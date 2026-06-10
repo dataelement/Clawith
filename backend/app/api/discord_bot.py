@@ -281,11 +281,11 @@ async def discord_interaction_webhook(
         async def handle_in_background():
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
-            from app.api.feishu import _call_agent_llm
             from app.services.channel_session import find_or_create_channel_session
             from app.database import async_session
             from datetime import datetime, timezone
 
+            # ── Phase 1: Short transaction — load configs, save user message ──
             async with async_session() as bg_db:
                 # Load agent
                 agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
@@ -296,11 +296,11 @@ async def discord_interaction_webhook(
 
                 # Find-or-create platform user for this Discord sender via unified service
                 from app.services.channel_user_service import channel_user_service
-                
+
                 _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get("username", "")
                 _display = _discord_username or f"Discord User {sender_id[:8]}"
                 _extra_info = {"name": _display}
-                
+
                 _platform_user = await channel_user_service.resolve_channel_user(
                     db=bg_db,
                     agent=agent_obj,
@@ -308,7 +308,7 @@ async def discord_interaction_webhook(
                     external_user_id=sender_id,
                     extra_info=_extra_info,
                 )
-                
+
                 # Update display_name if we now have a better name
                 if _discord_username and _platform_user.display_name and _platform_user.display_name.startswith("Discord User ") and _platform_user.display_name != _discord_username:
                     _platform_user.display_name = _discord_username
@@ -340,33 +340,54 @@ async def discord_interaction_webhook(
                 # Save user message
                 bg_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
                 sess.last_message_at = datetime.now(timezone.utc)
-                await bg_db.commit()
 
-                # Call LLM
-                reply_text = await _call_agent_llm(bg_db, agent_id, user_text, history=history)
-                logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
+                # Pre-load agent/model for LLM call and extract config values
+                from app.api.feishu import _load_agent_and_model
+                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(bg_db, agent_id)
 
-                # Save reply
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-                sess.last_message_at = datetime.now(timezone.utc)
-                await bg_db.commit()
-
-                # Bot token stored in config — read from DB to avoid detached ORM issues
                 from sqlalchemy import select as _sel
                 cfg_r = await bg_db.execute(_sel(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "discord",
                 ))
                 cfg = cfg_r.scalar_one_or_none()
-                bot_token_bg = cfg.app_secret if cfg else ""
-                app_id_bg = cfg.app_id if cfg else ""
+                _bot_token_bg = cfg.app_secret if cfg else ""
+                _app_id_bg = cfg.app_id if cfg else ""
 
-                # Send chunked reply via Discord follow-up
-                if bot_token_bg and interaction_token and app_id_bg:
-                    try:
-                        await _send_discord_followup(app_id_bg, bot_token_bg, interaction_token, reply_text)
-                    except Exception as e:
-                        logger.error(f"[Discord] Failed to send follow-up: {e}")
+                await bg_db.commit()
+            # ── Phase 1 complete: release connection ──
+
+            # ── Phase 2: LLM call (no DB session needed) ──
+            from app.api.feishu import _call_llm_with_config
+            reply_text = await _call_llm_with_config(
+                _agent_model, _llm_model, _fallback_model,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+            )
+            logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
+
+            # ── Phase 3: Save reply + send (new short transaction) ──
+            async with async_session() as _save_db:
+                _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                # Reload session object to update last_message_at
+                from app.models.chat_session import ChatSession
+                _sess_r = await _save_db.execute(
+                    select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
+                )
+                _sess_fresh = _sess_r.scalar_one_or_none()
+                if _sess_fresh:
+                    _sess_fresh.last_message_at = datetime.now(timezone.utc)
+                await _save_db.commit()
+
+            # Send chunked reply via Discord follow-up
+            if _bot_token_bg and interaction_token and _app_id_bg:
+                try:
+                    await _send_discord_followup(_app_id_bg, _bot_token_bg, interaction_token, reply_text)
+                except Exception as e:
+                    logger.error(f"[Discord] Failed to send follow-up: {e}")
 
         asyncio.create_task(handle_in_background())
         # Return DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE — shows "thinking..." to user

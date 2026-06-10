@@ -3,14 +3,71 @@
 from loguru import logger
 from sqlalchemy import select
 from app.database import async_session
+from app.models.tenant import Tenant
+from app.models.tenant_setting import TenantSetting
 from app.models.tool import Tool
+from app.services.llm.finish import FINISH_TOOL_SEED
+from app.services.tool_config import meaningful_config, tenant_tool_config_key
+
+SYNC_IS_DEFAULT_TOOL_NAMES = {
+    "finish",
+    "read_webpage",
+    "duckduckgo_search",
+    "jina_search",
+    "jina_read",
+    "update_objective",
+    # AgentBay tools should NOT be is_default=True. Older seeder versions may
+    # have set them to True; include them here so the seeder corrects the DB.
+    "agentbay_browser_navigate",
+    "agentbay_browser_screenshot",
+    "agentbay_browser_save_screenshot",
+    "agentbay_browser_click",
+    "agentbay_browser_type",
+    "agentbay_browser_extract",
+    "agentbay_browser_observe",
+    "agentbay_browser_login",
+    "agentbay_code_execute",
+    "agentbay_code_write_file",
+    "agentbay_code_read_file",
+    "agentbay_code_edit_file",
+    "agentbay_command_exec",
+    "agentbay_computer_screenshot",
+    "agentbay_computer_save_screenshot",
+    "agentbay_computer_click",
+    "agentbay_computer_precision_screenshot",
+    "agentbay_computer_input_text",
+    "agentbay_computer_press_keys",
+    "agentbay_computer_scroll",
+    "agentbay_computer_move_mouse",
+    "agentbay_computer_drag_mouse",
+    "agentbay_computer_get_installed_apps",
+    "agentbay_computer_start_app",
+    "agentbay_computer_list_windows",
+    "agentbay_computer_close_window",
+    "agentbay_computer_dismiss_dialog",
+    "agentbay_file_transfer",
+}
+
+LEGACY_IMAGE_TOOL_MODEL_DEFAULTS = {
+    "generate_image_siliconflow": "black-forest-labs/FLUX.1-schnell",
+    "generate_image_openai": "dall-e-3",
+    "generate_image_google": "gemini-2.5-flash-image",
+}
+
+
+def _global_builtin_config(tool_data: dict) -> dict:
+    """Return config safe to store on the global builtin Tool row."""
+    if (tool_data.get("config_schema") or {}).get("fields"):
+        return {}
+    return tool_data.get("config", {})
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
 BUILTIN_TOOLS = [
+    FINISH_TOOL_SEED,
     {
         "name": "list_files",
         "display_name": "List Files",
-        "description": "List files and folders in a directory within the workspace. Can also list enterprise_info/ for shared company information.",
+        "description": "List files and folders in a directory within the workspace. Use this before writing new workspace documents so you can inspect the current folder structure, reuse existing topical subfolders when appropriate, and avoid dumping files directly into the workspace root unless there is a clear reason. Can also list enterprise_info/ for shared company information.",
         "category": "file",
         "icon": "📁",
         "is_default": True,
@@ -26,14 +83,14 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
+        "description": "Read file contents from the workspace. Can read soul.md, memory/memory.md, skills/, and enterprise_info/. Focus is stored in system tools, not focus.md. Use offset and limit for reading large files in chunks.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
+                "path": {"type": "string", "description": "File path, e.g.: soul.md, memory/memory.md"},
                 "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
                 "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
             },
@@ -47,16 +104,70 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "list_focus_items",
+        "display_name": "List Focus Items",
+        "description": "List structured Focus items from the system database.",
+        "category": "file",
+        "icon": "◎",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "include_completed": {"type": "boolean", "description": "Whether to include completed Focus items. Default true."},
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "upsert_focus_item",
+        "display_name": "Upsert Focus Item",
+        "description": "Create or update a structured Focus item in the system database.",
+        "category": "file",
+        "icon": "◎",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Stable short identifier, snake_case preferred."},
+                "title": {"type": "string", "description": "Short title (Focus名称)."},
+                "description": {"type": "string", "description": "Human-readable description of what is being tracked."},
+                "kind": {"type": "string", "enum": ["normal", "system"], "description": "normal or system"},
+                "source": {"type": "string", "description": "Optional origin label, e.g. user, trigger, a2a, okr."},
+            },
+            "required": ["description"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "complete_focus_item",
+        "display_name": "Complete Focus Item",
+        "description": "Mark a structured Focus item completed.",
+        "category": "file",
+        "icon": "◎",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Focus item identifier to complete."},
+            },
+            "required": ["key"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "write_file",
         "display_name": "Write File",
-        "description": "Write or update a file in the workspace. Can update memory/memory.md, create documents in workspace/, create skills in skills/.",
+        "description": "Write or update a file in the workspace. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, create documents in workspace/, create skills in skills/.",
         "category": "file",
         "icon": "✏️",
         "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path, e.g.: memory/memory.md, workspace/report.md"},
+                "path": {"type": "string", "description": "File path, e.g.: memory/memory.md, workspace/reports/report.md, workspace/knowledge_base/notes.md. Prefer a meaningful subfolder instead of writing loose files into workspace/ root."},
                 "content": {"type": "string", "description": "File content to write"},
             },
             "required": ["path", "content"],
@@ -77,6 +188,25 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path to delete"}
             },
             "required": ["path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "move_file",
+        "display_name": "Move File",
+        "description": "Move or rename a file or folder within the workspace. Use this instead of execute_code for reorganizing workspace files, moving generated documents into subfolders, or renaming files. Cannot move soul.md, tasks.json, or enterprise_info/. If destination_path is an existing folder or ends with '/', the original filename is preserved inside that folder. Does not overwrite by default.",
+        "category": "file",
+        "icon": "↪",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Current file or folder path, e.g.: workspace/report.md"},
+                "destination_path": {"type": "string", "description": "Destination file/folder path, e.g.: workspace/archive/report.md or workspace/presentations/PPT/"},
+                "overwrite": {"type": "boolean", "description": "Replace the destination if it already exists. Default false."},
+            },
+            "required": ["source_path", "destination_path"],
         },
         "config": {},
         "config_schema": {},
@@ -157,11 +287,111 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "convert_csv_to_xlsx",
+        "display_name": "CSV to Excel",
+        "description": "Convert a CSV source file into an Excel .xlsx file. Create/edit the CSV first, then use this tool.",
+        "category": "file",
+        "icon": "📊",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source CSV file"},
+                "target_path": {"type": "string", "description": "Path for the output Excel file (.xlsx)"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "convert_html_to_pdf",
+        "display_name": "HTML to PDF",
+        "description": "Convert an HTML source file into a PDF document. Uses headless Chrome by default for higher-fidelity rendering of modern CSS and screen layouts, with WeasyPrint as a fallback.",
+        "category": "file",
+        "icon": "📄",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source HTML file"},
+                "target_path": {"type": "string", "description": "Path for the output PDF file (.pdf)"},
+                "design_width": {"type": "number", "description": "Optional browser viewport width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional browser viewport height in pixels, default 720"},
+                "pdf_mode": {"type": "string", "enum": ["pages", "single"], "description": "pages outputs paginated PDF, single outputs one long full-page PDF. Default: pages"},
+                "scale": {"type": "number", "description": "Optional Chrome PDF scale for paginated output, default 0.64"},
+                "paper_width": {"type": "number", "description": "Optional paper width in inches for paginated output, default 8.27"},
+                "paper_height": {"type": "number", "description": "Optional paper height in inches for paginated output, default 11.69"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "convert_html_to_pptx",
+        "display_name": "HTML to PowerPoint",
+        "description": "Convert an HTML source file into a PowerPoint .pptx file. By default, render_mode='editable' opens the HTML in headless Chrome, samples real element positions/styles, and maps explicit .slide/data-slide nodes or top-level page sections into editable PPT elements. Use render_mode='visual' as a high-fidelity screenshot fallback when exact visual preservation is more important than editability.",
+        "category": "file",
+        "icon": "📽️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source HTML file"},
+                "target_path": {"type": "string", "description": "Path for the output PowerPoint file (.pptx)"},
+                "design_width": {"type": "number", "description": "Optional source design width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional source design height in pixels, default 720"},
+                "render_mode": {"type": "string", "enum": ["editable", "visual"], "description": "editable maps HTML/CSS into editable PPT elements using Chrome layout sampling; visual preserves styling with Chrome-rendered screenshots as a fallback. Default: editable"},
+                "render_scale": {"type": "number", "description": "Optional Chrome raster scale for screenshots and complex CSS captures. Higher values improve sharpness but increase PPTX size. Default: 2, clamped between 1 and 4"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "convert_markdown_to_docx",
+        "display_name": "Markdown to Word",
+        "description": "Convert a Markdown source file into a Word .docx file.",
+        "category": "file",
+        "icon": "📝",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source Markdown file"},
+                "target_path": {"type": "string", "description": "Path for the output Word file (.docx)"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "convert_markdown_to_pdf",
+        "display_name": "Markdown to PDF",
+        "description": "Convert a Markdown source file into a PDF document.",
+        "category": "file",
+        "icon": "📄",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source Markdown file"},
+                "target_path": {"type": "string", "description": "Path for the output PDF file (.pdf)"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
     # --- Aware trigger management tools ---
     {
         "name": "set_trigger",
         "display_name": "Set Trigger",
-        "description": "Set a new trigger to wake yourself up at a specific time or condition. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or human user replies).",
+        "description": "Set a new trigger to wake yourself up at a specific time or condition. Every trigger is attached to a focus item; if focus_ref is omitted, the system creates a focus item from the reason. Trigger types: 'cron' (recurring schedule), 'once' (fire once at a time), 'interval' (every N minutes), 'poll' (HTTP monitoring), 'on_message' (when another agent or human user replies).",
         "category": "aware",
         "icon": "⚡",
         "is_default": True,
@@ -172,7 +402,7 @@ BUILTIN_TOOLS = [
                 "type": {"type": "string", "enum": ["cron", "once", "interval", "poll", "on_message"], "description": "Trigger type"},
                 "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"}"},
                 "reason": {"type": "string", "description": "What to do when this trigger fires"},
-                "focus_ref": {"type": "string", "description": "Optional: which focus item this relates to"},
+                "focus_ref": {"type": "string", "description": "Optional: which focus item this relates to. If omitted, one is created automatically."},
             },
             "required": ["name", "type", "config", "reason"],
         },
@@ -252,9 +482,9 @@ BUILTIN_TOOLS = [
     # It was previously duplicated here under 'communication', which could cause
     # 'Tool names must be unique' errors when the DB lacked a UNIQUE constraint.
     {
-        "name": "send_web_message",
-        "display_name": "Web Message",
-        "description": "Send a proactive message to a user on the Clawith web platform. The message appears in their chat history and is pushed in real-time if they are online.",
+        "name": "send_platform_message",
+        "display_name": "Platform Message",
+        "description": "Send a proactive message to a user on the Clawith first-party platform (web or app). The message appears in their platform chat history and is pushed in real-time if they are online.",
         "category": "communication",
         "icon": "🌐",
         "is_default": True,
@@ -379,7 +609,7 @@ BUILTIN_TOOLS = [
         "description": "Search the internet using Jina AI (s.jina.ai). Returns high-quality results with full content. Requires Jina AI API key for higher rate limits.",
         "category": "search",
         "icon": "🔮",
-        "is_default": True,
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -407,7 +637,7 @@ BUILTIN_TOOLS = [
         "description": "Read and extract full content from a URL using Jina AI Reader (r.jina.ai). Returns clean markdown. Requires Jina AI API key for higher rate limits.",
         "category": "search",
         "icon": "📖",
-        "is_default": True,
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -428,6 +658,25 @@ BUILTIN_TOOLS = [
                 },
             ]
         },
+    },
+    {
+        "name": "read_webpage",
+        "display_name": "Read Webpage",
+        "description": "Fetch a public HTTP/HTTPS URL directly and extract readable webpage text. Use this when you already have a specific link and need its page content without relying on an external reader service.",
+        "category": "search",
+        "icon": "🌐",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full public HTTP/HTTPS URL to read"},
+                "max_chars": {"type": "integer", "description": "Max characters to return (default 12000, max 50000)"},
+                "include_links": {"type": "boolean", "description": "Whether to include extracted page links (default false)"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
     },
     {
         "name": "exa_search",
@@ -489,7 +738,7 @@ BUILTIN_TOOLS = [
         "description": "Search the internet using DuckDuckGo. Free, no API key required. Returns titles, URLs, and snippets.",
         "category": "search",
         "icon": "🦆",
-        "is_default": False,
+        "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
@@ -713,7 +962,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 30,
                     "min": 5,
-                    "max": 300,
+                    "max": 3600,
                 },
                 {
                     "key": "max_timeout",
@@ -721,7 +970,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 60,
                     "min": 10,
-                    "max": 300,
+                    "max": 3600,
                 },
             ]
         },
@@ -764,7 +1013,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 30,
                     "min": 5,
-                    "max": 300,
+                    "max": 3600,
                 },
                 {
                     "key": "max_timeout",
@@ -772,7 +1021,7 @@ BUILTIN_TOOLS = [
                     "type": "number",
                     "default": 60,
                     "min": 10,
-                    "max": 300,
+                    "max": 3600,
                 },
             ]
         },
@@ -831,7 +1080,7 @@ BUILTIN_TOOLS = [
             "required": ["prompt"],
         },
         "config": {
-            "model": "black-forest-labs/FLUX.1-schnell",
+            "model": "",
             "api_key": "",
             "base_url": "",
         },
@@ -841,7 +1090,7 @@ BUILTIN_TOOLS = [
                     "key": "model",
                     "label": "Model",
                     "type": "text",
-                    "default": "black-forest-labs/FLUX.1-schnell",
+                    "default": "",
                     "placeholder": "e.g. black-forest-labs/FLUX.1-schnell",
                 },
                 {
@@ -878,7 +1127,7 @@ BUILTIN_TOOLS = [
             "required": ["prompt"],
         },
         "config": {
-            "model": "dall-e-3",
+            "model": "",
             "api_key": "",
             "base_url": "",
         },
@@ -888,7 +1137,7 @@ BUILTIN_TOOLS = [
                     "key": "model",
                     "label": "Model",
                     "type": "text",
-                    "default": "dall-e-3",
+                    "default": "",
                     "placeholder": "e.g. dall-e-3 or dall-e-2",
                 },
                 {
@@ -925,7 +1174,7 @@ BUILTIN_TOOLS = [
             "required": ["prompt"],
         },
         "config": {
-            "model": "gemini-2.5-flash-image",
+            "model": "",
             "api_key": "",
             "base_url": "",
         },
@@ -935,7 +1184,7 @@ BUILTIN_TOOLS = [
                     "key": "model",
                     "label": "Model",
                     "type": "text",
-                    "default": "gemini-2.5-flash-image",
+                    "default": "",
                     "placeholder": "e.g. gemini-2.5-flash-image",
                 },
                 {
@@ -956,6 +1205,99 @@ BUILTIN_TOOLS = [
         },
     },
     {
+        "name": "generate_image_custom",
+        "display_name": "Generate Image (Custom API)",
+        "description": "Generate an image through a custom OpenAI-compatible or gateway API. Configure the request body template and response image path for providers such as TokenRouter or OpenRouter.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed image description."},
+                "size": {"type": "string", "description": "Image size (e.g. 1024x1024). Default 1024x1024."},
+                "save_path": {"type": "string", "description": "Save path in workspace. Default: auto."},
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "api_key": "",
+            "base_url": "",
+            "endpoint_path": "/chat/completions",
+            "model": "",
+            "request_body_template_json": "{\n  \"model\": \"{model}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{prompt}\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+            "response_image_path": "choices.0.message.images.0.image_url.url",
+            "extra_headers_json": "",
+            "timeout_seconds": 120,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "API key for your image generation gateway",
+                },
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "e.g. google/gemini-2.5-flash-image",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Base URL",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "e.g. https://api.tokenrouter.com/v1 or https://openrouter.ai/api/v1",
+                },
+                {
+                    "key": "endpoint_path",
+                    "label": "Endpoint Path",
+                    "type": "text",
+                    "default": "/chat/completions",
+                    "placeholder": "/chat/completions",
+                    "advanced": True,
+                },
+                {
+                    "key": "request_body_template_json",
+                    "label": "Request Body Template JSON",
+                    "type": "textarea",
+                    "default": "{\n  \"model\": \"{model}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{prompt}\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+                    "placeholder": "{\n  \"model\": \"{model}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"{prompt}\"}],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": false\n}",
+                    "advanced": True,
+                },
+                {
+                    "key": "response_image_path",
+                    "label": "Response Image Path",
+                    "type": "text",
+                    "default": "choices.0.message.images.0.image_url.url",
+                    "placeholder": "choices.0.message.images.0.image_url.url",
+                    "advanced": True,
+                },
+                {
+                    "key": "extra_headers_json",
+                    "label": "Extra Headers JSON",
+                    "type": "textarea",
+                    "default": "",
+                    "placeholder": "{\n  \"HTTP-Referer\": \"https://your-app.example\",\n  \"X-Title\": \"Clawith\"\n}",
+                    "advanced": True,
+                },
+                {
+                    "key": "timeout_seconds",
+                    "label": "Timeout Seconds",
+                    "type": "number",
+                    "default": 120,
+                    "min": 10,
+                    "max": 600,
+                    "advanced": True,
+                },
+            ]
+        },
+    },
+    {
         "name": "discover_resources",
         "display_name": "Resource Discovery",
         "description": "Search public MCP registries (Smithery + ModelScope) for tools and capabilities that can extend your abilities. Use this when you encounter a task you cannot handle with your current tools.",
@@ -970,7 +1312,7 @@ BUILTIN_TOOLS = [
             },
             "required": ["query"],
         },
-        "config": {"smithery_api_key": "", "modelscope_api_token": ""},
+        "config": {},
         "config_schema": {
             "fields": [
                 {
@@ -1005,7 +1347,7 @@ BUILTIN_TOOLS = [
             },
             "required": ["server_id"],
         },
-        "config": {"smithery_api_key": "", "modelscope_api_token": ""},
+        "config": {},
         "config_schema": {
             "fields": [
                 {
@@ -1143,6 +1485,481 @@ BUILTIN_TOOLS = [
             "required": ["message_id", "body"],
         },
         "config": {},
+        "config_schema": {},
+    },
+    # --- OKR Tools ---
+    # These tools expose the OKR system to agents. Not default — assigned explicitly
+    # to the OKR Agent and to other agents that want to self-report progress.
+    {
+        "name": "get_okr",
+        "display_name": "Get OKR Board",
+        "description": (
+            "Get the full OKR board for the current period. Returns all Objectives and Key Results "
+            "for the tenant, organized by company and member level. Includes objective_id values "
+            "for every Objective and kr_id values for every Key Result, so you can update existing "
+            "Objectives and KRs instead of creating duplicates. Used by the OKR Agent to generate "
+            "progress reports and monitor team performance."
+        ),
+        "category": "okr",
+        "icon": "🎯",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {
+                    "type": "string",
+                    "description": "Optional: ISO date string (YYYY-MM-DD) to filter by period start. Defaults to current period.",
+                },
+                "period_end": {
+                    "type": "string",
+                    "description": "Optional: ISO date string (YYYY-MM-DD) to filter by period end.",
+                },
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "get_my_okr",
+        "display_name": "My OKR",
+        "description": (
+            "Get your own OKR Objectives and Key Results for the current period. "
+            "Returns a structured view of your goals, current progress values, plus objective_id and kr_id references "
+            "you need to update existing OKRs correctly. Call this before changing progress, KR content, "
+            "or Objective text so you reuse the current records instead of creating duplicates."
+        ),
+        "category": "okr",
+        "icon": "🎯",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {
+                    "type": "string",
+                    "description": "Optional: ISO date string (YYYY-MM-DD). Defaults to current period.",
+                },
+                "period_end": {
+                    "type": "string",
+                    "description": "Optional: ISO date string (YYYY-MM-DD).",
+                },
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "update_kr_progress",
+        "display_name": "Update KR Progress",
+        "description": (
+            "Update the current progress value for a Key Result. Use get_my_okr first to obtain "
+            "the kr_id. The status (on_track / at_risk / behind / completed) is automatically "
+            "computed from the progress ratio, or you can override it explicitly. "
+            "A progress log entry is recorded for full audit history."
+        ),
+        "category": "okr",
+        "icon": "📈",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update. Get this from get_my_okr.",
+                },
+                "value": {
+                    "type": "number",
+                    "description": "New current value (e.g. 4.2 for a KR with target 5.0).",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note explaining the progress update (e.g. 'Completed weekly review session').",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional: override the auto-computed status.",
+                },
+            },
+            "required": ["kr_id", "value"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "update_kr_content",
+        "display_name": "Update KR Content",
+        "description": (
+            "Update the content fields of one of YOUR OWN Key Results, such as title, target value, unit, "
+            "focus reference, or status. Use get_my_okr first to obtain the kr_id. "
+            "This tool is for changing KR definition/content, not reporting progress. "
+            "If the user says to change, revise, adjust, or replace an existing KR target or wording, "
+            "prefer this tool instead of create_key_result."
+        ),
+        "category": "okr",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update (from get_my_okr).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional new KR title.",
+                },
+                "target_value": {
+                    "type": "number",
+                    "description": "Optional new target value.",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional new unit label.",
+                },
+                "focus_ref": {
+                    "type": "string",
+                    "description": "Optional new focus file reference.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional explicit status override.",
+                },
+            },
+            "required": ["kr_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        # collect_okr_progress — legacy OKR Agent heartbeat collection path.
+        # This replaces the need to contact each member individually.
+        "name": "collect_okr_progress",
+        "display_name": "Collect OKR Progress",
+        "description": (
+            "Legacy batch sync for reported KR progress. Prefer direct OKR tools such as "
+            "get_my_okr and update_kr_progress for new work. Returns a summary of how many "
+            "KRs were updated."
+        ),
+        "category": "okr",
+        "icon": "📊",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # generate_okr_report — OKR Agent calls this to produce the structured report.
+        # The tool writes the report to WorkReport table and returns the markdown content
+        # so the Agent can choose to post it to Plaza or send it to specific channels.
+        "name": "generate_okr_report",
+        "display_name": "Generate OKR Report",
+        "description": (
+            "Generate a structured OKR progress report (daily or weekly) for the current "
+            "period. The report summarizes all Objectives and Key Results, highlights items "
+            "at risk or behind, and shows overall team health metrics. The report is saved "
+            "to the database and to your workspace/reports/ folder. Returns the full report "
+            "markdown so you can post it to Plaza or share with the team."
+        ),
+        "category": "okr",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "report_type": {
+                    "type": "string",
+                    "enum": ["daily", "weekly"],
+                    "description": "Whether to generate a daily or weekly report.",
+                },
+            },
+            "required": ["report_type"],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # get_okr_settings — lets OKR Agent read the tenant's OKR configuration so it
+        # can determine whether reports are due, what time they're scheduled, etc.
+        "name": "get_okr_settings",
+        "display_name": "Get OKR Settings",
+        "description": (
+            "Read the OKR configuration for this team, including whether daily/weekly "
+            "reports are enabled, the configured report time, period frequency, and more. "
+            "Use this at the start of your heartbeat to decide whether a report is due today."
+        ),
+        "category": "okr",
+        "icon": "⚙️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # create_objective — OKR Agent uses this after conversation-based confirmation
+        # to create an O for the company, a user, or an agent. Only OKR Agent has this tool.
+        "name": "create_objective",
+        "display_name": "Create Objective",
+        "description": (
+            "Create an OKR Objective for the company, a specific user, or a specific agent. "
+            "Call this after confirming the objective with the relevant person through conversation. "
+            "Use this only when a new Objective needs to be created for the period. "
+            "If the person already has a matching Objective and just wants to revise it, use update_objective instead. "
+            "owner_type must be 'company', 'user', or 'agent'. "
+            "owner_id is not required for company-level objectives. "
+            "period_start and period_end must be ISO date strings (YYYY-MM-DD)."
+        ),
+        "category": "okr",
+        "icon": "🎯",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The objective title (concise, inspiring, directional).",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional detailed description of the objective.",
+                },
+                "owner_type": {
+                    "type": "string",
+                    "enum": ["company", "user", "agent"],
+                    "description": "Who this objective belongs to.",
+                },
+                "owner_id": {
+                    "type": "string",
+                    "description": "UUID of the owner. Try to use this if available in context.",
+                },
+                "owner_name": {
+                    "type": "string",
+                    "description": "Optional fallback: the exact display name of the human/agent. Use this ONLY if you don't have their UUID.",
+                },
+                "period_start": {
+                    "type": "string",
+                    "description": "ISO date string for the start of the OKR period (e.g. '2026-04-01').",
+                },
+                "period_end": {
+                    "type": "string",
+                    "description": "ISO date string for the end of the OKR period (e.g. '2026-06-30').",
+                },
+            },
+            "required": ["title", "owner_type", "period_start", "period_end"],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # create_key_result — OKR Agent creates a measurable KR under a confirmed objective.
+        "name": "create_key_result",
+        "display_name": "Create Key Result",
+        "description": (
+            "Create a Key Result (KR) under an existing Objective. "
+            "Get the objective_id first using get_okr. "
+            "Use this only for a brand-new KR. If the user is revising the wording, target value, unit, "
+            "or focus reference of an existing KR, use update_kr_content instead. "
+            "target_value is the goal number (e.g. 50000 for 50000 followers). "
+            "unit is optional but recommended for clarity (e.g. '%', 'NPS', '万元', 'followers')."
+        ),
+        "category": "okr",
+        "icon": "🔑",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "objective_id": {
+                    "type": "string",
+                    "description": "UUID of the parent Objective.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "The KR title (specific, measurable outcome).",
+                },
+                "target_value": {
+                    "type": "number",
+                    "description": "The target number to achieve (e.g. 50000).",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional unit label (e.g. '%', 'followers', '万元', 'NPS score').",
+                },
+                "focus_ref": {
+                    "type": "string",
+                    "description": "Optional: basename of the focus file that tracks this KR (e.g. 'content_quality').",
+                },
+            },
+            "required": ["objective_id", "title", "target_value"],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # update_objective — available to ALL agents, but with ownership enforcement:
+        # regular agents can only modify their own O; OKR Agent can modify any O.
+        "name": "update_objective",
+        "display_name": "Update Objective",
+        "description": (
+            "Modify an Objective's title, description, status, or period dates. "
+            "Regular agents can only update their own Objectives — call get_my_okr first "
+            "to get your objective_id. The OKR Agent can update any member's Objective. "
+            "Only provide the fields you want to change. If the request is to revise an existing OKR's "
+            "goal text rather than create a new one, prefer this tool over create_objective."
+        ),
+        "category": "okr",
+        "icon": "✏️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "objective_id": {
+                    "type": "string",
+                    "description": "UUID of the Objective to update. Get from get_my_okr (own) or get_okr (any).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "New title for the objective.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New description.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["draft", "active", "completed", "archived"],
+                    "description": "New status for the objective.",
+                },
+                "period_start": {
+                    "type": "string",
+                    "description": "New period start date (YYYY-MM-DD).",
+                },
+                "period_end": {
+                    "type": "string",
+                    "description": "New period end date (YYYY-MM-DD).",
+                },
+            },
+            "required": ["objective_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        # update_any_kr_progress — OKR Agent exclusive: update KR for any member.
+        # Unlike update_kr_progress (self-report), this can update anyone's KR.
+        # Used after collecting progress data through conversation.
+        "name": "update_any_kr_progress",
+        "display_name": "Update Any KR Progress",
+        "description": (
+            "Update the progress value of any team member's Key Result. "
+            "This is the OKR Agent's exclusive version of update_kr_progress — it can update "
+            "KRs belonging to any user or agent, not just the caller's own. "
+            "Use this ONLY after confirming the value with the KR owner through conversation. "
+            "Get kr_id from get_okr. Optionally provide a note explaining the source."
+        ),
+        "category": "okr",
+        "icon": "📈",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update. Get from get_okr.",
+                },
+                "value": {
+                    "type": "number",
+                    "description": "New current value for this KR.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Source or context note (e.g. 'Reported by user in weekly check-in').",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional: override the auto-computed status.",
+                },
+            },
+            "required": ["kr_id", "value"],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # generate_monthly_okr_report — OKR Agent exclusive: produce the monthly summary report.
+        # Called automatically by the monthly_okr_report system cron trigger, or on-demand.
+        "name": "generate_monthly_okr_report",
+        "display_name": "Generate Monthly OKR Report",
+        "description": (
+            "Generate the monthly OKR progress summary report. Covers all Objectives and Key "
+            "Results for the current period, highlights completed and at-risk items, and provides "
+            "a closing action note. Saved to WorkReport (report_type='monthly') and "
+            "workspace/reports/. Returns the full Markdown so you can send it to admins."
+        ),
+        "category": "okr",
+        "icon": "📅",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        "config": {"okr_agent_only": True},
+        "config_schema": {},
+    },
+    {
+        # upsert_member_daily_report — OKR Agent exclusive: create or revise a member daily report.
+        "name": "upsert_member_daily_report",
+        "display_name": "Upsert Member Daily Report",
+        "description": (
+            "Create or update the final normalized daily report for any member in the company. "
+            "Use this after discussing progress with the member and distilling their update into "
+            "one concise final report. The stored content should stay within 2000 characters."
+        ),
+        "category": "okr",
+        "icon": "📝",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "report_date": {
+                    "type": "string",
+                    "description": "Report date in YYYY-MM-DD format.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Final concise daily report content. Keep it within 2000 characters.",
+                },
+                "member_type": {
+                    "type": "string",
+                    "enum": ["user", "agent"],
+                    "description": "Member type. Defaults to user if omitted.",
+                },
+                "member_id": {
+                    "type": "string",
+                    "description": "UUID of the member. Preferred when available.",
+                },
+                "member_name": {
+                    "type": "string",
+                    "description": "Member display name. Use when you do not have the UUID.",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Optional source tag such as okr_agent_assisted or manual.",
+                },
+            },
+            "required": ["report_date", "content"],
+        },
+        "config": {"okr_agent_only": True},
         "config_schema": {},
     },
     # --- Feishu Integration Tools ---
@@ -1310,6 +2127,30 @@ BUILTIN_TOOLS = [
                 "record_id": {"type": "string", "description": "要删除的 record_id，通过 bitable_query_records 获取。"},
             },
             "required": ["url", "record_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_doc_search",
+        "display_name": "Feishu Doc Search",
+        "description": "Search Feishu cloud documents by keyword using the official document search API. Useful when a wiki or knowledge base has too many files to browse manually.",
+        "category": "feishu",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword, e.g. '恩菲' or '客户周报'"},
+                "docs_types": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["doc", "docx", "sheet", "bitable", "file", "folder", "mindnote", "slides"]},
+                    "description": "Optional file type filter.",
+                },
+                "count": {"type": "integer", "description": "Number of results to return (default 10, max 50)."},
+                "offset": {"type": "integer", "description": "Result offset for pagination (default 0)."},
+            },
+            "required": ["query"],
         },
         "config": {},
         "config_schema": {},
@@ -1608,6 +2449,51 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "update_kr_content",
+        "display_name": "Update KR Content",
+        "description": (
+            "Update the content fields of one of YOUR OWN Key Results. "
+            "Call get_my_okr first to obtain the kr_id, then change title, target_value, unit, "
+            "focus_ref, or status as needed. This does not record a progress update."
+        ),
+        "category": "okr",
+        "icon": "✏️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update (from get_my_okr).",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional new KR title.",
+                },
+                "target_value": {
+                    "type": "number",
+                    "description": "Optional new target value.",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Optional new unit label.",
+                },
+                "focus_ref": {
+                    "type": "string",
+                    "description": "Optional new focus reference.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["on_track", "at_risk", "behind", "completed"],
+                    "description": "Optional explicit status value.",
+                },
+            },
+            "required": ["kr_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────
@@ -1615,7 +2501,7 @@ BUILTIN_TOOLS = [
 AGENTBAY_TOOLS = [
     {
         "name": "agentbay_browser_navigate",
-        "display_name": "AgentBay: 浏览器访问",
+        "display_name": "AgentBay: Browser Navigate",
         "description": "[ENV: Browser] Navigate to a URL in the AgentBay HEADLESS BROWSER environment. IMPORTANT: This browser runs in an ISOLATED environment — it does NOT share filesystem, processes, or downloads with the Cloud Desktop (computer_* tools) or Code Sandbox (code_execute/command_exec). Files downloaded here are NOT accessible from other environments. Tip: after navigating, use browser_observe to identify interactive elements, then use browser_type/browser_click to interact.",
         "category": "agentbay",
         "icon": "🌐",
@@ -1625,14 +2511,6 @@ AGENTBAY_TOOLS = [
             "properties": {
                 "url": {"type": "string", "description": "要访问的网址"},
                 "wait_for": {"type": "string", "description": "等待元素选择器（可选）"},
-                "save_to_workspace": {
-                    "type": "boolean",
-                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
-                    # a screenshot (e.g. "截图给我看", "保存截图"). Default False means
-                    # the screenshot is held in memory for LLM vision only (invisible to user).
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                    "default": False,
-                },
             },
             "required": ["url"],
         },
@@ -1662,29 +2540,32 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_screenshot",
-        "display_name": "AgentBay: 浏览器截图",
+        "display_name": "AgentBay: Browser Screenshot",
         "description": "[ENV: Browser] Take a screenshot of the current page in the headless browser. This browser is ISOLATED from the Cloud Desktop and Code Sandbox. Use this after clicking, typing, or submitting a form to verify the result — it preserves the current page state. Never call browser_navigate just to take a screenshot.",
         "category": "agentbay",
         "icon": "📸",
         "is_default": False,
         "parameters_schema": {
             "type": "object",
-            "properties": {
-                "save_to_workspace": {
-                    "type": "boolean",
-                    # Set to True ONLY when the user explicitly asks to SEE or SAVE
-                    # a screenshot. Default False = in-memory for LLM vision only.
-                    "description": "CRITICAL: Set to True IF AND ONLY IF the user explicitly asked you to SHOW them a screenshot or save it (e.g. \"截图给我看\", \"截图看看\", \"把截图发出来\"). If True, the image is saved to their workspace and you get a Markdown link. Default is False (internal in-memory analysis only, completely invisible to the user).",
-                    "default": False,
-                },
-            },
+            "properties": {},
         },
         "config": {},
         "config_schema": {},
     },
     {
+        "name": "agentbay_browser_save_screenshot",
+        "display_name": "AgentBay: Save Browser Screenshot",
+        "description": "[ENV: Browser] Save the current headless browser screenshot to workspace/screenshots/. Use only when the user explicitly asks to save, share, keep, or show a screenshot. For routine visual observation, use agentbay_browser_screenshot instead because it stays internal and does not create workspace files.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {"type": "object", "properties": {}},
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "agentbay_browser_click",
-        "display_name": "AgentBay: 浏览器点击",
+        "display_name": "AgentBay: Browser Click",
         "description": "[ENV: Browser] Click an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector (e.g. #btn) or natural language description (e.g. 'the Send button').",
         "category": "agentbay",
         "icon": "🖱️",
@@ -1701,7 +2582,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_browser_type",
-        "display_name": "AgentBay: 浏览器输入",
+        "display_name": "AgentBay: Browser Type",
         "description": "[ENV: Browser] Type text into an element in the headless browser (ISOLATED from Desktop and Code Sandbox). selector can be a CSS selector or natural language description (e.g. 'phone number input').",
         "category": "agentbay",
         "icon": "⌨️",
@@ -1719,7 +2600,7 @@ AGENTBAY_TOOLS = [
     },
     {
         "name": "agentbay_code_execute",
-        "display_name": "AgentBay: 代码执行",
+        "display_name": "AgentBay: Code Execute",
         "description": "[ENV: Code Sandbox] Execute code (Python, Bash, Node.js) in the AgentBay Code Sandbox. IMPORTANT: This sandbox is an ISOLATED environment — it does NOT share filesystem, processes, or network with the Headless Browser (browser_* tools) or Cloud Desktop (computer_* tools). Files created here are NOT accessible from other environments.",
         "category": "agentbay",
         "icon": "💻",
@@ -1732,6 +2613,90 @@ AGENTBAY_TOOLS = [
                 "timeout": {"type": "integer", "description": "超时时间（秒）", "default": 30},
             },
             "required": ["language", "code"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_write_file",
+        "display_name": "AgentBay: Write Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Write a text file inside the AgentBay Code Sandbox.",
+        "category": "agentbay",
+        "icon": "📝",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+                "content": {"type": "string", "description": "File content to write."},
+                "mode": {
+                    "type": "string",
+                    "enum": ["overwrite", "append"],
+                    "description": "Write mode. Default: overwrite.",
+                    "default": "overwrite",
+                },
+            },
+            "required": ["remote_path", "content"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_read_file",
+        "display_name": "AgentBay: Read Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Read a text file from the AgentBay Code Sandbox.",
+        "category": "agentbay",
+        "icon": "📖",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+            },
+            "required": ["remote_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_code_edit_file",
+        "display_name": "AgentBay: Edit Code Sandbox File",
+        "description": "[ENV: Code Sandbox] Edit a text file inside the AgentBay Code Sandbox by replacing exact text.",
+        "category": "agentbay",
+        "icon": "✏️",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "List of exact text replacements.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "oldText": {"type": "string", "description": "Exact text to replace."},
+                            "newText": {"type": "string", "description": "Replacement text."},
+                        },
+                        "required": ["oldText", "newText"],
+                    },
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview changes without applying them. Default: false.",
+                    "default": False,
+                },
+            },
+            "required": ["remote_path", "edits"],
         },
         "config": {},
         "config_schema": {},
@@ -1815,9 +2780,28 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_screenshot",
         "display_name": "AgentBay: Desktop Screenshot",
-        "description": "[ENV: Cloud Desktop] Take a screenshot of the full Cloud Desktop (Windows/Linux). IMPORTANT: This desktop is an ISOLATED environment — it does NOT share filesystem, processes, or browser sessions with the Headless Browser (browser_* tools) or Code Sandbox (code_execute/command_exec). To browse the web on this desktop, use computer_start_app to open a browser app. Essential for understanding the current desktop state before performing GUI operations.",
+        "description": "[ENV: Cloud Desktop] Take a screenshot of the full Cloud Desktop (Windows/Linux). The analysis image includes a coordinate grid and the result includes the pixel coordinate system for mouse tools. For tiny controls such as close buttons, menus, checkboxes, or small icons, call this again with focus_x/focus_y/focus_width/focus_height around the target area before clicking; the focused crop is enlarged for vision and its grid labels remain absolute desktop coordinates. IMPORTANT: This desktop is an ISOLATED environment — it does NOT share filesystem, processes, or browser sessions with the Headless Browser (browser_* tools) or Code Sandbox (code_execute/command_exec). To browse the web on this desktop, first use agentbay_computer_get_installed_apps, then start a browser with the returned start_cmd. Essential for understanding the current desktop state before performing GUI operations.",
         "category": "agentbay",
         "icon": "📸",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "focus_x": {"type": "integer", "description": "Optional absolute desktop X coordinate for the top-left of a focused precision crop"},
+                "focus_y": {"type": "integer", "description": "Optional absolute desktop Y coordinate for the top-left of a focused precision crop"},
+                "focus_width": {"type": "integer", "description": "Optional width of the focused precision crop in desktop pixels"},
+                "focus_height": {"type": "integer", "description": "Optional height of the focused precision crop in desktop pixels"},
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_save_screenshot",
+        "display_name": "AgentBay: Save Desktop Screenshot",
+        "description": "[ENV: Cloud Desktop] Save the current Cloud Desktop screenshot to workspace/screenshots/. Use only when the user explicitly asks to save, share, keep, or show a screenshot. For routine visual observation, use agentbay_computer_screenshot instead because it stays internal and does not create workspace files.",
+        "category": "agentbay",
+        "icon": "A",
         "is_default": False,
         "parameters_schema": {"type": "object", "properties": {}},
         "config": {},
@@ -1826,7 +2810,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_click",
         "display_name": "AgentBay: Mouse Click",
-        "description": "[ENV: Cloud Desktop] Click the mouse at specific screen coordinates on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Take a screenshot first to identify the target position.",
+        "description": "[ENV: Cloud Desktop] Click the mouse at absolute desktop pixel coordinates on the Cloud Desktop (ISOLATED from Browser and Code Sandbox). Always inspect the desktop first with agentbay_computer_screenshot. Before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, or any target whose center is not unambiguous from the full screenshot, call agentbay_computer_precision_screenshot around the target area and use the absolute coordinate labels in that enlarged crop. Do not repeatedly guess from the full screenshot after a miss. For login prompts, software popups, cancel/no-thanks/not-now/skip/no-login flows, prefer agentbay_computer_dismiss_dialog before coordinate clicking. Click the visual center of the target. Coordinates are from the full desktop top-left corner (0, 0), not from the right-side preview panel. For in-app popups, embedded panels, marketplace/store windows, browser/app tabs, document tabs, and software-internal close buttons, use the app UI with click, Escape, or shortcuts such as Ctrl+W; do not escalate to root-window close tools. Use agentbay_computer_list_windows/close_window only when the user explicitly wants to close or quit an entire OS-level window/application.",
         "category": "agentbay",
         "icon": "🖱️",
         "is_default": False,
@@ -1838,6 +2822,26 @@ AGENTBAY_TOOLS = [
                 "button": {"type": "string", "enum": ["left", "right", "middle", "double_left"], "description": "Mouse button (default: left)", "default": "left"},
             },
             "required": ["x", "y"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_precision_screenshot",
+        "display_name": "AgentBay: Precision Screenshot",
+        "description": "[ENV: Cloud Desktop] Take an enlarged focused crop of the Cloud Desktop for accurate mouse targeting. Use this before clicking dialog buttons, text buttons, tabs, menus, checkboxes, close buttons, small controls, or after any near-miss. Provide an approximate absolute desktop rectangle around the target; small rectangles are automatically expanded to include surrounding context, so prefer a region around the target instead of an ultra-tight crop. The returned vision image is enlarged and its grid labels remain absolute desktop coordinates for agentbay_computer_click. The next click should use the center coordinate read from this precision crop, not a guessed coordinate from the full screenshot.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Absolute desktop X coordinate of the crop top-left"},
+                "y": {"type": "integer", "description": "Absolute desktop Y coordinate of the crop top-left"},
+                "width": {"type": "integer", "description": "Approximate crop width in desktop pixels. Small crops are automatically expanded for context."},
+                "height": {"type": "integer", "description": "Approximate crop height in desktop pixels. Small crops are automatically expanded for context."},
+            },
+            "required": ["x", "y", "width", "height"],
         },
         "config": {},
         "config_schema": {},
@@ -1950,7 +2954,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_start_app",
         "display_name": "AgentBay: Start Application",
-        "description": "[ENV: Cloud Desktop] Start an application on the Cloud Desktop by its launch command (e.g. 'firefox', 'libreoffice --calc'). The desktop is ISOLATED from the Headless Browser and Code Sandbox environments.",
+        "description": "[ENV: Cloud Desktop] Start an application on the Cloud Desktop by its launch command. Prefer calling agentbay_computer_get_installed_apps first and pass the returned start_cmd exactly; do not guess commands such as chrome, microsoft-edge, or wps. If a direct command fails, this tool will try to match installed apps by name/start_cmd and retry with the real start_cmd. The desktop is ISOLATED from the Headless Browser and Code Sandbox environments.",
         "category": "agentbay",
         "icon": "🚀",
         "is_default": False,
@@ -1961,6 +2965,24 @@ AGENTBAY_TOOLS = [
                 "work_dir": {"type": "string", "description": "Working directory for the application (optional)"},
             },
             "required": ["cmd"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_get_installed_apps",
+        "display_name": "AgentBay: Get Installed Apps",
+        "description": "[ENV: Cloud Desktop] List installed applications and their real launch commands. Use this before agentbay_computer_start_app, then pass the returned start_cmd exactly instead of guessing app names.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "start_menu": {"type": "boolean", "description": "Include Start Menu applications (default: true)", "default": True},
+                "desktop": {"type": "boolean", "description": "Include Desktop shortcuts (default: true)", "default": True},
+                "ignore_system_apps": {"type": "boolean", "description": "Hide system applications (default: true)", "default": True},
+            },
         },
         "config": {},
         "config_schema": {},
@@ -1990,7 +3012,7 @@ AGENTBAY_TOOLS = [
     {
         "name": "agentbay_computer_activate_window",
         "display_name": "AgentBay: Activate Window",
-        "description": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop by its window ID. Use get_active_window or list_visible_apps to find window IDs.",
+        "description": "[ENV: Cloud Desktop] Bring a specific window to the foreground on the Cloud Desktop by its window ID. Use agentbay_computer_list_windows or get_active_window to find window IDs.",
         "category": "agentbay",
         "icon": "🪟",
         "is_default": False,
@@ -2000,6 +3022,56 @@ AGENTBAY_TOOLS = [
                 "window_id": {"type": "integer", "description": "Window ID to activate"},
             },
             "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_list_windows",
+        "display_name": "AgentBay: List Windows",
+        "description": "[ENV: Cloud Desktop] List OS-level root desktop windows with window_id, title, process, and geometry. These IDs are for whole application windows only. Use this for activation, or before closing only when the user explicitly wants to close/quit an entire desktop window or app. Do NOT use root window IDs for in-app popups, modals, embedded marketplace/store panels, browser/app tabs, document tabs, or software-internal dialogs; close those with the app UI, Escape, Ctrl+W, or agentbay_computer_dismiss_dialog.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds (default: 3000)", "default": 3000},
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_close_window",
+        "display_name": "AgentBay: Close Window",
+        "description": "[ENV: Cloud Desktop] HIGH-RISK: close an entire OS-level root desktop window by explicit window_id returned by agentbay_computer_list_windows. This can quit the whole application and lose context. Use only when the user explicitly asks to close/quit a whole desktop window or app. Never use this for in-app popups, modals, embedded marketplace/store panels, browser/app tabs, document tabs, login prompts, or software-internal dialogs; use app UI clicks, Escape, Ctrl+W, or agentbay_computer_dismiss_dialog instead.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "window_id": {"type": "integer", "description": "Window ID returned by agentbay_computer_list_windows or get_active_window"},
+                "title": {"type": "string", "description": "Optional title text for candidate lookup only when window_id is unknown; title-only calls will not close anything"},
+            },
+            "required": ["window_id"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "agentbay_computer_dismiss_dialog",
+        "display_name": "AgentBay: Dismiss Dialog",
+        "description": "[ENV: Cloud Desktop] Safely dismiss the active in-app popup/dialog by sending Escape only. It never closes root desktop windows or applications. Prefer this over coordinate clicking for modals, login prompts, no-login/not-now/skip/cancel prompts, and software-internal dialogs. For in-app tabs, embedded panels, marketplace/store windows, or document tabs, prefer app UI controls or shortcuts such as Ctrl+W. Use agentbay_computer_close_window only when the user explicitly wants to close/quit an entire OS-level window/app.",
+        "category": "agentbay",
+        "icon": "A",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Optional human-readable popup/dialog title hint for logging only; this tool will still only send Escape"},
+            },
         },
         "config": {},
         "config_schema": {},
@@ -2063,14 +3135,315 @@ BUILTIN_TOOLS = [
     *AGENTBAY_TOOLS,
 ]
 
+# ── OKR Tools ────────────────────────────────────────────────────────────────
+# These three tools are global builtins available to ALL agents.
+# OKR Agent-exclusive management tools (create_objective, create_key_result, etc.)
+# are injected separately via agent_seeder when the OKR Agent is created.
+
+OKR_BUILTIN_TOOLS = [
+    {
+        "name": "get_okr",
+        "display_name": "Get OKR",
+        "description": (
+            "Read the full OKR board for the current period: company-level Objectives and "
+            "Key Results, plus every member's (human and agent) individual O and KRs with "
+            "current progress values. Includes objective_id for each Objective and kr_id for "
+            "each Key Result. Use this to understand company direction, update existing OKRs, "
+            "and see how others are tracking before planning your own work."
+        ),
+        "category": "okr",
+        "icon": "🎯",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {
+                    "type": "string",
+                    "description": "Optional ISO date (YYYY-MM-DD). Defaults to the current period start.",
+                },
+                "period_end": {
+                    "type": "string",
+                    "description": "Optional ISO date (YYYY-MM-DD). Defaults to the current period end.",
+                },
+            },
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "get_my_okr",
+        "display_name": "Get My OKR",
+        "description": (
+            "Read your own Objectives and Key Results for the current period, including "
+            "kr_id values needed to update progress. Call this before update_kr_progress "
+            "to get the correct kr_id."
+        ),
+        "category": "okr",
+        "icon": "🎯",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {},
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "update_kr_progress",
+        "display_name": "Update KR Progress",
+        "description": (
+            "Update the current progress value of one of YOUR OWN Key Results. "
+            "Call get_my_okr first to obtain the kr_id. "
+            "A progress log entry is created automatically for history tracking."
+        ),
+        "category": "okr",
+        "icon": "📈",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "kr_id": {
+                    "type": "string",
+                    "description": "UUID of the Key Result to update (from get_my_okr).",
+                },
+                "value": {
+                    "type": "number",
+                    "description": "New current value (e.g. 3500 for a follower count, 75 for a percentage).",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note explaining the progress update.",
+                },
+            },
+            "required": ["kr_id", "value"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+]
+
+DEPLOY_BUILTIN_TOOLS = [
+    {
+        "name": "vercel_deploy",
+        "display_name": "Deploy to Vercel",
+        "description": "Deploy a project from workspace to Vercel. Supports two modes: 'upload' (direct file upload, no GitHub needed) or 'github' (push to GitHub repo, Vercel auto-deploys). Returns the deployment URL.",
+        "category": "deploy",
+        "icon": "🚀",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Vercel project name (will be created if not exists)"
+                },
+                "source_dir": {
+                    "type": "string",
+                    "description": "Directory in workspace containing the project, e.g. 'workspace/my-app'"
+                },
+                "deploy_method": {
+                    "type": "string",
+                    "enum": ["upload", "github"],
+                    "description": "'upload': direct file upload (simple, no GitHub needed). 'github': push to GitHub repo and let Vercel auto-deploy (better for version control and CI/CD). Default: 'upload'."
+                },
+                "github_repo": {
+                    "type": "string",
+                    "description": "GitHub repo in 'owner/repo' format. Required when deploy_method='github'."
+                },
+                "framework": {
+                    "type": "string",
+                    "description": "Framework preset: 'nextjs', 'vite', 'static', etc.",
+                    "enum": ["nextjs", "vite", "nuxtjs", "static", "remix", "astro"]
+                },
+                "production": {
+                    "type": "boolean",
+                    "description": "If true, deploy to production. Default false (preview)."
+                }
+            },
+            "required": ["project_name", "source_dir"]
+        },
+        "config": {"vercel_token": ""},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "vercel_token",
+                    "label": "Vercel Access Token",
+                    "type": "password",
+                    "default": "",
+                    "help_text": "Get from https://vercel.com/account/tokens"
+                }
+            ]
+        }
+    },
+    {
+        "name": "vercel_list_deployments",
+        "display_name": "List Vercel Deployments",
+        "description": "List recent deployments for a Vercel project. Shows status, URL, and creation time.",
+        "category": "deploy",
+        "icon": "📋",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "project_name": {"type": "string", "description": "Vercel project name"}
+            },
+            "required": ["project_name"]
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "vercel_get_deploy_logs",
+        "display_name": "Get Deploy Logs",
+        "description": "Get build logs and runtime logs for a Vercel deployment. Useful for debugging failed deployments.",
+        "category": "deploy",
+        "icon": "📜",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "deployment_id": {"type": "string", "description": "Deployment ID or URL"}
+            },
+            "required": ["deployment_id"]
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "vercel_set_env",
+        "display_name": "Set Environment Variable",
+        "description": "Set an environment variable for a Vercel project. Use for database URLs, API keys, and other secrets.",
+        "category": "deploy",
+        "icon": "🔐",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "project_name": {"type": "string"},
+                "key": {"type": "string", "description": "Environment variable name, e.g. DATABASE_URL"},
+                "value": {"type": "string", "description": "Environment variable value"},
+                "target": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["production", "preview", "development"]},
+                    "description": "Deployment targets. Default: all."
+                }
+            },
+            "required": ["project_name", "key", "value"]
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "vercel_manage_domain",
+        "display_name": "Manage Domain",
+        "description": "Check domain availability/pricing, or bind a custom domain to a Vercel project.",
+        "category": "deploy",
+        "icon": "🌐",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["check", "bind"],
+                    "description": "'check' to check availability/price, 'bind' to add domain to project"
+                },
+                "domain": {"type": "string", "description": "Domain name, e.g. 'myapp.com'"},
+                "project_name": {"type": "string", "description": "Required for 'bind' action"}
+            },
+            "required": ["action", "domain"]
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "neon_create_database",
+        "display_name": "Create Postgres Database",
+        "description": "Create a new Neon Postgres database. Returns the DATABASE_URL connection string. Use vercel_set_env to inject it into your Vercel project.",
+        "category": "deploy",
+        "icon": "🐘",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Name for the Neon project"
+                },
+                "database_name": {
+                    "type": "string",
+                    "description": "Database name, default 'neondb'"
+                },
+                "region": {
+                    "type": "string",
+                    "description": "Region: 'aws-us-east-1', 'aws-eu-central-1', etc.",
+                    "default": "aws-us-east-1"
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "Optional: Neon Organization ID. If not provided and you belong to multiple organizations, the tool will automatically list them for you to choose."
+                }
+            },
+            "required": ["project_name"]
+        },
+        "config": {"neon_api_key": ""},
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "neon_api_key",
+                    "label": "Neon API Key",
+                    "type": "password",
+                    "default": "",
+                    "help_text": "Get from https://console.neon.tech/app/settings/api-keys"
+                }
+            ]
+        }
+    }
+]
+
+BUILTIN_TOOLS = [
+    *BUILTIN_TOOLS,
+    *OKR_BUILTIN_TOOLS,
+    *DEPLOY_BUILTIN_TOOLS,
+]
+
+
 async def seed_builtin_tools():
     """Insert or update builtin tools in the database."""
     from app.models.tool import AgentTool
     from app.models.agent import Agent
 
+
     async with async_session() as db:
+        # Legacy rename: older environments persisted this tool as
+        # `send_web_message`. Rename or merge it in-place so agents keep the
+        # same assignment after the first startup on the new version.
+        old_name = "send_web_message"
+        new_name = "send_platform_message"
+        old_result = await db.execute(select(Tool).where(Tool.name == old_name))
+        old_tool = old_result.scalar_one_or_none()
+        new_result = await db.execute(select(Tool).where(Tool.name == new_name))
+        new_tool = new_result.scalar_one_or_none()
+        if old_tool and not new_tool:
+            old_tool.name = new_name
+            logger.info(f"[ToolSeeder] Renamed builtin tool: {old_name} -> {new_name}")
+        elif old_tool and new_tool:
+            old_assignments = await db.execute(select(AgentTool).where(AgentTool.tool_id == old_tool.id))
+            for assignment in old_assignments.scalars().all():
+                existing_assignment = await db.execute(
+                    select(AgentTool).where(
+                        AgentTool.agent_id == assignment.agent_id,
+                        AgentTool.tool_id == new_tool.id,
+                    )
+                )
+                if not existing_assignment.scalar_one_or_none():
+                    assignment.tool_id = new_tool.id
+            await db.delete(old_tool)
+            logger.info(f"[ToolSeeder] Merged legacy builtin tool into {new_name}")
+
         new_tool_ids = []
         for t in BUILTIN_TOOLS:
+            seed_config = _global_builtin_config(t)
             result = await db.execute(select(Tool).where(Tool.name == t["name"]))
             existing = result.scalar_one_or_none()
             if not existing:
@@ -2083,7 +3456,7 @@ async def seed_builtin_tools():
                     icon=t["icon"],
                     is_default=t["is_default"],
                     parameters_schema=t.get("parameters_schema", {"type": "object", "properties": {}}),
-                    config=t.get("config", {}),
+                    config=seed_config,
                     config_schema=t.get("config_schema", {}),
                     source="builtin",
                 )
@@ -2107,15 +3480,38 @@ async def seed_builtin_tools():
                 if existing.icon != t["icon"]:
                     existing.icon = t["icon"]
                     updated_fields.append("icon")
+                if t["name"] in SYNC_IS_DEFAULT_TOOL_NAMES and existing.is_default != t["is_default"]:
+                    existing.is_default = t["is_default"]
+                    updated_fields.append("is_default")
                 if t.get("config_schema") and existing.config_schema != t["config_schema"]:
                     existing.config_schema = t["config_schema"]
                     updated_fields.append("config_schema")
                     # Merge new config defaults when config_schema changes
-                    if t.get("config"):
-                        existing.config = {**t["config"], **(existing.config or {})}
+                    if seed_config:
+                        existing.config = {**seed_config, **(existing.config or {})}
                         updated_fields.append("config")
-                if not existing.config and t.get("config"):
-                    existing.config = t["config"]
+                if not existing.config and seed_config:
+                    existing.config = seed_config
+                    updated_fields.append("config")
+                elif seed_config and existing.config != seed_config:
+                    # Merge new config keys into existing config so that flags like
+                    # okr_agent_only are propagated to already-created tool records.
+                    # Existing keys take precedence (agent-specific overrides are preserved).
+                    merged = {**seed_config, **(existing.config or {})}
+                    if merged != existing.config:
+                        existing.config = merged
+                        updated_fields.append("config")
+                legacy_model = LEGACY_IMAGE_TOOL_MODEL_DEFAULTS.get(t["name"])
+                if legacy_model and existing.config == {
+                    "model": legacy_model,
+                    "api_key": "",
+                    "base_url": "",
+                }:
+                    existing.config = {
+                        "model": "",
+                        "api_key": "",
+                        "base_url": "",
+                    }
                     updated_fields.append("config")
                 if existing.parameters_schema != t["parameters_schema"]:
                     existing.parameters_schema = t["parameters_schema"]
@@ -2140,13 +3536,172 @@ async def seed_builtin_tools():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
-        OBSOLETE_TOOLS = ["bing_search", "read_webpage", "manage_tasks"]
+        # AgentBay desktop window helpers are non-default tools, but should be
+        # available wherever the user has already enabled Cloud Desktop tools.
+        computer_anchor_names = [
+            "agentbay_computer_screenshot",
+            "agentbay_computer_precision_screenshot",
+            "agentbay_computer_click",
+            "agentbay_computer_get_active_window",
+            "agentbay_computer_activate_window",
+        ]
+        computer_helper_names = [
+            "agentbay_computer_precision_screenshot",
+            "agentbay_computer_save_screenshot",
+            "agentbay_computer_list_windows",
+            "agentbay_computer_close_window",
+            "agentbay_computer_dismiss_dialog",
+        ]
+        anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(computer_anchor_names)))
+        anchor_tool_ids = [row[0] for row in anchor_tools_r.fetchall()]
+        helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(computer_helper_names)))
+        helper_tools = helper_tools_r.scalars().all()
+        if anchor_tool_ids and helper_tools:
+            enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            enabled_agent_ids = [row[0] for row in enabled_agent_r.fetchall()]
+            assigned_count = 0
+            for agent_id in enabled_agent_ids:
+                for helper_tool in helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        assigned_count += 1
+            if assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {assigned_count} AgentBay computer helper tool(s) "
+                    f"to {len(enabled_agent_ids)} agent(s)"
+                )
+
+        # Save-screenshot is non-default, but should be available wherever the
+        # user has enabled the AgentBay browser screenshot tool.
+        browser_anchor_names = [
+            "agentbay_browser_navigate",
+            "agentbay_browser_screenshot",
+        ]
+        browser_helper_names = ["agentbay_browser_save_screenshot"]
+        browser_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(browser_anchor_names)))
+        browser_anchor_tool_ids = [row[0] for row in browser_anchor_tools_r.fetchall()]
+        browser_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(browser_helper_names)))
+        browser_helper_tools = browser_helper_tools_r.scalars().all()
+        if browser_anchor_tool_ids and browser_helper_tools:
+            browser_enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(browser_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            browser_enabled_agent_ids = [row[0] for row in browser_enabled_agent_r.fetchall()]
+            browser_assigned_count = 0
+            for agent_id in browser_enabled_agent_ids:
+                for helper_tool in browser_helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        browser_assigned_count += 1
+            if browser_assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {browser_assigned_count} AgentBay browser helper tool(s) "
+                    f"to {len(browser_enabled_agent_ids)} agent(s)"
+                )
+
+        # Code sandbox file helpers are non-default, but should be available
+        # wherever the user has already enabled AgentBay code execution tools.
+        code_anchor_names = [
+            "agentbay_code_execute",
+            "agentbay_command_exec",
+            "agentbay_file_transfer",
+        ]
+        code_helper_names = [
+            "agentbay_code_write_file",
+            "agentbay_code_read_file",
+            "agentbay_code_edit_file",
+        ]
+        code_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(code_anchor_names)))
+        code_anchor_tool_ids = [row[0] for row in code_anchor_tools_r.fetchall()]
+        code_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(code_helper_names)))
+        code_helper_tools = code_helper_tools_r.scalars().all()
+        if code_anchor_tool_ids and code_helper_tools:
+            code_enabled_agent_r = await db.execute(
+                select(AgentTool.agent_id)
+                .where(AgentTool.tool_id.in_(code_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
+                .distinct()
+            )
+            code_enabled_agent_ids = [row[0] for row in code_enabled_agent_r.fetchall()]
+            code_assigned_count = 0
+            for agent_id in code_enabled_agent_ids:
+                for helper_tool in code_helper_tools:
+                    existing_assignment = await db.execute(
+                        select(AgentTool).where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.tool_id == helper_tool.id,
+                        )
+                    )
+                    if not existing_assignment.scalar_one_or_none():
+                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        code_assigned_count += 1
+            if code_assigned_count:
+                logger.info(
+                    f"[ToolSeeder] Auto-assigned {code_assigned_count} AgentBay code file helper tool(s) "
+                    f"to {len(code_enabled_agent_ids)} agent(s)"
+                )
+
+        OBSOLETE_TOOLS = ["bing_search", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
             obsolete = result.scalar_one_or_none()
             if obsolete:
                 await db.delete(obsolete)
                 logger.info(f"[ToolSeeder] Removed obsolete tool: {obsolete_name}")
+
+        # Legacy deployments stored company credentials for builtin tools in
+        # the global tools.config row. Move those values into the first tenant's
+        # tenant_settings once, then clear the global row so new companies do
+        # not inherit another company's keys.
+        first_tenant_r = await db.execute(select(Tenant).order_by(Tenant.created_at).limit(1))
+        first_tenant = first_tenant_r.scalar_one_or_none()
+        if first_tenant:
+            builtin_config_tools_r = await db.execute(select(Tool).where(Tool.source == "builtin"))
+            migrated = 0
+            for tool in builtin_config_tools_r.scalars().all():
+                if not (tool.config_schema or {}).get("fields"):
+                    continue
+                legacy_config = meaningful_config(tool.config or {})
+                if not legacy_config:
+                    tool.config = {}
+                    continue
+                setting_key = tenant_tool_config_key(tool.name)
+                existing_setting_r = await db.execute(
+                    select(TenantSetting).where(
+                        TenantSetting.tenant_id == first_tenant.id,
+                        TenantSetting.key == setting_key,
+                    )
+                )
+                if not existing_setting_r.scalar_one_or_none():
+                    db.add(TenantSetting(
+                        tenant_id=first_tenant.id,
+                        key=setting_key,
+                        value={"config": legacy_config},
+                    ))
+                    migrated += 1
+                tool.config = {}
+            if migrated:
+                logger.info(
+                    f"[ToolSeeder] Migrated {migrated} legacy builtin tool config(s) "
+                    f"to tenant_settings for tenant {first_tenant.id}"
+                )
 
         await db.commit()
         logger.info("[ToolSeeder] Builtin tools seeded")

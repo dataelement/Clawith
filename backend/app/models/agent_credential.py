@@ -1,8 +1,8 @@
-"""Agent credential model for storing login credentials and cookies.
+"""Agent credential model for storing platform session cookies.
 
-Each AgentCredential stores encrypted login credentials (username/password)
-and browser cookies for a specific platform, enabling automatic login
-state injection when creating new AgentBay browser sessions.
+Each AgentCredential stores encrypted browser cookies for a specific platform,
+enabling automatic login state injection when creating new AgentBay browser
+sessions without retaining third-party account passwords.
 """
 
 import uuid
@@ -16,11 +16,10 @@ from app.database import Base
 
 
 class AgentCredential(Base):
-    """Stores encrypted credentials and cookies for an agent on a specific platform.
+    """Stores encrypted session cookies for an agent on a specific platform.
 
     The cookies_json field holds an encrypted JSON array of Playwright-compatible
-    cookie objects. The username and password fields are also encrypted using
-    the platform's AES-256-CBC encrypt_data/decrypt_data utilities.
+    cookie objects.
 
     Lifecycle:
     - Created manually by admin via UI (Phase 2)
@@ -50,13 +49,6 @@ class AgentCredential(Base):
     display_name: Mapped[str] = mapped_column(
         String(200), default=""
     )  # human-readable label
-
-    # Manual credentials (encrypted, used for auto-login in Take Control)
-    username: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted
-    password: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypted
-    login_url: Mapped[str | None] = mapped_column(
-        String(500), nullable=True
-    )  # login page URL for Re-login
 
     # Auto-managed cookie state
     cookies_json: Mapped[str | None] = mapped_column(

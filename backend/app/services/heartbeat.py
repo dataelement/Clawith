@@ -13,7 +13,14 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from loguru import logger
-from sqlalchemy import select, update
+
+from app.core.logging_config import new_trace_id
+from sqlalchemy import select, update, or_
+from app.services.storage import agent_storage_key, get_storage_backend
+
+from app.services.llm.finish import FINISH_PROTOCOL_REMINDER, find_finish_call, parse_tool_arguments
+
+_HEARTBEAT_SEMAPHORE = asyncio.Semaphore(10)
 
 # Default heartbeat instruction used when HEARTBEAT.md doesn't exist
 DEFAULT_HEARTBEAT_INSTRUCTION = """[Heartbeat Check]
@@ -87,6 +94,15 @@ Format for curiosity_journal.md entries:
 - Do NOT post trivial or repetitive content
 """
 
+PRIVATE_AGENT_HEARTBEAT_APPEND = """
+
+⚠️ PRIVATE AGENT RULE — STRICTLY FOLLOW:
+- You are a private agent. Do NOT browse Agent Plaza.
+- Do NOT call plaza_get_new_posts, plaza_create_post, or plaza_add_comment.
+- Do NOT share any findings, summaries, or opinions in Plaza.
+- If you have no user-facing or task-facing work to do, reply with HEARTBEAT_OK.
+"""
+
 
 def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
     """Check if current time is within the agent's active hours.
@@ -123,8 +139,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
     during long-running LLM calls:
       Phase 1: Read agent, model, context, notifications → commit
       Phase 2: LLM tool loop (no DB connection held)
-      Phase 3: Write token usage + last_heartbeat_at → commit
+      Phase 3: Write token usage → commit
     """
+    new_trace_id()
+    await _HEARTBEAT_SEMAPHORE.acquire()
     try:
         from app.database import async_session
         from app.models.agent import Agent
@@ -135,6 +153,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         agent_name = ""
         agent_role = ""
         agent_creator_id = None
+        agent_is_private = False
         model_provider = ""
         model_api_key = ""
         model_model = ""
@@ -162,6 +181,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             agent_name = agent.name
             agent_role = agent.role_description or ""
             agent_creator_id = agent.creator_id
+            agent_is_private = (getattr(agent, "access_mode", None) or "company") != "company"
             model_provider = model.provider
             model_api_key = get_model_api_key(model)
             model_model = model.model
@@ -171,15 +191,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             model_request_timeout = getattr(model, 'request_timeout', None)
 
             # Read HEARTBEAT.md if it exists, otherwise use default
-            from pathlib import Path
-            from app.config import get_settings
-            settings = get_settings()
-
-            ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-            hb_file = ws_root / "HEARTBEAT.md"
-            if hb_file.exists():
+            storage = get_storage_backend()
+            hb_key = agent_storage_key(agent_id, "HEARTBEAT.md")
+            if await storage.exists(hb_key):
                 try:
-                    custom = hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    custom = await storage.read_text(hb_key, encoding="utf-8", errors="replace")
+                    custom = custom.strip()
                     if custom:
                         # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """
@@ -198,6 +215,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 """
                 except Exception:
                     pass
+            if agent_is_private:
+                heartbeat_instruction += PRIVATE_AGENT_HEARTBEAT_APPEND
 
             # Build context
             from app.services.agent_context import build_agent_context
@@ -275,10 +294,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         reply = ""
         plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
         plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
-        _hb_accumulated_tokens = 0
+        _hb_accumulated_usage = None
 
         # Token tracking helpers
-        from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+        from app.services.token_tracker import (
+            TokenUsage,
+            record_token_usage,
+            extract_token_usage,
+            estimate_token_usage_from_chars,
+        )
+        _hb_accumulated_usage = TokenUsage()
 
         # Convert messages to LLMMessage format
         llm_messages = [
@@ -304,12 +329,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                 break
 
             # Track tokens for this round
-            real_tokens = extract_usage_tokens(response.usage)
-            if real_tokens:
-                _hb_accumulated_tokens += real_tokens
+            usage = extract_token_usage(response.usage)
+            if usage:
+                _hb_accumulated_usage.add(usage)
             else:
                 round_chars = sum(len(m.content or '') for m in llm_messages) + len(response.content or '')
-                _hb_accumulated_tokens += estimate_tokens_from_chars(round_chars)
+                _hb_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
 
             if response.tool_calls:
                 # Add assistant message with tool calls
@@ -323,6 +348,18 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     } for tc in response.tool_calls],
                     reasoning_content=response.reasoning_content,
                 ))
+
+                finish_call = find_finish_call(response.tool_calls)
+                if finish_call:
+                    if finish_call.valid:
+                        reply = finish_call.content
+                        break
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=finish_call.call_id,
+                        content=finish_call.error or "`finish` was invalid.",
+                    ))
+                    continue
 
                 # Tools that require arguments — if LLM sends empty args, skip and ask to retry
                 # (aligned with call_llm in websocket.py)
@@ -338,7 +375,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     raw_args = fn.get("arguments", "{}")
                     logger.info(f"[Heartbeat] Raw arguments for {tool_name} (len={len(raw_args) if raw_args else 0}): {repr(raw_args[:300]) if raw_args else 'None'}")
                     try:
-                        args = json.loads(raw_args) if raw_args else {}
+                        args = parse_tool_arguments(raw_args)
                     except json.JSONDecodeError as je:
                         logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
                         args = {}
@@ -376,24 +413,18 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                         content=str(tool_result),
                     ))
             else:
-                reply = response.content or ""
-                break
+                if response.content:
+                    llm_messages.append(LLMMessage(role="assistant", content=response.content))
+                llm_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+                continue
 
         await client.close()
 
         # ── Phase 3: Write results back to DB (short transaction) ──
         async with async_session() as db:
             # Record accumulated heartbeat token usage
-            if _hb_accumulated_tokens > 0:
-                await record_token_usage(agent_id, _hb_accumulated_tokens)
-
-            # Update last_heartbeat_at
-            # Using an update statement is safer to avoid state drift if the object was updated elsewhere
-            await db.execute(
-                update(Agent)
-                .where(Agent.id == agent_id)
-                .values(last_heartbeat_at=datetime.now(timezone.utc))
-            )
+            if _hb_accumulated_usage and _hb_accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _hb_accumulated_usage)
             await db.commit()
 
         # Log activity if not empty
@@ -410,6 +441,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
     except Exception as e:
         logger.exception(f"Heartbeat error for agent {agent_id}: {e}")
+    finally:
+        _HEARTBEAT_SEMAPHORE.release()
 
 
 async def _heartbeat_tick():
@@ -420,6 +453,7 @@ async def _heartbeat_tick():
     from app.services.timezone_utils import get_agent_timezone_sync
     from app.models.tenant import Tenant
 
+    new_trace_id()
     now = datetime.now(timezone.utc)
 
     try:
@@ -463,14 +497,41 @@ async def _heartbeat_tick():
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     continue
 
-                # Fire heartbeat
+                # Atomically claim this heartbeat slot before scheduling work.
+                claim_result = await db.execute(
+                    update(Agent)
+                    .where(
+                        Agent.id == agent.id,
+                        Agent.heartbeat_enabled == True,
+                        Agent.status.in_(["running", "idle"]),
+                        or_(
+                            Agent.last_heartbeat_at.is_(None),
+                            Agent.last_heartbeat_at <= now - interval,
+                        ),
+                    )
+                    .values(last_heartbeat_at=now)
+                )
+                if (claim_result.rowcount or 0) != 1:
+                    continue
+
+                await db.commit()
+
+                # Fire heartbeat only after the DB claim has been committed.
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
-                await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
+                try:
+                    await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
+                except Exception as e:
+                    logger.warning(f"Failed to write heartbeat_fire audit log for {agent.name}: {e}")
                 asyncio.create_task(_execute_heartbeat(agent.id))
                 triggered += 1
 
+            await db.commit()
+
             if triggered:
-                await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
+                try:
+                    await write_audit_log("heartbeat_tick", {"eligible_agents": len(agents), "triggered": triggered})
+                except Exception as e:
+                    logger.warning(f"Failed to write heartbeat_tick audit log: {e}")
 
     except Exception as e:
         logger.exception(f"Heartbeat tick error: {e}")
@@ -483,3 +544,270 @@ async def start_heartbeat():
     while True:
         await _heartbeat_tick()
         await asyncio.sleep(60)
+
+
+async def _notify_oneshot_error(
+    triggered_by_user_id: uuid.UUID | None,
+    agent_id: uuid.UUID,
+    agent_name: str,
+    error_msg: str,
+) -> None:
+    """Create a platform notification for the admin who triggered a failed oneshot task."""
+    if not triggered_by_user_id:
+        return
+    try:
+        from app.database import async_session
+        from app.models.notification import Notification
+        async with async_session() as db:
+            db.add(Notification(
+                user_id=triggered_by_user_id,
+                type="system",
+                title=f"{agent_name} task failed",
+                body=error_msg[:500],
+                link=f"/agents/{agent_id}#chat",
+                ref_id=agent_id,
+                sender_name=agent_name,
+            ))
+            await db.commit()
+        logger.info(f"[Oneshot] Notified user {triggered_by_user_id} about {agent_name} failure")
+    except Exception as e:
+        logger.warning(f"[Oneshot] Failed to create error notification: {e}")
+
+
+async def run_agent_oneshot(
+    agent_id: uuid.UUID,
+    prompt: str,
+    triggered_by_user_id: uuid.UUID | None = None,
+    max_rounds: int = 40,
+) -> str:
+    """Run an agent with a specific one-shot task prompt.
+
+    Reuses the same LLM + tools infrastructure as the heartbeat, but:
+    - Accepts an arbitrary task prompt instead of the HEARTBEAT.md instruction
+    - Does NOT update last_heartbeat_at
+    - Does NOT check active hours
+    - Configurable max_rounds to handle multi-member outreach tasks
+    - Sends a platform notification to the triggering user on failure
+
+    Returns the final reply string (for logging purposes).
+    """
+    new_trace_id()
+    try:
+        from app.database import async_session
+        from app.models.agent import Agent
+        from app.models.llm import LLMModel
+        from app.services.llm import get_model_api_key
+
+        # ── Phase 1: Read agent + model config (short DB transaction) ──────────
+        agent_name = ""
+        agent_role = ""
+        agent_creator_id = None
+        model_provider = ""
+        model_api_key = ""
+        model_model = ""
+        model_base_url = None
+        model_temperature = None
+        model_max_output_tokens = None
+        model_request_timeout = None
+
+        async with async_session() as db:
+            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent = result.scalar_one_or_none()
+            if not agent:
+                logger.warning(f"[Oneshot] Agent {agent_id} not found — aborting")
+                return ""
+
+            model_id = agent.primary_model_id or agent.fallback_model_id
+            if not model_id:
+                msg = "Agent has no LLM model configured. Please assign a model in Agent Settings."
+                logger.warning(f"[Oneshot] Agent {agent_id} has no model configured — aborting")
+                await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name or str(agent_id), msg)
+                return ""
+
+            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+            model = model_result.scalar_one_or_none()
+            if not model:
+                msg = f"The configured LLM model ({model_id}) was not found. Please check Agent Settings."
+                logger.warning(f"[Oneshot] Model {model_id} not found — aborting")
+                await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name or str(agent_id), msg)
+                return ""
+
+            agent_name = agent.name
+            agent_role = agent.role_description or ""
+            agent_creator_id = agent.creator_id
+            model_provider = model.provider
+            model_api_key = get_model_api_key(model)
+            model_model = model.model
+            model_base_url = model.base_url
+            model_temperature = model.temperature
+            model_max_output_tokens = getattr(model, "max_output_tokens", None)
+            model_request_timeout = getattr(model, "request_timeout", None)
+
+            # Build agent identity context (system prompt + dynamic context)
+            from app.services.agent_context import build_agent_context
+            static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role)
+
+            await db.commit()
+        # DB session is now closed — connection returned to pool
+
+        # ── Phase 2: LLM tool-call loop (no DB connection held) ────────────────
+        from app.services.llm import (
+            create_llm_client,
+            get_max_tokens,
+            LLMMessage,
+            LLMError,
+        )
+        from app.services.agent_tools import execute_tool, get_agent_tools_for_llm
+        from app.services.token_tracker import (
+            TokenUsage,
+            record_token_usage,
+            extract_token_usage,
+            estimate_token_usage_from_chars,
+        )
+
+        try:
+            client = create_llm_client(
+                provider=model_provider,
+                api_key=model_api_key,
+                model=model_model,
+                base_url=model_base_url,
+                timeout=float(model_request_timeout or 120.0),
+            )
+        except Exception as e:
+            msg = f"Failed to initialise the LLM client: {e}"
+            logger.error(f"[Oneshot] Failed to create LLM client for {agent_name}: {e}")
+            await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name, msg)
+            return ""
+
+        tools_for_llm = await get_agent_tools_for_llm(agent_id)
+        llm_messages = [
+            LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt),
+            LLMMessage(role="user", content=prompt),
+        ]
+
+        reply = ""
+        accumulated_usage = TokenUsage()
+
+        for round_i in range(max_rounds):
+            try:
+                response = await client.complete(
+                    messages=llm_messages,
+                    tools=tools_for_llm,
+                    temperature=model_temperature,
+                    max_tokens=get_max_tokens(model_provider, model_model, model_max_output_tokens),
+                )
+            except LLMError as e:
+                logger.error(f"[Oneshot] LLM error (round {round_i}): {e}")
+                await _notify_oneshot_error(
+                    triggered_by_user_id, agent_id, agent_name,
+                    f"LLM call failed (round {round_i}): {e}",
+                )
+                break
+            except Exception as e:
+                logger.error(f"[Oneshot] Unexpected LLM error (round {round_i}): {e}")
+                await _notify_oneshot_error(
+                    triggered_by_user_id, agent_id, agent_name,
+                    f"Unexpected error during LLM call (round {round_i}): {e}",
+                )
+                break
+
+            # Track token usage
+            usage = extract_token_usage(response.usage)
+            if usage:
+                accumulated_usage.add(usage)
+            else:
+                round_chars = sum(len(m.content or "") for m in llm_messages) + len(response.content or "")
+                accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
+
+            if response.tool_calls:
+                llm_messages.append(LLMMessage(
+                    role="assistant",
+                    content=response.content or None,
+                    tool_calls=[{
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": tc["function"],
+                    } for tc in response.tool_calls],
+                    reasoning_content=response.reasoning_content,
+                ))
+
+                finish_call = find_finish_call(response.tool_calls)
+                if finish_call:
+                    if finish_call.valid:
+                        reply = finish_call.content
+                        break
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=finish_call.call_id,
+                        content=finish_call.error or "`finish` was invalid.",
+                    ))
+                    continue
+
+                for tc in response.tool_calls:
+                    fn = tc["function"]
+                    tool_name = fn["name"]
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        args = parse_tool_arguments(raw_args)
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    logger.info(f"[Oneshot:{agent_name}] Tool call: {tool_name}({list(args.keys())})")
+                    tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+
+                    llm_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=tc["id"],
+                        content=str(tool_result),
+                    ))
+            else:
+                if response.content:
+                    llm_messages.append(LLMMessage(role="assistant", content=response.content))
+                llm_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+                continue
+
+        await client.close()
+
+        # ── Phase 3: Record token usage (best-effort) ───────────────────────────
+        if accumulated_usage.total_tokens > 0:
+            try:
+                await record_token_usage(agent_id, accumulated_usage)
+            except Exception as e:
+                logger.warning(f"[Oneshot] Failed to record token usage: {e}")
+
+        # Log activity
+        if reply:
+            try:
+                from app.services.activity_logger import log_activity
+                await log_activity(
+                    agent_id, "oneshot_task",
+                    f"Oneshot task completed: {reply[:80]}",
+                    detail={"reply": reply[:500], "triggered_by": str(triggered_by_user_id)},
+                )
+            except Exception:
+                pass
+
+        # ── Phase 4: Clear any previous error notifications ──────────
+        if triggered_by_user_id:
+            try:
+                from sqlalchemy import delete
+                from app.models.notification import Notification
+                async with async_session() as db:
+                    await db.execute(
+                        delete(Notification).where(
+                            Notification.user_id == triggered_by_user_id,
+                            Notification.ref_id == agent_id,
+                            Notification.type == "system",
+                            Notification.title.contains("task failed")
+                        )
+                    )
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[Oneshot] Failed to clear error notifications: {e}")
+
+        logger.info(f"[Oneshot] {agent_name} completed ({round_i + 1} rounds, {accumulated_usage.total_tokens} tokens)")
+        return reply
+
+    except Exception as e:
+        logger.exception(f"[Oneshot] Unexpected error for agent {agent_id}: {e}")
+        return ""

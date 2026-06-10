@@ -14,18 +14,35 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.config import get_settings
 from app.database import async_session
-from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
-from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
+
+# NOTE: agent_tools imports are deferred to function bodies to avoid circular
+# import: agent_tools → llm.finish → llm/__init__ → caller → agent_tools
+
+async def get_agent_tools_for_llm(*args, **kwargs):
+    from app.services.agent_tools import get_agent_tools_for_llm as _impl
+    return await _impl(*args, **kwargs)
+
+async def execute_tool(*args, **kwargs):
+    from app.services.agent_tools import execute_tool as _impl
+    return await _impl(*args, **kwargs)
+from app.services.token_tracker import (
+    TokenUsage,
+    record_token_usage,
+    extract_token_usage,
+    estimate_token_usage_from_chars,
+)
 
 from .client import LLMError
 from .failover import classify_error, FailoverErrorType
+from .finish import FINISH_PROTOCOL_REMINDER, FINISH_TOOL_DEFINITION, find_finish_call, parse_tool_arguments
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
@@ -34,9 +51,58 @@ if TYPE_CHECKING:
 
 
 TOOLS_REQUIRING_ARGS = frozenset({
-    "write_file", "read_file", "delete_file", "read_document",
+    "write_file", "read_file", "move_file", "delete_file", "read_document",
     "send_message_to_agent", "send_feishu_message", "send_email"
 })
+
+
+def _sanitize_tool_calls_for_context(tool_calls: list[dict]) -> tuple[list[dict] | None, str | None]:
+    """Return OpenAI-compatible tool calls, or a retry instruction if args are invalid."""
+    sanitized: list[dict] = []
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        tool_name = fn.get("name") or ""
+        raw_args = fn.get("arguments", "{}")
+
+        if raw_args is None or raw_args == "":
+            args_str = "{}"
+        elif isinstance(raw_args, str):
+            try:
+                json.loads(raw_args)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "[LLM] Invalid tool arguments JSON for {}: {} at pos {}",
+                    tool_name or "<unknown>",
+                    exc.msg,
+                    exc.pos,
+                )
+                return None, (
+                    "Your previous tool call arguments were not valid JSON. "
+                    f"The affected tool was `{tool_name or 'unknown'}`. "
+                    "Retry the tool call now with `function.arguments` as one valid JSON object string. "
+                    "Escape all quotes and newlines inside long HTML, CSS, JavaScript, or markdown content. "
+                    "Do not explain; only retry with a valid tool call."
+                )
+            args_str = raw_args
+        elif isinstance(raw_args, (dict, list)):
+            args_str = json.dumps(raw_args, ensure_ascii=False)
+        else:
+            return None, (
+                "Your previous tool call arguments had an unsupported type. "
+                f"The affected tool was `{tool_name or 'unknown'}`. "
+                "Retry the tool call with `function.arguments` as one valid JSON object string."
+            )
+
+        sanitized.append({
+            "id": tc.get("id", ""),
+            "type": tc.get("type") or "function",
+            "function": {
+                "name": tool_name,
+                "arguments": args_str,
+            },
+        })
+
+    return sanitized, None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -90,6 +156,15 @@ def _get_model_timeout(model: "LLMModel") -> float:
     return float(getattr(model, "request_timeout", None) or 120.0)
 
 
+def _usage_from_response_or_estimate(response, api_messages: list[LLMMessage]) -> TokenUsage:
+    usage = extract_token_usage(response.usage)
+    if usage:
+        return usage
+    round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages)
+    round_chars += len(response.content or '')
+    return estimate_token_usage_from_chars(round_chars)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helper Functions
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -122,11 +197,17 @@ async def _get_user_name(user_id) -> str | None:
         return None
     try:
         from app.models.user import User as _UserModel
+        from app.models.agent import Agent as _AgentModel
         async with async_session() as _udb:
             _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
             _u = _ur.scalar_one_or_none()
             if _u:
                 return _u.display_name or _u.username
+            # Check Agent name fallback
+            _ar = await _udb.execute(select(_AgentModel).where(_AgentModel.id == user_id))
+            _a = _ar.scalar_one_or_none()
+            if _a:
+                return _a.name
     except Exception:
         pass
     return None
@@ -192,6 +273,23 @@ def _check_tool_requires_args(tool_name: str, args: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _allowed_tool_names(tools_for_llm: list[dict] | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools_for_llm or []:
+        name = ((tool.get("function") or {}).get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _tool_not_enabled_message(tool_name: str) -> str:
+    return (
+        f"Tool `{tool_name}` is not enabled for this agent. "
+        "Do not call it again. Use only the tools currently available to you, "
+        "or explain that the required capability is not enabled."
+    )
+
+
 async def _process_tool_call(
     tc: dict,
     api_messages: list,
@@ -201,6 +299,8 @@ async def _process_tool_call(
     supports_vision: bool,
     on_tool_call,
     full_reasoning_content: str,
+    allowed_tool_names: set[str],
+    on_code_output=None,
 ) -> str:
     """Process a single tool call and return result."""
     fn = tc["function"]
@@ -218,11 +318,34 @@ async def _process_tool_call(
     if not should_execute:
         return error_msg
 
+    # if tool_name not in allowed_tool_names:
+    #     result = _tool_not_enabled_message(tool_name)
+    #     logger.warning(f"[LLM] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
+    #     if on_tool_call:
+    #         try:
+    #             await on_tool_call({
+    #                 "name": tool_name,
+    #                 "call_id": tc.get("id", ""),
+    #                 "args": args,
+    #                 "status": "done",
+    #                 "result": result,
+    #                 "reasoning_content": full_reasoning_content
+    #             })
+    #         except Exception:
+    #             pass
+    #     api_messages.append(LLMMessage(
+    #         role="tool",
+    #         tool_call_id=tc["id"],
+    #         content=result,
+    #     ))
+    #     return ""
+
     # Notify client about tool call (in-progress)
     if on_tool_call:
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "running",
                 "reasoning_content": full_reasoning_content
@@ -230,12 +353,14 @@ async def _process_tool_call(
         except Exception:
             pass
 
-    # Execute tool
+    # Execute tool — pass on_output for execute_code streaming
+    _on_output = on_code_output if tool_name in ("execute_code", "execute_code_e2b") else None
     result = await execute_tool(
         tool_name, args,
         agent_id=agent_id,
         user_id=user_id or agent_id,
         session_id=session_id,
+        on_output=_on_output,
     )
     logger.debug(f"[LLM] Tool result: {result[:100]}")
 
@@ -244,8 +369,8 @@ async def _process_tool_call(
     if supports_vision and agent_id:
         try:
             from app.services.vision_inject import try_inject_screenshot_vision
-            from app.config import get_settings
-            ws_path = get_settings().get_agent_workspace_path(agent_id)
+            settings = get_settings()
+            ws_path = Path(settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR) / str(agent_id)
             vision_content = try_inject_screenshot_vision(tool_name, str(result), ws_path)
             if vision_content:
                 tool_content = vision_content
@@ -258,6 +383,7 @@ async def _process_tool_call(
         try:
             await on_tool_call({
                 "name": tool_name,
+                "call_id": tc.get("id", ""),
                 "args": args,
                 "status": "done",
                 "result": result,
@@ -289,9 +415,13 @@ async def call_llm(
     session_id: str = "",
     on_chunk=None,
     on_tool_call=None,
+    on_tool_delta=None,
     on_thinking=None,
     supports_vision=False,
     max_tool_rounds_override: int | None = None,
+    skip_tools: bool = False,
+    on_code_output=None,
+    current_user_name_override: str | None = None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
@@ -302,15 +432,43 @@ async def call_llm(
         _max_tool_rounds = max_tool_rounds_override
 
     # Get user's name for personalized context
-    _user_name = await _get_user_name(user_id)
+    if current_user_name_override:
+        _user_name = current_user_name_override
+    else:
+        _user_name = await _get_user_name(user_id)
+
+    # Auto-assign fallback tool call logger if none provided but conversation context exists
+    if on_tool_call is None and session_id:
+        from app.services.chat_session_service import save_tool_call_log
+        async def _default_on_tool_call(data: dict):
+            if data.get("status") == "done" and agent_id:
+                await save_tool_call_log(
+                    agent_id=agent_id,
+                    user_id=user_id or agent_id,
+                    conversation_id=session_id,
+                    tool_name=data.get("name", ""),
+                    arguments=data.get("args"),
+                    result=data.get("result"),
+                    status="done",
+                    tool_call_id=data.get("call_id"),
+                    reasoning_content=data.get("reasoning_content"),
+                )
+        on_tool_call = _default_on_tool_call
 
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
     # Look up current user's display name so the agent knows who it's talking to
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
 
-    # Load tools dynamically from DB
-    tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+    # Load tools dynamically from DB. `skip_tools=True` is set by the WS
+    # handler on the onboarding greeting turn; keep the runtime-level `finish`
+    # tool available so every turn still has an explicit stop signal.
+    if skip_tools:
+        tools_for_llm = [FINISH_TOOL_DEFINITION]
+    else:
+        from app.services.agent_tools import AGENT_TOOLS
+        tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+    allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
     # Convert messages to LLMMessage format
     api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
@@ -338,7 +496,7 @@ async def call_llm(
         return f"[Error] Failed to create LLM client: {e}"
 
     max_tokens = get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None))
-    _accumulated_tokens = 0
+    _accumulated_usage = TokenUsage()
 
     # Tool-calling loop
     for round_i in range(_max_tool_rounds):
@@ -350,72 +508,94 @@ async def call_llm(
                 role="user",
                 content=(
                     f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
+                    "如果当前任务尚未完成，请尽快使用 upsert_focus_item 保存进度，"
                     "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
                 ),
             ))
         elif round_i == _warn_threshold_96:
             api_messages.append(LLMMessage(
                 role="user",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
+                content="🚨 仅剩 2 轮工具调用。请立即使用 upsert_focus_item 保存进度并设置续接触发器。",
             ))
 
         try:
             # Use streaming API for real-time responses
+            async def _buffer_chunk(_text: str) -> None:
+                # Final user-facing text must come through finish(content=...).
+                return None
+
             response = await client.stream(
                 messages=api_messages,
                 tools=tools_for_llm if tools_for_llm else None,
                 temperature=model.temperature,
                 max_tokens=max_tokens,
-                on_chunk=on_chunk,
+                on_chunk=_buffer_chunk,
+                on_tool_delta=on_tool_delta,
                 on_thinking=on_thinking,
             )
         except LLMError as e:
             logger.error(f"[LLM] LLMError: provider={getattr(model, 'provider', '?')} model={getattr(model, 'model', '?')} {e}")
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
+            if agent_id and _accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_usage)
             await client.close()
             return f"[LLM Error] {e}"
         except Exception as e:
             logger.exception(f"[LLM] Unexpected error: {type(e).__name__}: {str(e)[:300]}")
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
+            if agent_id and _accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_usage)
             await client.close()
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
 
         # Track tokens for this round
-        real_tokens = extract_usage_tokens(response.usage)
-        if real_tokens:
-            _accumulated_tokens += real_tokens
-        else:
-            round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
-            _accumulated_tokens += estimate_tokens_from_chars(round_chars)
+        _accumulated_usage.add(_usage_from_response_or_estimate(response, api_messages))
 
-        # If no tool calls, return the final content
+        # Plain assistant text is not a stop condition. The model must finish
+        # explicitly via finish(content=...).
         if not response.tool_calls:
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
-            await client.close()
-            return response.content or "[LLM returned empty content]"
+            if response.content:
+                api_messages.append(LLMMessage(role="assistant", content=response.content))
+            api_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+            continue
 
         # Execute tool calls
         logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s)")
+        sanitized_tool_calls, retry_instruction = _sanitize_tool_calls_for_context(response.tool_calls)
+        if retry_instruction:
+            api_messages.append(LLMMessage(role="user", content=retry_instruction))
+            continue
+
+        finish_call = find_finish_call(sanitized_tool_calls)
+        if finish_call:
+            if finish_call.valid:
+                if agent_id and _accumulated_usage.total_tokens > 0:
+                    await record_token_usage(agent_id, _accumulated_usage)
+                await client.close()
+                return finish_call.content
+
+            api_messages.append(LLMMessage(
+                role="assistant",
+                content=response.content or None,
+                tool_calls=sanitized_tool_calls,
+                reasoning_content=response.reasoning_content,
+            ))
+            api_messages.append(LLMMessage(
+                role="tool",
+                content=finish_call.error or "`finish` was invalid.",
+                tool_call_id=finish_call.call_id,
+            ))
+            continue
 
         # Add assistant message with tool calls
         api_messages.append(LLMMessage(
             role="assistant",
             content=response.content or None,
-            tool_calls=[{
-                "id": tc["id"],
-                "type": "function",
-                "function": tc["function"],
-            } for tc in response.tool_calls],
+            tool_calls=sanitized_tool_calls,
             reasoning_content=response.reasoning_content,
         ))
 
         full_reasoning_content = response.reasoning_content or ""
 
-        for tc in response.tool_calls:
+        for tc in sanitized_tool_calls or []:
             tool_error = await _process_tool_call(
                 tc=tc,
                 api_messages=api_messages,
@@ -424,7 +604,9 @@ async def call_llm(
                 session_id=session_id,
                 supports_vision=supports_vision,
                 on_tool_call=on_tool_call,
+                on_code_output=on_code_output,
                 full_reasoning_content=full_reasoning_content,
+                allowed_tool_names=allowed_tool_names,
             )
             if tool_error:
                 api_messages.append(LLMMessage(
@@ -434,8 +616,8 @@ async def call_llm(
                 ))
 
     # Record tokens even on "too many rounds" exit
-    if agent_id and _accumulated_tokens > 0:
-        await record_token_usage(agent_id, _accumulated_tokens)
+    if agent_id and _accumulated_usage.total_tokens > 0:
+        await record_token_usage(agent_id, _accumulated_usage)
     await client.close()
     return "[Error] Too many tool call rounds"
 
@@ -452,8 +634,12 @@ async def call_llm_with_failover(
     on_chunk=None,
     on_thinking=None,
     on_tool_call=None,
+    on_tool_delta=None,
     supports_vision=False,
     on_failover=None,
+    skip_tools: bool = False,
+    on_code_output=None,
+    current_user_name_override: str | None = None,
 ) -> str:
     """Call LLM with automatic failover support."""
     guard = FailoverGuard()
@@ -490,8 +676,12 @@ async def call_llm_with_failover(
         session_id=session_id,
         on_chunk=_wrapped_on_chunk,
         on_tool_call=_wrapped_on_tool_call,
+        on_tool_delta=on_tool_delta,
         on_thinking=on_thinking,
         supports_vision=supports_vision,
+        skip_tools=skip_tools,
+        on_code_output=on_code_output,
+        current_user_name_override=current_user_name_override,
     )
 
     # Check if we need to failover
@@ -550,8 +740,12 @@ async def call_llm_with_failover(
         session_id=session_id,
         on_chunk=_fallback_on_chunk,
         on_tool_call=_fallback_on_tool_call,
+        on_tool_delta=on_tool_delta,
         on_thinking=on_thinking,
         supports_vision=getattr(fallback_model, 'supports_vision', False),
+        skip_tools=skip_tools,
+        on_code_output=on_code_output,
+        current_user_name_override=current_user_name_override,
     )
 
     # Combine error messages if fallback also failed
@@ -682,12 +876,12 @@ async def call_agent_llm_with_tools(
         LLMMessage(role="user", content=user_prompt),
     ]
 
-    # Load tools
     tools_for_llm = await get_agent_tools_for_llm(agent_id)
+    allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
     async def _try_model(model: LLMModel) -> tuple[str, bool, bool]:
         """Try to complete with a model. Returns (response, success, tool_executed)."""
-        _accumulated_tokens = 0
+        _accumulated_usage = TokenUsage()
         tool_executed = False
         try:
             client = create_llm_client(
@@ -716,66 +910,86 @@ async def call_agent_llm_with_tools(
                 except Exception as e:
                     logger.error(f"[call_agent_llm_with_tools] Agent {agent_id}: LLM call error: {e}")
                     await client.close()
-                    if agent_id and _accumulated_tokens > 0:
-                        await record_token_usage(agent_id, _accumulated_tokens)
+                    if agent_id and _accumulated_usage.total_tokens > 0:
+                        await record_token_usage(agent_id, _accumulated_usage)
                     raise
 
                 # Track tokens for this round
-                real_tokens = extract_usage_tokens(response.usage)
-                if real_tokens:
-                    _accumulated_tokens += real_tokens
-                else:
-                    round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
-                    _accumulated_tokens += estimate_tokens_from_chars(round_chars)
+                _accumulated_usage.add(_usage_from_response_or_estimate(response, api_messages))
 
                 if not response.tool_calls:
-                    if agent_id and _accumulated_tokens > 0:
-                        await record_token_usage(agent_id, _accumulated_tokens)
-                    await client.close()
-                    return response.content or "[Empty response]", True
+                    if response.content:
+                        api_messages.append(LLMMessage(role="assistant", content=response.content))
+                    api_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
+                    continue
 
                 # Execute tool calls
+                sanitized_tool_calls, retry_instruction = _sanitize_tool_calls_for_context(response.tool_calls)
+                if retry_instruction:
+                    api_messages.append(LLMMessage(role="user", content=retry_instruction))
+                    continue
+
+                finish_call = find_finish_call(sanitized_tool_calls)
+                if finish_call:
+                    if finish_call.valid:
+                        if agent_id and _accumulated_usage.total_tokens > 0:
+                            await record_token_usage(agent_id, _accumulated_usage)
+                        await client.close()
+                        return finish_call.content, True, tool_executed
+                    api_messages.append(LLMMessage(
+                        role="assistant",
+                        content=response.content or None,
+                        tool_calls=sanitized_tool_calls,
+                        reasoning_content=response.reasoning_content,
+                    ))
+                    api_messages.append(LLMMessage(
+                        role="tool",
+                        tool_call_id=finish_call.call_id,
+                        content=finish_call.error or "`finish` was invalid.",
+                    ))
+                    continue
+
                 api_messages.append(LLMMessage(
                     role="assistant",
                     content=response.content or None,
-                    tool_calls=[{
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": tc["function"],
-                    } for tc in response.tool_calls],
+                    tool_calls=sanitized_tool_calls,
                     reasoning_content=response.reasoning_content,
                 ))
 
-                for tc in response.tool_calls:
+                for tc in sanitized_tool_calls or []:
                     fn = tc["function"]
                     tool_name = fn["name"]
                     raw_args = fn.get("arguments", "{}")
                     try:
-                        args = json.loads(raw_args) if raw_args else {}
+                        args = parse_tool_arguments(raw_args)
                     except json.JSONDecodeError:
                         args = {}
 
                     tool_executed = True
-                    result = await execute_tool(
-                        tool_name, args,
-                        agent_id=agent_id,
-                        user_id=agent.creator_id,
-                        session_id=session_id,
-                    )
+                    if tool_name not in allowed_tool_names:
+                        logger.warning(f"[call_agent_llm_with_tools] Blocked disabled tool call: {tool_name} agent_id={agent_id}")
+                        result = _tool_not_enabled_message(tool_name)
+                    else:
+                        result = await execute_tool(
+                            tool_name, args,
+                            agent_id=agent_id,
+                            user_id=agent.creator_id,
+                            session_id=session_id,
+                        )
                     api_messages.append(LLMMessage(
                         role="tool",
                         tool_call_id=tc["id"],
                         content=str(result),
                     ))
 
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
+            if agent_id and _accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_usage)
             await client.close()
             return "[Error] Too many tool call rounds", False, tool_executed
 
         except Exception as e:
-            if agent_id and _accumulated_tokens > 0:
-                await record_token_usage(agent_id, _accumulated_tokens)
+            if agent_id and _accumulated_usage.total_tokens > 0:
+                await record_token_usage(agent_id, _accumulated_usage)
             return f"[Error] {e}", False, tool_executed
 
     # Try primary model

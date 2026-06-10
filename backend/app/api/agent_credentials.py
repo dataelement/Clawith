@@ -1,7 +1,7 @@
 """Agent Credentials CRUD API routes.
 
-Provides endpoints for managing encrypted login credentials and cookies
-per agent. Sensitive fields (cookies_json, password) are encrypted at rest
+Provides endpoints for managing encrypted session cookies
+per agent. Sensitive fields (cookies_json) are encrypted at rest
 using AES-256-CBC and are NEVER returned in API responses.
 """
 
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access
-from app.core.security import encrypt_data, decrypt_data, get_current_user
+from app.core.security import encrypt_data, get_current_user
 from app.database import get_db
 from app.models.agent_credential import AgentCredential
 from app.models.user import User
@@ -31,33 +31,19 @@ router = APIRouter(prefix="/agents/{agent_id}/credentials", tags=["agent-credent
 def _to_response(cred: AgentCredential) -> dict:
     """Convert an AgentCredential ORM object to a safe response dict.
 
-    Decrypts username for display but NEVER exposes password or cookies_json.
-    Uses has_cookies / has_password boolean flags instead.
+    NEVER exposes cookies_json. Uses has_cookies as a presence flag instead.
     """
-    settings = get_settings()
-
-    # Decrypt username for display (safe to show)
-    decrypted_username = None
-    if cred.username:
-        try:
-            decrypted_username = decrypt_data(cred.username, settings.SECRET_KEY)
-        except Exception:
-            decrypted_username = "(decryption failed)"
-
     return {
         "id": cred.id,
         "agent_id": cred.agent_id,
         "credential_type": cred.credential_type,
         "platform": cred.platform,
         "display_name": cred.display_name or "",
-        "username": decrypted_username,
-        "login_url": cred.login_url,
         "status": cred.status,
         "cookies_updated_at": cred.cookies_updated_at,
         "last_login_at": cred.last_login_at,
         "last_injected_at": cred.last_injected_at,
         "has_cookies": bool(cred.cookies_json),
-        "has_password": bool(cred.password),
         "created_at": cred.created_at,
         "updated_at": cred.updated_at,
     }
@@ -96,7 +82,7 @@ async def create_credential(
 ):
     """Create a new credential for an agent.
 
-    Sensitive fields (username, password, cookies_json) are encrypted before storage.
+    Sensitive fields (cookies_json) are encrypted before storage.
     """
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level not in ("manage",) and current_user.role not in ("platform_admin", "org_admin"):
@@ -124,15 +110,10 @@ async def create_credential(
         credential_type=data.credential_type,
         platform=data.platform,
         display_name=data.display_name or "",
-        login_url=data.login_url,
         status="active",
     )
 
     # Encrypt sensitive fields
-    if data.username:
-        cred.username = encrypt_data(data.username, settings.SECRET_KEY)
-    if data.password:
-        cred.password = encrypt_data(data.password, settings.SECRET_KEY)
     if data.cookies_json:
         cred.cookies_json = encrypt_data(data.cookies_json, settings.SECRET_KEY)
         cred.cookies_updated_at = datetime.now(timezone.utc)
@@ -178,16 +159,9 @@ async def update_credential(
     update_data = data.model_dump(exclude_unset=True)
 
     # Handle plaintext fields
-    for field in ("credential_type", "platform", "display_name", "login_url", "status"):
+    for field in ("credential_type", "platform", "display_name", "status"):
         if field in update_data:
             setattr(cred, field, update_data[field])
-
-    # Handle encrypted fields
-    if "username" in update_data:
-        cred.username = encrypt_data(update_data["username"], settings.SECRET_KEY) if update_data["username"] else None
-
-    if "password" in update_data:
-        cred.password = encrypt_data(update_data["password"], settings.SECRET_KEY) if update_data["password"] else None
 
     if "cookies_json" in update_data:
         if update_data["cookies_json"]:

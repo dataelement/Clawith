@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface PromptModalProps {
     open: boolean;
@@ -9,6 +10,7 @@ interface PromptModalProps {
 }
 
 export default function PromptModal({ open, title, placeholder, onConfirm, onCancel }: PromptModalProps) {
+    const { t } = useTranslation();
     const [value, setValue] = useState('');
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -46,9 +48,9 @@ export default function PromptModal({ open, title, placeholder, onConfirm, onCan
                     style={{ width: '100%', marginBottom: '16px' }}
                 />
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button className="btn btn-secondary" onClick={onCancel}>取消</button>
+                    <button className="btn btn-secondary" onClick={onCancel}>{t('common.confirmActions.cancelLabel')}</button>
                     <button className="btn btn-primary" onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
-                        disabled={!value.trim()}>确定</button>
+                        disabled={!value.trim()}>{t('common.confirmActions.confirmLabel')}</button>
                 </div>
             </div>
         </div>

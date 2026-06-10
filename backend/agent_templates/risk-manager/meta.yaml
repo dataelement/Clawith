@@ -1,0 +1,17 @@
+name: "Risk Manager"
+description: "The gatekeeper for every trade idea. Stage your trade, run the guards, get GREEN / YELLOW / RED — then you decide whether to send."
+icon: "RM"
+category: "trading"
+capability_bullets:
+  - "Trade staging — write your idea down before you act"
+  - "Guard checks — single-trade risk, position size, concentration, cooldown, rules"
+  - "GREEN/YELLOW/RED verdict — every trade passes the same checklist"
+default_skills:
+  - "market-data"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

@@ -228,6 +228,7 @@ class LLMClient(ABC):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -256,9 +257,11 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_cache_control: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_cache_control = supports_cache_control
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -290,7 +293,7 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
-        messages_payload = [m.to_openai_format() for m in messages]
+        messages_payload = self._messages_to_openai_payload(messages)
         logger.debug(f"[LLM-Debug] OpenAICompatibleClient payload messages for model {self.model}: {json.dumps(messages_payload, indent=2, ensure_ascii=False)}")
         payload: dict[str, Any] = {
             "model": self.model,
@@ -317,6 +320,76 @@ class OpenAICompatibleClient(LLMClient):
         payload.update(kwargs)
 
         return payload
+
+    def _messages_to_openai_payload(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+        """Convert messages, optionally adding DashScope/OpenAI-compatible cache hints."""
+        if not self.supports_cache_control:
+            return [m.to_openai_format() for m in messages]
+
+        payload: list[dict[str, Any]] = []
+        last_user_index = -1
+
+        for msg in messages:
+            if msg.role == "system":
+                formatted: dict[str, Any] = {"role": "system"}
+                content_blocks: list[dict[str, Any]] = []
+
+                if isinstance(msg.content, str) and msg.content:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": msg.content,
+                        "cache_control": {"type": "ephemeral"},
+                    })
+                elif isinstance(msg.content, list):
+                    content_blocks = [dict(part) for part in msg.content if isinstance(part, dict)]
+                    self._mark_last_text_block_cacheable(content_blocks)
+
+                if msg.dynamic_content:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"\n\n{msg.dynamic_content}",
+                    })
+
+                if content_blocks:
+                    formatted["content"] = content_blocks
+                if msg.tool_calls:
+                    formatted["tool_calls"] = msg.tool_calls
+                payload.append(formatted)
+                continue
+
+            formatted = msg.to_openai_format()
+            payload.append(formatted)
+            if msg.role == "user":
+                last_user_index = len(payload) - 1
+
+        if last_user_index >= 0:
+            payload[last_user_index] = self._with_cache_control_on_message(payload[last_user_index])
+
+        return payload
+
+    def _with_cache_control_on_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            message = dict(message)
+            message["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+            return message
+        if isinstance(content, list):
+            blocks = [dict(part) for part in content if isinstance(part, dict)]
+            if self._mark_last_text_block_cacheable(blocks):
+                message = dict(message)
+                message["content"] = blocks
+        return message
+
+    def _mark_last_text_block_cacheable(self, blocks: list[dict[str, Any]]) -> bool:
+        for part in reversed(blocks):
+            if part.get("type") == "text" and part.get("text"):
+                part["cache_control"] = {"type": "ephemeral"}
+                return True
+        return False
 
     def _parse_stream_line(
         self,
@@ -489,6 +562,7 @@ class OpenAICompatibleClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -551,6 +625,18 @@ class OpenAICompatibleClient(LLMClient):
                                     tc["function"]["arguments"] = json.dumps(arg_chunk, ensure_ascii=False)
                                 else:
                                     tc["function"]["arguments"] += str(arg_chunk)
+                            if on_tool_delta and (
+                                tc["function"].get("name")
+                                or tc["function"].get("arguments")
+                            ):
+                                await on_tool_delta(
+                                    {
+                                        "id": tc.get("id") or f"draft-{idx}",
+                                        "index": idx,
+                                        "name": tc["function"].get("name", ""),
+                                        "arguments": tc["function"].get("arguments", ""),
+                                    }
+                                )
 
                         if chunk.usage:
                             final_usage = chunk.usage
@@ -862,6 +948,7 @@ class OpenAIResponsesClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -925,6 +1012,7 @@ class GeminiClient(LLMClient):
                 model=self.model,
                 timeout=self.timeout,
                 supports_tool_choice=self.supports_tool_choice,
+                supports_cache_control=False,
             )
         return self._openai_fallback_client
 
@@ -1256,6 +1344,7 @@ class GeminiClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1268,6 +1357,7 @@ class GeminiClient(LLMClient):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 on_chunk=on_chunk,
+                on_tool_delta=on_tool_delta,
                 on_thinking=on_thinking,
                 **kwargs,
             )
@@ -1549,6 +1639,8 @@ class AnthropicClient(LLMClient):
             usage = {
                 "input_tokens": data["usage"].get("input_tokens", 0),
                 "output_tokens": data["usage"].get("output_tokens", 0),
+                "cache_creation_input_tokens": data["usage"].get("cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": data["usage"].get("cache_read_input_tokens", 0),
             }
 
         return LLMResponse(
@@ -1568,6 +1660,7 @@ class AnthropicClient(LLMClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         on_chunk: ChunkCallback | None = None,
+        on_tool_delta: ToolCallback | None = None,
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -1634,6 +1727,15 @@ class AnthropicClient(LLMClient):
                                 "type": "function",
                                 "function": {"name": block.get("name"), "arguments": ""}
                             })
+                            if on_tool_delta:
+                                await on_tool_delta(
+                                    {
+                                        "id": block.get("id") or f"draft-{idx}",
+                                        "index": idx,
+                                        "name": block.get("name", ""),
+                                        "arguments": "",
+                                    }
+                                )
 
                     elif current_event == "content_block_delta":
                         idx = data.get("index", 0)
@@ -1659,6 +1761,15 @@ class AnthropicClient(LLMClient):
                             if idx in tool_call_index_map:
                                 tc_idx = tool_call_index_map[idx]
                                 tool_calls_data[tc_idx]["function"]["arguments"] += delta.get("partial_json", "")
+                                if on_tool_delta:
+                                    await on_tool_delta(
+                                        {
+                                            "id": tool_calls_data[tc_idx].get("id") or f"draft-{idx}",
+                                            "index": idx,
+                                            "name": tool_calls_data[tc_idx]["function"].get("name", ""),
+                                            "arguments": tool_calls_data[tc_idx]["function"].get("arguments", ""),
+                                        }
+                                    )
 
                     elif current_event == "message_delta":
                         delta = data.get("delta", {})
@@ -2013,6 +2124,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            supports_cache_control=normalized_provider == "qwen",
         )
     else:
         # Default to OpenAI-compatible for unknown providers
@@ -2022,6 +2134,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            supports_cache_control=False,
         )
 
 

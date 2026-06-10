@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useDialog } from '../components/Dialog/DialogProvider';
+import { IconEdit } from '@tabler/icons-react';
 
 interface UserInfo {
     id: string;
@@ -49,6 +51,7 @@ export default function UserManagement() {
     const { t, i18n } = useTranslation();
     const isChinese = i18n.language?.startsWith('zh');
     const { user: currentUser, setUser } = useAuthStore();
+    const dialog = useDialog();
 
     const [users, setUsers] = useState<UserInfo[]>([]);
     const [loading, setLoading] = useState(true);
@@ -57,7 +60,7 @@ export default function UserManagement() {
         quota_message_limit: 50,
         quota_message_period: 'permanent',
         quota_max_agents: 2,
-        quota_agent_ttl_hours: 48,
+        quota_agent_ttl_hours: 0,
     });
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
@@ -107,12 +110,12 @@ export default function UserManagement() {
                 method: 'PATCH',
                 body: JSON.stringify(editForm),
             });
-            setToast(isChinese ? '✅ 配额已更新' : '✅ Quota updated');
+            setToast(isChinese ? '配额已更新' : 'Quota updated');
             setTimeout(() => setToast(''), 2000);
             setEditingUserId(null);
             loadUsers();
         } catch (e: any) {
-            setToast(`❌ ${e.message}`);
+            setToast(`Error: ${e.message}`);
             setTimeout(() => setToast(''), 3000);
         }
         setSaving(false);
@@ -224,7 +227,7 @@ export default function UserManagement() {
             {toast && (
                 <div style={{
                     position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
-                    borderRadius: '8px', background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)',
+                    borderRadius: '8px', background: toast.startsWith('Error:') ? 'var(--error)' : 'var(--success)',
                     color: '#fff', fontSize: '13px', zIndex: 9999, transition: 'all 0.3s',
                 }}>
                     {toast}
@@ -315,12 +318,13 @@ export default function UserManagement() {
                                             className="form-input"
                                             value={user.role}
                                             disabled={changingRoleUserId === user.id}
-                                            onChange={e => {
+                                            onChange={async e => {
                                                 const newRole = e.target.value;
                                                 const confirmMsg = isChinese
                                                     ? `确认将 ${user.display_name || user.username} 的角色更改为 ${newRole === 'org_admin' ? 'Admin' : 'Member'}？`
                                                     : `Change ${user.display_name || user.username}'s role to ${newRole === 'org_admin' ? 'Admin' : 'Member'}?`;
-                                                if (confirm(confirmMsg)) handleRoleChange(user.id, newRole);
+                                                const ok = await dialog.confirm(confirmMsg, { title: isChinese ? '更改角色' : 'Change role' });
+                                                if (ok) handleRoleChange(user.id, newRole);
                                             }}
                                             style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
                                         >
@@ -356,14 +360,16 @@ export default function UserManagement() {
                                     <span style={{ fontSize: '13px', fontWeight: 500 }}>{user.agents_count}</span>
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> / {user.quota_max_agents}</span>
                                 </div>
-                                <div style={{ fontSize: '12px' }}>{user.quota_agent_ttl_hours}h</div>
+                                <div style={{ fontSize: '12px' }}>
+                                    {user.quota_agent_ttl_hours > 0 ? `${user.quota_agent_ttl_hours}h` : t('enterprise.quotas.permanent', 'Permanent')}
+                                </div>
                                 <div>
                                     <button
                                         className="btn btn-secondary"
-                                        style={{ padding: '4px 10px', fontSize: '11px' }}
+                                        style={{ padding: '4px 10px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
-                                        {editingUserId === user.id ? t('common.cancel') : `✏️ ${t('common.edit')}`}
+                                        {editingUserId === user.id ? t('common.cancel') : <><IconEdit size={13} stroke={1.8} /> {t('common.edit')}</>}
                                     </button>
                                 </div>
                             </div>
@@ -418,10 +424,13 @@ export default function UserManagement() {
                                             </label>
                                             <input
                                                 className="form-input"
-                                                type="number" min={1}
+                                                type="number" min={0}
                                                 value={editForm.quota_agent_ttl_hours}
                                                 onChange={e => setEditForm({ ...editForm, quota_agent_ttl_hours: Number(e.target.value) })}
                                             />
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                {t('enterprise.quotas.agentAutoExpiry')}
+                                            </div>
                                         </div>
                                     </div>
                                     <div style={{ marginTop: '12px', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>

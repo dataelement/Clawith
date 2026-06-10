@@ -37,6 +37,8 @@ class AgentTrigger(Base):
     fire_count: Mapped[int] = mapped_column(Integer, default=0)
     max_fires: Mapped[int | None] = mapped_column(Integer)  # None = unlimited
     cooldown_seconds: Mapped[int] = mapped_column(Integer, default=60)  # 1 min default
+    # System triggers (seeded by platform) cannot be deleted by users, only enabled/disabled
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

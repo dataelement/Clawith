@@ -15,7 +15,7 @@ from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.security import hash_password
+from app.core.security import hash_password_async
 from app.models.identity import IdentityProvider
 from app.models.tenant import Tenant
 from app.models.user import User, Identity
@@ -25,6 +25,41 @@ from loguru import logger
 
 class RegistrationService:
     """Service for handling user registration flows."""
+
+    async def ensure_identity_provider(
+        self,
+        db: AsyncSession,
+        provider_type: str,
+        tenant_id: uuid.UUID | None,
+        *,
+        name: str | None = None,
+        sso_login_enabled: bool = False,
+    ) -> IdentityProvider:
+        """Get or create an identity provider record for a tenant."""
+        query = select(IdentityProvider).where(
+            IdentityProvider.provider_type == provider_type,
+        )
+        if tenant_id is None:
+            query = query.where(IdentityProvider.tenant_id.is_(None))
+        else:
+            query = query.where(IdentityProvider.tenant_id == tenant_id)
+
+        result = await db.execute(query)
+        provider = result.scalar_one_or_none()
+        if provider:
+            return provider
+
+        provider = IdentityProvider(
+            provider_type=provider_type,
+            name=name or provider_type.capitalize(),
+            is_active=True,
+            sso_login_enabled=sso_login_enabled,
+            config={},
+            tenant_id=tenant_id,
+        )
+        db.add(provider)
+        await db.flush()
+        return provider
 
     async def detect_tenant_by_email(self, db: AsyncSession, email: str) -> Tenant | None:
         """Detect tenant based on email domain.
@@ -41,10 +76,10 @@ class RegistrationService:
 
         domain = email.split("@")[1].lower()
 
-        # Try to find tenant by custom domain
+        # Try to find tenant by custom domain - Exact match to use index
         result = await db.execute(
             select(Tenant).where(
-                Tenant.sso_domain.ilike(f"%{domain}%"),
+                Tenant.sso_domain == domain,
                 Tenant.is_active == True,
             )
         )
@@ -103,14 +138,11 @@ class RegistrationService:
         username: str | None = None,
         password: str | None = None,
         is_platform_admin: bool = False,
+        email_config: Any = None,
     ) -> Identity:
         """Find an existing identity or create a new one.
 
         Security note: only email and phone are authoritative identity claims.
-        Username is NOT used as a lookup key — it is just a display name and
-        cannot prove ownership. Using it as a fallback would allow account
-        takeover when two users share the same email prefix (e.g. alice@gmail.com
-        and alice@yahoo.com both produce username 'alice').
         """
         identity = None
 
@@ -125,32 +157,31 @@ class RegistrationService:
             res = await db.execute(select(Identity).where(Identity.phone == normalized_phone))
             identity = res.scalar_one_or_none()
 
-        # Username is intentionally NOT used as a lookup key.
-        # If we cannot establish ownership via email or phone, treat this as a
-        # new identity to avoid returning another user's record.
-
         if identity:
-            # Auto-verify if SMTP is not configured anywhere (env or DB)
-            from app.services.system_email_service import resolve_email_config_async
-            email_config = await resolve_email_config_async(db)
+            # Auto-verify if SMTP is not configured
+            if not email_config:
+                from app.services.system_email_service import resolve_email_config_async
+                email_config = await resolve_email_config_async(db)
+            
             if not email_config:
                 if not identity.email_verified:
                     identity.email_verified = True
                     db.add(identity)
             return identity
 
-        # Check if SMTP is configured anywhere (env or DB) for auto-verification
-        from app.services.system_email_service import resolve_email_config_async
-        email_config = await resolve_email_config_async(db)
+        # Check if SMTP is configured for auto-verification
+        if not email_config:
+            from app.services.system_email_service import resolve_email_config_async
+            email_config = await resolve_email_config_async(db)
+        
         is_verified = not email_config  # Auto-verify only if no SMTP configured
 
-        # Resolve a safe username: if the desired username is already taken by
-        # another identity, append a short random hex suffix to avoid collisions
-        # without blocking the registration.
+        # Resolve a safe username
         final_username = username
         if username:
+            # Use EXISTS for faster lookup
             existing_res = await db.execute(
-                select(Identity).where(Identity.username == username)
+                select(Identity.id).where(Identity.username == username).limit(1)
             )
             if existing_res.scalar_one_or_none():
                 final_username = f"{username}_{uuid.uuid4().hex[:6]}"
@@ -166,7 +197,7 @@ class RegistrationService:
             email=email,
             phone=normalized_phone,
             username=final_username,
-            password_hash=hash_password(password) if password else None,
+            password_hash=await hash_password_async(password) if password else None,
             is_platform_admin=is_platform_admin,
             email_verified=is_verified,
         )
@@ -182,27 +213,16 @@ class RegistrationService:
         role: str = "member",
         tenant_id: uuid.UUID | None = None,
         registration_source: str = "web",
+        email_config: Any = None,
     ) -> User:
-        """Create a new tenant-specific user linked to an identity.
-
-        Args:
-            db: Database session
-            identity: The global identity
-            display_name: Tenant-specific display name
-            role: Role within the tenant
-            tenant_id: Tenant ID
-            registration_source: Source of registration
-
-        Returns:
-            Created User (tenant-user)
-        """
-        # Ensure unique display name / username within tenant if needed
-        # (Using display_name or identity info)
+        """Create a new tenant-specific user linked to an identity."""
         name = display_name or identity.username or "User"
 
-        # Check if SMTP is configured anywhere (env or DB) for auto-activation
-        from app.services.system_email_service import resolve_email_config_async
-        email_config = await resolve_email_config_async(db)
+        # Check if SMTP is configured for auto-activation
+        if not email_config:
+            from app.services.system_email_service import resolve_email_config_async
+            email_config = await resolve_email_config_async(db)
+            
         is_active = identity.email_verified
         if not email_config:
             is_active = True  # Auto-activate if no SMTP configured
@@ -382,7 +402,7 @@ class RegistrationService:
 
             # Also try matching by email
             if user_info_obj.email:
-                existing_by_email = await sso_service.match_user_by_email(db, user_info_obj.email)
+                existing_by_email = await sso_service.match_user_by_email(db, user_info_obj.email, tenant_id=tenant_id)
                 if existing_by_email:
                     # Link identity to existing user
                     await sso_service.link_identity(
@@ -463,35 +483,9 @@ class RegistrationService:
             return
 
         from app.models.org import OrgMember
-        
-        member = None
-
-        # Prefer email match
-        if user.email:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.email == user.email,
-                    OrgMember.tenant_id == user.tenant_id,
-                    OrgMember.user_id == None
-                )
-            )
-            member = result.scalar_one_or_none()
-
-        # Fallback to phone match
-        if not member and user.primary_mobile:
-            result = await db.execute(
-                select(OrgMember).where(
-                    OrgMember.phone == user.primary_mobile,
-                    OrgMember.tenant_id == user.tenant_id,
-                    OrgMember.user_id == None
-                )
-            )
-            member = result.scalar_one_or_none()
-        
+        member = await self._find_unbound_org_member_by_contact(db, user)
         if member:
             member.user_id = user.id
-            
-            # Sync email/phone both ways (prefer user if provided)
             if user.email and member.email != user.email:
                 member.email = user.email
             elif not user.email and member.email:
@@ -501,8 +495,129 @@ class RegistrationService:
                 member.phone = user.primary_mobile
             elif not user.primary_mobile and member.phone:
                 user.primary_mobile = member.phone
-            
             await db.flush()
+
+            from app.services.okr_agent_hook import hook_new_org_member
+            await hook_new_org_member(db, member.id, user.tenant_id)
+
+        await self.ensure_web_org_member(db, user)
+
+    async def _find_unbound_org_member_by_contact(
+        self,
+        db: AsyncSession,
+        user: User,
+    ):
+        from app.models.org import OrgMember
+
+        if user.email:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.email == user.email,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+            if member:
+                return member
+
+        if user.primary_mobile:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.phone == user.primary_mobile,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+            if member:
+                return member
+
+        return None
+
+    async def ensure_web_org_member(self, db: AsyncSession, user: User):
+        """Ensure the user has a dedicated platform OrgMember record in their tenant."""
+        if not user.tenant_id:
+            return None
+
+        from app.models.org import OrgMember
+
+        web_provider = await self.ensure_identity_provider(
+            db,
+            "web",
+            user.tenant_id,
+            name="Platform",
+        )
+        if web_provider.name == "Web":
+            web_provider.name = "Platform"
+
+        result = await db.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user.id,
+                OrgMember.tenant_id == user.tenant_id,
+                OrgMember.provider_id == web_provider.id,
+            ).limit(1)
+        )
+        member = result.scalar_one_or_none()
+
+        if not member and user.email:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.email == user.email,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.provider_id == web_provider.id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+
+        if not member and user.primary_mobile:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.phone == user.primary_mobile,
+                    OrgMember.tenant_id == user.tenant_id,
+                    OrgMember.provider_id == web_provider.id,
+                    OrgMember.user_id == None,
+                ).limit(1)
+            )
+            member = result.scalar_one_or_none()
+
+        created = False
+        linked_existing = False
+        if member:
+            linked_existing = member.user_id is None
+            member.user_id = user.id
+        else:
+            member = OrgMember(
+                name=user.display_name or "User",
+                email=user.email,
+                phone=user.primary_mobile,
+                provider_id=web_provider.id,
+                title="Platform User",
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                status="active",
+            )
+            db.add(member)
+            created = True
+
+        desired_name = user.display_name or member.name or "User"
+        if desired_name and member.name != desired_name:
+            member.name = desired_name
+        if member.email != user.email:
+            member.email = user.email
+        if member.phone != user.primary_mobile:
+            member.phone = user.primary_mobile
+        if member.title in (None, "", "Web User"):
+            member.title = "Platform User"
+
+        await db.flush()
+
+        if created or linked_existing:
+            from app.services.okr_agent_hook import hook_new_org_member
+            await hook_new_org_member(db, member.id, user.tenant_id)
+
+        return member
 
     async def sync_org_member_contact_from_user(
         self,
@@ -517,21 +632,26 @@ class RegistrationService:
             return
 
         from app.models.org import OrgMember
+        web_provider = await self.ensure_identity_provider(db, "web", user.tenant_id, name="Platform")
+        if web_provider.name == "Web":
+            web_provider.name = "Platform"
 
         result = await db.execute(
             select(OrgMember).where(
                 OrgMember.user_id == user.id,
                 OrgMember.tenant_id == user.tenant_id,
+                OrgMember.provider_id == web_provider.id,
             )
         )
-        member = result.scalar_one_or_none()
-        if not member:
+        members = result.scalars().all()
+        if not members:
             return
 
-        if sync_email and member.email != user.email:
-            member.email = user.email
-        if sync_phone and member.phone != user.primary_mobile:
-            member.phone = user.primary_mobile
+        for member in members:
+            if sync_email and member.email != user.email:
+                member.email = user.email
+            if sync_phone and member.phone != user.primary_mobile:
+                member.phone = user.primary_mobile
 
         await db.flush()
 

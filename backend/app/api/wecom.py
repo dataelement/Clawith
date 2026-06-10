@@ -424,9 +424,9 @@ async def wecom_event_webhook(
         if not user_text:
             return Response(content="success", media_type="text/plain")
 
-        # Process in background task
+        # Process in background task (manages its own sessions)
         asyncio.create_task(
-            _process_wecom_text(db, agent_id, config, from_user, user_text, chat_id=chat_id)
+            _process_wecom_text(agent_id, config, from_user, user_text, chat_id=chat_id)
         )
 
     elif msg_type == "event":
@@ -448,70 +448,71 @@ async def wecom_event_webhook(
 async def _process_wecom_kf_event(agent_id: uuid.UUID, config_obj: ChannelConfig, token: str, open_kfid: str = None):
     """Sync WeCom Customer Service (KF) messages in background."""
     try:
-        async with async_session() as session:
-            r = await session.execute(
+        # Short transaction: load config only
+        async with async_session() as _cfg_db:
+            r = await _cfg_db.execute(
                 select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "wecom")
             )
             config = r.scalar_one_or_none()
-            if not config:
+        if not config:
+            return
+        # config is now detached but app_id/app_secret are loaded
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            tok_resp = await client.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken", params={"corpid": config.app_id, "corpsecret": config.app_secret})
+            token_data = tok_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
                 return
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                tok_resp = await client.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken", params={"corpid": config.app_id, "corpsecret": config.app_secret})
-                token_data = tok_resp.json()
-                access_token = token_data.get("access_token")
-                if not access_token:
-                    return
+            current_cursor = token
+            has_more = 1
+            current_ts = int(time.time())
 
-                current_cursor = token
-                has_more = 1
-                current_ts = int(time.time())
+            while has_more:
+                payload = {"limit": 20}
+                if open_kfid:
+                    payload["open_kfid"] = open_kfid
 
-                while has_more:
-                    payload = {"limit": 20}
-                    if open_kfid:
-                        payload["open_kfid"] = open_kfid
+                if current_cursor.startswith("ENC"):
+                    payload["token"] = current_cursor
+                else:
+                    payload["cursor"] = current_cursor
 
-                    if current_cursor.startswith("ENC"):
-                        payload["token"] = current_cursor
-                    else:
-                        payload["cursor"] = current_cursor
-                    
-                    logger.info(f"[WeCom KF] Calling sync_msg with payload: {payload}")
-                    sync_resp = await client.post(f"https://qyapi.weixin.qq.com/cgi-bin/kf/sync_msg?access_token={access_token}", json=payload)
-                    sync_data = sync_resp.json()
-                    if sync_data.get("errcode") != 0:
-                        logger.error(f"[WeCom KF] sync_msg error: {sync_data}")
-                        break
-                    
-                    has_more = sync_data.get("has_more", 0)
-                    current_cursor = sync_data.get("next_cursor", "")
-                    
-                    for msg in sync_data.get("msg_list", []):
-                        if msg.get("origin") == 3 and msg.get("msgtype") == "text":
-                            mid = msg.get("msgid")
-                            if mid in _processed_kf_msgids:
-                                continue
-                            if msg.get("send_time", 0) > 0 and (current_ts - msg.get("send_time", 0) > 86400):
-                                continue
-                            _processed_kf_msgids.add(mid)
-                            text = msg.get("text", {}).get("content", "").strip()
-                            if text:
-                                logger.info(f"[WeCom KF] Found msg from {msg.get('external_userid')}: {text[:20]}...")
-                                # Call the local process text with extra KF info
-                                await _process_wecom_text(
-                                    session, agent_id, config, 
-                                    msg.get("external_userid"), text,
-                                    is_kf=True, open_kfid=msg.get("open_kfid"), kf_msg_id=mid
-                                )
-                    if not has_more:
-                        break
-    except Exception as e: 
+                logger.info(f"[WeCom KF] Calling sync_msg with payload: {payload}")
+                sync_resp = await client.post(f"https://qyapi.weixin.qq.com/cgi-bin/kf/sync_msg?access_token={access_token}", json=payload)
+                sync_data = sync_resp.json()
+                if sync_data.get("errcode") != 0:
+                    logger.error(f"[WeCom KF] sync_msg error: {sync_data}")
+                    break
+
+                has_more = sync_data.get("has_more", 0)
+                current_cursor = sync_data.get("next_cursor", "")
+
+                for msg in sync_data.get("msg_list", []):
+                    if msg.get("origin") == 3 and msg.get("msgtype") == "text":
+                        mid = msg.get("msgid")
+                        if mid in _processed_kf_msgids:
+                            continue
+                        if msg.get("send_time", 0) > 0 and (current_ts - msg.get("send_time", 0) > 86400):
+                            continue
+                        _processed_kf_msgids.add(mid)
+                        text = msg.get("text", {}).get("content", "").strip()
+                        if text:
+                            logger.info(f"[WeCom KF] Found msg from {msg.get('external_userid')}: {text[:20]}...")
+                            # _process_wecom_text manages its own sessions internally
+                            await _process_wecom_text(
+                                agent_id, config,
+                                msg.get("external_userid"), text,
+                                is_kf=True, open_kfid=msg.get("open_kfid"), kf_msg_id=mid
+                            )
+                if not has_more:
+                    break
+    except Exception as e:
         logger.error(f"[WeCom KF] Error in background task: {e}")
 
 
 async def _process_wecom_text(
-    db: AsyncSession,
     agent_id: uuid.UUID,
     config: ChannelConfig,
     from_user: str,
@@ -521,7 +522,10 @@ async def _process_wecom_text(
     kf_msg_id: str = None,
     chat_id: str = "",
 ):
-    """Process an incoming WeCom text message and reply."""
+    """Process an incoming WeCom text message and reply.
+
+    Manages its own short-lived database transactions.
+    """
 
     async with async_session() as db:
         # Load agent
@@ -584,12 +588,22 @@ async def _process_wecom_text(
             conversation_id=session_conv_id,
         ))
         sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
 
-        # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
+        # Pre-load agent/model for LLM call
+        from app.api.feishu import _load_agent_and_model
+        _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
+
+        await db.commit()
+        # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
+        await db.close()
+
+        # Call LLM (no DB session needed)
+        from app.api.feishu import _call_llm_with_config
+        reply_text = await _call_llm_with_config(
+            _agent_model, _llm_model, _fallback_model,
+            agent_id, user_text,
             history=history, user_id=platform_user_id,
+            session_id=session_conv_id,
         )
         logger.info(f"[WeCom] LLM reply: {reply_text[:100]}")
 
@@ -629,14 +643,22 @@ async def _process_wecom_text(
         except Exception as e:
             logger.error(f"[WeCom] Failed to send reply: {e}")
 
-        # Save assistant reply
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
-        sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
+        # Save assistant reply (new short transaction)
+        async with async_session() as _save_db:
+            _save_db.add(ChatMessage(
+                agent_id=agent_id, user_id=platform_user_id,
+                role="assistant", content=reply_text,
+                conversation_id=session_conv_id,
+            ))
+            # Reload session object to update last_message_at
+            from app.models.chat_session import ChatSession
+            _sess_r = await _save_db.execute(
+                select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
+            )
+            _sess_fresh = _sess_r.scalar_one_or_none()
+            if _sess_fresh:
+                _sess_fresh.last_message_at = datetime.now(timezone.utc)
+            await _save_db.commit()
 
         # Log activity
         await log_activity(
@@ -686,7 +708,13 @@ async def wecom_callback(
 
     # 2. Extract user info and login/register via RegistrationService
     try:
-        auth_provider = auth_provider_registry.get_provider(provider)
+        auth_provider = await auth_provider_registry.get_provider(
+            db,
+            "wecom",
+            str(tenant_id) if tenant_id else (str(provider.tenant_id) if provider.tenant_id else None),
+        )
+        if not auth_provider:
+            return HTMLResponse("Auth failed: WeCom provider unavailable")
         
         token_data = await auth_provider.exchange_code_for_token(code)
         access_token_str = token_data.get("access_token")
@@ -698,7 +726,7 @@ async def wecom_callback(
             return HTMLResponse("Auth failed: No UserId returned")
             
         # Find or Create User (handles Identity and OrgMember linking)
-        user = await auth_provider.find_or_create_user(
+        user, _is_new = await auth_provider.find_or_create_user(
             db, user_info, tenant_id=tenant_id or provider.tenant_id
         )
     except Exception as e:

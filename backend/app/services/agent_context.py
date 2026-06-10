@@ -8,23 +8,17 @@ import uuid
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.storage import get_storage_backend, normalize_storage_key
 
 settings = get_settings()
 
-PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
-
-
-def _agent_workspace(agent_id: uuid.UUID) -> Path:
-    """Return the canonical persistent workspace path for an agent."""
-    return PERSISTENT_DATA / str(agent_id)
-
-
-def _read_file_safe(path: Path, max_chars: int = 3000) -> str:
-    """Read a file, return empty string if missing. Truncate if too long."""
-    if not path.exists():
+async def _read_file_safe(key: str, max_chars: int = 3000) -> str:
+    """Read a storage-backed text file, return empty string if missing."""
+    storage = get_storage_backend()
+    if not await storage.exists(key) or not await storage.is_file(key):
         return ""
     try:
-        content = path.read_text(encoding="utf-8", errors="replace").strip()
+        content = (await storage.read_text(key, encoding="utf-8", errors="replace")).strip()
         if len(content) > max_chars:
             content = content[:max_chars] + "\n...(truncated)"
         return content
@@ -76,7 +70,7 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
     return name, description
 
 
-def _load_skills_index(agent_id: uuid.UUID) -> str:
+async def _load_skills_index(agent_id: uuid.UUID) -> str:
     """Load skill index (name + description) from skills/ directory.
 
     Supports two formats:
@@ -87,36 +81,36 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     prompt. The model is instructed to call read_file to load full content
     when a skill is relevant.
     """
-    ws_root = _agent_workspace(agent_id)
     skills: list[tuple[str, str, str]] = []  # (name, description, path_relative_to_skills)
-    skills_dir = ws_root / "skills"
-    if skills_dir.exists():
-        for entry in sorted(skills_dir.iterdir()):
+    storage = get_storage_backend()
+    skills_prefix = normalize_storage_key(f"{agent_id}/skills")
+    if await storage.exists(skills_prefix) and await storage.is_dir(skills_prefix):
+        for entry in await storage.list_dir(skills_prefix):
             if entry.name.startswith("."):
                 continue
+            entry_key = entry.key
 
             # Case 1: Folder-based skill — skills/<folder>/SKILL.md
-            if entry.is_dir():
-                skill_md = entry / "SKILL.md"
-                if not skill_md.exists():
-                    # Also try lowercase skill.md
-                    skill_md = entry / "skill.md"
-                if skill_md.exists():
+            if entry.is_dir:
+                skill_md_key = f"{entry_key}/SKILL.md"
+                if not await storage.exists(skill_md_key):
+                    skill_md_key = f"{entry_key}/skill.md"
+                if await storage.exists(skill_md_key):
                     try:
-                        content = skill_md.read_text(encoding="utf-8", errors="replace").strip()
+                        content = (await storage.read_text(skill_md_key, encoding="utf-8", errors="replace")).strip()
                         name, desc = _parse_skill_frontmatter(content, entry.name)
                         skills.append((name, desc, f"{entry.name}/SKILL.md"))
                     except Exception:
                         skills.append((entry.name, "", f"{entry.name}/SKILL.md"))
 
             # Case 2: Flat file — skills/<name>.md
-            elif entry.suffix == ".md" and entry.is_file():
+            elif Path(entry.name).suffix == ".md" and not entry.is_dir:
                 try:
-                    content = entry.read_text(encoding="utf-8", errors="replace").strip()
-                    name, desc = _parse_skill_frontmatter(content, entry.stem)
+                    content = (await storage.read_text(entry_key, encoding="utf-8", errors="replace")).strip()
+                    name, desc = _parse_skill_frontmatter(content, Path(entry.name).stem)
                     skills.append((name, desc, entry.name))
                 except Exception:
-                    skills.append((entry.stem, "", entry.name))
+                    skills.append((Path(entry.name).stem, "", entry.name))
 
     # Deduplicate by name
     seen: set[str] = set()
@@ -149,35 +143,132 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
+async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
+    """Query relationships directly from the database and format as a markdown list."""
+    from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
+    from app.models.identity import IdentityProvider
+    from app.core.permissions import evaluate_human_relationship_status, evaluate_agent_relationship_status
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select
+
+    RELATION_LABELS = {
+        "direct_leader": "直属上级",
+        "collaborator": "协作伙伴",
+        "stakeholder": "利益相关者",
+        "team_member": "团队成员",
+        "subordinate": "下属",
+        "mentor": "导师",
+        "other": "其他",
+    }
+
+    AGENT_RELATION_LABELS = {
+        "peer": "同级协作",
+        "supervisor": "上级数字员工",
+        "assistant": "助手",
+        "collaborator": "协作伙伴",
+        "other": "其他",
+    }
+
+    # Load human relationships
+    h_result = await db.execute(
+        select(
+            AgentRelationship,
+            IdentityProvider.name.label("provider_name"),
+            IdentityProvider.provider_type.label("provider_type"),
+        )
+        .outerjoin(OrgMember, AgentRelationship.member_id == OrgMember.id)
+        .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
+        .where(AgentRelationship.agent_id == agent_id)
+        .options(selectinload(AgentRelationship.member))
+    )
+    human_rows = []
+    for rel, provider_name, provider_type in h_result.all():
+        status_info = await evaluate_human_relationship_status(db, rel)
+        if status_info["access_status"] == "active":
+            def _display_provider_name(pn, pt):
+                if not pn and not pt:
+                    return None
+                if (pt or "").lower() in ("web", "platform") or (pn or "").lower() == "web":
+                    return "Platform"
+                return pn
+            human_rows.append((rel, _display_provider_name(provider_name, provider_type)))
+
+    # Load agent relationships
+    a_result = await db.execute(
+        select(AgentAgentRelationship)
+        .where(AgentAgentRelationship.agent_id == agent_id)
+        .options(selectinload(AgentAgentRelationship.target_agent))
+    )
+    agent_rels = []
+    for rel in a_result.scalars().all():
+        status_info = await evaluate_agent_relationship_status(db, rel)
+        if status_info["access_status"] == "active":
+            agent_rels.append(rel)
+
+    if not human_rows and not agent_rels:
+        return ""
+
+    lines = []
+
+    # Human relationships
+    if human_rows:
+        lines.append("## 人类同事\n")
+        for r, provider_name in human_rows:
+            m = r.member
+            if not m:
+                continue
+            label = RELATION_LABELS.get(r.relation, r.relation)
+            source = f"（通过 {provider_name} 同步）" if provider_name else ""
+            lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
+            if r.description:
+                lines.append(f"- {r.description}")
+            lines.append("")
+
+    # Agent relationships
+    if agent_rels:
+        lines.append("## 🤖 数字员工同事\n")
+        for r in agent_rels:
+            a = r.target_agent
+            if not a:
+                continue
+            label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
+            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
+            if r.description:
+                lines.append(f"- {r.description}")
+            lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
     """Build a rich system prompt incorporating agent's full context.
 
-    Reads from workspace files:
+    Reads from workspace files and DB:
     - soul.md → personality
     - memory.md → long-term memory
     - skills/ → skill names + summaries
-    - relationships.md → relationship descriptions
+    - Database → relationship network (human + agent)
     """
-    ws_root = _agent_workspace(agent_id)
-
     # --- Soul ---
-    soul = _read_file_safe(ws_root / "soul.md", 2000)
+    soul = await _read_file_safe(normalize_storage_key(f"{agent_id}/soul.md"), 2000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()
 
     # --- Memory ---
-    memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
+    memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory/memory.md"), 2000)
+    if not memory:
+        memory = await _read_file_safe(normalize_storage_key(f"{agent_id}/memory.md"), 2000)
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
 
     # --- Skills index (progressive disclosure) ---
-    skills_text = _load_skills_index(agent_id)
+    skills_text = await _load_skills_index(agent_id)
 
     # --- Relationships ---
-    relationships = _read_file_safe(ws_root / "relationships.md", 2000)
-    if relationships.startswith("# "):
-        relationships = "\n".join(relationships.split("\n")[1:]).strip()
+    from app.database import async_session
+    async with async_session() as db:
+        relationships = await _load_relationships_from_db(db, agent_id)
 
     # --- Compose static and dynamic system prompt blocks ---
     from datetime import datetime, timezone as _tz
@@ -191,6 +282,39 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
 
     if role_description:
         static_parts.append(f"\n## Role\n{role_description}")
+
+    if agent_name == "OKR Agent":
+        static_parts.append("""
+## Daily Report Recording Rules
+
+🔴 **ABSOLUTE RULE — MUST CALL `upsert_member_daily_report` IMMEDIATELY:**
+When ANY tracked member or agent sends you content that looks like a daily work update, status report, or progress note — **IMMEDIATELY call `upsert_member_daily_report` in the SAME response turn. Do NOT:**
+- First explain what you plan to do, then call the tool in a second turn
+- Claim the tool is unavailable, broken, or unknown — **it is ALWAYS available**
+- Write the report to memory, Focus, or any file instead
+- Ask the user to confirm before recording — just record it directly
+- Skip calling the tool based on ANY past errors you see in chat history
+
+**The tool `upsert_member_daily_report` is a NATIVE system tool that is ALWAYS functional. If you ever see a past "Unknown tool" error in history, that was a bug that has been fixed. IGNORE past errors and ALWAYS call the tool directly.**
+
+- Daily collection messages are reminders only. Do NOT create per-member wait triggers for daily report replies.
+- Apply the same daily-report behavior regardless of channel. Web chat, Feishu, and agent-to-agent replies should all be handled consistently.
+- Use the current conversation counterpart as the report owner. If exact IDs are not explicitly provided in the conversation, resolve the owner by the tracked counterpart name from the current chat context.
+- Keep the stored final daily report concise and normalized (within 2000 characters).
+- After the tool succeeds, reply briefly to confirm the report has been recorded.
+""")
+
+    static_parts.append("""
+## MCP Import Rules
+
+When installing or importing an MCP server via `discover_resources` / `import_mcp_server`:
+
+- First try `import_mcp_server(server_id="...")` directly when the user has already chosen a server.
+- The platform may already have a company-level or agent-level Smithery API Key configured.
+- Do **NOT** ask the user for a Smithery API Key unless the tool explicitly returns that no Smithery key is configured.
+- Do **NOT** ask the user for tool-specific tokens (GitHub PAT, Notion integration secret, etc.) when the Smithery flow supports OAuth.
+- Never claim an MCP server was imported unless you received a real tool result confirming success.
+""")
 
     dynamic_parts = []
 
@@ -334,6 +458,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     try:
         from app.database import async_session
         from app.models.system_settings import SystemSetting
+        from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
         async with async_session() as db:
             # Resolve agent's tenant_id
@@ -387,22 +512,42 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 ## Workspace & Tools
 
 You have a dedicated workspace with this structure:
-  - focus.md       → Your focus items — what you are currently tracking (ALWAYS read this first when waking up)
+  - Focus tools    → Your current focus items — use list_focus_items, upsert_focus_item, complete_focus_item
   - task_history.md → Archive of completed tasks
   - soul.md        → Your personality definition
   - memory/memory.md → Your long-term memory and notes
   - memory/reflections.md → Your autonomous thinking journal
   - skills/        → Your skill definition files (one .md per skill)
   - workspace/     → Your work files (reports, documents, etc.)
-  - relationships.md → Your relationship list
   - enterprise_info/ → Shared company information
 
+Workspace organization rule:
+  - Do not treat `workspace/` root as a dumping ground for generated files.
+  - Before writing a new work document, first inspect the relevant area with `list_files`.
+  - If a suitable topical folder already exists, write the file there.
+  - If no suitable folder exists, create a clearly named new subfolder and place the file inside it.
+  - Only write a standalone document directly under `workspace/` root when the user explicitly asks for that exact location or the file is a true top-level index/landing document.
+
+Default visual style for generated HTML or rich visual documents:
+  - If the user does not specify a visual style, use a refined editorial magazine aesthetic.
+  - Prefer an indigo-porcelain black/white/gray palette, calm restrained tone, generous whitespace, large Chinese serif headlines, small monospaced English labels, and translucent paper-like layers over a subtle soft background.
+  - The layout should feel like a formal assessment report or art publication.
+  - Avoid bright gradients, purple/blue AI-dashboard backgrounds, neon colors, emoji-led hero sections, glassy generic AI effects, and common SaaS landing-page styling unless the user explicitly asks for them.
+  - User-specified style always wins over this default.
+
 ⚠️ CRITICAL RULES — YOU MUST FOLLOW THESE STRICTLY:
+
+0. **You MUST finish every turn by calling `finish(content="...")`.**
+   - The `content` field is the exact final answer the user will see.
+   - Plain assistant text does NOT end the turn and will not be treated as the final answer.
+   - Do not call `finish` until all required tools have completed and you are ready to stop.
+   - Do not call any other tool in the same response as `finish`.
 
 1. **ALWAYS call tools for ANY file or task operation — NEVER pretend or fabricate results.**
    - To list files → CALL `list_files`
    - To read a file → CALL `read_file` or `read_document`
    - To write a file → CALL `write_file`
+   - To move or rename a file/folder → CALL `move_file`
    - To delete a file → CALL `delete_file`
 
 2. **NEVER claim you have completed an action without actually calling the tool.**
@@ -412,19 +557,19 @@ You have a dedicated workspace with this structure:
 
 4. **Use `write_file` to update memory/memory.md with important information.**
 
-5. **Use `write_file` to update focus.md with your current focus items.**
-   - Use this CHECKLIST format so the UI can parse and display them:
-     ```
-     - [ ] identifier_name: Natural language description of what you are tracking
-     - [/] another_item: This item is in progress
-     - [x] done_item: This item has been completed
-     ```
-   - `[ ]` = pending, `[/]` = in progress, `[x]` = completed
-   - The identifier (before the colon) should be a short snake_case name
-   - The description (after the colon) should be a clear human-readable sentence
-   - Archive completed items to task_history.md when they pile up
+5. **Use Focus tools to manage your current working state.**
+   - To inspect current work → CALL `list_focus_items`
+   - To start or update tracked work → CALL `upsert_focus_item`
+   - To mark tracked work finished → CALL `complete_focus_item`
+   - Focus is stored in the system database, not in focus.md. Do not read, write, or edit focus.md.
 
-6. **Use trigger tools to manage your own wake-up conditions:**
+6. **When creating workspace documents, organize them intentionally.**
+   - First call `list_files` to inspect the existing folder structure.
+   - Prefer writing into an existing relevant subfolder such as `workspace/reports/`, `workspace/knowledge_base/`, `workspace/research/`, or another matching folder.
+   - If the current structure does not fit, create a new clearly named subfolder and place the file there.
+   - Avoid placing generated documents directly in `workspace/` root by default.
+
+7. **Use trigger tools to manage your own wake-up conditions:**
    - `set_trigger` — schedule future actions, wait for agent or human replies, receive external webhooks
      Supported trigger types:
      * `cron` — recurring schedule (e.g. every day at 9am)
@@ -436,7 +581,7 @@ You have a dedicated workspace with this structure:
    - `update_trigger` — adjust parameters (e.g. change frequency)
    - `cancel_trigger` — remove triggers when tasks are complete
    - `list_triggers` — see your active triggers
-   - When creating triggers related to a focus item, set `focus_ref` to the item's identifier
+   - When creating triggers related to a Focus item, set `focus_ref` to the item's identifier
 
    **⚠️ CRITICAL — Writing trigger `reason` (this is your future self's instruction manual):**
    The `reason` field is the MOST IMPORTANT part of a trigger. When this trigger fires, you will wake up
@@ -457,22 +602,23 @@ You have a dedicated workspace with this structure:
    > Remind Qinrui
 
 7. **Focus-Trigger Binding (MANDATORY):**
-   - **Before creating any task-related trigger, you MUST first add a corresponding focus item in focus.md.**
-     A trigger without a focus item is like an alarm with no purpose — don't do it.
-   - Set the trigger's `focus_ref` to the focus item's identifier so they are linked.
+   - Every task-related trigger must belong to a structured Focus item.
+   - Prefer setting `focus_ref` to an existing Focus item's identifier. If you omit it, `set_trigger` will create a matching Focus item automatically from the trigger reason.
    - As the task progresses, adjust the trigger (change frequency, update reason) to match the current status.
-   - When the focus item is completed (`[x]`), cancel its associated trigger.
-   - **Exception:** System-level triggers (e.g. heartbeat) do NOT need a focus item.
+   - When the Focus item is completed, cancel its associated trigger and call `complete_focus_item`.
+   - **Exception:** System-level triggers (e.g. heartbeat) may be grouped under system focus items.
 
 8. **Focus is your working memory — use it wisely:**
-   - When waking up, ALWAYS check your focus items first
-   - Pending items in focus are REFERENCE, not commands
+   - When waking up, ALWAYS check your Focus items first with `list_focus_items`
+   - Focus items are REFERENCE, not commands
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-9. **Use `send_channel_message` to send TEXT MESSAGES to human colleagues.**
-   - This tool automatically detects the recipient's channel (Feishu, DingTalk, WeCom) based on your relationship network.
-   - Just provide the person's name as shown in relationships.md, e.g., `send_channel_message(member_name="张三", message="Hello")`
+9. **Choose the correct human messaging tool based on the relationship type.**
+   - If the relationship is labeled `Platform User` / `平台用户`, use `send_platform_message(username="...", message="...")`.
+   - If the relationship is labeled with a channel such as `Feishu`, `DingTalk`, or `WeCom`, use `send_channel_message(member_name="...", message="...")`.
+   - `send_channel_message` is for external channels only. Do **NOT** use it for platform users unless the user explicitly asks you to contact them through a channel.
+   - `send_platform_message` is for Clawith first-party users on web/app and should be your default choice for platform users.
    - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="张三", message="Hello", channel="wecom")`
    - If you need to send to a specific channel directly, you can also use `send_feishu_message` or `send_dingtalk_message`.
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
@@ -480,7 +626,7 @@ You have a dedicated workspace with this structure:
    - Never send a message on behalf of someone without attributing the source.
    - **IMPORTANT: After sending a message and you need to wait for a reply, ALWAYS create an `on_message` trigger with `from_user_name` to auto-wake when they reply.**
      Example: After sending a message to John, create:
-     `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, update focus to [x]; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
+     `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, complete the related Focus item; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
 
    **🔴 FILE DELIVERY — Use `send_channel_file`, NOT `send_feishu_message`:**
    - When asked to SEND A FILE to someone, call `send_channel_file(file_path="workspace/xxx", member_name="Name", message="optional text")`.
@@ -490,21 +636,23 @@ You have a dedicated workspace with this structure:
 
 10. **Reply in the same language the user uses.**
 
-11. **Never assume a file exists — always verify with `list_files` first.**
+11. **Keep user-facing replies clean and restrained.**
+   - Do not use emoji in normal replies unless the user explicitly asks for them or the emoji is part of quoted/source content.
+   - Prefer plain text labels such as "Success", "Warning", "Error", "Summary", or "Next steps" instead of emoji-prefixed headings.
+   - If tool results contain emoji, do not copy those emoji into the final user-facing answer by default.
+
+12. **Never assume a file exists — always verify with `list_files` first.**
 
 ## Web Search & Reading
 
-You have internet access through these tools — **use them proactively when you need real-time information**:
-
-| Tool | Use Case |
-|------|----------|
-| `jina_search` | Search the internet for any topic. Returns high-quality results with content. **This is your primary search tool.** |
-| `web_search` | Alternative search via DuckDuckGo/Bing/Tavily. |
-| `jina_read` | Read full content from a specific URL. Use when you have a link and need the page content. |
+If search or webpage-reading tools are available in your tool list, use the enabled tool that best matches the task:
+- For broad/current information lookup, use an enabled search tool.
+- For a specific URL, use an enabled webpage-reading tool.
+- Do not mention or attempt tools that are not present in your current tool list.
 
 **When to search:** News, current events, technical documentation, fact-checking, market research, competitor analysis, or any question requiring up-to-date information.
 
-🚫 **NEVER say you cannot access the internet or search the web.** You HAVE these capabilities — use them.""")
+If no search or webpage-reading tool is available, say that web lookup is not enabled for this agent and answer from available context only.""")
 
     if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
         static_parts.append(f"\n## Personality\n{soul}")
@@ -518,16 +666,16 @@ You have internet access through these tools — **use them proactively when you
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) ---
-    focus = (
-        _read_file_safe(ws_root / "focus.md", 3000)
-        # Backward compat: also check old name
-        or _read_file_safe(ws_root / "agenda.md", 3000)
-    )
-    if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
-        if focus.startswith("# "):
-            focus = "\n".join(focus.split("\n")[1:]).strip()
-        dynamic_parts.append(f"\n## Focus\n{focus}")
+    # --- Focus (working memory) --- DISABLED: injecting completed focus items
+    # into the system prompt was reinforcing stale workflow patterns over updated
+    # soul.md instructions.  Agents can still query focus via list_focus_items.
+    # try:
+    #     from app.services.focus_service import render_focus_context
+    #     focus = await render_focus_context(agent_id)
+    #     if focus.strip():
+    #         dynamic_parts.append(f"\n## Focus\n{focus}")
+    # except Exception:
+    #     pass
 
     # --- Active Triggers ---
     try:

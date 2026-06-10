@@ -1,31 +1,23 @@
 """Public pages API — serves published HTML without authentication."""
 
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.published_page import PublishedPage
 from app.models.user import User
-
-settings = get_settings()
+from app.services.storage import get_storage_backend, normalize_storage_key
 
 # Public router — no /api prefix, no auth
 public_router = APIRouter(tags=["pages"])
 
 # Authenticated router — under /api prefix
 router = APIRouter(prefix="/pages", tags=["pages"])
-
-
-def _agent_base_dir(agent_id: uuid.UUID) -> Path:
-    return Path(settings.AGENT_DATA_DIR) / str(agent_id)
-
 
 # ── Public render (NO auth) ────────────────────────────
 
@@ -39,12 +31,12 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     if not page:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    # Read the HTML file from agent workspace
-    file_path = _agent_base_dir(page.agent_id) / page.source_path
-    if not file_path.exists() or not file_path.is_file():
+    storage = get_storage_backend()
+    storage_key = normalize_storage_key(f"{page.agent_id}/{page.source_path}")
+    if not await storage.exists(storage_key) or not await storage.is_file(storage_key):
         raise HTTPException(status_code=404, detail="Source file no longer exists")
 
-    html_content = file_path.read_text(encoding="utf-8", errors="replace")
+    html_content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
 
     # Increment view count
     await db.execute(

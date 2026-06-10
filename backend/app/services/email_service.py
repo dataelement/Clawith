@@ -421,7 +421,7 @@ async def test_connection(config: dict) -> dict:
             password=password,
             from_addr=addr,
             to_addrs=[addr],  # Send to self for test
-            msg_string="Subject: Clawith Connection Test\n\nSMTP Connection Successful.",
+            msg_string=f"From: {addr}\nTo: {addr}\nSubject: Clawith Connection Test\n\nSMTP Connection Successful.",
             use_ssl=cfg.get("smtp_ssl", True),
             timeout=10,
         )

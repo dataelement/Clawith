@@ -11,36 +11,62 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.core.security import hash_password
 from app.models.agent import Agent
 from app.models.identity import IdentityProvider
 from app.models.org import OrgMember
-from app.models.user import User
+from app.models.user import Identity, User
 from app.services.sso_service import sso_service
+
+
+class ChannelUserResolutionError(ValueError):
+    """Raised when a channel message cannot be safely attributed to a user."""
 
 
 class ChannelUserService:
     """Service for resolving channel users via OrgMember and SSO patterns."""
 
+    CHANNEL_TYPE_ALIASES = {
+        "microsoft_teams": "teams",
+    }
+
+    def _normalize_channel_type(self, channel_type: str) -> str:
+        raw = (channel_type or "").strip().lower()
+        return self.CHANNEL_TYPE_ALIASES.get(raw, raw)
+
+    def _legacy_provider_types_for_channel(self, channel_type: str) -> list[str]:
+        normalized = self._normalize_channel_type(channel_type)
+        legacy = [normalized]
+        if normalized == "teams":
+            legacy.append("microsoft_teams")
+        elif normalized == "microsoft_teams":
+            legacy.append("teams")
+        return legacy
+
     def _get_channel_ids(
         self,
         channel_type: str,
-        external_user_id: str,
+        external_user_id: str | None,
         extra_info: dict[str, Any],
     ) -> tuple[str | None, str | None, str | None]:
+        normalized_channel = self._normalize_channel_type(channel_type)
         unionid = (extra_info.get("unionid") or extra_info.get("union_id") or "").strip() or None
         open_id = (extra_info.get("open_id") or "").strip() or None
         external_id = (extra_info.get("external_id") or external_user_id or "").strip() or None
 
-        if channel_type == "feishu":
-            open_id = open_id or external_user_id
+        if normalized_channel == "feishu":
+            # Feishu external_id must remain tenant-stable user_id only.
+            # Never backfill it from open_id.
             external_id = (extra_info.get("external_id") or "").strip() or None
-        elif channel_type == "dingtalk":
+        elif normalized_channel == "dingtalk":
             open_id = open_id or None
-        elif channel_type == "wecom":
+        elif normalized_channel == "wecom":
             unionid = None
             open_id = open_id or None
+        else:
+            unionid = None
+            open_id = None
 
         return unionid, open_id, external_id
 
@@ -49,7 +75,7 @@ class ChannelUserService:
         db: AsyncSession,
         agent: Agent,
         channel_type: str,
-        external_user_id: str,
+        external_user_id: str | None,
         extra_info: dict[str, Any] | None = None,
     ) -> User:
         """Resolve channel user identity, find or create platform User.
@@ -63,8 +89,8 @@ class ChannelUserService:
         Args:
             db: Database session
             agent: Agent receiving the message (for tenant_id)
-            channel_type: "dingtalk" | "wecom" | "feishu"
-            external_user_id: User ID from external platform (staff_id/userid/open_id)
+            channel_type: "dingtalk" | "wecom" | "wechat" | "feishu"
+            external_user_id: User ID from external platform. For Feishu this must be user_id, not open_id.
             extra_info: Optional name/avatar/mobile/email from platform API
 
         Returns:
@@ -78,7 +104,7 @@ class ChannelUserService:
 
         # Step 2: Try to find OrgMember by external identity
         org_member = await self._find_org_member(
-            db, provider.id, channel_type, external_user_id
+            db, provider.id, channel_type, external_user_id, extra_info
         )
 
         # Step 3: Resolve User from OrgMember or other means
@@ -111,9 +137,11 @@ class ChannelUserService:
                     f"[{channel_type}] Matched user by mobile: {user.id}"
                 )
 
-        # If found User by email/mobile, link OrgMember if exists (only for org-sync channels)
+        should_persist_member = True
+
+        # If found User by email/mobile, link OrgMember if exists
         if user:
-            if channel_type in ("feishu", "dingtalk", "wecom"):
+            if should_persist_member:
                 if org_member and not org_member.user_id:
                     # Existing shell OrgMember not yet linked → link it
                     org_member.user_id = user.id
@@ -147,14 +175,23 @@ class ChannelUserService:
             await db.flush()
             return user
 
+        unionid, open_id, external_id = self._get_channel_ids(
+            channel_type, external_user_id, extra_info
+        )
+
+        if channel_type == "feishu" and not org_member and not (unionid or external_id):
+            raise ChannelUserResolutionError(
+                "Feishu sender could not be resolved to a stable user_id/union_id; "
+                "refusing to lazily create a duplicate user from open_id only."
+            )
+
         # Step 5: Create new User (lazy registration)
         user = await self._create_channel_user(
             db, channel_type, external_user_id, extra_info, tenant_id
         )
 
-        # Step 6: Link or create OrgMember (only for channels with org sync)
-        # Channels like Discord/Slack don't have OrgMember, skip this step
-        if channel_type in ("feishu", "dingtalk", "wecom"):
+        # Step 6: Link or create OrgMember
+        if should_persist_member:
             if org_member:
                 org_member.user_id = user.id
             else:
@@ -173,25 +210,41 @@ class ChannelUserService:
         self, db: AsyncSession, provider_type: str, tenant_id: uuid.UUID | None
     ) -> IdentityProvider:
         """Get or create IdentityProvider record."""
+        canonical_type = self._normalize_channel_type(provider_type)
+
         query = select(IdentityProvider).where(
-            IdentityProvider.provider_type == provider_type
+            IdentityProvider.provider_type == canonical_type
         )
         if tenant_id:
             query = query.where(IdentityProvider.tenant_id == tenant_id)
 
         result = await db.execute(query)
         provider = result.scalar_one_or_none()
+        if provider:
+            return provider
 
-        if not provider:
-            provider = IdentityProvider(
-                provider_type=provider_type,
-                name=provider_type.capitalize(),
-                is_active=True,
-                config={},
-                tenant_id=tenant_id,
+        for legacy_type in self._legacy_provider_types_for_channel(provider_type):
+            if legacy_type == canonical_type:
+                continue
+            legacy_query = select(IdentityProvider).where(
+                IdentityProvider.provider_type == legacy_type
             )
-            db.add(provider)
-            await db.flush()
+            if tenant_id:
+                legacy_query = legacy_query.where(IdentityProvider.tenant_id == tenant_id)
+            legacy_result = await db.execute(legacy_query)
+            legacy_provider = legacy_result.scalar_one_or_none()
+            if legacy_provider:
+                return legacy_provider
+
+        provider = IdentityProvider(
+            provider_type=canonical_type,
+            name=canonical_type.capitalize(),
+            is_active=True,
+            config={},
+            tenant_id=tenant_id,
+        )
+        db.add(provider)
+        await db.flush()
 
         return provider
 
@@ -200,43 +253,83 @@ class ChannelUserService:
         db: AsyncSession,
         provider_id: uuid.UUID,
         channel_type: str,
-        external_user_id: str,
+        external_user_id: str | None,
+        extra_info: dict[str, Any] | None = None,
     ) -> OrgMember | None:
         """Find OrgMember by external identity.
 
         For Feishu: try unionid first, then open_id, then external_id
         For DingTalk: try unionid first, then external_id
         For WeCom: try external_id (userid)
+        For WeChat: try external_id (from_user_id)
 
         Returns None if OrgMember not found or org sync is not enabled for this channel.
         """
         try:
+            extra_info = extra_info or {}
+            unionid, open_id, external_id = self._get_channel_ids(
+                channel_type, external_user_id, extra_info
+            )
+
             # Build OR conditions for matching
             conditions = [OrgMember.provider_id == provider_id, OrgMember.status == "active"]
 
             # Channel-specific matching priority
-            if channel_type == "feishu":
-                # Feishu: unionid is most stable, then open_id, then user_id
-                conditions.append(
-                    (OrgMember.unionid == external_user_id) |
-                    (OrgMember.open_id == external_user_id) |
-                    (OrgMember.external_id == external_user_id)
-                )
-            elif channel_type == "dingtalk":
+            normalized_channel = self._normalize_channel_type(channel_type)
+            if normalized_channel == "feishu":
+                # Feishu identifiers have distinct semantics:
+                # unionid/open_id come from extra_info; external_id is user_id only.
+                lookup_conditions = []
+                if unionid:
+                    lookup_conditions.append(OrgMember.unionid == unionid)
+                if open_id:
+                    lookup_conditions.append(OrgMember.open_id == open_id)
+                if external_id:
+                    lookup_conditions.append(OrgMember.external_id == external_id)
+                if not lookup_conditions:
+                    return None
+                conditions.append(lookup_conditions[0])
+                for cond in lookup_conditions[1:]:
+                    conditions[-1] = conditions[-1] | cond
+            elif normalized_channel == "dingtalk":
                 # DingTalk: unionid is stable across apps, then external_id
-                conditions.append(
-                    (OrgMember.unionid == external_user_id) |
-                    (OrgMember.external_id == external_user_id)
-                )
-            elif channel_type == "wecom":
+                lookup_conditions = []
+                if unionid:
+                    lookup_conditions.append(OrgMember.unionid == unionid)
+                if external_id:
+                    lookup_conditions.append(OrgMember.external_id == external_id)
+                if not lookup_conditions:
+                    return None
+                conditions.append(lookup_conditions[0])
+                for cond in lookup_conditions[1:]:
+                    conditions[-1] = conditions[-1] | cond
+            elif normalized_channel == "wecom":
                 # WeCom: external_id (userid) is the primary identifier
-                conditions.append(OrgMember.external_id == external_user_id)
+                if not external_id:
+                    return None
+                conditions.append(OrgMember.external_id == external_id)
             else:
-                # Generic fallback (discord, slack, etc. - no org sync)
-                # These channels don't have OrgMember, return None immediately
-                return None
+                # Generic channels: provider is already channel-scoped, so external_id
+                # can be used directly without namespacing.
+                if not external_id:
+                    return None
+                conditions.append(OrgMember.external_id == external_id)
 
-            query = select(OrgMember).where(*conditions)
+            # Use limit(1) + prioritize records that are already linked to a User.
+            # scalar_one_or_none() would raise MultipleResultsFound when duplicate
+            # OrgMember shells exist for the same external_user_id — which was the
+            # root cause of continuous new-user creation on every Feishu message.
+            query = (
+                select(OrgMember)
+                .where(*conditions)
+                .order_by(
+                    # Prefer rows already linked to a platform User
+                    OrgMember.user_id.isnot(None).desc(),
+                    # Among equals, pick the oldest (most likely the "canonical" one)
+                    OrgMember.synced_at.asc(),
+                )
+                .limit(1)
+            )
             result = await db.execute(query)
             return result.scalar_one_or_none()
         except Exception as e:
@@ -249,12 +342,17 @@ class ChannelUserService:
         db: AsyncSession,
         provider: IdentityProvider,
         channel_type: str,
-        external_user_id: str,
+        external_user_id: str | None,
         extra_info: dict[str, Any],
         linked_user_id: uuid.UUID | None = None,
     ) -> OrgMember:
         """Create a shell OrgMember record for this identity."""
-        name = extra_info.get("name") or f"{channel_type.capitalize()} User {external_user_id[:8]}"
+        identity_seed = (
+            external_user_id
+            or (extra_info.get("open_id") or "").strip()
+            or uuid.uuid4().hex
+        )
+        name = extra_info.get("name") or f"{channel_type.capitalize()} User {identity_seed[:8]}"
         unionid, open_id, external_id = self._get_channel_ids(channel_type, external_user_id, extra_info)
 
         member = OrgMember(
@@ -301,7 +399,7 @@ class ChannelUserService:
         self,
         db: AsyncSession,
         channel_type: str,
-        external_user_id: str,
+        external_user_id: str | None,
         extra_info: dict[str, Any],
         tenant_id: uuid.UUID | None,
     ) -> User:
@@ -311,19 +409,21 @@ class ChannelUserService:
         This ensures compatibility with the Phase 2 user model where username,
         email, and password_hash live on the Identity table.
         """
-        from app.models.user import Identity
-
         # Generate username and email
         email = extra_info.get("email")
-        name = extra_info.get("name") or f"{channel_type.capitalize()} {external_user_id[:8]}"
+        identity_seed = (
+            external_user_id
+            or (extra_info.get("open_id") or "").strip()
+            or uuid.uuid4().hex
+        )
+        name = extra_info.get("name") or f"{channel_type.capitalize()} {identity_seed[:8]}"
 
         if email:
             username = email.split("@")[0]
         else:
-            username = f"{channel_type}_{external_user_id[:12]}"
+            username = f"{channel_type}_{identity_seed[:12]}"
 
         # Ensure unique username within tenant
-        from app.models.user import User, Identity
         query = (
             select(User)
             .join(User.identity)
@@ -334,7 +434,7 @@ class ChannelUserService:
 
         existing = await db.execute(query)
         if existing.scalar_one_or_none():
-            username = f"{username}_{external_user_id[:6]}"
+            username = f"{username}_{identity_seed[:6]}"
 
         email = email or f"{username}@{channel_type}.local"
 
@@ -390,7 +490,15 @@ async def get_platform_user_by_org_member(
     """
     # Case 1: OrgMember already linked to User
     if org_member.user_id:
-        user = await db.get(User, org_member.user_id)
+        query = (
+            select(User)
+            .where(User.id == org_member.user_id)
+            .options(selectinload(User.identity))
+        )
+        if agent_tenant_id:
+            query = query.where(User.tenant_id == agent_tenant_id)
+        user_res = await db.execute(query)
+        user = user_res.scalar_one_or_none()
         if user:
             return user
 
@@ -405,27 +513,32 @@ async def get_platform_user_by_org_member(
         # Link existing User to OrgMember
         org_member.user_id = user.id
         await db.flush()
-        return user
+        # Eagerly load/refresh User.identity before returning
+        user_res = await db.execute(
+            select(User).where(User.id == user.id).options(selectinload(User.identity))
+        )
+        return user_res.scalar_one()
 
     # Case 3: Create new User and link to OrgMember
     # Determine channel type from provider
     from app.models.identity import IdentityProvider
     provider = await db.get(IdentityProvider, org_member.provider_id)
     channel_type = provider.provider_type if provider else "unknown"
+    external_seed = org_member.external_id
 
     # Generate username from OrgMember info
     email = org_member.email
-    name = org_member.name or f"{channel_type.capitalize()} User {org_member.external_id[:8]}"
+    seed_for_name = external_seed or org_member.id.hex
+    name = org_member.name or f"{channel_type.capitalize()} User {seed_for_name[:8]}"
 
     if email:
         username = email.split("@")[0]
-    elif org_member.external_id:
-        username = f"{channel_type}_{org_member.external_id[:12]}"
+    elif external_seed:
+        username = f"{channel_type}_{external_seed[:12]}"
     else:
         username = f"{channel_type}_{org_member.id.hex[:12]}"
 
     # Ensure unique username within tenant
-    from app.models.user import User, Identity
     query = (
         select(User)
         .join(User.identity)
@@ -436,7 +549,7 @@ async def get_platform_user_by_org_member(
 
     existing = await db.execute(query)
     if existing.scalar_one_or_none():
-        username = f"{username}_{org_member.external_id[:6] if org_member.external_id else org_member.id.hex[:6]}"
+        username = f"{username}_{external_seed[:6] if external_seed else org_member.id.hex[:6]}"
 
     email = email or f"{username}@{channel_type}.local"
 
@@ -453,7 +566,7 @@ async def get_platform_user_by_org_member(
 
 
     user = User(
-        identity_id=identity.id,
+        identity=identity,
         display_name=name,
         avatar_url=org_member.avatar_url,
         role="member",
@@ -470,4 +583,9 @@ async def get_platform_user_by_org_member(
     await db.flush()
 
     logger.info(f"[channel_user_service] Created User {user.id} for OrgMember {org_member.id} ({name})")
-    return user
+    
+    # Eagerly load/refresh User.identity before returning
+    user_res = await db.execute(
+        select(User).where(User.id == user.id).options(selectinload(User.identity))
+    )
+    return user_res.scalar_one()

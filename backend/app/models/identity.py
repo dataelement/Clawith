@@ -1,5 +1,6 @@
 """Identity models for managing multiple authentication providers and SSO sessions."""
 
+from enum import Enum
 import uuid
 from datetime import datetime
 
@@ -10,6 +11,18 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
+class AuthProviderType(str, Enum):
+    """Supported authentication provider types."""
+
+    FEISHU = "feishu"
+    DINGTALK = "dingtalk"
+    WECOM = "wecom"
+    GOOGLE_WORKSPACE = "google_workspace"
+    MICROSOFT_TEAMS = "microsoft_teams"
+    GOOGLE = "google"
+    GITHUB = "github"
+
+
 class IdentityProvider(Base):
     """Configuration for external identity providers (Feishu, DingTalk, WeCom, etc.)."""
 
@@ -18,7 +31,7 @@ class IdentityProvider(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Use plain String instead of PostgreSQL native Enum to stay compatible with the
     # existing production schema (character varying(50)) and avoid type-cast errors.
-    provider_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider_type: Mapped[AuthProviderType] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # When True, this provider can be used for SSO login (not just directory sync)
@@ -41,7 +54,7 @@ class SSOScanSession(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, scanned, authorized, expired, completed
-    provider_type: Mapped[str | None] = mapped_column(String(50))
+    provider_type: Mapped[AuthProviderType | None] = mapped_column(String(50))
     error_msg: Mapped[str | None] = mapped_column(Text)
 
     # Context (no FK - soft coupling)

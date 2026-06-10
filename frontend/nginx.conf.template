@@ -1,0 +1,81 @@
+server {
+    listen 3000;
+    server_name localhost;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    resolver 127.0.0.11 ipv6=off valid=30s;
+    set $api_upstream http://${API_UPSTREAM};
+
+    # Allow large file uploads (up to 100MB)
+    client_max_body_size 500m;
+
+    # SPA fallback — index.html must never be cached so users always get the latest build
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+    }
+
+    # Hashed assets (JS/CSS) — safe to cache for 1 year since filenames change on every build
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # API proxy
+    location /api/ {
+        proxy_pass $api_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 500m;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    # Public pages proxy (no auth, served by backend)
+    location /p/ {
+        proxy_pass $api_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # WeCom domain verification files
+    # WeCom's ownership-check bot requests WW_verify_<token>.txt at the domain root.
+    # This rule intercepts these requests before the SPA fallback and proxies them
+    # to the backend, which serves the file content stored in the tenant's config.
+    location ~ ^/WW_verify_[A-Za-z0-9]+\.txt$ {
+        proxy_pass $api_upstream/api/wecom-verify$request_uri;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # MinIO S3 proxy
+    location /minio/ {
+        set $minio_upstream http://${MINIO_UPSTREAM};
+        rewrite ^/minio/(.*)$ /$1 break;
+        proxy_pass $minio_upstream;
+        proxy_set_header Host ${MINIO_UPSTREAM};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Disable buffering and allow large files
+        proxy_buffering off;
+        client_max_body_size 0;
+    }
+
+    # WebSocket proxy
+    location /ws/ {
+        proxy_pass $api_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;
+
+        # Keep WebSocket alive for long-running agent sessions (1 hour)
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

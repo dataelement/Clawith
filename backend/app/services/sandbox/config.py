@@ -28,14 +28,15 @@ class SandboxConfig(BaseModel):
     cpu_limit: str = "0.5"
     memory_limit: str = "256m"
     allow_network: bool = True
+    allow_unsafe_fallback_when_bwrap_missing: bool = False
 
     # API sandbox options
     api_key: str = ""
     api_url: str = ""
 
     # Common options
-    default_timeout: int = Field(default=30, ge=1, le=300)
-    max_timeout: int = Field(default=60, ge=1, le=300)
+    default_timeout: int = Field(default=30, ge=1, le=3600)
+    max_timeout: int = Field(default=60, ge=1, le=3600)
 
     # Language mapping for API sandboxes
     # Maps our internal language names to API-specific language IDs
@@ -70,6 +71,8 @@ class SandboxConfig(BaseModel):
                     value = getattr(fallback_config, key, default)
                 else:
                     value = default
+            if key == "allow_network":
+                logger.info(f"[SandboxConfig] allow_network: raw={config.get(key)!r}, resolved={value!r}")
 
             # 解密敏感字段
             if encrypt and value:
@@ -104,6 +107,10 @@ class SandboxConfig(BaseModel):
             cpu_limit=get_value("cpu_limit", "0.5"),
             memory_limit=get_value("memory_limit", "256m"),
             allow_network=get_value("allow_network", False),
+            allow_unsafe_fallback_when_bwrap_missing=get_value(
+                "allow_unsafe_fallback_when_bwrap_missing",
+                False,
+            ),
             default_timeout=get_value("default_timeout", 30),
             max_timeout=get_value("max_timeout", 60),
         )

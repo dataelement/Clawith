@@ -155,3 +155,20 @@ async def send_dingtalk_message(
         if not agent_id:
             agent_id = app_id
         return await send_dingtalk_corp_conversation(app_id, app_secret, user_id, msg_body, agent_id)
+
+
+async def download_dingtalk_media(
+    app_id: str, app_secret: str, download_code: str
+) -> bytes | None:
+    """Download a media file from DingTalk using a downloadCode.
+
+    Convenience wrapper that delegates to the stream module's download helper.
+    Returns raw file bytes on success, or None on failure.
+
+    Args:
+        app_id: DingTalk app key (robotCode).
+        app_secret: DingTalk app secret.
+        download_code: The downloadCode from the incoming message payload.
+    """
+    from app.services.dingtalk_stream import download_dingtalk_media as _download
+    return await _download(app_id, app_secret, download_code)

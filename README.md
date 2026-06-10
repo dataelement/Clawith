@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Clawith_slogan.png" alt="Clawith — OpenClaw for Teams" width="800" />
+  <img src="assets/slogan.png" alt="Clawith — OpenClaw for Teams" width="800" />
 </p>
 
 <p align="center">
@@ -19,7 +19,16 @@
   <a href="README_zh-CN.md">中文</a> ·
   <a href="README_ja.md">日本語</a> ·
   <a href="README_ko.md">한국어</a> ·
-  <a href="README_es.md">Español</a>
+  <a href="README_es.md">Español</a> ·
+  <a href="README_ar.md">العربية</a>
+</p>
+
+<p align="center">
+  <strong>Live Demo:</strong> <a href="https://try.clawith.ai">try.clawith.ai</a>
+  — open-source feature preview; shared demo environment, not guaranteed stable.
+  <br />
+  <strong>Clawith Cloud:</strong> <a href="https://cloud.clawith.ai">cloud.clawith.ai</a>
+  — hosted production service.
 </p>
 
 ---
@@ -158,14 +167,12 @@ The first user to register automatically becomes the **platform admin**. Open th
 
 ### System Email and Password Reset
 
-Clawith can send platform-owned emails for password reset and optional broadcast delivery.
+Clawith can send platform-owned emails for password reset, email verification, and optional broadcast delivery.
 
-Primary configuration path:
-
-1. Open **Admin** → **Platform Settings** (`/admin/platform-settings`)
-2. Go to the **Platform** tab
-3. Fill **System Email Configuration** (From address/name, SMTP host/port, username, password, SSL/TLS, timeout)
-4. Click **Save**, then use **Send Test Email** to verify delivery
+You can configure the SMTP server settings directly from the web interface:
+1. Log in as a platform administrator.
+2. Navigate to **Admin -> Platform Settings**.
+3. Under the **Platform** tab, locate the **System Email Configuration** section and enter your SMTP details.
 
 `PUBLIC_BASE_URL` must point to the user-facing frontend because reset links are generated as `/reset-password?token=...`.
 In production, set it to your public HTTPS domain (for example `https://app.example.com`), not a localhost address.
@@ -233,7 +240,7 @@ Join our [Discord server](https://discord.gg/NRNHZkyDcG) to chat with the team, 
 You can also scan the QR code below to join our community on mobile:
 
 <p align="center">
-  <img src="assets/QR_Code.png" alt="Community QR Code" width="200" />
+  <img src="assets/Clawith_QRcode.png" alt="Community QR Code" width="200" />
 </p>
 
 ## ⭐ Star History

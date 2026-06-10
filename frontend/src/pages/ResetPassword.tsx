@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconCheck } from '@tabler/icons-react';
 import { authApi } from '../services/api';
 
 export default function ResetPassword() {
@@ -15,7 +16,7 @@ export default function ResetPassword() {
     const [success, setSuccess] = useState(false);
 
     useEffect(() => {
-        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.setAttribute('data-theme', localStorage.getItem('theme') || 'light');
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -64,13 +65,13 @@ export default function ResetPassword() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <span><IconAlertTriangle size={14} stroke={1.8} /></span> {error}
                         </div>
                     )}
 
                     {success && (
-                        <div className="login-error" style={{ background: 'rgba(34,197,94,0.14)', borderColor: 'rgba(34,197,94,0.35)', color: '#dcfce7' }}>
-                            <span>✓</span> {t('auth.resetPasswordSuccess', 'Password updated. Redirecting to login...')}
+                        <div className="login-error" style={{ background: 'var(--success-subtle)', borderColor: 'color-mix(in srgb, var(--success) 20%, transparent)', color: 'var(--success)' }}>
+                            <span><IconCheck size={14} stroke={1.8} /></span> {t('auth.resetPasswordSuccess', 'Password updated. Redirecting to login...')}
                         </div>
                     )}
 

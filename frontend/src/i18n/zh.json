@@ -1,14 +1,17 @@
 {
   "app": {
     "name": "Clawith",
-    "tagline": "企业数字员工平台"
+    "tagline": "Enterprise Digital Employee Platform"
   },
   "login": {
     "hero": {
       "badge": "开源 · 多智能体协作",
       "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw 赋能个人。<br>Clawith 将其扩展到前沿组织。",
+      "subtitle": "Your Agent Company.",
+      "welcome": "欢迎，",
+      "founder": "Founder",
+      "description": "来构建你的 Agent Company",
+      "mark": "Your Agent Company",
       "features": {
         "multiAgent": {
           "title": "多智能体团队",
@@ -31,11 +34,24 @@
     "myCreated": "我创建的",
     "companyShared": "公司共用",
     "newAgent": "新建数字员工",
+    "hire": "招聘新成员",
     "enterprise": "公司设置",
     "adminCompanies": "公司管理",
     "platformSettings": "平台设置",
     "language": "语言",
-    "plaza": "广场"
+    "plaza": "广场",
+    "okr": "OKR"
+  },
+  "talentMarket": {
+    "title": "人才市场",
+    "subtitle": "挑选一位专业成员加入你的公司",
+    "hire": "聘用",
+    "hiring": "聘用中...",
+    "footer": "点击聘用·可随时在设置中调整",
+    "customTitle": "自建 Agent",
+    "customCategory": "自定义",
+    "customDescription": "从零开始定义身份、性格、权限和工具，完全按你的需求打造。",
+    "customStart": "开始"
   },
   "plaza": {
     "title": "智能体广场",
@@ -194,12 +210,12 @@
       "creating": "创建中",
       "error": "异常",
       "disconnected": "已断开",
-      "24hActions": "⏰ 24h 活动",
+      "24hActions": "24h 活动",
       "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
-      "llmCallsToday": "🤖 今日 LLM 调用",
+      "llmCallsToday": "今日 LLM 调用",
       "max": "上限",
-      "totalToken": "📊 总 Token",
-      "pending": "⏳ 待处理"
+      "totalToken": "总 Token",
+      "pending": "待处理"
     },
     "tabs": {
       "status": "状态",
@@ -217,26 +233,26 @@
     },
     "fields": {
       "name": "名称",
-      "role": "👤 角色",
+      "role": "角色",
       "avatar": "头像",
       "personality": "人格设定",
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
       "supervisions": "督办",
-      "createdBy": "👨‍💼 创建者"
+      "createdBy": "创建者"
     },
     "profile": {
-      "title": "📋 Agent 档案",
-      "created": "📅 创建时间",
-      "lastActive": "⏰ 最后活跃",
-      "timezone": "🌐 时区"
+      "title": "Agent 档案",
+      "created": "创建时间",
+      "lastActive": "最后活跃",
+      "timezone": "时区"
     },
     "modelConfig": {
-      "title": "🤖 模型配置",
-      "model": "🧠 模型",
-      "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文窗口"
+      "title": "模型配置",
+      "model": "模型",
+      "provider": "提供商",
+      "contextRounds": "上下文窗口"
     },
     "actions": {
       "start": "启动",
@@ -253,8 +269,11 @@
       "humanRelationships": "人类关系",
       "agentRelationships": "数字员工关系",
       "searchMembers": "搜索组织架构成员...",
+      "searchAgents": "搜索可见数字员工...",
+      "noSearchResults": "没有可添加的结果",
       "noRelationships": "暂无关系",
       "addRelationship": "添加关系",
+      "alreadyAdded": "已添加",
       "supervisor": "上级",
       "colleague": "同事",
       "subordinate": "下级",
@@ -376,17 +395,24 @@
       "delete": "删除",
       "save": "保存",
       "edit": "编辑",
-      "cancel": "取消"
+      "cancel": "取消",
+      "done": "完成",
+      "openInNewTab": "在新标签页打开",
+      "focusPreview": "聚焦预览",
+      "unfocusPreview": "退出聚焦",
+      "versionHistory": "历史版本"
     },
     "chat": {
       "sessionListTitle": "会话列表",
       "collapseSidebar": "收起会话列表",
       "mySessions": "我的会话",
+      "otherSessions": "其他会话",
       "allUsers": "所有用户",
       "viewOtherUsersSessions": "查看其他用户会话",
       "otherUsersTab": "其他用户",
       "selectUserToView": "选择用户",
       "selectUserFirstHint": "请先选择用户，查看其与该数字员工的会话（只读）。",
+      "noOtherUserSessions": "暂无其他用户会话",
       "noOtherUsersSessions": "暂无其他用户与该数字员工的会话。",
       "newSession": "新建会话",
       "noSessionsYet": "还没有会话。",
@@ -403,10 +429,24 @@
       "uploadFailed": "上传失败",
       "askAboutFile": "关于 {{name}} 的问题...",
       "thinking": "思考中...",
+      "thinkingLabel": "思考中",
+      "thoughtLabel": "已思考",
       "collapseSessions": "折叠会话列表",
       "showSessions": "显示聊天会话",
       "toolCallChain": "使用工具",
-      "analysing": "分析中"
+      "analysing": "分析中",
+      "thoughtProcess": "思考过程",
+      "createdFiles": "创建了 {{count}} 个文件",
+      "updatedFiles": "更新了 {{count}} 个文件",
+      "deletedFiles": "删除了 {{count}} 个文件",
+      "ranCommands": "运行了 {{count}} 个工具",
+      "ranAgents": "联系了 {{count}} 个数字员工",
+      "showMore": "显示更多",
+      "viewDetails": "查看细节",
+      "provider": "来源",
+      "toolName": "工具名",
+      "inProgress": "进行中",
+      "done": "完成"
     },
     "activityLog": {
       "title": "工作日志",
@@ -471,8 +511,8 @@
         "encryptKey": "Encrypt Key",
         "webhookUrl": "Webhook URL",
         "configured": "已配置",
-        "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
-        "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
+        "usingCompanyKey": "使用公司主密钥 ({{val}})",
+        "usingCompanyConfig": "使用公司默认配置 ({{val}})",
         "notConfigured": "未配置",
         "saveSuccess": "渠道配置已保存。",
         "saveFailed": "渠道配置保存失败。",
@@ -481,8 +521,7 @@
         "websocketConnected": "已通过 WebSocket 连接（无需回调 URL）",
         "websocketDisconnected": "已配置为 WebSocket，但当前未连接",
         "websocketDisconnectedHint": "重新保存一次企业微信 WebSocket 配置即可重新连接。",
-        "saveChannel": "保存配置",
-        "syncHint": "在配置飞书机器人之前，请先在企业设置 → 组织架构中同步您的组织结构。这确保机器人能够识别消息发送者。"
+        "saveChannel": "保存配置"
       },
       "danger": {
         "title": "危险操作",
@@ -504,7 +543,7 @@
         "saving": "保存中..."
       },
       "timezone": {
-        "title": "🌐 时区",
+        "title": "时区",
         "description": "此数字员工的调度、活跃时间和时间感知使用的时区。如果未设置，默认为公司时区。",
         "current": "数字员工时区",
         "override": "此数字员工的自定义时区",
@@ -529,6 +568,8 @@
         "companyWideDesc": "组织中的所有用户都可以使用此数字员工",
         "onlyMe": "仅我可见",
         "onlyMeDesc": "只有创建者可以使用此数字员工",
+        "custom": "指定成员",
+        "customDesc": "在设置中指定可使用的平台用户",
         "defaultAccess": "默认访问级别",
         "useAccess": "使用",
         "useAccessDesc": "任务、聊天、工具、技能、工作区",
@@ -602,7 +643,8 @@
         "code": "代码与执行",
         "discovery": "发现",
         "feishu": "飞书",
-        "agentbay": "AgentBay"
+        "agentbay": "AgentBay",
+        "okr": "OKR"
       },
       "upload": {
         "success": "上传成功",
@@ -641,8 +683,8 @@
       "noInstalled": "暂无自行安装的工具",
       "noCompany": "暂无公司统一配置的工具",
       "configured": "已配置",
-      "usingCompanyKey": "🏢 使用公司主密钥 ({{val}})",
-      "usingCompanyConfig": "🏢 使用公司默认配置 ({{val}})",
+      "usingCompanyKey": "使用公司主密钥 ({{val}})",
+      "usingCompanyConfig": "使用公司默认配置 ({{val}})",
       "config": "️ 配置",
       "testConnection": "测试连接",
       "testing": "测试中...",
@@ -701,7 +743,8 @@
       "code": "代码与执行",
       "discovery": "发现",
       "feishu": "飞书",
-      "agentbay": "AgentBay"
+      "agentbay": "AgentBay",
+      "okr": "OKR"
     },
     "upload": {
       "success": "上传成功",
@@ -733,7 +776,7 @@
     "credentials": {
       "title": "凭据",
       "add": "添加",
-      "description": "存储网站的登录凭据和 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
+      "description": "存储网站的会话 Cookie。当数字员工通过 AgentBay 打开浏览器时，Cookie 会自动注入。",
       "empty": "未配置凭据",
       "loading": "加载中...",
       "error": "加载凭据失败",
@@ -784,13 +827,6 @@
           "social": "社交",
           "api_key": "API 密钥"
         },
-        "username": "用户名",
-        "usernamePlaceholder": "登录用户名或邮箱",
-        "password": "密码",
-        "passwordHint": "（留空则保持当前密码）",
-        "passwordPlaceholder": "登录密码",
-        "loginUrl": "登录 URL",
-        "loginUrlPlaceholder": "https://example.com/login",
         "cookies": "Cookie JSON",
         "cookiesHint": "（留空则保持当前 Cookie）",
         "cookiesPlaceholder": "[\n  { \"name\": \"session\", \"value\": \"abc123\", \"domain\": \".example.com\", \"path\": \"/\" }\n]",
@@ -992,6 +1028,9 @@
     "dangerZone": "危险区域",
     "deleteCompanyDesc": "永久删除此公司及其所有数据，包括数字员工、模型、工具和技能。此操作无法撤销。",
     "deleteCompany": "删除此公司",
+    "deleteCompanyTitle": "删除公司",
+    "deleteCompanyConfirmButton": "永久删除",
+    "deleteCompanyFailed": "删除失败",
     "timezone": {
       "title": "公司时区",
       "description": "所有数字员工的默认时区。数字员工可以单独覆盖。",
@@ -1014,7 +1053,13 @@
         "America/Sao_Paulo": "美洲/圣保罗 (巴西利亚时间, UTC-3)",
         "Australia/Sydney": "澳大利亚/悉尼 (澳大利亚东部时间, UTC+10/+11)",
         "Pacific/Auckland": "太平洋/奥克兰 (新西兰时间, UTC+12/+13)"
-      }
+      },
+      "countryRegionTitle": "公司所在国家或地区",
+      "countryRegionDescription": "用于自动设置公司默认时区和 OKR 休息日规则。当前时区：{{timezone}}",
+      "searchPlaceholder": "搜索国家或地区、代码或时区",
+      "collapseRegionList": "收起地区列表",
+      "expandRegionList": "展开地区列表",
+      "noMatch": "没有匹配的国家或地区"
     },
     "systemEmail": {
       "title": "系统邮件配置",
@@ -1045,7 +1090,8 @@
       "maxAgents": "最大数字员工数",
       "agentsUserCanCreate": "用户可创建的数字员工数量",
       "agentTTL": "数字员工生命周期（小时）",
-      "agentAutoExpiry": "数字员工从创建开始的自动过期时间",
+      "agentAutoExpiry": "数字员工从创建开始的自动过期时间。永久表示不自动过期。",
+      "customHours": "自定义小时数",
       "dailyLLMCalls": "每日 LLM 调用/数字员工",
       "maxLLMCallsPerDay": "每个数字员工每天的最大 LLM 调用次数",
       "system": "系统",
@@ -1081,7 +1127,8 @@
       "disabled": "已关闭",
       "enabledHint": "数字员工可使用 notify、task_delegate 和 consult 三种通信模式。",
       "disabledHint": "所有数字员工消息使用同步 consult 模式。",
-      "enableWarning": "⚠️ 您即将开启数字员工间异步通信功能（测试版）。\n\n此功能允许数字员工通过 notify 和 task_delegate 模式进行异步通信。\n\n已知可能的问题：\n• 数字员工的回复中可能包含内部技术术语（触发器名称、关注项等）\n• task_delegate 回调可能因速率限制而偶尔延迟或丢失\n• Token 消耗将增加，因为每条异步消息都会触发一个独立的数字员工会话\n• 如果触发器配置不当，可能出现数字员工循环调用\n\n如遇到任何问题，请返回此页面关闭开关，即可恢复稳定的同步通信行为。\n\n确定要开启此功能吗？"
+      "enableWarning": "您即将开启数字员工间异步通信功能（测试版）。\n\n此功能允许数字员工通过 notify 和 task_delegate 模式进行异步通信。\n\n已知可能的问题：\n• 数字员工的回复中可能包含内部技术术语（触发器名称、关注项等）\n• task_delegate 回调可能因速率限制而偶尔延迟或丢失\n• Token 消耗将增加，因为每条异步消息都会触发一个独立的数字员工会话\n• 如果触发器配置不当，可能出现数字员工循环调用\n\n如遇到任何问题，请返回此页面关闭开关，即可恢复稳定的同步通信行为。\n\n确定要开启此功能吗？",
+      "note": "说明：OKR 日报收集本身会优先使用更稳的同步方式，不依赖这里的异步开关。"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -1129,7 +1176,7 @@
       "delete": "删除",
       "edit": "编辑",
       "cancel": "取消",
-      "supportsVision": "👁 支持视觉（多模态）",
+      "supportsVision": "支持视觉（多模态）",
       "supportsVisionDesc": "— 为能够分析图像的模型启用（GPT-4o、Claude、Qwen-VL 等）",
       "test": "测试",
       "testing": "测试中...",
@@ -1184,7 +1231,7 @@
       "save": "保存",
       "clear": "清除",
       "clawhubApiKey": "ClawHub API Key",
-      "clawhubApiKeyDesc": "验证 ClawHub API 调用，以避免在浏览和安装 ClawHub 工具时遇到速率限制。",
+      "clawhubApiKeyDesc": "验证官方 ClawHub API 调用，在浏览和安装 ClawHub 技能时将速率限制从每小时 60 次提高到每小时 1,000 次。",
       "authenticatedRequestsGetHigherRateLimits": "经过身份验证的请求在 ClawHub 工具浏览和安装时获得更高的速率限制。",
       "currentKey": "当前密钥：",
       "githubTokenSaved": "GitHub Token 已保存",
@@ -1212,6 +1259,7 @@
         "list_files": "列出文件",
         "read_file": "读取文件",
         "write_file": "写入文件",
+        "move_file": "移动文件",
         "delete_file": "删除文件",
         "read_document": "读取文档",
         "set_trigger": "设置触发器",
@@ -1220,11 +1268,12 @@
         "list_triggers": "列出触发器",
         "send_file_to_agent": "发送文件",
         "send_feishu_message": "飞书消息",
-        "send_web_message": "网页消息",
+        "send_platform_message": "平台消息",
         "send_message_to_agent": "数字员工消息",
         "web_search": "网络搜索",
         "jina_search": "Jina 搜索",
         "jina_read": "Jina 阅读",
+        "read_webpage": "读取网页",
         "plaza_get_new_posts": "广场：浏览",
         "plaza_create_post": "广场：发布",
         "plaza_add_comment": "广场：评论",
@@ -1251,8 +1300,12 @@
         "agentbay_browser_observe": "AgentBay: 浏览器观察",
         "agentbay_browser_login": "AgentBay: 浏览器登录",
         "agentbay_code_execute": "AgentBay: 代码执行",
+        "agentbay_code_write_file": "AgentBay: 写入代码沙箱文件",
+        "agentbay_code_read_file": "AgentBay: 读取代码沙箱文件",
+        "agentbay_code_edit_file": "AgentBay: 编辑代码沙箱文件",
         "agentbay_command_exec": "AgentBay: Shell 命令",
         "agentbay_computer_screenshot": "AgentBay: 桌面截图",
+        "agentbay_computer_precision_screenshot": "AgentBay: 精细截图",
         "agentbay_computer_click": "AgentBay: 鼠标点击",
         "agentbay_computer_input_text": "AgentBay: 键盘输入",
         "agentbay_computer_press_keys": "AgentBay: 快捷键",
@@ -1261,9 +1314,13 @@
         "agentbay_computer_drag_mouse": "AgentBay: 鼠标拖拽",
         "agentbay_computer_get_screen_size": "AgentBay: 获取屏幕尺寸",
         "agentbay_computer_start_app": "AgentBay: 启动应用",
+        "agentbay_computer_get_installed_apps": "AgentBay: 获取已安装应用",
         "agentbay_computer_get_cursor_position": "AgentBay: 获取光标位置",
         "agentbay_computer_get_active_window": "AgentBay: 获取活动窗口",
         "agentbay_computer_activate_window": "AgentBay: 激活窗口",
+        "agentbay_computer_list_windows": "AgentBay: 列出窗口",
+        "agentbay_computer_close_window": "AgentBay: 关闭窗口",
+        "agentbay_computer_dismiss_dialog": "AgentBay: 关闭弹窗",
         "agentbay_computer_list_visible_apps": "AgentBay: 列出运行应用",
         "atlassian_rovo": "Atlassian Rovo (Jira / Confluence / Compass)"
       },
@@ -1271,6 +1328,7 @@
         "list_files": "列出工作区目录中的文件和文件夹。",
         "read_file": "从工作区读取文件内容。",
         "write_file": "在工作区写入或更新文件。",
+        "move_file": "在工作区移动或重命名文件/文件夹。",
         "delete_file": "从工作区删除文件。",
         "read_document": "读取办公文档内容（PDF、Word、Excel、PPT）并提取文本。",
         "set_trigger": "设置一个新的触发器，在特定时间或条件下唤醒自己。",
@@ -1279,11 +1337,12 @@
         "list_triggers": "列出所有活动触发器的详细信息。",
         "send_file_to_agent": "将文件发送给特定人员或返回当前对话。",
         "send_feishu_message": "向飞书用户或群组发送消息。",
-        "send_web_message": "在 Clawith 网页平台上向用户发送主动消息。",
+        "send_platform_message": "在 Clawith 平台（网页或 App）上向用户发送主动消息。",
         "send_message_to_agent": "向数字员工同事发送消息并接收回复。",
         "web_search": "使用可配置的搜索引擎搜索互联网。",
         "jina_search": "使用 Jina AI 搜索互联网。",
         "jina_read": "使用 Jina AI Reader 从 URL 读取并提取完整内容。",
+        "read_webpage": "根据公开网址直接获取并提取网页可读文本。",
         "plaza_get_new_posts": "从数字员工广场（共享社交动态）获取最新帖子。",
         "plaza_create_post": "向数字员工广场发布新帖子。",
         "plaza_add_comment": "为现有广场帖子添加评论。",
@@ -1310,19 +1369,27 @@
         "agentbay_browser_observe": "[ENV: Browser] 观察并识别页面上的交互元素。",
         "agentbay_browser_login": "[ENV: Browser] 在无头浏览器中处理登录流程。",
         "agentbay_code_execute": "[ENV: Code Sandbox] 在 AgentBay 代码沙箱中执行代码（Python、Bash、Node.js）。",
+        "agentbay_code_write_file": "[ENV: Code Sandbox] 在 AgentBay 代码沙箱中写入文本文件。",
+        "agentbay_code_read_file": "[ENV: Code Sandbox] 从 AgentBay 代码沙箱读取文本文件。",
+        "agentbay_code_edit_file": "[ENV: Code Sandbox] 通过精确替换文本编辑 AgentBay 代码沙箱中的文件。",
         "agentbay_command_exec": "[ENV: Code Sandbox] 在 AgentBay 代码沙箱中执行 Shell 命令。",
-        "agentbay_computer_screenshot": "[ENV: Cloud Desktop] 对云桌面进行截图。",
-        "agentbay_computer_click": "[ENV: Cloud Desktop] 在云桌面指定坐标点击。",
+        "agentbay_computer_screenshot": "[ENV: Cloud Desktop] 对云桌面进行截图，并返回坐标系。支持用于小控件的局部精细截图。",
+        "agentbay_computer_precision_screenshot": "[ENV: Cloud Desktop] 针对小控件和点击偏移场景获取放大的局部精细截图。",
+        "agentbay_computer_click": "[ENV: Cloud Desktop] 基于最近一次截图的云桌面绝对像素坐标点击；点击小控件前优先使用精细截图。",
         "agentbay_computer_input_text": "[ENV: Cloud Desktop] 在云桌面中输入文本。",
         "agentbay_computer_press_keys": "[ENV: Cloud Desktop] 在云桌面中按下快捷键。",
         "agentbay_computer_scroll": "[ENV: Cloud Desktop] 在云桌面中滚动。",
         "agentbay_computer_move_mouse": "[ENV: Cloud Desktop] 将鼠标移动到云桌面指定坐标。",
         "agentbay_computer_drag_mouse": "[ENV: Cloud Desktop] 在云桌面中拖拽鼠标。",
         "agentbay_computer_get_screen_size": "[ENV: Cloud Desktop] 获取云桌面的屏幕尺寸。",
-        "agentbay_computer_start_app": "[ENV: Cloud Desktop] 在云桌面中启动应用程序。",
+        "agentbay_computer_start_app": "[ENV: Cloud Desktop] 使用启动命令启动应用，优先使用“获取已安装应用”返回的 start_cmd。",
+        "agentbay_computer_get_installed_apps": "[ENV: Cloud Desktop] 列出云桌面已安装应用及其真实 start_cmd 启动命令。",
         "agentbay_computer_get_cursor_position": "[ENV: Cloud Desktop] 获取云桌面中当前光标位置。",
         "agentbay_computer_get_active_window": "[ENV: Cloud Desktop] 获取云桌面中的活动窗口。",
         "agentbay_computer_activate_window": "[ENV: Cloud Desktop] 将指定窗口切换到云桌面前景。",
+        "agentbay_computer_list_windows": "[ENV: Cloud Desktop] 列出云桌面顶层窗口及其 ID 和几何信息。",
+        "agentbay_computer_close_window": "[ENV: Cloud Desktop] 通过明确窗口 ID 关闭整个云桌面窗口。",
+        "agentbay_computer_dismiss_dialog": "[ENV: Cloud Desktop] 仅通过 Escape 安全关闭当前应用内弹窗或对话框。",
         "agentbay_computer_list_visible_apps": "[ENV: Cloud Desktop] 列出云桌面中正在运行的应用程序。",
         "atlassian_rovo": "连接到 Atlassian Rovo MCP 服务器以访问 Jira、Confluence 和 Compass。"
       }
@@ -1367,6 +1434,13 @@
           "step3": "复制企业 ID (CorpID) 和 Secret",
           "step4": "将 CorpID 和 Secret 填入下方 → 点击保存配置",
           "step5": "如需使用企微免登：打开下方的SSO登录开关，然后在企微中配置：应用管理 → 网页授权及JS-SDK → 设置可信域名（即下方 Redirect URL 的域名部分）。分享下方的 SSO Login URL 给团队成员即可登录。"
+        },
+        "google_workspace": {
+          "step1": "在 Google Cloud 创建 OAuth Web App，并填入 Client ID 与 Client Secret。",
+          "step2": "将下方同一个 Redirect URL 配置到 Google Cloud 的 Authorized redirect URIs。",
+          "step3": "SSO 登录直接使用这套配置。",
+          "step4": "组织同步时，使用有 Directory 读取权限的 Google Workspace 管理员账号点击授权。",
+          "step5": "后端会加密保存管理员 refresh token，后续定时同步会自动刷新 access token。"
         }
       }
     },
@@ -1393,6 +1467,20 @@
     "companyName": {
       "title": "公司名称",
       "placeholder": "输入公司名称"
+    },
+    "logo": {
+      "title": "公司标识",
+      "description": "用于左侧公司切换入口和公司选择菜单。",
+      "upload": "上传标识",
+      "reset": "重置为默认",
+      "hint": "支持 PNG、JPG 或 WebP，最大 1MB。保存前需要裁剪为正方形。",
+      "cropTitle": "裁剪公司标识",
+      "zoom": "缩放",
+      "tooLarge": "Logo 图片不能大于 1MB。",
+      "invalidType": "请选择图片文件。",
+      "croppedTooLarge": "裁剪后的 Logo 仍然大于 1MB。",
+      "uploadFailed": "Logo 上传失败。",
+      "resetFailed": "Logo 重置失败。"
     },
     "companyIntro": {
       "title": "公司简介",
@@ -1431,7 +1519,7 @@
       "title": "顶部通知条",
       "enabled": "启用通知条",
       "text": "通知文案",
-      "textPlaceholder": "输入通知条文案，如：🎉 v2.1 已发布！",
+      "textPlaceholder": "输入通知条文案，如：v2.1 已发布！",
       "description": "在页面顶部显示一行通知条，所有用户（含未登录用户）可见。",
       "preview": "预览"
     },
@@ -1478,6 +1566,7 @@
       "monthly": "每月"
     },
     "identity": {
+      "ssoUrlEmpty": "请先开启 SSO 以生成地址",
       "title": "组织架构与账号同步",
       "description": "配置企业目录同步和身份提供商设置。",
       "notConfigured": "未配置",
@@ -1501,6 +1590,10 @@
           "name": "钉钉",
           "desc": "钉钉应用集成"
         },
+        "google_workspace": {
+          "name": "Google",
+          "desc": "Google 目录同步 + SSO"
+        },
         "oauth2": {
           "name": "OAuth2",
           "desc": "通用 OIDC 提供商"
@@ -1510,6 +1603,7 @@
         "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
         "dingtalk": "钉钉：需填写 app_key, app_secret",
         "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+        "google_workspace": "Google Workspace：同一套 Client ID、Client Secret 和同一个 Redirect URL 同时用于 SSO 与管理员授权的目录同步",
         "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
         "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
         "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"
@@ -1544,6 +1638,15 @@
       }
     }
   },
+  "dialog": {
+    "confirmTitle": "请确认",
+    "errorTitle": "出错了",
+    "successTitle": "成功",
+    "warningTitle": "提示",
+    "infoTitle": "提示",
+    "showDetails": "查看详细信息",
+    "hideDetails": "收起详细信息"
+  },
   "common": {
     "create": "创建",
     "save": "保存",
@@ -1551,11 +1654,43 @@
     "noPermission": "你没有权限访问此页面。",
     "cancel": "取消",
     "confirm": "确认",
+    "confirmActions": {
+      "deleteTitle": "删除确认",
+      "removeTitle": "移除确认",
+      "disableTitle": "禁用确认",
+      "forceDelete": "强制删除",
+      "confirmLabel": "确定",
+      "cancelLabel": "取消",
+      "deleteLabel": "删除",
+      "removeLabel": "移除",
+      "disableLabel": "禁用"
+    },
     "delete": "删除",
     "search": "搜索",
     "loading": "加载中...",
     "noData": "暂无数据",
-    "error": "出错了",
+    "error": {
+      "saveFailed": "保存失败",
+      "deleteFailed": "删除失败",
+      "createFailed": "创建失败",
+      "updateFailed": "更新失败",
+      "importFailed": "导入失败",
+      "installFailed": "安装失败",
+      "testFailed": "测试失败",
+      "testSuccess": "测试成功",
+      "batchUpdateFailed": "批量更新失败",
+      "broadcastFailed": "广播发送失败",
+      "sessionCreateFailed": "创建会话失败",
+      "agentDeleteFailed": "删除数字员工失败",
+      "planCreateFailed": "创建计划任务失败",
+      "companySwitchFailed": "切换公司失败",
+      "triggerDeleteFailed": "删除触发器失败",
+      "serverUpdateFailed": "更新服务器失败",
+      "toolRemoveFailed": "移除工具失败",
+      "modelDeleteFailed": "删除模型失败",
+      "configDeleteFailed": "删除配置失败",
+      "companyDisableFailed": "禁用公司失败"
+    },
     "close": "关闭",
     "edit": "编辑",
     "back": "返回",
@@ -1571,6 +1706,8 @@
       "discord": "Discord",
       "slack": "Slack",
       "teams": "Microsoft Teams",
+      "wechat": "微信",
+      "whatsapp": "WhatsApp",
       "dingtalk": "钉钉",
       "wecom": "企业微信"
     },
@@ -1582,7 +1719,46 @@
     "darkMode": "深色模式",
     "collapseSidebar": "折叠侧边栏",
     "expandSidebar": "展开侧边栏",
-    "deleting": "删除中..."
+    "deleting": "删除中...",
+    "status": {
+      "saved": "已保存",
+      "creating": "创建中...",
+      "exporting": "导出中...",
+      "uploading": "上传中...",
+      "analyzing": "分析中..."
+    },
+    "file": {
+      "maxFilesWarning": "最多可附加 {{count}} 个文件",
+      "imageUploaded": "[图片文件已上传: {{name}}...]",
+      "analyzeFiles": "请分析这些文件",
+      "filesImported": "已导入 {{count}} 个文件",
+      "skillInstalled": "已安装 \"{{name}}\"",
+      "skillImported": "已导入 \"{{name}}\"",
+      "triggersCount": "{{count}} 个触发器"
+    },
+    "model": {
+      "connectivityTest": "连通性测试",
+      "connectivityTestFailed": "连通性测试失败"
+    },
+    "dialog": {
+      "deleteSession": "删除会话",
+      "deleteSessionConfirm": "确定删除此会话？",
+      "deleteTool": "删除工具",
+      "deleteToolConfirm": "确定删除 {{name}}？",
+      "removeTool": "移除工具",
+      "removeToolConfirm": "确定移除此工具？",
+      "deleteModel": "删除模型",
+      "deleteConfig": "删除配置",
+      "deleteConfigConfirm": "确定要删除此配置吗？",
+      "disableCompany": "禁用公司",
+      "disableCompanyConfirm": "确定禁用此公司？",
+      "partialImportFailed": "部分导入失败",
+      "partialImportSuccess": "已导入 {{success}}/{{total}} 个工具"
+    },
+    "toast": {
+      "collapseDetails": "收起详情",
+      "viewDetails": "查看详情"
+    }
   },
   "admin": {
     "title": "公司管理",
@@ -1591,6 +1767,8 @@
     "platformSettings": "平台设置",
     "allowSelfCreate": "允许用户自行创建公司",
     "allowSelfCreateDesc": "关闭后，仅平台管理员可以创建公司。",
+    "ssoCustomDomainRedirect": "启用租户 SSO 自定义域名重定向",
+    "ssoCustomDomainRedirectDesc": "关闭后，整个平台所有的租户都无法使用自定义域名或专属链接跳转到单点登录提供商。",
     "inviteCodeRequired": "注册需要邀请码",
     "inviteCodeRequiredDesc": "开启后，新用户必须提供有效的邀请码才能注册。",
     "companyNamePlaceholder": "公司名称",
@@ -1697,8 +1875,8 @@
       "step3": "回到 OAuth & Permissions 顶部 → 点击 Install to Workspace → 点击 Allow → 复制 Bot User OAuth Token（以 xoxb- 开头）",
       "step4": "左侧菜单 → Basic Information → 滚动到 App Credentials → 点击 Signing Secret 旁的 Show → 复制",
       "step5": "将 Bot Token 和 Signing Secret 填入上方 → 点击保存配置 → 复制出现的 Webhook URL",
-      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified ✓ 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes",
-      "step7": "页面顶部会出现黄色横幅：点击 reinstall your app 并重新授权",
+      "step6": "左侧菜单 → Event Subscriptions → 打开 Enable Events 开关 → 将 Webhook URL 粘贴到 Request URL 框中（显示 Verified ✓ 后继续）→ 在 Subscribe to bot events 下点击 Add Bot User Event，依次添加：app_mention、message.im → 点击 Save Changes，保存成功后顶部会显示 Success 提示",
+      "step7": "左侧菜单 → App Home → 找到 Show Tabs → 打开 Messages Tab → 勾选 Allow users to send Slash commands and messages from the messages tab → 点击 Save Changes → 回到 OAuth & Permissions → 点击 Reinstall to Workspace 重新授权",
       "step8": "在 Slack 中找到你的 Bot，发一条私信测试是否正常回复",
       "note": "服务器必须能被公网访问，Slack 才能将消息推送到 Webhook URL。"
     },
@@ -1772,6 +1950,20 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wechat": {
+      "step1": "点击下方“Generate QR Code”，申请新的微信 iLink 登录二维码。",
+      "step2": "用手机微信扫码，并在手机端确认 Bot 登录。",
+      "step3": "确认后，Clawith 会保存返回的 bot token，并自动启动 getupdates 长轮询。",
+      "step4": "给该微信 iLink Bot 发送一条私信，验证入站轮询和出站回复是否正常。",
+      "note": "该通道遵循 iLink Bot 协议：二维码登录、token 长轮询，以及基于入站 context_token 的回复路由。"
+    },
+    "whatsapp": {
+      "step1": "在 Meta 开发者后台创建应用，并启用 WhatsApp 产品。",
+      "step2": "复制 Phone Number ID，并生成具备 WhatsApp 权限的永久 Access Token。",
+      "step3": "填写你自定义的 Verify Token；如需启用 X-Hub-Signature-256 签名校验，可选填写 App Secret。",
+      "step4": "将下方 Webhook URL 粘贴到 Meta 的 WhatsApp Webhook 配置中并完成验证。",
+      "step5": "为应用订阅 WhatsApp message webhook，让入站消息能送达这个智能体。"
     }
   },
   "identity": {
@@ -1786,6 +1978,7 @@
       "feishu": "飞书：需填写 app_id, app_secret（可选：encrypt_key, verification_token）",
       "dingtalk": "钉钉：需填写 app_key, app_secret",
       "wecom": "企业微信：传统模式需 corp_id, secret, agent_id；智能机器人模式需 bot_id, bot_secret",
+      "google_workspace": "Google Workspace：同一套 Client ID 和 Client Secret 同时用于 SSO 与管理员授权的目录同步",
       "oauth2": "OAuth2：填写 App ID、App Secret、授权地址、Token地址、用户信息地址",
       "saml": "SAML：需填写 entry_point, issuer, cert (公钥)",
       "microsoft_teams": "Microsoft Teams：需填写 client_id, client_secret, tenant_id"
@@ -1866,5 +2059,135 @@
     },
     "loading": "加载中...",
     "noData": "暂无数据"
+  },
+  "postHire": {
+    "title": "配置新成员",
+    "visibility": "可见权限",
+    "visibilityCompanyTitle": "公司所有人",
+    "visibilityCompanyHint": "全公司都能使用这个数字员工",
+    "visibilityOnlyMeTitle": "仅自己",
+    "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
+    "visibilityCustomTitle": "指定成员",
+    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定可使用的平台用户",
+    "model": "首选模型",
+    "defaultSuffix": "默认",
+    "createOnly": "仅创建",
+    "chatNow": "立即对话",
+    "creating": "创建中...",
+    "noModelButtonHint": "需要先在公司设置中启用至少一个模型，才能创建模板成员。",
+    "noModelError": "公司还没有启用可用模型，请先配置模型后再创建模板成员。",
+    "modelRequired": "请选择模型",
+    "noModelsTitle": "还没有可用模型",
+    "noModelsAdminHint": "启用至少一个公司模型后，才能基于模板创建数字员工。",
+    "noModelsMemberHint": "请联系公司管理员先启用模型。",
+    "configureModels": "配置模型",
+    "createFailed": "创建数字员工失败"
+  },
+  "agentDetail": {
+    "errorTitle": "出了点问题",
+    "errorMessage": "加载此页面时发生了意外错误。",
+    "reloadPage": "重新加载页面"
+  },
+  "oauth": {
+    "selectCompany": "选择公司",
+    "selectCompanyHint": "该账号关联了多个公司，请选择要登录的公司：",
+    "completingSignIn": "正在完成登录...",
+    "missingParams": "缺少 OAuth 回调参数",
+    "oauthLoginFailed": "OAuth 登录失败",
+    "loginFailed": "登录失败",
+    "loginFailedTitle": "OAuth 登录失败"
+  },
+  "customAgentModal": {
+    "noModelButtonHint": "需要先在公司设置中启用至少一个模型，才能创建平台托管成员。",
+    "nameRequired": "请填写名称",
+    "noModelError": "公司还没有启用可用模型，请先配置模型或切换为外部 Agent。",
+    "modelRequired": "请选择模型",
+    "nativeTitle": "创建自定义成员",
+    "externalTitle": "连接外部 Agent",
+    "nativeSubtitle": "先完成必要信息，其余能力之后在设置中调整。",
+    "externalSubtitle": "为 OpenClaw 或其他外部运行的 Agent 创建连接入口。",
+    "nativeMode": "平台托管",
+    "externalMode": "外部 Agent",
+    "name": "名称",
+    "namePlaceholderNative": "例如：客户研究员",
+    "namePlaceholderExternal": "例如：OpenClaw 研究助手",
+    "role": "角色描述",
+    "rolePlaceholder": "一句话说明它负责什么。",
+    "visibility": "可见权限",
+    "visibilityCompany": "公司所有人",
+    "visibilityCompanyHint": "全公司都能使用这个数字员工",
+    "visibilityOnlyMe": "仅自己",
+    "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
+    "visibilityCustom": "指定成员",
+    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定成员",
+    "model": "首选模型",
+    "modelFallback": "模型",
+    "defaultModel": "默认",
+    "createOnly": "仅创建",
+    "creating": "创建中...",
+    "chatNow": "立即对话",
+    "createConnection": "创建连接",
+    "noModelsTitle": "还没有可用模型",
+    "noModelsAdminHint": "启用至少一个公司模型后，才能创建平台托管的数字员工。",
+    "noModelsMemberHint": "请联系公司管理员先启用模型。",
+    "noModelsExternalHint": "如果你只是接入外部运行的 Agent，可以切换到\"外部 Agent\"。",
+    "configureModels": "配置模型",
+    "creationFailed": "创建失败",
+    "externalCreated": "连接已创建",
+    "externalCreatedDesc": "把下面的连接指令交给外部 Agent，它就能通过网关收发 Clawith 消息。",
+    "gatewayKeyEmbedded": "API Key 已包含在连接指令中",
+    "copyKey": "复制 Key",
+    "noKeyReturned": "未返回 API Key，请进入 Agent 页面重新生成。",
+    "enterAgent": "进入 Agent"
+  },
+  "takeControl": {
+    "acquiringControl": "正在获取控制权...",
+    "inControl": "已获得控制权。在截图上点击或拖拽。",
+    "dragToRelease": "拖拽中，松开鼠标完成...",
+    "dragging": "拖拽中 ({{fromX}},{{fromY}}) -> ({{toX}},{{toY}})...",
+    "dragComplete": "拖拽完成",
+    "dragFailed": "拖拽失败：{{message}}",
+    "clickingAt": "正在点击 ({{x}}, {{y}})...",
+    "clickedAt": "已点击 ({{x}}, {{y}})",
+    "clickFailed": "点击失败：{{message}}",
+    "typing": "正在输入：\"{{text}}\"",
+    "textSent": "文本已发送",
+    "typeFailed": "输入失败：{{message}}",
+    "pressing": "正在按键：{{keys}}",
+    "pressed": "已按键：{{keys}}",
+    "pressFailed": "按键失败：{{message}}",
+    "exportingCookies": "正在导出 Cookies...",
+    "loginComplete": "登录完成！已保存 {{count}} 个 Cookies。",
+    "sessionUnlocked": "会话已解锁（未导出 Cookies）。",
+    "unlockFailed": "解锁失败：{{message}}",
+    "canceling": "正在取消...",
+    "lockFailed": "获取控制权失败：{{message}}",
+    "title": "人工控制",
+    "exitWithoutSaving": "退出（不保存）",
+    "connecting": "正在连接会话...",
+    "typeToSend": "输入要发送的文本...",
+    "browserSession": "浏览器会话",
+    "saveLoginStateTo": "保存登录状态到",
+    "exit": "退出",
+    "saveLoginState": "保存登录状态",
+    "sendText": "发送文本"
+  },
+  "errorBoundary": {
+    "title": "糟糕，出了点问题。",
+    "description": "发生了意外错误。您可以尝试刷新页面，如果问题持续存在，请联系支持团队。",
+    "errorDetails": "错误详情",
+    "refreshPage": "刷新页面"
+  },
+  "sso": {
+    "missingSessionId": "缺少会话 ID",
+    "failedToLoadConfig": "加载登录配置失败",
+    "sessionExpired": "SSO 会话已过期",
+    "redirectingToLogin": "正在跳转到安全登录...",
+    "error": "错误",
+    "completingLogin": "正在完成登录...",
+    "loginTitle": "登录 Clawith",
+    "selectLoginMethod": "选择登录方式",
+    "loginWith": "使用 {{provider}} 登录",
+    "noProviders": "未配置 SSO 提供商。"
   }
 }
