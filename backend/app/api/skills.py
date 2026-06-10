@@ -2,7 +2,11 @@
 
 import asyncio
 import base64
+import io
+import os
 import re
+import zipfile
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,7 +22,8 @@ from loguru import logger
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
-CLAWHUB_BASE = "https://clawhub.ai/api"
+CLAWHUB_BASE = os.getenv("CLAWHUB_BASE", "https://clawhub.ai/api").rstrip("/")
+CLAWHUB_MIRROR_BASE = os.getenv("CLAWHUB_MIRROR_BASE", "https://cn.clawhub-mirror.com/api").rstrip("/")
 GITHUB_API = "https://api.github.com"
 
 MAX_SKILL_SIZE = 512_000  # 500 KB total limit per skill
@@ -60,6 +65,182 @@ def _clawhub_headers(api_key: str) -> dict:
     if api_key:
         return {"Authorization": f"Bearer {api_key}"}
     return {}
+
+
+def _clawhub_headers_for_base(api_key: str, base_url: str) -> dict:
+    """Only send the official ClawHub API key to official ClawHub endpoints."""
+    if "clawhub-mirror.com" in base_url:
+        return {}
+    return _clawhub_headers(api_key)
+
+
+def _candidate_clawhub_bases(preferred: str | None = None) -> list[str]:
+    """Return ClawHub API bases in fallback order without duplicates."""
+    bases = [preferred, CLAWHUB_BASE, CLAWHUB_MIRROR_BASE]
+    result: list[str] = []
+    for base in bases:
+        if not base:
+            continue
+        normalized = base.rstrip("/")
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _clawhub_search_endpoint(base_url: str) -> str:
+    """The China mirror serves search under /v1/search, while clawhub.ai keeps /search."""
+    if "clawhub-mirror.com" in base_url:
+        return f"{base_url}/v1/search"
+    return f"{base_url}/search"
+
+
+def _clawhub_skill_url(base_url: str, slug: str) -> str:
+    return f"{base_url}/v1/skills/{slug}"
+
+
+def _clawhub_download_url(base_url: str) -> str:
+    return f"{base_url}/v1/download"
+
+
+def _public_clawhub_url(base_url: str, slug: str) -> str:
+    if "clawhub-mirror.com" in base_url:
+        return f"https://cn.clawhub-mirror.com/skills/{slug}"
+    return f"https://clawhub.ai/skills/{slug}"
+
+
+def _extract_clawhub_zip_files(data: bytes) -> list[dict]:
+    """Convert a ClawHub skill zip into [{"path", "content"}] records."""
+    files: list[dict] = []
+    total_size = 0
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(502, "ClawHub download did not return a valid skill archive") from exc
+
+    entries = [info for info in archive.infolist() if not info.is_dir()]
+    raw_paths = [Path(info.filename) for info in entries]
+    strip_prefix = ""
+    if raw_paths:
+        first_parts = raw_paths[0].parts
+        if len(first_parts) > 1:
+            candidate = first_parts[0]
+            has_root_skill = any(p.name.upper() == "SKILL.MD" and len(p.parts) == 1 for p in raw_paths)
+            has_prefixed_skill = any(
+                len(p.parts) > 1 and p.parts[0] == candidate and p.parts[-1].upper() == "SKILL.MD"
+                for p in raw_paths
+            )
+            all_share_prefix = all(len(p.parts) > 1 and p.parts[0] == candidate for p in raw_paths)
+            if not has_root_skill and has_prefixed_skill and all_share_prefix:
+                strip_prefix = f"{candidate}/"
+
+    for info in entries:
+        rel = info.filename.lstrip("/")
+        if strip_prefix and rel.startswith(strip_prefix):
+            rel = rel[len(strip_prefix):]
+        path = Path(rel)
+        if not rel or path.is_absolute() or ".." in path.parts:
+            continue
+
+        total_size += info.file_size
+        if total_size > MAX_SKILL_SIZE:
+            raise HTTPException(413, f"Skill exceeds size limit ({MAX_SKILL_SIZE // 1024}KB)")
+
+        content = archive.read(info).decode("utf-8", errors="replace")
+        files.append({"path": rel, "content": content})
+
+    if not any(f["path"].upper() == "SKILL.MD" for f in files):
+        raise HTTPException(400, "No SKILL.md found in ClawHub archive — not a valid skill package")
+    return files
+
+
+async def _fetch_clawhub_json(
+    path_builder,
+    api_key: str = "",
+    preferred_base: str | None = None,
+    params: dict | None = None,
+) -> tuple[dict, str]:
+    """Fetch JSON from ClawHub, falling back to the mirror when available."""
+    last_error = ""
+    for base_url in _candidate_clawhub_bases(preferred_base):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    path_builder(base_url),
+                    params=params,
+                    headers=_clawhub_headers_for_base(api_key, base_url),
+                )
+            content_type = resp.headers.get("content-type", "")
+            if resp.status_code == 404:
+                last_error = f"ClawHub not found at {base_url}"
+                continue
+            if resp.status_code == 429:
+                last_error = f"ClawHub rate limit exceeded at {base_url}"
+                continue
+            if resp.status_code == 200 and "json" in content_type:
+                return resp.json(), base_url
+            last_error = f"ClawHub API error from {base_url}: HTTP {resp.status_code}"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            last_error = f"Failed to connect to ClawHub at {base_url}: {exc}"
+    if "rate limit" in last_error:
+        raise HTTPException(429, "ClawHub rate limit exceeded. Please wait a moment and try again.")
+    raise HTTPException(502, last_error or "Failed to connect to ClawHub")
+
+
+async def _fetch_clawhub_skill_meta(
+    slug: str,
+    api_key: str = "",
+    preferred_base: str | None = None,
+) -> tuple[dict, str]:
+    return await _fetch_clawhub_json(
+        lambda base_url: _clawhub_skill_url(base_url, slug),
+        api_key=api_key,
+        preferred_base=preferred_base,
+    )
+
+
+async def _fetch_clawhub_skill_archive(
+    slug: str,
+    api_key: str = "",
+    preferred_base: str | None = None,
+    version: str | None = None,
+    tag: str | None = None,
+) -> tuple[list[dict], str]:
+    """Download a ClawHub skill archive from official API or mirror."""
+    params = {"slug": slug}
+    if version:
+        params["version"] = version
+    if tag:
+        params["tag"] = tag
+
+    last_error = ""
+    for base_url in _candidate_clawhub_bases(preferred_base):
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(
+                    _clawhub_download_url(base_url),
+                    params=params,
+                    headers=_clawhub_headers_for_base(api_key, base_url),
+                )
+            content_type = resp.headers.get("content-type", "")
+            if resp.status_code == 404:
+                last_error = f"Skill '{slug}' not found on ClawHub at {base_url}"
+                continue
+            if resp.status_code == 429:
+                last_error = f"ClawHub rate limit exceeded at {base_url}"
+                continue
+            if resp.status_code == 200 and ("zip" in content_type or resp.content.startswith(b"PK")):
+                return _extract_clawhub_zip_files(resp.content), base_url
+            last_error = f"ClawHub download failed from {base_url}: HTTP {resp.status_code}"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            last_error = f"Failed to download ClawHub skill from {base_url}: {exc}"
+    if "rate limit" in last_error:
+        raise HTTPException(429, "ClawHub rate limit exceeded. Please wait a moment and try again.")
+    raise HTTPException(502, last_error or f"Failed to download skill '{slug}' from ClawHub")
 
 
 class SkillFileIn(BaseModel):
@@ -286,11 +467,11 @@ async def search_clawhub(q: str, current_user: User = Depends(get_current_user))
     """Proxy search requests to the ClawHub API."""
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     api_key = await _get_clawhub_key(tenant_id)
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{CLAWHUB_BASE}/search", params={"q": q}, headers=_clawhub_headers(api_key))
-        if resp.status_code != 200:
-            raise HTTPException(502, f"ClawHub search failed: {resp.status_code}")
-        data = resp.json()
+    data, _ = await _fetch_clawhub_json(
+        _clawhub_search_endpoint,
+        api_key=api_key,
+        params={"q": q},
+    )
     results = data.get("results", [])
     return [
         {
@@ -311,15 +492,8 @@ async def clawhub_detail(slug: str, current_user: User = Depends(get_current_use
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     api_key = await _get_clawhub_key(tenant_id)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}", headers=_clawhub_headers(api_key))
-            if resp.status_code == 404:
-                raise HTTPException(404, f"Skill '{slug}' not found on ClawHub")
-            if resp.status_code == 429:
-                raise HTTPException(429, "ClawHub rate limit exceeded. Please wait a moment and try again.")
-            if resp.status_code != 200:
-                raise HTTPException(502, f"ClawHub API error: {resp.status_code}")
-            return resp.json()
+        data, _ = await _fetch_clawhub_skill_meta(slug, api_key=api_key)
+        return data
     except HTTPException:
         raise
     except Exception as e:
@@ -329,30 +503,17 @@ async def clawhub_detail(slug: str, current_user: User = Depends(get_current_use
 @router.post("/clawhub/install")
 async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depends(get_current_user)):
     """Install a skill from ClawHub into the global registry."""
-    # Resolve tenant GitHub token
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
-    token = await _get_github_token(tenant_id)
     slug = body.slug
 
     # 1. Fetch metadata from ClawHub (with retry for rate limits)
     api_key = await _get_clawhub_key(tenant_id)
-    ch_headers = _clawhub_headers(api_key)
     meta = None
+    meta_base = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(f"{CLAWHUB_BASE}/v1/skills/{slug}", headers=ch_headers)
-                if resp.status_code == 404:
-                    raise HTTPException(404, f"Skill '{slug}' not found on ClawHub")
-                if resp.status_code == 429:
-                    if attempt < 2:
-                        await asyncio.sleep(1 + attempt)  # 1s, 2s backoff
-                        continue
-                    raise HTTPException(429, "ClawHub rate limit exceeded. Please wait a moment and try again.")
-                if resp.status_code != 200:
-                    raise HTTPException(502, f"ClawHub API error: {resp.status_code}")
-                meta = resp.json()
-                break
+            meta, meta_base = await _fetch_clawhub_skill_meta(slug, api_key=api_key)
+            break
         except HTTPException:
             raise
         except Exception as e:
@@ -373,20 +534,11 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     is_suspicious = moderation.get("isSuspicious", False)
     moderation_summary = moderation.get("summary", "")
 
-    # 3. Fetch files from GitHub archive
-    github_path = f"skills/{handle}/{slug}"
-    try:
-        files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token=token)
-    except HTTPException as e:
-        if e.status_code == 404:
-            raise HTTPException(
-                404, f"Skill files not found in GitHub archive at {github_path}. "
-                     "Try importing via URL instead."
-            )
-        raise
+    # 3. Fetch files from the ClawHub archive
+    files, archive_base = await _fetch_clawhub_skill_archive(slug, api_key=api_key, preferred_base=meta_base)
 
     if not files:
-        raise HTTPException(404, "No files found in the skill directory")
+        raise HTTPException(404, "No files found in the ClawHub skill archive")
 
     # 4. Extract name/description from SKILL.md
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
@@ -410,7 +562,7 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
         category=tier_labels.get(tier, "clawhub"),
         icon="",
         files=files,
-        source_url=f"https://clawhub.ai/skills/{slug}",
+        source_url=_public_clawhub_url(archive_base, slug),
         tenant_id=tenant_id,
     )
 
@@ -420,6 +572,7 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     result["has_scripts"] = has_scripts
     result["file_count"] = len(files)
     result["source"] = "clawhub"
+    result["archive_source"] = archive_base
     return result
 
 

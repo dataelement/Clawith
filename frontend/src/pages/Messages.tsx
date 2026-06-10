@@ -1,9 +1,11 @@
+import type React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { IconMessageCircle } from '@tabler/icons-react';
 import { messageApi } from '../services/api';
 
-const ACTION_ICONS: Record<string, string> = {
-    text: '💬',
+const ACTION_ICONS: Record<string, React.ReactNode> = {
+    text: <IconMessageCircle size={16} stroke={1.8} />,
     notify: '·',
     consult: '?',
     task_delegate: '+',

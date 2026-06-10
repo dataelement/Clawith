@@ -7,6 +7,7 @@ export interface User {
     display_name: string;
     avatar_url?: string;
     role: 'platform_admin' | 'org_admin' | 'agent_admin' | 'member';
+    is_platform_admin?: boolean;
     tenant_id?: string;
     title?: string;
     feishu_open_id?: string;
@@ -28,6 +29,13 @@ export interface Agent {
     autonomy_policy: Record<string, string>;
     tokens_used_today: number;
     tokens_used_month: number;
+    tokens_used_total?: number;
+    cache_read_tokens_today?: number;
+    cache_read_tokens_month?: number;
+    cache_read_tokens_total?: number;
+    cache_creation_tokens_today?: number;
+    cache_creation_tokens_month?: number;
+    cache_creation_tokens_total?: number;
     max_tokens_per_day?: number;
     max_tokens_per_month?: number;
     heartbeat_enabled: boolean;
@@ -38,6 +46,12 @@ export interface Agent {
     context_window_size?: number;
     agent_type?: 'native' | 'openclaw';
     openclaw_last_seen?: string;
+    access_mode?: 'company' | 'private' | 'custom';
+    company_access_level?: 'use' | 'manage';
+    unread_count?: number;
+    // True when the viewing user has already been onboarded to this agent.
+    // Defaults to true on list endpoints that don't compute per-viewer state.
+    onboarded_for_me?: boolean;
     created_at: string;
     last_active_at?: string;
 }

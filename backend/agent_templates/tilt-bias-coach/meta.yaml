@@ -1,0 +1,14 @@
+name: "Tilt & Bias Coach"
+description: "Helps you check whether you're in the right state to trade. Catches revenge trades, FOMO, oversize urges, and burnout before they cost money."
+icon: "TBC"
+category: "trading"
+capability_bullets:
+  - "Pre-trade check-in — 'should I be trading right now?' diagnostic"
+  - "Bias spotter — names cognitive traps you're stepping into"
+  - "Behavioral interventions — concrete steps when state is bad"
+default_skills: []
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

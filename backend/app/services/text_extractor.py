@@ -1,7 +1,7 @@
 """Extract text from common office file formats.
 
-Supports: PDF, DOCX, XLSX, PPTX, CSV
-Saves extracted text as a companion .txt file alongside the original.
+Supports: PDF, DOCX, XLSX, PPTX
+Saves extracted text as a companion .md file alongside the original.
 """
 
 import io
@@ -16,6 +16,30 @@ EXTRACTABLE_EXTS = {".pdf", ".docx", ".xlsx", ".pptx"}
 # Text extensions that don't need extraction
 TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
              ".js", ".ts", ".py", ".html", ".css", ".sh", ".log", ".env"}
+
+
+def _clean_cell(value: object) -> str:
+    text = str(value or "").strip()
+    return text.replace("\n", "<br>").replace("|", "\\|")
+
+
+def _markdown_table(rows: list[list[object]]) -> str:
+    cleaned = [[_clean_cell(cell) for cell in row] for row in rows]
+    cleaned = [row for row in cleaned if any(cell for cell in row)]
+    if not cleaned:
+        return ""
+
+    width = max(len(row) for row in cleaned)
+    normalized = [row + [""] * (width - len(row)) for row in cleaned]
+    header = normalized[0]
+    separator = ["---"] * width
+    body = normalized[1:]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(separator) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
 
 
 def needs_extraction(filename: str) -> bool:
@@ -48,19 +72,19 @@ def extract_text(file_bytes: bytes, filename: str) -> str | None:
 
 
 def save_extracted_text(save_path: Path, file_bytes: bytes, filename: str) -> Path | None:
-    """Extract text and save as a companion .txt file.
-    
-    For example: report.pdf → report.txt
-    Returns the path to the text file, or None if extraction failed.
+    """Extract text and save as a companion .md file.
+
+    For example: report.pdf -> report.md
+    Returns the path to the markdown file, or None if extraction failed.
     """
     text = extract_text(file_bytes, filename)
     if not text or not text.strip():
         return None
-    
-    txt_path = save_path.parent / f"{save_path.stem}.txt"
-    txt_path.write_text(text, encoding="utf-8")
-    logger.info(f"[TextExtractor] Extracted {len(text)} chars from {filename} → {txt_path.name}")
-    return txt_path
+
+    md_path = save_path.parent / f"{save_path.stem}.md"
+    md_path.write_text(text, encoding="utf-8")
+    logger.info(f"[TextExtractor] Extracted {len(text)} chars from {filename} -> {md_path.name}")
+    return md_path
 
 
 def _extract_pdf(data: bytes) -> str:
@@ -70,20 +94,21 @@ def _extract_pdf(data: bytes) -> str:
     pages = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages):
+            page_parts = []
             text = page.extract_text()
             if text and text.strip():
-                pages.append(f"--- 第{i+1}页 ---\n{text.strip()}")
+                page_parts.append(text.strip())
             
             # Also extract tables
             tables = page.extract_tables()
             for table in tables:
                 if table:
-                    rows = []
-                    for row in table:
-                        cells = [str(c or "").strip() for c in row]
-                        rows.append(" | ".join(cells))
-                    if rows:
-                        pages.append("表格:\n" + "\n".join(rows))
+                    table_md = _markdown_table(table)
+                    if table_md:
+                        page_parts.append(table_md)
+
+            if page_parts:
+                pages.append(f"## 第 {i + 1} 页\n\n" + "\n\n".join(page_parts))
     
     return "\n\n".join(pages)
 
@@ -99,13 +124,18 @@ def _extract_docx(data: bytes) -> str:
         text = para.text.strip()
         if text:
             # Preserve heading hierarchy
-            if para.style and para.style.name and para.style.name.startswith("Heading"):
-                level = para.style.name.replace("Heading", "").strip()
+            style_name = para.style.name if para.style and para.style.name else ""
+            if style_name.startswith("Heading"):
+                level = style_name.replace("Heading", "").strip()
                 try:
                     level = int(level)
                 except ValueError:
                     level = 1
                 parts.append(f"{'#' * level} {text}")
+            elif "List Bullet" in style_name:
+                parts.append(f"- {text}")
+            elif "List Number" in style_name:
+                parts.append(f"1. {text}")
             else:
                 parts.append(text)
     
@@ -113,10 +143,10 @@ def _extract_docx(data: bytes) -> str:
     for table in doc.tables:
         rows = []
         for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            rows.append(" | ".join(cells))
-        if rows:
-            parts.append("\n表格:\n" + "\n".join(rows))
+            rows.append([cell.text.strip() for cell in row.cells])
+        table_md = _markdown_table(rows)
+        if table_md:
+            parts.append("## 表格\n\n" + table_md)
     
     return "\n\n".join(parts)
 
@@ -132,12 +162,13 @@ def _extract_xlsx(data: bytes) -> str:
         ws = wb[sheet]
         rows = []
         for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
-            if any(c.strip() for c in cells):
-                rows.append(" | ".join(cells))
+            cells = [c if c is not None else "" for c in row]
+            if any(str(c).strip() for c in cells):
+                rows.append(cells)
         
-        if rows:
-            parts.append(f"## 工作表: {sheet}\n" + "\n".join(rows))
+        table_md = _markdown_table(rows)
+        if table_md:
+            parts.append(f"## 工作表: {sheet}\n\n" + table_md)
     
     wb.close()
     return "\n\n".join(parts)
@@ -152,6 +183,7 @@ def _extract_pptx(data: bytes) -> str:
     
     for i, slide in enumerate(prs.slides):
         texts = []
+        tables = []
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
@@ -159,11 +191,18 @@ def _extract_pptx(data: bytes) -> str:
                     if text:
                         texts.append(text)
             if shape.has_table:
+                rows = []
                 for row in shape.table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    texts.append(" | ".join(cells))
+                    rows.append([cell.text.strip() for cell in row.cells])
+                table_md = _markdown_table(rows)
+                if table_md:
+                    tables.append(table_md)
         
+        slide_parts = []
         if texts:
-            parts.append(f"--- 幻灯片 {i+1} ---\n" + "\n".join(texts))
+            slide_parts.append("\n\n".join(texts))
+        slide_parts.extend(tables)
+        if slide_parts:
+            parts.append(f"## 幻灯片 {i + 1}\n\n" + "\n\n".join(slide_parts))
     
     return "\n\n".join(parts)

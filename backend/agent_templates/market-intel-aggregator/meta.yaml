@@ -1,0 +1,19 @@
+name: "Market Intel Aggregator"
+description: "Daily financial intel: scans global news, separates signal from noise, gives you a 5-minute briefing of what actually moves your tape."
+icon: "MIA"
+category: "trading"
+capability_bullets:
+  - "Daily brief — 5-10 stories that actually matter, sorted by impact"
+  - "Signal vs noise — flags hype, headline stuffing, and recycled stories"
+  - "One-line takeaways — every story ends with the trading-relevant read"
+default_skills:
+  - "web-research"
+  - "market-data"
+  - "financial-calendar"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

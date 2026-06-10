@@ -3,9 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { adminApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
-import { IconFilter } from '@tabler/icons-react';
+import { IconFilter, IconShieldCheck } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { useDialog } from '../components/Dialog/DialogProvider';
 // Helper for authenticated JSON fetch
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -47,8 +48,10 @@ export default function AdminCompanies() {
     const user = useAuthStore((s) => s.user);
     const [activeTab, setActiveTab] = useState<'dashboard' | 'platform' | 'companies'>('dashboard');
 
-    // Guard: only platform_admin
-    if (user?.role !== 'platform_admin') {
+    const canAccessPlatformSettings = user?.role === 'platform_admin' || !!(user as any)?.is_platform_admin;
+
+    // Guard: platform admins keep access across tenant contexts.
+    if (!canAccessPlatformSettings) {
         return (
             <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
                 {t('common.noPermission', 'You do not have permission to access this page.')}
@@ -98,6 +101,18 @@ export default function AdminCompanies() {
 // ─── Platform Tab ──────────────────────────────────
 function PlatformTab() {
     const { t } = useTranslation();
+    const socialProviderMeta = {
+        google: {
+            name: 'Google',
+            scope: 'openid profile email',
+            authorizeLabel: 'Authorized redirect URI',
+        },
+        github: {
+            name: 'GitHub',
+            scope: 'read:user user:email',
+            authorizeLabel: 'Authorization callback URL',
+        },
+    } as const;
 
     // Platform settings toggles
     const [settings, setSettings] = useState<any>({});
@@ -112,6 +127,7 @@ function PlatformTab() {
 
     // System email configuration
     const [systemEmailConfig, setSystemEmailConfig] = useState({
+        SYSTEM_EMAIL_ENABLED: false,
         SYSTEM_EMAIL_FROM_ADDRESS: '',
         SYSTEM_EMAIL_FROM_NAME: 'Clawith',
         SYSTEM_SMTP_HOST: '',
@@ -141,6 +157,8 @@ function PlatformTab() {
     const [templatesSaving, setTemplatesSaving] = useState(false);
     const [templatesSaved, setTemplatesSaved] = useState(false);
     const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null);
+    const [oauthProviders, setOauthProviders] = useState<Record<string, any>>({});
+    const [oauthSaving, setOauthSaving] = useState<Record<string, boolean>>({});
 
     // Toast
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
@@ -168,6 +186,9 @@ function PlatformTab() {
             .then(d => {
                 if (d?.value) {
                     setSystemEmailConfig({
+                        SYSTEM_EMAIL_ENABLED: d.value.SYSTEM_EMAIL_ENABLED !== undefined
+                            ? !!d.value.SYSTEM_EMAIL_ENABLED
+                            : !!(d.value.SYSTEM_EMAIL_FROM_ADDRESS && d.value.SYSTEM_SMTP_HOST),
                         SYSTEM_EMAIL_FROM_ADDRESS: d.value.SYSTEM_EMAIL_FROM_ADDRESS || '',
                         SYSTEM_EMAIL_FROM_NAME: d.value.SYSTEM_EMAIL_FROM_NAME || 'Clawith',
                         SYSTEM_SMTP_HOST: d.value.SYSTEM_SMTP_HOST || '',
@@ -189,6 +210,45 @@ function PlatformTab() {
                 if (d.defaults) setEmailTemplateDefaults(d.defaults);
             })
             .catch(() => { });
+
+        fetchJson<any[]>('/enterprise/identity-providers?global_only=true')
+            .then(items => {
+                const mapped = items.reduce((acc, item) => {
+                    if (item.provider_type === 'google' || item.provider_type === 'github') {
+                        acc[item.provider_type] = {
+                            id: item.id,
+                            provider_type: item.provider_type,
+                            name: item.name || socialProviderMeta[item.provider_type as 'google' | 'github'].name,
+                            is_active: !!item.is_active,
+                            config: item.config || {},
+                            client_id: item.config?.client_id || item.config?.app_id || '',
+                            client_secret: item.config?.client_secret || item.config?.app_secret || '',
+                            scope: item.config?.scope || socialProviderMeta[item.provider_type as 'google' | 'github'].scope,
+                        };
+                    }
+                    return acc;
+                }, {} as Record<string, any>);
+
+                setOauthProviders({
+                    google: mapped.google || {
+                        provider_type: 'google',
+                        name: socialProviderMeta.google.name,
+                        is_active: false,
+                        client_id: '',
+                        client_secret: '',
+                        scope: socialProviderMeta.google.scope,
+                    },
+                    github: mapped.github || {
+                        provider_type: 'github',
+                        name: socialProviderMeta.github.name,
+                        is_active: false,
+                        client_id: '',
+                        client_secret: '',
+                        scope: socialProviderMeta.github.scope,
+                    },
+                });
+            })
+            .catch(() => { });
     }, []);
 
     const handleToggleSetting = async (key: string, value: boolean) => {
@@ -203,19 +263,45 @@ function PlatformTab() {
         setSettingsLoading(false);
     };
 
-    const saveNotificationBar = async () => {
+    const saveNotificationBar = async (nextEnabled = nbEnabled, nextText = nbText) => {
         setNbSaving(true);
         try {
             const token = localStorage.getItem('token');
-            await fetch('/api/enterprise/system-settings/notification_bar', {
+            const res = await fetch('/api/enterprise/system-settings/notification_bar', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-                body: JSON.stringify({ value: { enabled: nbEnabled, text: nbText } }),
+                body: JSON.stringify({ value: { enabled: nextEnabled, text: nextText } }),
             });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ detail: res.statusText }));
+                throw new Error(err.detail || res.statusText);
+            }
+            const payload = await res.json();
+            setNbEnabled(nextEnabled);
+            setNbText(nextText);
+            window.dispatchEvent(new CustomEvent('notification-bar-updated', {
+                detail: {
+                    enabled: nextEnabled,
+                    text: nextText,
+                    updated_at: payload?.updated_at || null,
+                },
+            }));
             setNbSaved(true);
             setTimeout(() => setNbSaved(false), 2000);
-        } catch { }
-        setNbSaving(false);
+            return true;
+        } catch (e: any) {
+            showToast(e.message || t('common.saveFailed', 'Save failed'), 'error');
+            return false;
+        } finally {
+            setNbSaving(false);
+        }
+    };
+
+    const handleNotificationBarToggle = async (nextEnabled: boolean) => {
+        const previousEnabled = nbEnabled;
+        setNbEnabled(nextEnabled);
+        const saved = await saveNotificationBar(nextEnabled, nbText);
+        if (!saved) setNbEnabled(previousEnabled);
     };
 
 
@@ -286,6 +372,68 @@ function PlatformTab() {
         }));
     };
 
+    const setOauthField = (providerType: 'google' | 'github', key: string, value: string | boolean) => {
+        setOauthProviders(prev => ({
+            ...prev,
+            [providerType]: {
+                ...prev[providerType],
+                [key]: value,
+            }
+        }));
+    };
+
+    const saveOauthProvider = async (providerType: 'google' | 'github') => {
+        const provider = oauthProviders[providerType];
+        if (!provider?.client_id?.trim() || !provider?.client_secret?.trim()) {
+            showToast(`${socialProviderMeta[providerType].name} Client ID and Client Secret are required`, 'error');
+            return;
+        }
+
+        setOauthSaving(prev => ({ ...prev, [providerType]: true }));
+        const payload = {
+            provider_type: providerType,
+            name: socialProviderMeta[providerType].name,
+            is_active: !!provider.is_active,
+            config: {
+                app_id: provider.client_id.trim(),
+                client_id: provider.client_id.trim(),
+                app_secret: provider.client_secret.trim(),
+                client_secret: provider.client_secret.trim(),
+                scope: provider.scope?.trim() || socialProviderMeta[providerType].scope,
+            },
+        };
+
+        try {
+            const result = provider.id
+                ? await fetchJson<any>(`/enterprise/identity-providers/${provider.id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        name: payload.name,
+                        is_active: payload.is_active,
+                        config: payload.config,
+                    }),
+                })
+                : await fetchJson<any>('/enterprise/identity-providers', {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                });
+
+            setOauthProviders(prev => ({
+                ...prev,
+                [providerType]: {
+                    ...prev[providerType],
+                    id: result.id,
+                    is_active: !!result.is_active,
+                }
+            }));
+            showToast(`${socialProviderMeta[providerType].name} OAuth saved`);
+        } catch (e: any) {
+            showToast(e.message || `Failed to save ${socialProviderMeta[providerType].name} OAuth`, 'error');
+        } finally {
+            setOauthSaving(prev => ({ ...prev, [providerType]: false }));
+        }
+    };
+
     const switchStyle = (checked: boolean, disabled?: boolean): React.CSSProperties => ({
         position: 'relative', display: 'inline-block', width: '40px', height: '22px',
         cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0,
@@ -311,11 +459,12 @@ function PlatformTab() {
                 }}>{toast.msg}</div>
             )}
 
-            {/* Allow self-create company toggle */}
+            {/* Allow self-create company and SSO redirect toggle */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {[
                         { key: 'allow_self_create_company', label: t('admin.allowSelfCreate', 'Allow users to create their own companies'), desc: t('admin.allowSelfCreateDesc', 'When disabled, only platform admins can create companies.') },
+                        { key: 'sso_custom_domain_redirect_enabled', label: t('admin.ssoCustomDomainRedirect', 'Enable tenant SSO custom domain redirect'), desc: t('admin.ssoCustomDomainRedirectDesc', 'When disabled, all tenants will be blocked from using custom domains or dedicated links to redirect to SSO providers.') },
                     ].map(s => (
                         <div key={s.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
                             <div>
@@ -334,6 +483,104 @@ function PlatformTab() {
                 </div>
             </div>
 
+            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                    OAuth Login
+                </div>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                    Configure platform-wide social login providers. Once enabled, users can sign in from the main login page with Google or GitHub.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+                    {(['google', 'github'] as const).map((providerType) => {
+                        const provider = oauthProviders[providerType];
+                        const meta = socialProviderMeta[providerType];
+                        const callbackUrl = `${window.location.origin}/oauth/callback/${providerType}`;
+                        return (
+                            <div key={providerType} style={{ border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '16px', background: 'var(--bg-secondary)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                    <div>
+                                        <div style={{ fontSize: '14px', fontWeight: 600 }}>{meta.name}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            Scope: {provider?.scope || meta.scope}
+                                        </div>
+                                    </div>
+                                    <label style={switchStyle(!!provider?.is_active, oauthSaving[providerType])}>
+                                        <input
+                                            type="checkbox"
+                                            checked={!!provider?.is_active}
+                                            onChange={(e) => setOauthField(providerType, 'is_active', e.target.checked)}
+                                            disabled={!!oauthSaving[providerType]}
+                                            style={{ opacity: 0, width: 0, height: 0 }}
+                                        />
+                                        <span style={switchTrack(!!provider?.is_active)}>
+                                            <span style={switchThumb(!!provider?.is_active)} />
+                                        </span>
+                                    </label>
+                                </div>
+
+                                <div style={{ display: 'grid', gap: '12px' }}>
+                                    <div>
+                                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>Client ID</label>
+                                        <input
+                                            className="form-input"
+                                            value={provider?.client_id || ''}
+                                            onChange={e => setOauthField(providerType, 'client_id', e.target.value)}
+                                            placeholder={providerType === 'google' ? 'xxxxxxxx.apps.googleusercontent.com' : 'GitHub OAuth App Client ID'}
+                                            style={{ fontSize: '13px' }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>Client Secret</label>
+                                        <input
+                                            className="form-input"
+                                            type="password"
+                                            value={provider?.client_secret || ''}
+                                            onChange={e => setOauthField(providerType, 'client_secret', e.target.value)}
+                                            placeholder={`${meta.name} Client Secret`}
+                                            style={{ fontSize: '13px' }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>Scope</label>
+                                        <input
+                                            className="form-input"
+                                            value={provider?.scope || meta.scope}
+                                            onChange={e => setOauthField(providerType, 'scope', e.target.value)}
+                                            style={{ fontSize: '13px' }}
+                                        />
+                                    </div>
+                                    <div style={{ padding: '10px 12px', borderRadius: '8px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)' }}>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>
+                                            {meta.authorizeLabel}
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <code style={{ flex: 1, fontSize: '11px', wordBreak: 'break-all', color: 'var(--text-primary)' }}>{callbackUrl}</code>
+                                            <LinearCopyButton
+                                                className="btn btn-ghost"
+                                                style={{ fontSize: '11px', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                                                textToCopy={callbackUrl}
+                                                label="Copy"
+                                                copiedLabel="Copied"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <button className="btn btn-primary" onClick={() => saveOauthProvider(providerType)} disabled={!!oauthSaving[providerType]}>
+                                            {oauthSaving[providerType] ? t('common.loading') : t('common.save', 'Save')}
+                                        </button>
+                                        {provider?.id && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {provider.is_active ? 'Enabled on login page' : 'Saved but disabled'}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
             {/* Notification Bar */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -345,8 +592,8 @@ function PlatformTab() {
                             {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
                         </div>
                     </div>
-                    <label style={switchStyle(nbEnabled)}>
-                        <input type="checkbox" checked={nbEnabled} onChange={e => setNbEnabled(e.target.checked)}
+                    <label style={switchStyle(nbEnabled, nbSaving)}>
+                        <input type="checkbox" checked={nbEnabled} onChange={e => handleNotificationBarToggle(e.target.checked)} disabled={nbSaving}
                             style={{ opacity: 0, width: 0, height: 0 }} />
                         <span style={switchTrack(nbEnabled)}>
                             <span style={switchThumb(nbEnabled)} />
@@ -370,7 +617,7 @@ function PlatformTab() {
                         />
                     </div>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
+                        <button className="btn btn-primary" onClick={() => saveNotificationBar()} disabled={nbSaving}>
                             {nbSaving ? t('common.loading') : t('common.save', 'Save')}
                         </button>
                         {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
@@ -382,11 +629,31 @@ function PlatformTab() {
 
             {/* System Email Configuration */}
             <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
-                    {t('enterprise.systemEmail.title', 'System Email Configuration')}
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', marginBottom: '4px' }}>
+                    <div>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {t('enterprise.systemEmail.title', 'System Email Configuration')}
+                        </div>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: '4px 0 0' }}>
+                            {t('enterprise.systemEmail.description', 'Configure SMTP settings for sending system emails such as password resets and notifications.')}
+                        </p>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', paddingTop: '2px', flexShrink: 0 }}>
+                        <input
+                            type="checkbox"
+                            checked={systemEmailConfig.SYSTEM_EMAIL_ENABLED}
+                            onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_EMAIL_ENABLED: e.target.checked })}
+                            style={{ width: '16px', height: '16px' }}
+                        />
+                        <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                            {t('enterprise.systemEmail.enabled', 'Enable system email')}
+                        </span>
+                    </label>
                 </div>
                 <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-                    {t('enterprise.systemEmail.description', 'Configure SMTP settings for sending system emails such as password resets and notifications.')}
+                    {systemEmailConfig.SYSTEM_EMAIL_ENABLED
+                        ? t('enterprise.systemEmail.enabledHint', 'System emails are enabled. New email/password registrations will require email verification.')
+                        : t('enterprise.systemEmail.disabledHint', 'System emails are disabled. SMTP settings can be saved and tested, but registration email verification will be skipped.')}
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                     <div>
@@ -639,6 +906,7 @@ function PlatformTab() {
 // ─── Companies Tab ─────────────────────────────────
 function CompaniesTab() {
     const { t } = useTranslation();
+    const dialog = useDialog();
     const [companies, setCompanies] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -750,7 +1018,10 @@ function CompaniesTab() {
 
     const handleToggle = async (id: string, currentlyActive: boolean) => {
         const action = currentlyActive ? 'disable' : 'enable';
-        if (currentlyActive && !confirm(t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'))) return;
+        if (currentlyActive) {
+            const ok = await dialog.confirm(t('common.dialog.disableCompanyConfirm'), { title: t('common.dialog.disableCompany'), danger: true, confirmLabel: t('common.confirmActions.disableLabel') });
+            if (!ok) return;
+        }
         try {
             await adminApi.toggleCompany(id);
             loadCompanies();
@@ -990,7 +1261,7 @@ function CompaniesTab() {
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
                             {c.sso_enabled ? (
                                 <>
-                                    <span style={{ color: 'var(--accent-primary)', fontSize: '14px' }} title="SSO Enabled">🛡️</span>
+                                    <span style={{ color: 'var(--accent-primary)', display: 'inline-flex' }} title="SSO Enabled"><IconShieldCheck size={14} stroke={1.8} /></span>
                                     {c.sso_domain && (
                                         <span style={{ 
                                             fontSize: '9px', background: 'rgba(59,130,246,0.1)', 

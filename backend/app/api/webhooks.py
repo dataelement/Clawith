@@ -14,15 +14,32 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import select
 
+from app.core.events import get_redis
 from app.database import async_session
+from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.trigger import AgentTrigger
+from app.services.trigger_runtime import enqueue_webhook_execution
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
-# In-memory rate limiter: token -> list of timestamps
-_rate_hits: dict[str, list[float]] = {}
-RATE_LIMIT = 5       # max hits per minute per token
+RATE_LIMIT = 5  # max hits per minute per token
 MAX_PAYLOAD_SIZE = 65536  # 64KB max payload
+
+
+async def _record_and_count_hits(token: str) -> int:
+    """Record the current hit in Redis and return the rolling 60-second count."""
+    redis = await get_redis()
+    now = time.time()
+    key = f"webhook:rate:{token}"
+    member = f"{now}:{hashlib.sha1(f'{token}:{now}'.encode()).hexdigest()[:8]}"
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.zremrangebyscore(key, 0, now - 60)
+        pipe.zadd(key, {member: now})
+        pipe.zcard(key)
+        pipe.expire(key, 120)
+        _, _, count, _ = await pipe.execute()
+    return int(count)
 
 
 @router.post("/t/{token}")
@@ -37,17 +54,13 @@ async def receive_webhook(token: str, request: Request):
     - Payload size limit (64KB)
     """
     # Rate limiting — use per-agent limit if available
-    now = time.time()
-    hits = _rate_hits.get(token, [])
-    hits = [t for t in hits if now - t < 60]  # keep last 60 seconds
+    hit_count = await _record_and_count_hits(token)
 
     # We'll check per-agent rate limit after finding the trigger below.
     # For now, apply a generous global ceiling to prevent memory abuse.
-    if len(hits) >= 60:  # hard ceiling: 60/min regardless of config
+    if hit_count >= 60:  # hard ceiling: 60/min regardless of config
         logger.warning(f"Webhook hard rate limit exceeded for token {token[:8]}...")
         return JSONResponse({"ok": True}, status_code=429)
-    hits.append(now)
-    _rate_hits[token] = hits
 
     # Payload size check
     body = await request.body()
@@ -60,7 +73,7 @@ async def receive_webhook(token: str, request: Request):
         result = await db.execute(
             select(AgentTrigger).where(
                 AgentTrigger.type == "webhook",
-                AgentTrigger.is_enabled == True,
+                AgentTrigger.is_enabled,
             )
         )
         triggers = result.scalars().all()
@@ -78,41 +91,46 @@ async def receive_webhook(token: str, request: Request):
             return JSONResponse({"ok": True})
 
         # Per-agent rate limit check
-        from app.models.agent import Agent
         agent_result = await db.execute(select(Agent).where(Agent.id == target.agent_id))
         agent_obj = agent_result.scalar_one_or_none()
         agent_rate_limit = (agent_obj.webhook_rate_limit if agent_obj else None) or RATE_LIMIT
+
+        # Retrieve all needed scalar fields and expunge from db session to prevent MissingGreenlet errors.
+        target_name = target.name
+        target_agent_id = target.agent_id
+        target_config = target.config or {}
+        db.expunge(target)
+        if agent_obj:
+            db.expunge(agent_obj)
+
         # Re-check hits against agent-specific limit (hits already collected above)
-        if len(hits) > agent_rate_limit:  # > because we already appended current hit
+        if hit_count > agent_rate_limit:  # > because current hit is already counted
             logger.warning(f"Webhook per-agent rate limit ({agent_rate_limit}/min) for token {token[:8]}...")
             # Log audit entry so user can see dropped webhooks
             try:
-                from app.models.audit import AuditLog
-                db.add(AuditLog(
-                    agent_id=target.agent_id,
-                    action="webhook_rate_limited",
-                    details={
-                        "trigger_name": target.name,
-                        "limit": agent_rate_limit,
-                        "token_prefix": token[:8],
-                    },
-                ))
+                db.add(
+                    AuditLog(
+                        agent_id=target_agent_id,
+                        action="webhook_rate_limited",
+                        details={
+                            "trigger_name": target_name,
+                            "limit": agent_rate_limit,
+                            "token_prefix": token[:8],
+                        },
+                    )
+                )
                 await db.commit()
             except Exception:
                 pass
             return JSONResponse({"ok": True}, status_code=429)
 
-        cfg = target.config or {}
-
         # HMAC signature verification (optional)
-        secret = cfg.get("secret")
+        secret = target_config.get("secret")
         if secret:
             sig_header = request.headers.get("x-hub-signature-256", "")
-            expected_sig = "sha256=" + hmac.new(
-                secret.encode(), body, hashlib.sha256
-            ).hexdigest()
+            expected_sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(sig_header, expected_sig):
-                logger.warning(f"Webhook signature mismatch for trigger {target.name}")
+                logger.warning(f"Webhook signature mismatch for trigger {target_name}")
                 # Still return 200 to not leak info
                 return JSONResponse({"ok": True})
 
@@ -120,24 +138,28 @@ async def receive_webhook(token: str, request: Request):
         try:
             payload_str = body.decode("utf-8")
             # Try to pretty-format JSON for readability
+            payload_obj = None
             try:
                 payload_obj = json.loads(payload_str)
                 payload_str = json.dumps(payload_obj, ensure_ascii=False, indent=2)
             except json.JSONDecodeError:
-                pass  # Keep as raw string
+                payload_obj = None
         except Exception:
+            payload_obj = None
             payload_str = repr(body[:2000])
 
-        # Store payload and set pending flag
-        new_config = {**cfg, "_webhook_pending": True, "_webhook_payload": payload_str[:8000]}
-        from sqlalchemy import update
-        await db.execute(
-            update(AgentTrigger)
-            .where(AgentTrigger.id == target.id)
-            .values(config=new_config)
+        _execution, created = await enqueue_webhook_execution(
+            db,
+            trigger=target,
+            body=body,
+            payload_text=payload_str,
+            payload_obj=payload_obj if isinstance(payload_obj, dict) else None,
+            request_headers={k.lower(): v for k, v in request.headers.items()},
         )
-        await db.commit()
+        if not created:
+            logger.info(f"Webhook duplicate ignored for trigger {target_name}")
+            return JSONResponse({"ok": True})
 
-        logger.info(f"Webhook received for trigger {target.name} (agent {target.agent_id})")
+        logger.info(f"Webhook queued for trigger {target_name} (agent {target_agent_id})")
 
     return JSONResponse({"ok": True})

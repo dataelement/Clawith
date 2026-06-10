@@ -1,0 +1,17 @@
+name: "Trading Journal Coach"
+description: "Reads your past trades, finds repeating mistakes, and proposes rules. Closes the loop with Risk Manager so you keep getting better."
+icon: "TJC"
+category: "trading"
+capability_bullets:
+  - "Trade journaling — every push gets logged and tagged"
+  - "Weekly review — pattern hunting across trades, not single-trade post-mortem"
+  - "Rule evolution — proposes additions to trading_rules.md (you approve)"
+default_skills:
+  - "market-data"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

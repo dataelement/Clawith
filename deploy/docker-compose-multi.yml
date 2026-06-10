@@ -1,0 +1,185 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    networks:
+      - default
+    environment:
+      POSTGRES_USER: clawith
+      POSTGRES_PASSWORD: clawith
+      POSTGRES_DB: clawith
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawith"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - default
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    networks:
+      - default
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-clawith}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-clawith-minio-secret}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend-api:
+    build:
+      context: ../backend
+      args:
+        CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
+        CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    command: ["/bin/bash", "/app/entrypoint.sh"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      REDIS_URL: redis://redis:6379/0
+      AGENT_DATA_DIR: /data/agents
+      AGENT_TEMPLATE_DIR: /app/agent_template
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: /data/agents
+      STORAGE_LOCAL_FALLBACK_ENABLED: ${STORAGE_LOCAL_FALLBACK_ENABLED:-true}
+      S3_BUCKET: ${S3_BUCKET:-clawith}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-${MINIO_ROOT_USER:-clawith}}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:-clawith-minio-secret}}
+      S3_PREFIX: ${S3_PREFIX:-agents}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
+      PROCESS_ROLE: api
+      CORS_ORIGINS: '["*"]'
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      DOCKER_NETWORK: clawith_yaojin_network
+      SS_CONFIG_FILE: /data/ss-nodes.json
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+    volumes:
+      - ./backend/agent_data:/data/agents
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ss-nodes.json:/data/ss-nodes.json:ro
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+    networks:
+      default:
+        aliases:
+          - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend-trigger:
+    build:
+      context: ../backend
+      args:
+        CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
+        CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    command: ["/bin/bash", "/app/entrypoint.sh"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      REDIS_URL: redis://redis:6379/0
+      AGENT_DATA_DIR: /data/agents
+      AGENT_TEMPLATE_DIR: /app/agent_template
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: /data/agents
+      STORAGE_LOCAL_FALLBACK_ENABLED: ${STORAGE_LOCAL_FALLBACK_ENABLED:-true}
+      S3_BUCKET: ${S3_BUCKET:-clawith}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-${MINIO_ROOT_USER:-clawith}}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD:-clawith-minio-secret}}
+      S3_PREFIX: ${S3_PREFIX:-agents}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
+      PROCESS_ROLE: bootstrap,worker,connector
+      CORS_ORIGINS: '["*"]'
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      DOCKER_NETWORK: clawith_yaojin_network
+      SS_CONFIG_FILE: /data/ss-nodes.json
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+    volumes:
+      - ./backend/agent_data:/data/agents
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ss-nodes.json:/data/ss-nodes.json:ro
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+    networks:
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3008}:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
+      MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
+    volumes:
+      - ./frontend/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - default
+    depends_on:
+      - backend-api
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+
+networks:
+  default:
+    name: clawith_network

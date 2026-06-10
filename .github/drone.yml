@@ -1,0 +1,302 @@
+# ============================================================
+# Clawith CI/CD Pipeline
+# 基于 Drone CI 的自动化构建、本地部署测试和升级测试
+#
+# 流程:
+#   1. 代码克隆 (获取完整历史和 tags)
+#   2. 构建 Docker 镜像
+#   3. 本地部署测试 (直接利用本地 docker socket 和 docker-compose.ci.yml)
+#   4. 本地升级测试 (测试旧版到新版的迁移)
+#   5. 打包传输到服务器 (可选)
+# ============================================================
+kind: pipeline
+type: docker
+name: build-and-test
+
+workspace:
+  path: /drone/src
+
+clone:
+  disable: true
+
+steps:
+  # --------------------------------------------------------
+  # Step 1: 代码克隆 (获取完整历史和 tags)
+  # --------------------------------------------------------
+  - name: clone
+    image: alpine/git
+    pull: if-not-exists
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+    commands:
+      - git config --global core.compression 0
+      - git config --global http.postBuffer 524288000
+      - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
+      # 将 shallow clone 转换为完整克隆，获取完整 commit 历史
+      - git fetch --unshallow --tags || git fetch --tags
+      - git checkout $DRONE_COMMIT
+      - echo "当前 commit $(git log --oneline -1)"
+      - echo "上一个 tag $(git describe --tags --abbrev=0 2>/dev/null || echo '无 tag')"
+
+  # --------------------------------------------------------
+  # Step 2: 构建新旧版本 Docker 镜像
+  # --------------------------------------------------------
+  - name: build-images
+    image: docker:24.0.6
+    pull: if-not-exists
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+    environment:
+      http_proxy:
+        from_secret: PROXY
+      https_proxy:
+        from_secret: PROXY
+    commands:
+      - apk add --no-cache git
+      - echo "========================================"
+      - echo "开始构建 Docker 镜像"
+      - echo "事件 $DRONE_BUILD_EVENT"
+      - echo "目标分支 $DRONE_BRANCH"
+      - echo "提交 $DRONE_COMMIT_SHORT"
+      - echo "========================================"
+
+      # 获取上一个 tag
+      - PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+      - |
+        if [ -z "$PREV_TAG" ]; then
+          echo "警告: 未找到历史 tag，升级测试将被跳过"
+          echo "SKIP_UPGRADE_TEST=true" > .env.drone
+          # 仅构建当前版本
+          docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+          docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
+          echo "当前版本镜像构建完成"
+          exit 0
+        fi
+      - echo "上一个 tag $PREV_TAG"
+      - |
+        echo "SKIP_UPGRADE_TEST=false" > .env.drone
+
+      # --- 构建旧版本镜像 ---
+      - echo "--- 构建旧版本镜像 ($PREV_TAG) ---"
+      - git checkout $PREV_TAG
+      - docker build -t clawith-backend:old --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+      - docker build -t clawith-frontend:old -f frontend/Dockerfile ./frontend
+      - echo "旧版本镜像构建完成"
+
+      # --- 构建当前版本镜像 ---
+      - echo "--- 构建当前版本镜像 ($DRONE_COMMIT_SHORT) ---"
+      - git checkout $DRONE_COMMIT
+      - docker build -t clawith-backend:new --build-arg CLAWITH_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -f backend/Dockerfile ./backend
+      - docker build -t clawith-frontend:new -f frontend/Dockerfile ./frontend
+      - echo "当前版本镜像构建完成"
+
+  # --------------------------------------------------------
+  # Step 3: 本地部署测试 (Deploy Test)
+  # --------------------------------------------------------
+  - name: local-deploy-test
+    image: docker:24.0.6
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+    commands:
+      - apk add --no-cache docker-cli-compose curl bash
+      - echo "========================================"
+      - echo "本地部署测试 全新部署验证"
+      - echo "========================================"
+      - docker compose -f docker-compose.ci.yml down -v --remove-orphans 2>/dev/null || true
+      - echo "启动全部服务 (postgres/redis/backend/frontend)..."
+      - IMAGE_TAG=new docker compose -f docker-compose.ci.yml up -d --no-build
+      - sleep 5
+      
+      # 等待基础设施就绪
+      - echo "等待 postgres 和 redis 健康检查通过..."
+      - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose -f docker-compose.ci.yml ps -q postgres) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "postgres 启动超时" && docker compose -f docker-compose.ci.yml logs postgres && exit 1)
+      - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose -f docker-compose.ci.yml ps -q redis) 2>/dev/null)" = "healthy" ]; do sleep 2; done' || (echo "redis 启动超时" && docker compose -f docker-compose.ci.yml logs redis && exit 1)
+      
+      # 核心验证: backend 启动
+      - echo "等待 backend 启动 (最多 90 秒)..."
+      - timeout 90s bash -c 'until docker compose -f docker-compose.ci.yml logs --tail=200 backend 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+      - RESULT=$?
+      - |
+        if [ $RESULT -ne 0 ]; then
+          echo "❌ 部署测试失败: backend 启动超时"
+          docker compose -f docker-compose.ci.yml logs --tail=100 backend
+          exit 1
+        fi
+        
+      # 检查迁移是否失败
+      - echo "检查数据库迁移状态..."
+      - |
+        MIGRATION_LOG=$(docker compose -f docker-compose.ci.yml logs --tail=200 backend 2>&1)
+        if echo "$MIGRATION_LOG" | grep -Eqi "migration.*FAIL|alembic.*error"; then
+          echo "❌ 部署测试失败: 检测到数据库迁移失败"
+          echo "$MIGRATION_LOG" | grep -Ei "migration|alembic|error|FAIL"
+          exit 1
+        fi
+        
+      # 验证 health endpoint (通过 docker compose exec 直接在容器内 curl)
+      - echo "验证 health endpoint..."
+      - timeout 10s bash -c 'until docker compose -f docker-compose.ci.yml exec -T backend curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do sleep 2; done' || (echo "❌ health endpoint 不可达" && exit 1)
+      
+      # 清理环境
+      - echo "清理测试环境..."
+      - docker compose -f docker-compose.ci.yml down -v --remove-orphans
+      - echo "✅ 本地部署测试通过"
+
+  # --------------------------------------------------------
+  # Step 4: 本地升级测试 (Upgrade Test)
+  # --------------------------------------------------------
+  - name: local-upgrade-test
+    image: docker:24.0.6
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+    commands:
+      - apk add --no-cache docker-cli-compose curl bash
+      - echo "========================================"
+      - echo "本地升级测试 旧版 → 新版数据库迁移验证"
+      - echo "========================================"
+      - |
+        if [ -f ".env.drone" ] && grep -q "SKIP_UPGRADE_TEST=true" ".env.drone"; then
+          echo "⚠️ 未找到历史 tag，跳过升级测试"
+          exit 0
+        fi
+        
+      - docker compose -f docker-compose.ci.yml down -v --remove-orphans 2>/dev/null || true
+      - docker rm -f backend-upgrade-test 2>/dev/null || true
+
+      # 阶段 1: 部署旧版本
+      - echo "--- 阶段 1 - 部署旧版本 ---"
+      - IMAGE_TAG=old docker compose -f docker-compose.ci.yml up -d postgres redis
+      - sleep 5
+      - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose -f docker-compose.ci.yml ps -q postgres) 2>/dev/null)" = "healthy" ]; do sleep 2; done'
+      - timeout 30s bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" $(docker compose -f docker-compose.ci.yml ps -q redis) 2>/dev/null)" = "healthy" ]; do sleep 2; done'
+      
+      # 启动旧版 backend
+      - |
+        docker run -d --name backend-upgrade-test \
+          --network clawith_network \
+          -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+          -e REDIS_URL=redis://redis:6379/0 \
+          -e AGENT_DATA_DIR=/data/agents \
+          -e AGENT_TEMPLATE_DIR=/app/agent_template \
+          -e SECRET_KEY=ci-test-secret \
+          -e JWT_SECRET_KEY=ci-test-jwt-secret \
+          -e CORS_ORIGINS='["*"]' \
+          clawith-backend:old
+
+      - timeout 90s bash -c 'until docker logs backend-upgrade-test 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+      - RESULT=$?
+      - |
+        if [ $RESULT -ne 0 ]; then
+          echo "❌ 升级测试失败: 旧版 backend 启动超时"
+          docker logs --tail=100 backend-upgrade-test
+          exit 1
+        fi
+      
+      - docker exec backend-upgrade-test alembic history 2>&1 | head -5 || true
+      - docker stop backend-upgrade-test
+      - docker rm backend-upgrade-test
+
+      # 阶段 2: 升级到新版本
+      - echo "--- 阶段 2 - 升级到新版本 ---"
+      - |
+        docker run -d --name backend-upgrade-test \
+          --network clawith_network \
+          -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+          -e REDIS_URL=redis://redis:6379/0 \
+          -e AGENT_DATA_DIR=/data/agents \
+          -e AGENT_TEMPLATE_DIR=/app/agent_template \
+          -e SECRET_KEY=ci-test-secret \
+          -e JWT_SECRET_KEY=ci-test-jwt-secret \
+          -e CORS_ORIGINS='["*"]' \
+          clawith-backend:new
+
+      - timeout 120s bash -c 'until docker logs backend-upgrade-test 2>&1 | grep -q "Application startup complete"; do sleep 3; done'
+      - RESULT=$?
+      - |
+        if [ $RESULT -ne 0 ]; then
+          echo "❌ 升级测试失败: 新版 backend 启动超时"
+          docker logs --tail=200 backend-upgrade-test
+          exit 1
+        fi
+
+      - |
+        UPGRADE_LOG=$(docker logs --tail=300 backend-upgrade-test 2>&1)
+        if echo "$UPGRADE_LOG" | grep -Eqi "migration.*FAIL|alembic.*error|WARNING.*migration"; then
+          echo "❌ 升级测试失败: 检测到数据库迁移异常"
+          echo "$UPGRADE_LOG" | grep -Ei "migration|alembic|error|FAIL|WARNING"
+          exit 1
+        fi
+
+      - timeout 10s bash -c 'until docker exec backend-upgrade-test curl -sf http://localhost:8000/api/health > /dev/null 2>&1; do sleep 2; done' || (echo "❌ health endpoint 不可达" && exit 1)
+
+      - docker exec backend-upgrade-test alembic history 2>&1 | head -5 || true
+      - docker exec backend-upgrade-test alembic current 2>&1 || true
+
+      - docker rm -f backend-upgrade-test
+      - docker compose -f docker-compose.ci.yml down -v --remove-orphans
+      - echo "✅ 本地升级测试通过"
+
+  # --------------------------------------------------------
+  # Step 5: (可选) 导出镜像并传输到私有服务器
+  # 只有在部署测试通过后才会执行到这一步
+  # --------------------------------------------------------
+  - name: save-images
+    image: docker:24.0.6
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+    commands:
+      - echo "测试全部通过，开始导出镜像文件..."
+      - docker save -o clawith-backend-new.tar clawith-backend:new
+      - docker save -o clawith-frontend-new.tar clawith-frontend:new
+      - |
+        if [ -f ".env.drone" ] && grep -q "SKIP_UPGRADE_TEST=false" ".env.drone"; then
+          docker save -o clawith-backend-old.tar clawith-backend:old
+          docker save -o clawith-frontend-old.tar clawith-frontend:old
+        fi
+      - chmod 644 *.tar
+      - ls -lh *.tar
+
+  - name: scp-images
+    image: appleboy/drone-scp
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: root
+      password:
+        from_secret: sshpwd
+      port: 22
+      command_timeout: 15m
+      target: /opt/server/clawith-ci/
+      source:
+        - clawith-backend-new.tar
+        - clawith-frontend-new.tar
+        - clawith-backend-old.tar
+        - clawith-frontend-old.tar
+        - docker-compose.ci.yml
+        - .env.drone
+      rm: false
+
+trigger:
+  branch:
+    - main
+    - release
+  event:
+    - push
+    - pull_request
+
+volumes:
+  - name: docker-socket
+    host:
+      path: /var/run/docker.sock

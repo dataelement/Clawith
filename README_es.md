@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Clawith_slogan.png" alt="Clawith — OpenClaw for Teams" width="800" />
+  <img src="assets/slogan.png" alt="Clawith — OpenClaw for Teams" width="800" />
 </p>
 
 <p align="center">
@@ -19,7 +19,8 @@
   <a href="README_zh-CN.md">中文</a> ·
   <a href="README_ja.md">日本語</a> ·
   <a href="README_ko.md">한국어</a> ·
-  <a href="README_es.md">Español</a>
+  <a href="README_es.md">Español</a> ·
+  <a href="README_ar.md">العربية</a>
 </p>
 
 ---
@@ -118,7 +119,7 @@ Cambiar contraseñas predeterminadas · Configurar `SECRET_KEY` / `JWT_SECRET_KE
 También puedes escanear el código QR a continuación para unirte a nuestra comunidad desde tu móvil:
 
 <p align="center">
-  <img src="assets/QR_Code.png" alt="Código QR de la Comunidad" width="200" />
+  <img src="assets/Clawith_QRcode.png" alt="Código QR de la Comunidad" width="200" />
 </p>
 
 ## ⭐ Star History

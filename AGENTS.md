@@ -29,3 +29,8 @@ In practice:
 
 - The architecture document currently present in this repository is `ARCHITECTURE_SPEC_EN.md`
 - Do not invent alternative instruction filenames when the real rules already exist under `.agents/`
+
+## Local Collaboration Preference
+
+- At the end of each completed task, play a short local completion sound on the user's machine (for example with `afplay` on macOS) so the user notices work has finished even when reading or working in another window.
+- This reminder should be treated as a default behavior for this repository across sessions unless the user explicitly asks to skip it for a specific task.

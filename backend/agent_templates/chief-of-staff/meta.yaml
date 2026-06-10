@@ -1,0 +1,16 @@
+name: "Chief of Staff"
+description: "Your personal chief of staff — daily briefings, priority triage, follow-up tracking, and writing that sounds like you at your sharpest."
+icon: "CoS"
+category: "office"
+capability_bullets:
+  - "Daily briefing — what matters today in under a minute's reading"
+  - "Priority triage — what to act on, defer, delegate, or drop"
+  - "Follow-up tracking — nothing slips through the cracks between sessions"
+default_skills:
+  - "web-research"
+  - "meeting-notes"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

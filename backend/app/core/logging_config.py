@@ -3,7 +3,6 @@
 import sys
 import logging
 from contextvars import ContextVar
-from typing import Optional
 
 from loguru import logger
 
@@ -11,6 +10,19 @@ from loguru import logger
 from uuid import uuid4
 
 trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
+
+
+NOISY_CONNECTION_LOGGERS = {
+    # WebSocket accepted / HTTP access lines from uvicorn.
+    "uvicorn.access": logging.WARNING,
+    # "connection open" / "connection closed" emitted by websockets.
+    "websockets": logging.WARNING,
+    "websockets.server": logging.WARNING,
+    "websockets.client": logging.WARNING,
+    "uvicorn.protocols.websockets.websockets_impl": logging.WARNING,
+    # Supress "Failed to parse headers" warning from urllib3 when interacting with MinIO.
+    "urllib3.connection": logging.ERROR,
+}
 
 
 def get_trace_id() -> str:
@@ -23,6 +35,29 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
+def new_trace_id() -> str:
+    """Generate a new 12-char trace ID and bind it to the current context.
+
+    Intended for background tasks that run outside HTTP/WebSocket request
+    scopes so that all log lines produced by one task execution share the
+    same trace_id.
+    """
+    tid = uuid4().hex[:12]
+    set_trace_id(tid)
+    return tid
+
+
+def _disable_agentbay_logger_override():
+    """Disable AgentBay SDK's logging override to prevent it from resetting loguru."""
+    if "agentbay._common.logger" in sys.modules:
+        try:
+            from agentbay._common.logger import AgentBayLogger
+            AgentBayLogger._initialized = True
+            AgentBayLogger.setup = classmethod(lambda cls, *args, **kwargs: None)
+        except Exception:
+            pass
+
+
 def configure_logging():
     """Configure loguru with custom format including trace ID."""
     # Remove default handler
@@ -32,14 +67,23 @@ def configure_logging():
     logger.add(
         sys.stdout,
         level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{extra[trace_id]:-<12}</cyan> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{extra[trace_id]:-<12}</cyan> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         enqueue=True,
         backtrace=True,
         diagnose=True,
         filter=lambda record: (record["extra"].setdefault("trace_id", get_trace_id() or str(uuid4())) is not None)
     )
 
+    _disable_agentbay_logger_override()
+
     return logger
+
+
+def quiet_noisy_connection_loggers() -> None:
+    """Reduce chatty transport-level logs while keeping warnings/errors visible."""
+    for logger_name, level in NOISY_CONNECTION_LOGGERS.items():
+        target = logging.getLogger(logger_name)
+        target.setLevel(level)
 
 
 def intercept_standard_logging():
@@ -77,6 +121,7 @@ def intercept_standard_logging():
     for name in logging.root.manager.loggerDict:
         logging.getLogger(name).handlers = [InterceptHandler()]
         logging.getLogger(name).propagate = False
+    quiet_noisy_connection_loggers()
 
 
 # Configure on import

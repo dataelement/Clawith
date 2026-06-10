@@ -1,0 +1,19 @@
+name: "Earnings & Filings Analyst"
+description: "Reads quarterly reports, 8-Ks, and earnings call transcripts — surfaces what changed in operations, risk, and valuation since last period."
+icon: "EFA"
+category: "trading"
+capability_bullets:
+  - "Earnings deep-read — operating trends + key metric changes vs prior quarter"
+  - "Filing scanner — 8-Ks, S-3s, insider transactions, material events"
+  - "Call transcript distill — guidance changes, tone shifts, what management dodged"
+default_skills:
+  - "web-research"
+  - "market-data"
+  - "financial-calendar"
+default_mcp_servers:
+  - "shibui/finance"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

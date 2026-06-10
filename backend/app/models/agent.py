@@ -80,6 +80,12 @@ class Agent(Base):
     last_daily_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens_today: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens_month: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens_total: Mapped[int] = mapped_column(Integer, default=0)
+    cache_creation_tokens_today: Mapped[int] = mapped_column(Integer, default=0)
+    cache_creation_tokens_month: Mapped[int] = mapped_column(Integer, default=0)
+    cache_creation_tokens_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
@@ -92,9 +98,20 @@ class Agent(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_expired: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # System agent flag — system agents (e.g. OKR Agent) cannot be deleted by users
+    # and their system triggers are protected from user deletion.
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Access model:
+    # - company: all platform users in the tenant can access; all tenant agents can interact.
+    # - private: only the creator can use/manage; hidden from Plaza.
+    # - custom: explicit user access rows; agent-to-agent access is configured via Relationships.
+    access_mode: Mapped[str] = mapped_column(String(20), default="company", nullable=False)
+    company_access_level: Mapped[str] = mapped_column(String(20), default="use", nullable=False)
+
     # Daily LLM call limit
     llm_calls_today: Mapped[int] = mapped_column(Integer, default=0)
-    max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=100)
+    max_llm_calls_per_day: Mapped[int] = mapped_column(Integer, default=1000)
     llm_calls_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Template
@@ -160,10 +177,47 @@ class AgentTemplate(Base):
     category: Mapped[str] = mapped_column(String(50), default="general")
     soul_template: Mapped[str] = mapped_column(Text, default="")
     default_skills: Mapped[list] = mapped_column(JSON, default=[])
+    # Smithery server IDs (e.g. "shibui/finance") to auto-import + bind when
+    # an agent is created from this template. The new-agent handler in
+    # api.agents.create_agent calls import_mcp_from_smithery for each, using
+    # the system-level Smithery key, then assigns the resulting Tool(s) via
+    # AgentTool. Idempotent: existing Tool with same mcp_server_url is reused.
+    default_mcp_servers: Mapped[list] = mapped_column(JSON, default=[])
     default_autonomy_policy: Mapped[dict] = mapped_column(JSON, default={})
+    # Talent Market card: 2-4 short capability bullets shown under the role
+    capability_bullets: Mapped[list] = mapped_column(JSON, default=[])
+    # Founding onboarding ritual. Used as the system prompt when the very first
+    # human opens a chat with an agent created from this template — it guides
+    # the agent to collect project context, introduce itself, and suggest a
+    # first task. Every subsequent user meets the agent via a simpler built-in
+    # welcoming prompt (see app.services.onboarding), not this content.
+    bootstrap_content: Mapped[str | None] = mapped_column(Text, default=None)
     is_builtin: Mapped[bool] = mapped_column(default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentUserOnboarding(Base):
+    """Tracks the per-(agent, user) onboarding ritual.
+
+    Row presence means the greeting has fired, so the frontend should not
+    auto-trigger another empty-session greeting. The ``phase`` column lets the
+    backend continue with a second, real user reply that calibrates the agent
+    and writes durable working notes before marking onboarding complete.
+    """
+
+    __tablename__ = "agent_user_onboardings"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    onboarded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    phase: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
 
 
 # Import for relationship resolution

@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconAlertTriangle, IconCheck, IconMail, IconX } from '@tabler/icons-react';
 import { authApi } from '../services/api';
 import { useAuthStore } from '../stores';
+import { useToast } from '../components/Toast/ToastProvider';
 
 export default function VerifyEmail() {
     const { t, i18n } = useTranslation();
+    const toast = useToast();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const location = useLocation();
@@ -79,9 +82,9 @@ export default function VerifyEmail() {
         setLoading(true);
         try {
             await authApi.resendVerification(email);
-            alert(isChinese ? '验证码已重发，请检查您的邮箱。' : 'Verification code resent. Please check your email.');
+            toast.success(isChinese ? '验证码已重发，请检查您的邮箱' : 'Verification code resent. Please check your email.');
         } catch (err: any) {
-            alert(err.message || 'Failed to resend verification');
+            toast.error(isChinese ? '重发失败' : 'Failed to resend verification', { details: String(err?.message || err) });
         } finally {
             setLoading(false);
         }
@@ -106,7 +109,11 @@ export default function VerifyEmail() {
             <div className="company-setup-container" style={{ maxWidth: '440px', width: '100%' }}>
                 <div className="company-setup-header">
                     <div style={{ fontSize: '48px', marginBottom: '16px' }}>
-                        {status === 'success' ? '✅' : status === 'error' ? '❌' : '📧'}
+                        {status === 'success'
+                            ? <IconCheck size={48} stroke={1.8} />
+                            : status === 'error'
+                                ? <IconX size={48} stroke={1.8} />
+                                : <IconMail size={48} stroke={1.8} />}
                     </div>
                     <h1>{isChinese ? '邮箱验证' : 'Email Verification'}</h1>
                     <p className="company-setup-subtitle">
@@ -118,7 +125,7 @@ export default function VerifyEmail() {
 
                 {message && (
                     <div className={status === 'success' ? 'login-success' : 'login-error'} style={{ marginBottom: 20 }}>
-                        <span>{status === 'success' ? '✓' : '⚠'}</span> {message}
+                        <span>{status === 'success' ? <IconCheck size={14} stroke={1.8} /> : <IconAlertTriangle size={14} stroke={1.8} />}</span> {message}
                     </div>
                 )}
 

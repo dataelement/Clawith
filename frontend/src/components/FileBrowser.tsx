@@ -6,6 +6,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { IconDownload, IconEdit, IconFolder, IconFolderPlus, IconUpload } from '@tabler/icons-react';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useDropZone } from '../hooks/useDropZone';
 
@@ -291,7 +292,7 @@ export default function FileBrowser({
                     style={{ cursor: 'pointer', color: 'var(--accent-primary)', fontWeight: 500 }}
                     onClick={() => { setCurrentPath(rootPath); setViewing(null); setEditing(false); }}
                 >
-                    📁 {rootPath || 'root'}
+                    <IconFolder size={14} stroke={1.8} /> {rootPath || 'root'}
                 </span>
                 {pathParts.slice(rootPath ? rootPath.split('/').filter(Boolean).length : 0).map((part, i) => {
                     const upTo = pathParts.slice(0, (rootPath ? rootPath.split('/').filter(Boolean).length : 0) + i + 1).join('/');
@@ -430,7 +431,7 @@ export default function FileBrowser({
                     {isText && edit && (
                         !editing ? (
                             <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
-                                onClick={() => { setEditContent(content); setEditing(true); }}>✏️ {t('agent.soul.editButton')}</button>
+                                onClick={() => { setEditContent(content); setEditing(true); }}><IconEdit size={13} stroke={1.8} /> {t('agent.soul.editButton')}</button>
                         ) : (
                             <div style={{ display: 'flex', gap: '6px' }}>
                                 <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
@@ -442,7 +443,7 @@ export default function FileBrowser({
                     )}
                     {api.downloadUrl && (
                         <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}>⬇ {t('common.download', 'Download')}</button>
+                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}><IconDownload size={13} stroke={1.8} /> {t('common.download', 'Download')}</button>
                         </a>
                     )}
                     {canDelete && (
@@ -481,7 +482,7 @@ export default function FileBrowser({
                             <div style={{ fontSize: '12px', marginBottom: '16px' }}>Binary file — cannot preview</div>
                             {api.downloadUrl && (
                                 <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}>⬇ {t('common.download', 'Download')}</button>
+                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}><IconDownload size={14} stroke={1.8} /> {t('common.download', 'Download')}</button>
                                 </a>
                             )}
                         </div>
@@ -501,7 +502,7 @@ export default function FileBrowser({
             {/* Drop overlay */}
             {isDragging && (
                 <div className="drop-zone-overlay">
-                    <div className="drop-zone-overlay__icon">⬆</div>
+                    <div className="drop-zone-overlay__icon"><IconUpload size={28} stroke={1.8} /></div>
                     <div className="drop-zone-overlay__text">{t('agent.workspace.dragOrClick', 'Drop files to upload')}</div>
                 </div>
             )}
@@ -512,12 +513,12 @@ export default function FileBrowser({
                 {renderBreadcrumbs()}
                 <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto' }}>
                     {upload && api.upload && (
-                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpload}>⬆ Upload</button>
+                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpload}><IconUpload size={13} stroke={1.8} /> Upload</button>
                     )}
                     {newFolder && (
                         <button className="btn btn-secondary" style={{ fontSize: '12px' }}
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFolder'), placeholder: t('agent.workspace.newFolderName'), action: 'newFolder' })}>
-                            📁 {t('agent.workspace.newFolder')}
+                            <IconFolderPlus size={13} stroke={1.8} /> {t('agent.workspace.newFolder')}
                         </button>
                     )}
                     {newFile && !fileFilter && (
@@ -593,8 +594,8 @@ export default function FileBrowser({
                                     <a href={api.downloadUrl(f.path || `${currentPath}/${f.name}`)} download
                                         onClick={(e) => e.stopPropagation()}
                                         title={t('common.download', 'Download')}
-                                        style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', borderRadius: '4px' }}>
-                                        ⬇
+                                        style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', borderRadius: '4px', display: 'inline-flex', alignItems: 'center' }}>
+                                        <IconDownload size={13} stroke={1.8} />
                                     </a>
                                 )}
                                 {canDelete && (

@@ -1,0 +1,16 @@
+name: "Growth Hacker"
+description: "Designs growth experiments, analyzes funnels, and uncovers acquisition loops that move metrics — not vanity numbers."
+icon: "GH"
+category: "marketing"
+capability_bullets:
+  - "Funnel diagnosis — find the one leaky step that matters most"
+  - "Experiment design — ICE-scored tests with clear hypotheses"
+  - "Growth loops — referral, content, product-led engines"
+default_skills:
+  - "web-research"
+  - "data-analysis"
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+  delete_files: "L2"
+  send_feishu_message: "L2"

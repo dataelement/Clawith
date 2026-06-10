@@ -17,6 +17,8 @@ const now = new Date()
 const buildTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}.${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
 const version = `${majorVersion}+${buildTimestamp}`
 
+const backendPort = process.env.BACKEND_PORT || '8000'
+
 export default defineConfig({
     plugins: [react()],
     define: {
@@ -27,16 +29,28 @@ export default defineConfig({
             '@': path.resolve(__dirname, './src'),
         },
     },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+                    'vendor-charts': ['recharts'],
+                    'vendor-i18n': ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
+                    'vendor-icons': ['@tabler/icons-react'],
+                },
+            },
+        },
+    },
     server: {
         port: 3008,
         host: '0.0.0.0',
         proxy: {
             '/api': {
-                target: 'http://localhost:8008',
+                target: `http://localhost:${backendPort}`,
                 changeOrigin: true,
             },
             '/ws': {
-                target: 'ws://localhost:8008',
+                target: `ws://localhost:${backendPort}`,
                 ws: true,
             },
         },

@@ -7,6 +7,26 @@ export interface LivePreviewState {
     desktop?: { screenshotUrl: string };
     browser?: { screenshotUrl: string };
     code?: { output: string };
+    transfer?: {
+        fromType?: string;
+        fromPath?: string;
+        toType?: string;
+        toPath?: string;
+        status?: 'running' | 'done' | 'error';
+        result?: string;
+        updatedAt?: number;
+    };
+}
+
+export const MAX_LIVE_CODE_OUTPUT_CHARS = 120_000;
+const LIVE_CODE_TRUNCATED_NOTICE = '\n\n[... older live output truncated ...]\n';
+
+export function appendLiveCodeOutput(existing: string, chunk: string): string {
+    const next = existing + chunk;
+    if (next.length <= MAX_LIVE_CODE_OUTPUT_CHARS) return next;
+
+    const keepChars = Math.max(0, MAX_LIVE_CODE_OUTPUT_CHARS - LIVE_CODE_TRUNCATED_NOTICE.length);
+    return LIVE_CODE_TRUNCATED_NOTICE + next.slice(-keepChars);
 }
 
 interface Props {
@@ -17,6 +37,10 @@ interface Props {
     sessionId?: string;   // needed for Take Control
     /** Called by TC panel on close to push the latest screenshot into liveState */
     onLiveUpdate?: (env: 'browser' | 'desktop', screenshotDataUri: string) => void;
+    /** Called when user clicks Clear in the code output panel */
+    onClearCode?: () => void;
+    /** Called when user clicks Close to dismiss the code panel */
+    onCloseCode?: () => void;
 }
 
 /* ── Tab Icons (Linear-style minimal SVGs) ── */
@@ -76,7 +100,7 @@ function calcHalfContainerWidth(): number {
     return Math.max(MIN_WIDTH, Math.floor((window.innerWidth - 60) / 2));
 }
 
-export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate }: Props) {
+export default function AgentBayLivePanel({ liveState, visible, onToggle, agentId, sessionId, onLiveUpdate, onClearCode, onCloseCode }: Props) {
     const { t } = useTranslation();
 
     // Keep a ref to the latest onLiveUpdate so TakeControl callbacks always
@@ -250,6 +274,33 @@ export default function AgentBayLivePanel({ liveState, visible, onToggle, agentI
                             <path d="M3 3l5.5 10 1.5-4 4-1.5z" />
                         </svg>
                         <span>Control</span>
+                    </button>
+                )}
+                {/* Clear button for code output */}
+                {activeTab === 'code' && liveState.code && onClearCode && (
+                    <button
+                        className="live-panel-collapse"
+                        onClick={onClearCode}
+                        title="Clear output"
+                        style={{ marginRight: '2px' }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 4l8 8M12 4l-8 8" />
+                        </svg>
+                    </button>
+                )}
+                {/* Close button for code panel */}
+                {activeTab === 'code' && liveState.code && onCloseCode && (
+                    <button
+                        className="live-panel-collapse"
+                        onClick={onCloseCode}
+                        title="Close code panel"
+                        style={{ marginRight: '2px' }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="8" cy="8" r="6" />
+                            <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" />
+                        </svg>
                     </button>
                 )}
                 <button className="live-panel-collapse" onClick={onToggle} title="Collapse">

@@ -7,17 +7,23 @@ Admin endpoints for platform-level company management.
 import re
 import secrets
 import uuid
+import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
+from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.storage import ensure_local_path, get_storage_backend, normalize_storage_key
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -34,10 +40,13 @@ class TenantOut(BaseModel):
     slug: str
     im_provider: str
     timezone: str = "UTC"
+    country_region: str = "001"
     is_active: bool
     sso_enabled: bool = False
     sso_domain: str | None = None
-    a2a_async_enabled: bool = False
+    a2a_async_enabled: bool = True
+    default_model_id: uuid.UUID | None = None
+    logo_url: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -47,10 +56,39 @@ class TenantUpdate(BaseModel):
     name: str | None = None
     im_provider: str | None = None
     timezone: str | None = None
+    country_region: str | None = None
     is_active: bool | None = None
     sso_enabled: bool | None = None
     sso_domain: str | None = None
     a2a_async_enabled: bool | None = None
+
+
+def _tenant_logo_key(tenant_id: uuid.UUID) -> str:
+    return normalize_storage_key(f"_tenant_logos/{tenant_id}.png")
+
+
+def _tenant_logo_url(tenant_id: uuid.UUID) -> str:
+    return f"/api/tenants/{tenant_id}/logo?v={int(datetime.utcnow().timestamp())}"
+
+
+async def _get_updateable_tenant(
+    tenant_id: uuid.UUID,
+    current_user: User,
+    db: AsyncSession,
+) -> Tenant:
+    if current_user.role == "org_admin":
+        if not current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="Organization admin must belong to a company")
+        if current_user.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Can only update your own company")
+    elif current_user.role != "platform_admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -144,6 +182,8 @@ async def self_create_company(
 
     access_token = None
 
+    from app.services.registration_service import registration_service
+
     if current_user.tenant_id is not None:
         # Multi-tenant: user already belongs to a company.
         # Create a NEW User record for the new tenant instead of overwriting.
@@ -173,6 +213,7 @@ async def self_create_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
+        await registration_service.bind_org_member(db, new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -186,6 +227,7 @@ async def self_create_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
+        await registration_service.bind_org_member(db, current_user)
 
     await db.commit()
 
@@ -268,6 +310,8 @@ async def join_company(
 
     access_token = None
 
+    from app.services.registration_service import registration_service
+
     if current_user.tenant_id is not None:
         # Multi-tenant: user already belongs to a company.
         # Create a NEW User record for the new tenant.
@@ -297,6 +341,7 @@ async def join_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
+        await registration_service.bind_org_member(db, new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -312,6 +357,8 @@ async def join_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         final_role = current_user.role
+        await db.flush()
+        await registration_service.bind_org_member(db, current_user)
 
     # Increment invitation code usage
     code_obj.used_count += 1
@@ -358,26 +405,34 @@ async def resolve_tenant_by_domain(
     """
     tenant = None
 
-    # 1. Match by stripping protocol from stored sso_domain
-    # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
-    for proto in ("https://", "http://"):
-        result = await db.execute(
-            select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
-        )
-        tenant = result.scalar_one_or_none()
-        if tenant:
-            break
+    from app.models.system_settings import SystemSetting
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
+    )
+    setting_s = setting_result.scalar_one_or_none()
+    sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
 
-    # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
-    if not tenant and ":" in domain:
-        domain_no_port = domain.split(":")[0]
+    if sso_redirect_enabled:
+        # 1. Match by stripping protocol from stored sso_domain
+        # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
         for proto in ("https://", "http://"):
             result = await db.execute(
-                select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
             )
             tenant = result.scalar_one_or_none()
             if tenant:
                 break
+
+        # 2. Try without port (e.g. domain = "1.2.3.4:3009" → try "1.2.3.4")
+        if not tenant and ":" in domain:
+            domain_no_port = domain.split(":")[0]
+            for proto in ("https://", "http://"):
+                result = await db.execute(
+                    select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
+                )
+                tenant = result.scalar_one_or_none()
+                if tenant:
+                    break
 
     # 3. Fallback: extract slug from subdomain pattern
     if not tenant:
@@ -410,6 +465,64 @@ async def list_tenants(
     """List all tenants (platform_admin only)."""
     result = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
+
+
+@router.get("/me", response_model=TenantOut)
+async def get_my_tenant(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current user's own tenant. Any authenticated member can read
+    this — the wizard and the chat model switcher need default_model_id, which
+    shouldn't require admin privileges.
+    """
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User is not in a tenant")
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return TenantOut.model_validate(tenant)
+
+
+@router.get("/me/token-usage")
+async def get_my_tenant_token_usage(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return aggregate token and prompt-cache usage for the current company."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User is not in a tenant")
+
+    row = (await db.execute(
+        select(
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_today), 0).label("tokens_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_month), 0).label("tokens_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label("tokens_total"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_today), 0).label("cache_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_month), 0).label("cache_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0).label("cache_total"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_today), 0).label("cache_creation_today"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_month), 0).label("cache_creation_month"),
+            sqla_func.coalesce(sqla_func.sum(Agent.cache_creation_tokens_total), 0).label("cache_creation_total"),
+        ).where(Agent.tenant_id == current_user.tenant_id)
+    )).one()
+
+    def bucket(total: int, cache_read: int, cache_creation: int) -> dict:
+        total = int(total or 0)
+        cache_read = int(cache_read or 0)
+        return {
+            "total_tokens": total,
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": int(cache_creation or 0),
+            "cache_hit_rate": round(cache_read / total, 4) if total > 0 else 0,
+        }
+
+    return {
+        "today": bucket(row.tokens_today, row.cache_today, row.cache_creation_today),
+        "month": bucket(row.tokens_month, row.cache_month, row.cache_creation_month),
+        "total": bucket(row.tokens_total, row.cache_total, row.cache_creation_total),
+    }
 
 
 @router.get("/{tenant_id}", response_model=TenantOut)
@@ -465,6 +578,81 @@ async def update_tenant(
     return TenantOut.model_validate(tenant)
 
 
+@router.get("/{tenant_id}/logo")
+async def get_tenant_logo(tenant_id: uuid.UUID):
+    """Serve a tenant logo. Logos are public UI assets, addressed by UUID."""
+    storage = get_storage_backend()
+    key = _tenant_logo_key(tenant_id)
+    if not await storage.exists(key):
+        raise HTTPException(status_code=404, detail="Logo not found")
+    path = await ensure_local_path(key)
+    return FileResponse(path, media_type="image/png")
+
+
+@router.post("/{tenant_id}/logo", response_model=TenantOut)
+async def upload_tenant_logo(
+    tenant_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a cropped square company logo.
+
+    The frontend crops to a 1:1 PNG before upload. The backend keeps a hard
+    1 MB limit and stores the image outside git-managed source files.
+    """
+    tenant = await _get_updateable_tenant(tenant_id, current_user, db)
+    if file.content_type not in {"image/png", "image/jpeg", "image/webp"}:
+        raise HTTPException(status_code=400, detail="Logo must be a PNG, JPEG, or WebP image")
+
+    data = await file.read()
+    if len(data) > 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Logo image must be 1 MB or smaller")
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file") from exc
+    if image.width != image.height:
+        raise HTTPException(status_code=400, detail="Logo image must be a 1:1 square")
+
+    output = io.BytesIO()
+    image.convert("RGBA").save(output, format="PNG", optimize=True)
+    png_data = output.getvalue()
+    if len(png_data) > 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Logo image must be 1 MB or smaller after processing")
+
+    storage = get_storage_backend()
+    await storage.write_bytes(_tenant_logo_key(tenant_id), png_data, content_type="image/png")
+
+    config = dict(tenant.im_config or {})
+    config["logo_url"] = _tenant_logo_url(tenant_id)
+    tenant.im_config = config
+    await db.flush()
+    return TenantOut.model_validate(tenant)
+
+
+@router.delete("/{tenant_id}/logo", response_model=TenantOut)
+async def delete_tenant_logo(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a custom company logo and fall back to the generated default."""
+    tenant = await _get_updateable_tenant(tenant_id, current_user, db)
+
+    storage = get_storage_backend()
+    key = _tenant_logo_key(tenant_id)
+    if await storage.exists(key):
+        await storage.delete(key)
+
+    config = dict(tenant.im_config or {})
+    config.pop("logo_url", None)
+    tenant.im_config = config
+    await db.flush()
+    return TenantOut.model_validate(tenant)
+
+
 @router.put("/{tenant_id}/assign-user/{user_id}")
 async def assign_user_to_tenant(
     tenant_id: uuid.UUID,
@@ -492,3 +680,141 @@ async def assign_user_to_tenant(
     user.role = role
     await db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
+
+
+# ─── Authenticated: Delete Company ─────────────────────
+
+@router.delete("/{tenant_id}")
+async def delete_tenant(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a company and ALL its data.
+
+    Only the org_admin of the specified tenant (or a platform_admin) may call
+    this endpoint.  After deletion the caller receives a `fallback_tenant_id`
+    pointing to another company the user's identity belongs to, or `None` if
+    the user has no other company.
+
+    Deletion is performed in proper FK order to avoid constraint violations:
+    agent-level data → agents → OKR/org data → users → tenant.
+    """
+    from sqlalchemy import text
+
+    # ── Auth check ──────────────────────────────────────────────────────────
+    is_platform_admin = getattr(current_user, "role", None) == "platform_admin"
+    is_own_org_admin = (
+        getattr(current_user, "role", None) == "org_admin"
+        and str(current_user.tenant_id) == str(tenant_id)
+    )
+    if not is_platform_admin and not is_own_org_admin:
+        raise HTTPException(status_code=403, detail="Only the org admin of this company (or a platform admin) can delete it")
+
+    # ── Verify tenant exists ─────────────────────────────────────────────────
+    t_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = t_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tid = str(tenant_id)
+
+    # ── Find identity_id BEFORE any deletions (for the fallback lookup later) ─
+    identity_id = current_user.identity_id
+
+    # ── Cascade deletions in safe FK order ───────────────────────────────────
+    # Helper shorthand
+    agent_sub = "SELECT id FROM agents WHERE tenant_id = :tid"
+
+    # 1. Approval requests (has agent_id FK to agents — must delete before agents)
+    await db.execute(text(
+        f"DELETE FROM approval_requests WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 2. Notifications (has both user_id + agent_id FKs — must delete before both)
+    await db.execute(text(
+        f"DELETE FROM notifications WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        "DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE tenant_id = :tid)"
+    ), {"tid": tid})
+
+    # 3. Bi-directional agent-to-agent relationships
+    await db.execute(text(
+        f"DELETE FROM agent_agent_relationships "
+        f"WHERE agent_id IN ({agent_sub}) OR target_agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 4. Agent-to-human relationships
+    await db.execute(text(
+        f"DELETE FROM agent_relationships WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 5. Task logs → tasks
+    await db.execute(text(
+        f"DELETE FROM task_logs "
+        f"WHERE task_id IN (SELECT id FROM tasks WHERE agent_id IN ({agent_sub}))"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM tasks WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 6. chat_messages has no session_id — delete directly via agent_id
+    await db.execute(text(
+        f"DELETE FROM chat_messages WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    # 6b. Chat sessions
+    await db.execute(text(
+        f"DELETE FROM chat_sessions WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 7. Agent triggers  (table: agent_triggers, NOT triggers)
+    await db.execute(text(
+        f"DELETE FROM agent_triggers WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 8. Channel configs, permissions, credentials
+    await db.execute(text(
+        f"DELETE FROM channel_configs WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM agent_permissions WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+    await db.execute(text(
+        f"DELETE FROM agent_credentials WHERE agent_id IN ({agent_sub})"
+    ), {"tid": tid})
+
+    # 9. Agents
+    await db.execute(text("DELETE FROM agents WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 10. OKR data (okr_key_results, okr_alignments, okr_progress_logs cascade from okr_objectives FK)
+    await db.execute(text("DELETE FROM okr_settings WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM work_reports WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM okr_objectives WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 11. Org structure
+    await db.execute(text("DELETE FROM org_members WHERE tenant_id = :tid"), {"tid": tid})
+    await db.execute(text("DELETE FROM org_departments WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 12. Invitation codes
+    await db.execute(text("DELETE FROM invitation_codes WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 12. Users of this tenant
+    await db.execute(text("DELETE FROM users WHERE tenant_id = :tid"), {"tid": tid})
+
+    # 13. Delete the tenant itself
+    await db.execute(text("DELETE FROM tenants WHERE id = :tid"), {"tid": tid})
+
+    await db.commit()
+
+    # ── Find fallback tenant for the caller ──────────────────────────────────
+    fallback_result = await db.execute(
+        select(User.tenant_id).where(
+            User.identity_id == identity_id,
+            User.tenant_id != tenant_id,
+        ).limit(1)
+    )
+    fallback_row = fallback_result.first()
+    fallback_tenant_id = str(fallback_row[0]) if fallback_row else None
+
+    return {"status": "deleted", "fallback_tenant_id": fallback_tenant_id}
