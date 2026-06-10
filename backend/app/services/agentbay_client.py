@@ -968,7 +968,7 @@ def _build_openai_compatible_grounding_payload(
             }
         ],
         "temperature": 0,
-        "max_tokens": 512,
+        "max_tokens": 2048,
         "response_format": {"type": "json_object"},
     }
 
@@ -996,7 +996,7 @@ def _build_gemini_native_grounding_payload(
         ],
         "generationConfig": {
             "temperature": 0,
-            "maxOutputTokens": 512,
+            "maxOutputTokens": 2048,
             "responseMimeType": "application/json",
             "responseSchema": _gemini_grounding_response_schema(),
         },

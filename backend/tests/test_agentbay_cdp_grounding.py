@@ -115,6 +115,7 @@ def test_openai_compatible_grounding_payload_keeps_openai_json_mode():
 
     assert payload["model"] == "google/gemini-3.5-flash"
     assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] == 2048
     assert "generationConfig" not in payload
     image_part = payload["messages"][0]["content"][1]["image_url"]["url"]
     assert image_part == "data:image/png;base64,abcd"
@@ -130,7 +131,7 @@ def test_gemini_native_grounding_payload_uses_generation_config_schema():
     config = payload["generationConfig"]
     assert config["responseMimeType"] == "application/json"
     assert config["responseSchema"] == _gemini_grounding_response_schema()
-    assert config["maxOutputTokens"] == 512
+    assert config["maxOutputTokens"] == 2048
     assert payload["contents"][0]["parts"][1]["inlineData"] == {
         "mimeType": "image/png",
         "data": "abcd",
