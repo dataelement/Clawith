@@ -11,6 +11,8 @@ sys.modules.setdefault("agentbay", fake_agentbay)
 
 from app.services.agentbay_client import (  # noqa: E402
     _build_browser_cdp_action_script,
+    _grounding_not_found_message,
+    _grounding_target_not_found,
     _normalized_box_center_to_pixel,
     _parse_cdp_action_result,
     _parse_grounding_json,
@@ -71,3 +73,21 @@ def test_build_browser_cdp_action_script_disconnects_without_closing_remote_brow
     assert "browser.disconnect" in script
     assert "process.exit(exitCode)" in script
     assert "Promise.race" in script
+
+
+def test_grounding_target_not_found_message_includes_visible_page_summary():
+    grounding = {
+        "found": False,
+        "box_2d": None,
+        "page_content": "A Magento Admin login page with Username, Password, and Sign In controls.",
+        "reason": "The requested Create Order button is not visible.",
+        "clarification": "Navigate after login or specify a visible login control.",
+    }
+
+    assert _grounding_target_not_found(grounding) is True
+    message = _grounding_not_found_message("Create Order button", grounding)
+
+    assert "no CDP action was performed" in message
+    assert "Magento Admin login page" in message
+    assert "Create Order button" in message
+    assert "Navigate after login" in message

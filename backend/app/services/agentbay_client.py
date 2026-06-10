@@ -276,6 +276,9 @@ class AgentBayClient:
             instruction=instruction,
         )
 
+        if _grounding_target_not_found(grounding):
+            raise RuntimeError(_grounding_not_found_message(instruction, grounding))
+
         box = grounding.get("box_2d")
         if not (isinstance(box, list) and len(box) == 4):
             raise RuntimeError(f"Gemini grounding did not return a valid box_2d: {grounding}")
@@ -816,16 +819,21 @@ Gemini visual grounding coordinate rules:
 - The box should tightly cover the actionable target. Prefer the smallest actual clickable/editable element.
 - For text input, target the editable field itself, not just its label.
 - If the target is partially visible, box the visible actionable region.
+- If the requested target is not visible on the page, or the instruction is too ambiguous to identify one target, do NOT guess and do NOT return a fake box. Instead set found to false, set box_2d to null, summarize the visible page content, and ask for a clearer instruction.
 
 Screenshot size for reference: {image_width}x{image_height} pixels.
 
 Return ONLY valid JSON with this exact shape:
 {{
-  "target": "short description of the selected UI target",
+  "found": true,
+  "target": "short description of the selected UI target, or empty string when not found",
   "box_2d": [ymin, xmin, ymax, xmax],
   "confidence": 0.0,
-  "reason": "short reason"
+  "reason": "short reason",
+  "page_content": "brief summary of visible page content when not found",
+  "clarification": "what clearer instruction is needed when not found"
 }}
+When found is false, box_2d MUST be null.
 """.strip()
 
     payload = {
@@ -927,6 +935,39 @@ def _parse_grounding_json(content: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError(f"Gemini grounding returned non-object JSON: {data}")
     return data
+
+
+def _grounding_target_not_found(grounding: dict[str, Any]) -> bool:
+    found = grounding.get("found")
+    if found is False:
+        return True
+    if isinstance(found, str):
+        return found.strip().lower() in {"false", "no", "not_found", "not found", "missing", "0"}
+    return False
+
+
+def _grounding_not_found_message(instruction: str, grounding: dict[str, Any]) -> str:
+    page_content = str(
+        grounding.get("page_content")
+        or grounding.get("visible_page_content")
+        or grounding.get("visible_content")
+        or ""
+    ).strip()
+    reason = str(grounding.get("reason") or "").strip()
+    clarification = str(grounding.get("clarification") or "").strip()
+    parts = [
+        "Gemini grounding could not find the requested target on the current page, so no CDP action was performed.",
+        f"Requested target: {instruction}",
+    ]
+    if page_content:
+        parts.append(f"Visible page content: {page_content[:1000]}")
+    if reason:
+        parts.append(f"Reason: {reason[:500]}")
+    if clarification:
+        parts.append(f"Clarification needed: {clarification[:500]}")
+    else:
+        parts.append("Clarification needed: Please provide a more specific instruction that matches a visible element on the current page.")
+    return "\n".join(parts)
 
 
 def _normalized_box_center_to_pixel(box: list[Any], width: int, height: int) -> tuple[float, float, float, float, int, int]:
