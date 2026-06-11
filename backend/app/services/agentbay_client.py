@@ -1341,8 +1341,13 @@ function decodePayload() {
 # Previously keyed by (agent_id, image_type) which meant all users
 # of the same Agent shared one browser/desktop — causing conflicts.
 
-_agentbay_sessions: dict[tuple[uuid.UUID, str, str], tuple[AgentBayClient, datetime]] = {}
+_AgentBayCacheKey = tuple[uuid.UUID, str, str]
+
+_agentbay_sessions: dict[_AgentBayCacheKey, tuple[AgentBayClient, datetime]] = {}
+_agentbay_create_locks: dict[_AgentBayCacheKey, asyncio.Lock] = {}
+_agentbay_sessions_lock = asyncio.Lock()
 _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
+_AGENTBAY_CLEANUP_INTERVAL_SECONDS = 60
 
 
 AGENTBAY_API_URL = "https://api.agentbay.ai/v1"
@@ -1356,6 +1361,16 @@ def get_cached_agentbay_client_for_agent(
     """Return a cached AgentBay client without creating a new remote session."""
     entry = _agentbay_sessions.get((agent_id, session_id, image_type))
     return entry[0] if entry else None
+
+
+async def _get_agentbay_create_lock(cache_key: _AgentBayCacheKey) -> asyncio.Lock:
+    """Return a per-cache-key lock so concurrent tool calls share one session."""
+    async with _agentbay_sessions_lock:
+        lock = _agentbay_create_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _agentbay_create_locks[cache_key] = lock
+        return lock
 
 
 def _is_plausible_agentbay_api_key(value: str | None) -> bool:
@@ -1490,76 +1505,121 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, se
                     (e.g. test_agentbay_channel, single-session callers).
     """
 
-    now = datetime.now()
     cache_key = (agent_id, session_id, image_type)
+    await cleanup_agentbay_sessions()
 
-    if cache_key in _agentbay_sessions:
-        client, last_used = _agentbay_sessions[cache_key]
-        if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
-            # Session still valid, refresh timestamp and reuse
-            _agentbay_sessions[cache_key] = (client, now)
-            return client
-        else:
+    create_lock = await _get_agentbay_create_lock(cache_key)
+    async with create_lock:
+        now = datetime.now()
+        if cache_key in _agentbay_sessions:
+            client, last_used = _agentbay_sessions[cache_key]
+            if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
+                # Session still valid, refresh timestamp and reuse
+                _agentbay_sessions[cache_key] = (client, now)
+                return client
+
             # Session expired, close and remove
             logger.info(f"[AgentBay] Session expired for {image_type} (session={session_id[:8]}), closing")
+            async with _agentbay_sessions_lock:
+                _agentbay_sessions.pop(cache_key, None)
             await client.close_session()
-            del _agentbay_sessions[cache_key]
 
-    from app.services.agent_tools import _get_tool_config
+        from app.services.agent_tools import _get_tool_config
 
-    tool_config = await _get_tool_config(agent_id, "agentbay_browser_navigate")
-    api_key = None
+        tool_config = await _get_tool_config(agent_id, "agentbay_browser_navigate")
+        api_key = None
 
-    if tool_config and tool_config.get("api_key"):
-        api_key = tool_config.get("api_key")
-        from app.core.security import decrypt_data
-        from app.config import get_settings
+        if tool_config and tool_config.get("api_key"):
+            api_key = tool_config.get("api_key")
+            from app.core.security import decrypt_data
+            from app.config import get_settings
+            try:
+                api_key = decrypt_data(api_key, get_settings().SECRET_KEY)
+            except Exception:
+                pass  # Fallback if it's somehow plaintext
+            if not _is_plausible_agentbay_api_key(api_key):
+                api_key = None
+
+        if not api_key:
+            api_key = await get_agentbay_api_key_for_agent(agent_id)
+
+        if not api_key:
+            raise RuntimeError("AgentBay not configured for this agent. Please configure in Tools > AgentBay.")
+
+        client = AgentBayClient(api_key)
+
         try:
-            api_key = decrypt_data(api_key, get_settings().SECRET_KEY)
+            if image_type == "browser":
+                await client.create_session("browser_latest")
+                # Inject stored cookies after browser initialization
+                await _inject_credentials(client, agent_id)
+                from app.services.webarena_agentbay_artifacts import maybe_start_webarena_recorder
+                await maybe_start_webarena_recorder(agent_id, session_id, client)
+            elif image_type == "computer":
+                # Read OS preference from tool config (default: windows)
+                os_type = (tool_config or {}).get("os_type", "windows")
+                computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
+                logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image}) for session={session_id[:8]}")
+                await client.create_session(computer_image)
+            else:
+                await client.create_session("code_latest")
         except Exception:
-            pass  # Fallback if it's somehow plaintext
-        if not _is_plausible_agentbay_api_key(api_key):
-            api_key = None
+            await client.close_session()
+            raise
 
-    if not api_key:
-        api_key = await get_agentbay_api_key_for_agent(agent_id)
-
-    if not api_key:
-        raise RuntimeError("AgentBay not configured for this agent. Please configure in Tools > AgentBay.")
-
-    client = AgentBayClient(api_key)
-
-    if image_type == "browser":
-        await client.create_session("browser_latest")
-        # Inject stored cookies after browser initialization
-        await _inject_credentials(client, agent_id)
-        from app.services.webarena_agentbay_artifacts import maybe_start_webarena_recorder
-        await maybe_start_webarena_recorder(agent_id, session_id, client)
-    elif image_type == "computer":
-        # Read OS preference from tool config (default: windows)
-        os_type = (tool_config or {}).get("os_type", "windows")
-        computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
-        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image}) for session={session_id[:8]}")
-        await client.create_session(computer_image)
-    else:
-        await client.create_session("code_latest")
-
-    _agentbay_sessions[cache_key] = (client, now)
-    return client
+        async with _agentbay_sessions_lock:
+            _agentbay_sessions[cache_key] = (client, datetime.now())
+        return client
 
 
 async def cleanup_agentbay_sessions():
     """Clean up expired AgentBay sessions."""
     now = datetime.now()
-    expired = [
-        cache_key for cache_key, (client, last_used) in _agentbay_sessions.items()
-        if now - last_used > _AGENTBAY_SESSION_TIMEOUT
-    ]
-    for cache_key in expired:
-        client, _ = _agentbay_sessions.pop(cache_key)
+    async with _agentbay_sessions_lock:
+        expired = [
+            cache_key for cache_key, (client, last_used) in _agentbay_sessions.items()
+            if now - last_used > _AGENTBAY_SESSION_TIMEOUT
+        ]
+        clients_to_close = [
+            (cache_key, _agentbay_sessions.pop(cache_key)[0])
+            for cache_key in expired
+            if cache_key in _agentbay_sessions
+        ]
+        for cache_key in expired:
+            _agentbay_create_locks.pop(cache_key, None)
+
+    for cache_key, client in clients_to_close:
         agent_id, session_id, image_type = cache_key
         logger.info(f"[AgentBay] Cleaning up expired {image_type} session for agent {agent_id} (session={session_id[:8]})")
         await client.close_session()
+
+
+async def close_all_agentbay_sessions(reason: str = "shutdown"):
+    """Close every cached AgentBay session, used during process shutdown."""
+    async with _agentbay_sessions_lock:
+        clients_to_close = list(_agentbay_sessions.items())
+        _agentbay_sessions.clear()
+        _agentbay_create_locks.clear()
+
+    for cache_key, (client, _last_used) in clients_to_close:
+        agent_id, session_id, image_type = cache_key
+        logger.info(
+            f"[AgentBay] Closing cached {image_type} session for agent {agent_id} "
+            f"(session={session_id[:8]}, reason={reason})"
+        )
+        await client.close_session()
+
+
+async def run_agentbay_session_cleanup_loop():
+    """Periodically release idle AgentBay sessions so API-key concurrency is freed."""
+    while True:
+        try:
+            await cleanup_agentbay_sessions()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"[AgentBay] Periodic session cleanup failed: {exc}")
+        await asyncio.sleep(_AGENTBAY_CLEANUP_INTERVAL_SECONDS)
 
 
 async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):

@@ -298,6 +298,9 @@ async def lifespan(app: FastAPI):
         task_specs = []
         if _role_enabled("all", "worker"):
             task_specs.append(("trigger_daemon", start_trigger_daemon()))
+        if _role_enabled("all", "api"):
+            from app.services.agentbay_client import run_agentbay_session_cleanup_loop
+            task_specs.append(("agentbay_session_cleanup", run_agentbay_session_cleanup_loop()))
         if _role_enabled("all", "connector"):
             task_specs.extend([
                 ("feishu_ws", feishu_ws_manager.start_all()),
@@ -324,6 +327,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    try:
+        from app.services.agentbay_client import close_all_agentbay_sessions
+        await close_all_agentbay_sessions(reason="app_shutdown")
+    except Exception as e:
+        logger.warning(f"[shutdown] AgentBay session cleanup failed: {e}")
     await realtime_router.stop()
     await close_redis()
 

@@ -11564,6 +11564,16 @@ def _agentbay_save_cdp_coordinate_screenshot(
     )
 
 
+def _agentbay_runtime_error_text(exc: RuntimeError, *, locale: str = "zh") -> str:
+    """Return RuntimeError text with a config hint only for real config failures."""
+    message = str(exc)
+    if "not configured" not in message.lower():
+        return f"❌ {message}"
+    if locale == "zh":
+        return f"❌ {message}。请先在 Agent 设置中配置 AgentBay 通道。"
+    return f"❌ {message}. Please configure AgentBay in Agent settings."
+
+
 def _agentbay_record_eval_screenshot(
     *,
     agent_id: Optional[uuid.UUID],
@@ -11655,7 +11665,7 @@ async def _agentbay_browser_navigate(agent_id: Optional[uuid.UUID], ws: Path, ar
         return "\n\n".join(parts)
 
     except RuntimeError as e:
-        return f"❌ {str(e)}。请先在 Agent 设置中配置 AgentBay 通道。"
+        return _agentbay_runtime_error_text(e, locale="zh")
     except Exception as e:
         logger.exception(f"[AgentBay] Browser navigate failed for agent {agent_id}")
         return f"❌ AgentBay 浏览器访问失败: {str(e)[:200]}"
@@ -11921,7 +11931,7 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
         return "\n\n".join(parts)
 
     except RuntimeError as e:
-        return f"❌ {str(e)}。请先在 Agent 设置中配置 AgentBay 通道。"
+        return _agentbay_runtime_error_text(e, locale="zh")
     except Exception as e:
         logger.exception(f"[AgentBay] Code execution failed for agent {agent_id}")
         return f"❌ 代码执行失败: {str(e)[:200]}"
@@ -11959,7 +11969,7 @@ async def _agentbay_code_write_file(agent_id: Optional[uuid.UUID], ws: Path, arg
             return f"File written in AgentBay Code Sandbox: {remote_path} ({byte_count} bytes, mode={mode})"
         return f"Write failed: {result.error_message}"
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Code write file failed for agent {agent_id}")
         return f"Write file failed: {str(e)[:200]}"
@@ -11988,7 +11998,7 @@ async def _agentbay_code_read_file(agent_id: Optional[uuid.UUID], ws: Path, argu
             return f"File read from AgentBay Code Sandbox: {remote_path}\n\n{content[:12000]}"
         return f"Read failed: {result.error_message}"
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Code read file failed for agent {agent_id}")
         return f"Read file failed: {str(e)[:200]}"
@@ -12034,7 +12044,7 @@ async def _agentbay_code_edit_file(agent_id: Optional[uuid.UUID], ws: Path, argu
             return f"{action} AgentBay Code Sandbox file: {remote_path} ({len(normalized_edits)} replacement(s))"
         return f"Edit failed: {result.error_message}"
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Code edit file failed for agent {agent_id}")
         return f"Edit file failed: {str(e)[:200]}"
@@ -12225,7 +12235,7 @@ async def _agentbay_browser_extract(agent_id: Optional[uuid.UUID], ws: Path, arg
             return f"Extraction failed: {result}"
 
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Browser extract failed for agent {agent_id}")
         return f"Browser extract failed: {str(e)[:200]}"
@@ -12260,7 +12270,7 @@ async def _agentbay_browser_observe(agent_id: Optional[uuid.UUID], ws: Path, arg
             return f"Observation failed: {result}"
 
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Browser observe failed for agent {agent_id}")
         return f"Browser observe failed: {str(e)[:200]}"
@@ -12298,7 +12308,7 @@ async def _agentbay_browser_login(agent_id: Optional[uuid.UUID], ws: Path, argum
             return f"Login failed: {result.get('message', 'Unknown error')}"
 
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Browser login failed for agent {agent_id}")
         return f"Login failed: {str(e)[:200]}"
@@ -12339,7 +12349,7 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
         return "\n\n".join(parts)
 
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Command exec failed for agent {agent_id}")
         return f"Command execution failed: {str(e)[:200]}"
@@ -12669,7 +12679,7 @@ async def _agentbay_computer_screenshot(agent_id: Optional[uuid.UUID], ws: Path,
         )
 
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Computer screenshot failed for agent {agent_id}")
         return f"Desktop screenshot failed: {str(e)[:200]}"
@@ -12715,7 +12725,7 @@ async def _agentbay_computer_save_screenshot(agent_id: Optional[uuid.UUID], ws: 
         )
         return f"{saved}\n{coordinate_note}"
     except RuntimeError as e:
-        return f"{str(e)}. Please configure AgentBay in Agent settings."
+        return _agentbay_runtime_error_text(e, locale="en")
     except Exception as e:
         logger.exception(f"[AgentBay] Computer save screenshot failed for agent {agent_id}")
         return f"Desktop screenshot save failed: {str(e)[:200]}"

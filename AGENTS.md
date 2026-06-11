@@ -34,3 +34,16 @@ In practice:
 
 - At the end of each completed task, play a short local completion sound on the user's machine (for example with `afplay` on macOS) so the user notices work has finished even when reading or working in another window.
 - This reminder should be treated as a default behavior for this repository across sessions unless the user explicitly asks to skip it for a specific task.
+
+## Server Development / Deployment Environment
+
+- At the start of every Clawith session, read this section so the deployment target is available in context.
+- Primary development server: `root@192.168.106.163`
+- Server repository path: `/home/work/Clawith`
+- Standard deployment flow after local changes are committed and pushed:
+  1. SSH to the server: `ssh root@192.168.106.163`
+  2. Enter the repo: `cd /home/work/Clawith`
+  3. Pull the latest code from git.
+  4. Pull compose images: `docker compose -f deploy/docker-compose.yml -p clawith pull`
+  5. Rebuild services: `docker compose -f deploy/docker-compose.yml -p clawith build`
+  6. Restart in detached mode: `docker compose -f deploy/docker-compose.yml -p clawith up -d`
