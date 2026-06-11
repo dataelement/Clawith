@@ -2095,36 +2095,7 @@ export default function AgentDetailPage() {
         }
     };
 
-    const { data: soulContent } = useQuery({
-        queryKey: ['file', id, 'soul.md'],
-        queryFn: () => fileApi.read(id!, 'soul.md'),
-        enabled: !!id && activeTab === 'mind',
-    });
-
-    const { data: memoryFiles = [] } = useQuery({
-        queryKey: ['files', id, 'memory'],
-        queryFn: () => fileApi.list(id!, 'memory'),
-        enabled: !!id && activeTab === 'mind',
-    });
-    const [expandedMemory, setExpandedMemory] = useState<string | null>(null);
-    const { data: memoryFileContent } = useQuery({
-        queryKey: ['file', id, expandedMemory],
-        queryFn: () => fileApi.read(id!, expandedMemory!),
-        enabled: !!id && !!expandedMemory,
-    });
-
-    const { data: skillFiles = [] } = useQuery({
-        queryKey: ['files', id, 'skills'],
-        queryFn: () => fileApi.list(id!, 'skills'),
-        enabled: !!id && activeTab === 'skills',
-    });
-
     const [workspacePath, setWorkspacePath] = useState('workspace');
-    const { data: workspaceFiles = [] } = useQuery({
-        queryKey: ['files', id, workspacePath],
-        queryFn: () => fileApi.list(id!, workspacePath),
-        enabled: !!id && activeTab === 'workspace',
-    });
 
     const { data: activityLogs = [] } = useQuery({
         queryKey: ['activity', id],
@@ -3137,7 +3108,6 @@ export default function AgentDetailPage() {
                         setLivePanelVisible(true);
                         collapseSidebarsForLivePanel();
                     }
-                    queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
                 upsertToolCallMessage({
                     role: 'tool_call',
@@ -4066,17 +4036,7 @@ export default function AgentDetailPage() {
         retry: false,
     });
 
-    const { data: channelConfig } = useQuery({
-        queryKey: ['channel', id],
-        queryFn: () => channelApi.get(id!),
-        enabled: !!id && activeTab === 'settings',
-    });
 
-    const { data: webhookData } = useQuery({
-        queryKey: ['webhook-url', id],
-        queryFn: () => channelApi.webhookUrl(id!),
-        enabled: !!id && activeTab === 'settings',
-    });
 
     const { data: llmModels = [], isLoading: llmModelsLoading } = useQuery({
         queryKey: ['llm-models'],
@@ -4135,17 +4095,7 @@ export default function AgentDetailPage() {
         enabled: !!id && activeTab === 'settings',
     });
 
-    // ─── Soul editor ─────────────────────────────────────
-    const [soulEditing, setSoulEditing] = useState(false);
-    const [soulDraft, setSoulDraft] = useState('');
 
-    const saveSoul = useMutation({
-        mutationFn: () => fileApi.write(id!, 'soul.md', soulDraft),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['file', id, 'soul.md'] });
-            setSoulEditing(false);
-        },
-    });
 
 
     const CopyBtn = ({ url }: { url: string }) => (
@@ -4158,9 +4108,6 @@ export default function AgentDetailPage() {
     );
 
     // ─── File viewer ─────────────────────────────────────
-    const [viewingFile, setViewingFile] = useState<string | null>(null);
-    const [fileEditing, setFileEditing] = useState(false);
-    const [fileDraft, setFileDraft] = useState('');
     const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -4176,31 +4123,13 @@ export default function AgentDetailPage() {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
     };
-    const { data: fileContent } = useQuery({
-        queryKey: ['file-content', id, viewingFile],
-        queryFn: () => fileApi.read(id!, viewingFile!),
-        enabled: !!viewingFile,
-    });
 
     // ─── Task creation & detail ───────────────────────────────────
     const [showTaskForm, setShowTaskForm] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [taskForm, setTaskForm] = useState({ title: '', description: '', priority: 'medium', type: 'todo' as 'todo' | 'supervision', supervision_target_name: '', remind_schedule: '', due_date: '' });
     const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-    const { data: taskLogs = [] } = useQuery({
-        queryKey: ['task-logs', id, selectedTaskId],
-        queryFn: () => taskApi.getLogs(id!, selectedTaskId!),
-        enabled: !!id && !!selectedTaskId,
-        refetchInterval: selectedTaskId ? 3000 : false,
-    });
 
-    // Schedule execution history (selectedTaskId format: 'sched-{uuid}')
-    const expandedScheduleId = selectedTaskId?.startsWith('sched-') ? selectedTaskId.slice(6) : null;
-    const { data: scheduleHistoryData } = useQuery({
-        queryKey: ['schedule-history', id, expandedScheduleId],
-        queryFn: () => scheduleApi.history(id!, expandedScheduleId!),
-        enabled: !!id && !!expandedScheduleId,
-    });
     const createTask = useMutation({
         mutationFn: (data: any) => {
             const cleaned = { ...data };
@@ -6164,6 +6093,17 @@ export default function AgentDetailPage() {
                                                 onTouchMoveCapture={handleChatTouchMoveCapture}
                                                 style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
                                             >
+                                                {chatHistoryLoadingMore && (
+                                                    <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--text-tertiary)', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                                                        <div className="cw-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div>
+                                                        {i18n.language?.startsWith('zh') ? '正在加载历史消息...' : 'Loading history...'}
+                                                    </div>
+                                                )}
+                                                {!chatHistoryHasMore && chatMessages.length > 0 && (
+                                                    <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                                        {i18n.language?.startsWith('zh') ? '已加载全部历史消息' : 'All history loaded'}
+                                                    </div>
+                                                )}
                                                 {chatMessages.length === 0 && !showNoModelState && (
                                                     <div className="chat-empty-state">
                                                         <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
@@ -6774,20 +6714,11 @@ export default function AgentDetailPage() {
                     setPromptModal(null);
                     if (action === 'newFolder') {
                         await fileApi.write(id!, `${workspacePath}/${value}/.gitkeep`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                     } else if (action === 'newFile') {
                         await fileApi.write(id!, `${workspacePath}/${value}`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
-                        setViewingFile(`${workspacePath}/${value}`);
-                        setFileEditing(true);
-                        setFileDraft('');
                     } else if (action === 'newSkill') {
                         const template = `---\nname: ${value}\ndescription: Describe what this skill does\n---\n\n# ${value}\n\n## Overview\nDescribe the purpose and when to use this skill.\n\n## Process\n1. Step one\n2. Step two\n\n## Output Format\nDescribe the expected output format.\n`;
                         await fileApi.write(id!, `skills/${value}/SKILL.md`, template);
-                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                        setViewingFile(`skills/${value}/SKILL.md`);
-                        setFileEditing(true);
-                        setFileDraft(template);
                     }
                 }}
             />
@@ -6805,9 +6736,6 @@ export default function AgentDetailPage() {
                     if (path) {
                         try {
                             await fileApi.delete(id!, path);
-                            setViewingFile(null);
-                            setFileEditing(false);
-                            queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                             showToast(t('common.delete'));
                         } catch (err: any) {
                             showToast(t('agent.upload.failed'), 'error');

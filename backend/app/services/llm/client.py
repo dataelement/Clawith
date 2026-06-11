@@ -1238,11 +1238,16 @@ class GeminiClient(LLMClient):
                             parsed_args = args
                         else:
                             parsed_args = {}
+
+                        func_call_dict: dict[str, Any] = {
+                            "name": fn.get("name", ""),
+                            "args": parsed_args,
+                        }
+                        if "_gemini_extra" in tc:
+                            func_call_dict.update(tc["_gemini_extra"])
+
                         parts.append({
-                            "functionCall": {
-                                "name": fn.get("name", ""),
-                                "args": parsed_args,
-                            }
+                            "functionCall": func_call_dict
                         })
                 if parts:
                     contents.append({"role": "model", "parts": parts})
@@ -1351,6 +1356,9 @@ class GeminiClient(LLMClient):
                     if dedup_key in seen_tool_calls:
                         continue
                     seen_tool_calls.add(dedup_key)
+                    
+                    extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
+                    
                     tool_calls.append({
                         "id": f"call_{len(tool_calls) + 1}",
                         "type": "function",
@@ -1358,6 +1366,7 @@ class GeminiClient(LLMClient):
                             "name": name,
                             "arguments": args_str,
                         },
+                        "_gemini_extra": extra,
                     })
 
         usage = self._normalize_usage(data.get("usageMetadata"))
@@ -1498,6 +1507,9 @@ class GeminiClient(LLMClient):
                             if dedup_key in seen_tool_calls:
                                 continue
                             seen_tool_calls.add(dedup_key)
+                            
+                            extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
+                            
                             tool_calls.append({
                                 "id": f"call_{len(tool_calls) + 1}",
                                 "type": "function",
@@ -1505,6 +1517,7 @@ class GeminiClient(LLMClient):
                                     "name": name,
                                     "arguments": args_str,
                                 },
+                                "_gemini_extra": extra,
                             })
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:

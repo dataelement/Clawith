@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -412,7 +412,7 @@ export default function WorkspaceOperationPanel({
     const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'ready' | 'deleted'>('idle');
     const [editing, setEditing] = useState(false);
     const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-    const [revisions, setRevisions] = useState<any[]>([]);
+        const [revisions, setRevisions] = useState<any[]>([]);
     const [fileTree, setFileTree] = useState<WorkspaceFileNode[]>([]);
     const [activityOpenLocal, setActivityOpenLocal] = useState(false);
     const activityOpen = activityOpenProp ?? activityOpenLocal;
@@ -494,12 +494,20 @@ export default function WorkspaceOperationPanel({
 
     const loadFileTree = async () => {
         const loadDir = async (path: string, depth: number): Promise<WorkspaceFileNode[]> => {
-            if (depth > 4) return [];
-        const items = await fileApi.list(agentId, path).catch(() => []);
-        return Promise.all(items.map(async (item: WorkspaceFileNode) => {
-            if (!item.is_dir) return item;
-            return { ...item, children: await loadDir(item.path, depth + 1) };
-        }));
+            if (depth > 8) return [];
+            const isRoot = path === (treeScope === 'workspace' ? WORKSPACE_ROOT : '');
+            const isExpanded = expandedDirs.has(path);
+            if (!isRoot && !isExpanded) {
+                return [];
+            }
+            const items = await fileApi.list(agentId, path).catch(() => []);
+            return Promise.all(items.map(async (item: WorkspaceFileNode) => {
+                if (!item.is_dir) return item;
+                const children = expandedDirs.has(item.path)
+                    ? await loadDir(item.path, depth + 1)
+                    : [];
+                return { ...item, children };
+            }));
         };
         const roots = await loadDir(treeScope === 'workspace' ? WORKSPACE_ROOT : '', 0);
         setFileTree(roots);
@@ -603,7 +611,7 @@ export default function WorkspaceOperationPanel({
 
     useEffect(() => {
         loadFileTree();
-    }, [agentId, activityKey, liveDraft?.path, treeScope]);
+    }, [agentId, activityKey, liveDraft?.path, treeScope, expandedDirs]);
 
     useEffect(() => {
         if (!activePath || treeScope !== 'workspace') return;

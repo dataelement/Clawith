@@ -188,7 +188,6 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
                 base_config = global_config or {}
                 tenant_config = {}
                 if tool_source == "builtin":
-                    base_config = {}
                     tenant_config = await get_tenant_tool_config(db, agent_tenant_id, db_tool_name, config_schema)
                 # Merge: agent overrides global
                 merged = {**base_config, **tenant_config, **(agent_config or {})}
@@ -206,7 +205,7 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
             tenant_config = {}
             if tool.source == "builtin":
                 tenant_config = await get_tenant_tool_config(db, agent_tenant_id, tool.name, tool.config_schema)
-            base_config = {} if tool.source == "builtin" else (tool.config or {})
+            base_config = tool.config or {}
             merged = {**base_config, **tenant_config}
         else:
             merged = {}
@@ -8047,6 +8046,7 @@ async def _execute_code(
             timeout=timeout,
             work_dir=str(work_dir),
             on_output=on_output,
+            agent_id=agent_id,
         )
 
         # Format result for user display
