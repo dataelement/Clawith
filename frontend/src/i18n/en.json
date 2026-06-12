@@ -327,7 +327,15 @@
       "showMore": "Show {{count}} more...",
       "showLess": "Show less",
       "hideCompleted": "Hide completed",
-      "showCompleted": "Show {{count}} completed"
+      "showCompleted": "Show {{count}} completed",
+      "triggerOnce": "Once at {{time}}",
+      "triggerEveryMin": "Every {{min}} min",
+      "triggerEveryHour": "Every {{hour}}h",
+      "triggerPoll": "Poll: {{url}}",
+      "triggerOnMessage": "On message from {{sender}}",
+      "triggerUnknown": "unknown",
+      "today": "Today",
+      "viewAll": "View All"
     },
     "soul": {
       "title": "Soul.md — Personality Definition",

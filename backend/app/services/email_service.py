@@ -9,6 +9,8 @@ import socket
 import smtplib
 import ssl
 import email as email_lib
+import uuid
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -159,6 +161,7 @@ async def send_email(
     cc: Optional[str] = None,
     attachments: Optional[list[str]] = None,
     workspace_path: Optional[Path] = None,
+    agent_id: Optional[uuid.UUID] = None,
 ) -> str:
     """Send an email via SMTP.
 
@@ -170,6 +173,7 @@ async def send_email(
         cc: CC recipients, comma-separated
         attachments: List of workspace-relative file paths to attach
         workspace_path: Agent workspace root for resolving attachment paths
+        agent_id: Optional UUID of the agent for retrieving files from storage
     """
     cfg = resolve_config(config)
     addr = cfg["email_address"]
@@ -191,14 +195,39 @@ async def send_email(
 
     # Attach files
     if attachments and workspace_path:
+        from app.services.storage import get_storage_backend, normalize_storage_key
+        storage = get_storage_backend()
+
         for rel_path in attachments:
-            full_path = workspace_path / rel_path
-            if full_path.exists() and full_path.is_file():
-                with open(full_path, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
+            clean_rel = rel_path.replace("\\", "/").strip().lstrip("/")
+            prefix = str(agent_id) if agent_id else workspace_path.name
+            storage_key = normalize_storage_key(f"{prefix}/{clean_rel}")
+            file_bytes = None
+            filename = Path(clean_rel).name
+
+            # 1. Try to read from the storage backend (e.g. S3 or local storage)
+            try:
+                if await storage.exists(storage_key) and await storage.is_file(storage_key):
+                    file_bytes = await storage.read_bytes(storage_key)
+            except Exception:
+                pass
+
+            # 2. Fall back to local disk if not found in storage backend
+            if file_bytes is None:
+                full_path = workspace_path / rel_path
+                if full_path.exists() and full_path.is_file():
+                    try:
+                        with open(full_path, "rb") as f:
+                            file_bytes = f.read()
+                        filename = full_path.name
+                    except Exception:
+                        pass
+
+            if file_bytes is not None:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(file_bytes)
                 encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={full_path.name}")
+                part.add_header("Content-Disposition", "attachment", filename=filename)
                 msg.attach(part)
 
     try:

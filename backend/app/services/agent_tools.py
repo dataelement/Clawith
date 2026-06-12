@@ -11766,6 +11766,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                agent_id=agent_id,
             )
         elif tool_name == "read_emails":
             return await read_emails(

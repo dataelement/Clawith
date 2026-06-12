@@ -1385,7 +1385,7 @@ BUILTIN_TOOLS = [
                 "attachments": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of workspace-relative file paths to attach (optional)",
+                    "description": "List of workspace-relative file paths to attach (optional). E.g. ['workspace/filename.ext']. Always specify this parameter if the user uploads a file or mentions sending/attaching a file.",
                 },
             },
             "required": ["to", "subject", "body"],

@@ -90,7 +90,7 @@ services:
       API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
       MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
     volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     networks:
       - default
     depends_on:
