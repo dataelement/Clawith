@@ -441,7 +441,6 @@ class ChannelUserService:
         # Step 1: Find or create global Identity using unified registration service
         from app.services.registration_service import registration_service
         identity = await registration_service.find_or_create_identity(
-            db,
             email=email,
             phone=extra_info.get("mobile"),
             username=username,
@@ -557,7 +556,6 @@ async def get_platform_user_by_org_member(
     from app.services.registration_service import registration_service
     # Use unified find_or_create_identity with dual lookup (email/phone)
     identity = await registration_service.find_or_create_identity(
-        db,
         email=email,
         phone=org_member.phone,
         username=username,

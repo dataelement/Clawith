@@ -138,7 +138,7 @@ class BaseAuthProvider(ABC):
             # Update user info and ensure identity is loaded
             if not user.identity_id:
                  from app.services.registration_service import registration_service
-                 identity = await registration_service.find_or_create_identity(db, email=user_info.email, phone=user_info.mobile)
+                 identity = await registration_service.find_or_create_identity(email=user_info.email, phone=user_info.mobile)
                  user.identity_id = identity.id
             
             await self._update_existing_user(db, user, user_info)
@@ -159,7 +159,7 @@ class BaseAuthProvider(ABC):
 
         # SSO users should also appear as Web members for tenant-side user management.
         from app.services.registration_service import registration_service
-        await registration_service.ensure_web_org_member(db, user)
+        await registration_service.ensure_web_org_member(user)
 
         return user, is_new
 
@@ -219,7 +219,6 @@ class BaseAuthProvider(ABC):
         effective_id = user_info.provider_user_id or user_info.provider_union_id or "unknown"
         
         identity = await registration_service.find_or_create_identity(
-            db,
             email=user_info.email,
             phone=user_info.mobile,
             username=user_info.email.split("@")[0] if user_info.email else None,

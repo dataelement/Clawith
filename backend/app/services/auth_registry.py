@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import identity_provider_dao
 from app.models.identity import IdentityProvider
 from app.services.auth_provider import (
     PROVIDER_CLASSES,
@@ -34,12 +35,11 @@ class AuthProviderRegistry:
         self._cache: dict[str, BaseAuthProvider] = {}
 
     async def get_provider(
-        self, db: AsyncSession, provider_type: str, tenant_id: str | None = None
+        self, provider_type: str, tenant_id: str | None = None
     ) -> BaseAuthProvider | None:
         """Get or create an authentication provider instance.
 
         Args:
-            db: Database session
             provider_type: The type of provider (feishu, dingtalk, etc.)
             tenant_id: Optional tenant ID for tenant-specific providers
 
@@ -52,12 +52,13 @@ class AuthProviderRegistry:
             return self._cache[cache_key]
 
         # Try to get provider config from database
-        provider_model = await get_preferred_identity_provider(
-            db,
-            provider_type,
-            tenant_id,
-            is_active=True,
-        )
+        async with identity_provider_dao.session() as db:
+            provider_model = await get_preferred_identity_provider(
+                db,
+                provider_type,
+                tenant_id,
+                is_active=True,
+            )
 
         # Create provider instance
         provider = self._create_provider(provider_type, provider_model)
@@ -86,28 +87,28 @@ class AuthProviderRegistry:
         return provider_class(provider=provider_model, config=config)
 
     async def list_providers(
-        self, db: AsyncSession, tenant_id: str | None = None
+        self, tenant_id: str | None = None
     ) -> list[IdentityProvider]:
         """List all available identity providers.
 
         Args:
-            db: Database session
             tenant_id: Optional tenant ID to filter by
 
         Returns:
             List of IdentityProvider records
         """
-        query = select(IdentityProvider).where(IdentityProvider.is_active == True)
+        async with identity_provider_dao.session() as db:
+            query = select(IdentityProvider).where(IdentityProvider.is_active == True)
 
-        if tenant_id:
-            # Only include tenant-specific ones
-            query = query.where(IdentityProvider.tenant_id == tenant_id)
-        else:
-            # Public OAuth login should only expose global providers.
-            query = query.where(IdentityProvider.tenant_id.is_(None))
+            if tenant_id:
+                # Only include tenant-specific ones
+                query = query.where(IdentityProvider.tenant_id == tenant_id)
+            else:
+                # Public OAuth login should only expose global providers.
+                query = query.where(IdentityProvider.tenant_id.is_(None))
 
-        result = await db.execute(query)
-        return list(result.scalars().all())
+            result = await db.execute(query)
+            return list(result.scalars().all())
 
     async def create_provider(
         self,

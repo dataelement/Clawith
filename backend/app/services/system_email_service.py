@@ -51,19 +51,18 @@ class BroadcastEmailRecipient:
 
 
 
-async def resolve_email_config_async(db, *, include_disabled: bool = False) -> SystemEmailConfig | None:
-    """Resolve email configuration by searching in order:
-    1. Platform-level settings in DB ('system_email_platform')
-    """
-    from sqlalchemy import select
-    from app.models.system_settings import SystemSetting
+async def resolve_email_config_async(db=None, *, include_disabled: bool = False) -> SystemEmailConfig | None:
+    """Resolve email configuration from the 'system_email_platform' system setting.
 
-    # 1. Try platform-level config in DB
+    ``db`` is accepted for call-site compatibility but ignored — the lookup
+    goes through ``system_setting_dao`` which manages its own session.
+    """
+    from app.dao import system_setting_dao
+
+    # Try platform-level config in DB
     try:
-        result = await db.execute(select(SystemSetting).where(SystemSetting.key == "system_email_platform"))
-        setting = result.scalar_one_or_none()
-        if setting and setting.value:
-            v = setting.value
+        v = await system_setting_dao.get_value("system_email_platform", {})
+        if v:
             if v.get("SYSTEM_EMAIL_ENABLED") is False and not include_disabled:
                 return None
             if v.get("SYSTEM_EMAIL_FROM_ADDRESS") and v.get("SYSTEM_SMTP_HOST"):
@@ -72,7 +71,8 @@ async def resolve_email_config_async(db, *, include_disabled: bool = False) -> S
                     from_name=str(v.get("SYSTEM_EMAIL_FROM_NAME", "Clawith")).strip() or "Clawith",
                     smtp_host=str(v.get("SYSTEM_SMTP_HOST", "")).strip(),
                     smtp_port=int(v.get("SYSTEM_SMTP_PORT", 465)),
-                    smtp_username=str(v.get("SYSTEM_SMTP_USERNAME", "")).strip() or str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
+                    smtp_username=str(v.get("SYSTEM_SMTP_USERNAME", "")).strip()
+                    or str(v.get("SYSTEM_EMAIL_FROM_ADDRESS", "")).strip(),
                     smtp_password=str(v.get("SYSTEM_SMTP_PASSWORD", "")),
                     smtp_ssl=bool(v.get("SYSTEM_SMTP_SSL", True)),
                     smtp_timeout_seconds=max(1, int(v.get("SYSTEM_SMTP_TIMEOUT_SECONDS", 15))),
@@ -90,14 +90,9 @@ async def send_system_email(to: str, subject: str, body: str, db=None) -> None:
         to: Recipient email address
         subject: Email subject
         body: Email body text
-        db: Optional database session
+        db: Ignored; kept for call-site compatibility
     """
-    if not db:
-        from app.database import async_session
-        async with async_session() as session:
-            config = await resolve_email_config_async(session)
-    else:
-        config = await resolve_email_config_async(db)
+    config = await resolve_email_config_async()
 
     if not config:
         logger.warning(f"System email not configured, skipped sending to {to}")
@@ -233,36 +228,23 @@ EMAIL_TEMPLATE_VARIABLES: dict[str, list[str]] = {
 }
 
 
-async def get_email_templates(db=None) -> dict[str, dict[str, str]]:
+async def get_email_templates() -> dict[str, dict[str, str]]:
     """Load email templates from DB, falling back to defaults.
 
     Returns:
         A dict mapping scenario_key -> {"subject": str, "body": str}
     """
-    from sqlalchemy import select
-    from app.models.system_settings import SystemSetting
-
     templates = dict(DEFAULT_EMAIL_TEMPLATES)  # start with defaults
-
-    if not db:
-        from app.database import async_session
-        async with async_session() as session:
-            return await _load_templates_from_db(session, templates)
-    return await _load_templates_from_db(db, templates)
+    return await _load_templates_from_db(templates)
 
 
-async def _load_templates_from_db(db, templates: dict) -> dict:
+async def _load_templates_from_db(templates: dict) -> dict:
     """Internal helper: overlay DB-saved templates on top of defaults."""
-    from sqlalchemy import select
-    from app.models.system_settings import SystemSetting
+    from app.dao import system_setting_dao
 
     try:
-        result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "email_templates")
-        )
-        setting = result.scalar_one_or_none()
-        if setting and setting.value:
-            saved = setting.value
+        saved = await system_setting_dao.get_value("email_templates", {})
+        if saved:
             for key in templates:
                 if key in saved and isinstance(saved[key], dict):
                     # Only override subject/body if present and non-empty
@@ -287,19 +269,19 @@ def _render_template(template_str: str, variables: dict[str, str]) -> str:
 async def render_email_template(
     scenario_key: str,
     variables: dict[str, str],
-    db=None,
+    db=None,  # kept for call-site compat, ignored
 ) -> tuple[str, str]:
     """Render an email template for a given scenario.
 
     Args:
         scenario_key: One of the known scenario keys (e.g. 'email_verification')
         variables: Dict of variable_name -> value to substitute
-        db: Optional database session
+        db: Ignored; kept for backward-compatibility
 
     Returns:
         (subject, body) tuple with variables substituted
     """
-    templates = await get_email_templates(db=db)
+    templates = await get_email_templates()
     template = templates.get(scenario_key, DEFAULT_EMAIL_TEMPLATES.get(scenario_key, {}))
 
     subject = _render_template(template.get("subject", ""), variables)
@@ -312,15 +294,9 @@ async def send_test_email(to: str, db=None) -> None:
 
     Args:
         to: Recipient email address
-        db: Optional database session for resolving config
+        db: Ignored; kept for call-site compatibility
     """
-    config = None
-    if not db:
-        from app.database import async_session
-        async with async_session() as session:
-            config = await resolve_email_config_async(session, include_disabled=True)
-    else:
-        config = await resolve_email_config_async(db, include_disabled=True)
+    config = await resolve_email_config_async(include_disabled=True)
 
     if not config:
         raise RuntimeError("System email SMTP settings are not configured.")

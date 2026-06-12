@@ -135,7 +135,12 @@ async def test_auth_registry_uses_preferred_provider_when_duplicates_exist():
     db = _DummyDB([[provider]])
     registry = AuthProviderRegistry()
 
-    result = await registry.get_provider(db, "google_workspace", str(tenant_id))
+    from app.database import _session_ctx
+    token = _session_ctx.set(db)
+    try:
+        result = await registry.get_provider("google_workspace", str(tenant_id))
+    finally:
+        _session_ctx.reset(token)
 
     assert result is not None
     assert result.provider is provider

@@ -9,6 +9,15 @@ from fastapi import HTTPException
 
 from app.api import auth as auth_api
 from app.core.security import hash_password
+from app.database import _session_ctx
+
+
+async def run_with_db(db, func, *args, **kwargs):
+    token = _session_ctx.set(db)
+    try:
+        return await func(*args, **kwargs)
+    finally:
+        _session_ctx.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +120,7 @@ async def test_login_invalid_credentials_no_identity():
     bg = AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
-        await auth_api.login(data, bg, db)
+        await run_with_db(db, auth_api.login, data, bg)
     assert exc.value.status_code == 401
 
 
@@ -124,7 +133,7 @@ async def test_login_invalid_credentials_wrong_password():
     bg = AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
-        await auth_api.login(data, bg, db)
+        await run_with_db(db, auth_api.login, data, bg)
     assert exc.value.status_code == 401
 
 
@@ -137,7 +146,7 @@ async def test_login_disabled_account():
     bg = AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
-        await auth_api.login(data, bg, db)
+        await run_with_db(db, auth_api.login, data, bg)
     assert exc.value.status_code == 403
     assert "disabled" in str(exc.value.detail).lower()
 
@@ -157,7 +166,7 @@ async def test_login_unverified_email():
     with patch("app.services.system_email_service.resolve_email_config_async", new_callable=AsyncMock, return_value={"host": "localhost"}):
         with patch.object(auth_api, "_send_verification_email_task", new_callable=AsyncMock):
             with pytest.raises(HTTPException) as exc:
-                await auth_api.login(data, bg, db)
+                await run_with_db(db, auth_api.login, data, bg)
     assert exc.value.status_code == 403
     assert exc.value.detail["needs_verification"] is True
 
@@ -222,7 +231,7 @@ async def test_oauth_callback_passes_redirect_uri():
             with patch("app.api.auth.UserOut") as MockUserOut:
                 MockUserOut.model_validate.return_value = {"id": str(user.id)}
                 with patch.object(auth_api, "create_access_token", return_value="jwt-token"):
-                    result = await auth_api.oauth_callback("google", data, RecordingDB())
+                    result = await run_with_db(RecordingDB(), auth_api.oauth_callback, "google", data)
 
     provider.exchange_code_for_token.assert_awaited_once_with("oauth-code", "https://example.com/oauth/callback/google")
     assert result.access_token == "jwt-token"

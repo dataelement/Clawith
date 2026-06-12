@@ -449,7 +449,7 @@ async def dingtalk_callback(
             pass
 
     # 2. Get DingTalk provider config
-    auth_provider = await auth_provider_registry.get_provider(db, "dingtalk", str(tenant_id) if tenant_id else None)
+    auth_provider = await auth_provider_registry.get_provider("dingtalk", str(tenant_id) if tenant_id else None)
     if not auth_provider:
         return HTMLResponse("Auth failed: DingTalk provider not configured for this tenant")
 

@@ -7,12 +7,8 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.config import get_settings
 from app.core.events import get_redis
-from app.models.system_settings import SystemSetting
 
 # Key prefixes for Redis
 TOKEN_PREFIX = "pwd_reset:token:"
@@ -53,15 +49,15 @@ async def create_password_reset_token(identity_id: uuid.UUID) -> tuple[str, date
     return raw_token, expires_at
 
 
-async def get_public_base_url(db: AsyncSession) -> str:
+async def get_public_base_url() -> str:
     """Resolve the public base URL used for user-facing links."""
     from app.services.platform_service import platform_service
-    return await platform_service.get_public_base_url(db)
+    return await platform_service.get_public_base_url()
 
 
-async def build_password_reset_url(db: AsyncSession, raw_token: str) -> str:
+async def build_password_reset_url(raw_token: str) -> str:
     """Build the user-facing reset URL."""
-    base_url = await get_public_base_url(db)
+    base_url = await get_public_base_url()
     return f"{base_url}/reset-password?token={raw_token}"
 
 

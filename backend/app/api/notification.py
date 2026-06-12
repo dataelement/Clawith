@@ -183,7 +183,6 @@ async def broadcast_notification(
         from app.services.system_email_service import (
             BroadcastEmailRecipient,
             deliver_broadcast_emails,
-            run_background_email_job,
         )
 
         for user in users:
@@ -205,7 +204,7 @@ async def broadcast_notification(
 
     await db.commit()
     if email_recipients:
-        background_tasks.add_task(run_background_email_job, deliver_broadcast_emails, email_recipients)
+        background_tasks.add_task(deliver_broadcast_emails, email_recipients)
     return {
         "ok": True,
         "users_notified": count_users,

@@ -125,7 +125,7 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
         
         elif p.provider_type == "dingtalk":
             from app.services.auth_registry import auth_provider_registry
-            auth_provider = await auth_provider_registry.get_provider(db, "dingtalk", str(session.tenant_id) if session.tenant_id else None)
+            auth_provider = await auth_provider_registry.get_provider("dingtalk", str(session.tenant_id) if session.tenant_id else None)
             if auth_provider:
                 redir = f"{public_base}/api/auth/dingtalk/callback"
                 # Use provider's standardized authorization URL
@@ -147,7 +147,7 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
                 sign_google_sso_state,
             )
             auth_provider = await auth_provider_registry.get_provider(
-                db, "google_workspace", str(session.tenant_id) if session.tenant_id else None
+                "google_workspace", str(session.tenant_id) if session.tenant_id else None
             )
             if auth_provider:
                 redir = await get_google_redirect_uri(db, p, request)
