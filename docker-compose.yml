@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    networks:
+      - default
+    environment:
+      POSTGRES_USER: clawith
+      POSTGRES_PASSWORD: clawith
+      POSTGRES_DB: clawith
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U clawith" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - default
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-}
+        CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    command: ["/bin/bash", "/app/entrypoint.sh"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      REDIS_URL: redis://redis:6379/0
+      AGENT_DATA_DIR: /data/agents
+      AGENT_TEMPLATE_DIR: /app/agent_template
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: /data/agents
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
+      PROCESS_ROLE: all
+      CORS_ORIGINS: '["*"]'
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      SS_CONFIG_FILE: /data/ss-nodes.json
+      # Public base URL for constructing OAuth callback URLs and email links.
+      # Required when deployed behind a reverse proxy (e.g. Nginx, Cloudflare).
+      # If not set, the server infers the URL from the incoming request host.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Password reset token lifetime in minutes (default: 30)
+      PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+    volumes:
+      - ./backend/agent_data:/data/agents
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ss-nodes.json:/data/ss-nodes.json:ro
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    networks:
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3008}:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      API_UPSTREAM: ${API_UPSTREAM:-backend:8000}
+      MINIO_UPSTREAM: ${MINIO_UPSTREAM:-minio:9000}
+    volumes:
+      - ./frontend/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - default
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
+
+
+networks:
+  default:
+    name: clawith_network
