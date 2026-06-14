@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { fetchAuth } from '../utils/fetchAuth';
 
-export default function ApprovalsTab({ agentId }: { agentId: string }) {
+export default function ApprovalsTab({ agentId, canManage }: { agentId: string; canManage: boolean }) {
     const { i18n } = useTranslation();
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
@@ -16,6 +16,7 @@ export default function ApprovalsTab({ agentId }: { agentId: string }) {
 
     const resolveMut = useMutation({
         mutationFn: async ({ approvalId, action }: { approvalId: string; action: string }) => {
+            if (!canManage) return;
             const token = localStorage.getItem('token');
             return fetch(`/api/agents/${agentId}/approvals/${approvalId}/resolve`, {
                 method: 'POST',
@@ -79,24 +80,28 @@ export default function ApprovalsTab({ agentId }: { agentId: string }) {
                                     {typeof approval.details === 'string' ? approval.details : JSON.stringify(approval.details, null, 2)}
                                 </div>
                             )}
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                            {canManage && <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                 <button
                                     className="btn btn-primary"
                                     style={{ padding: '6px 16px', fontSize: '12px' }}
-                                    onClick={() => resolveMut.mutate({ approvalId: approval.id, action: 'approve' })}
-                                    disabled={resolveMut.isPending}
+                                    onClick={() => {
+                                        if (canManage) resolveMut.mutate({ approvalId: approval.id, action: 'approve' });
+                                    }}
+                                    disabled={!canManage || resolveMut.isPending}
                                 >
                                     {isChinese ? '批准' : 'Approve'}
                                 </button>
                                 <button
                                     className="btn btn-danger"
                                     style={{ padding: '6px 16px', fontSize: '12px' }}
-                                    onClick={() => resolveMut.mutate({ approvalId: approval.id, action: 'reject' })}
-                                    disabled={resolveMut.isPending}
+                                    onClick={() => {
+                                        if (canManage) resolveMut.mutate({ approvalId: approval.id, action: 'reject' });
+                                    }}
+                                    disabled={!canManage || resolveMut.isPending}
                                 >
                                     {isChinese ? '拒绝' : 'Reject'}
                                 </button>
-                            </div>
+                            </div>}
                         </div>
                     ))}
                     <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '16px 0' }} />

@@ -96,7 +96,7 @@ export default function SkillsTab(props: Props) {
                         <h3 style={{ marginBottom: '4px' }}>{t('agent.skills.title')}</h3>
                         <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.skills.description')}</p>
                     </div>
-                    <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                    {canManage && <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
                         <button
                             className="btn btn-secondary"
                             style={{ fontSize: '13px' }}
@@ -118,7 +118,7 @@ export default function SkillsTab(props: Props) {
                         >
                             Import from Presets
                         </button>
-                    </div>
+                    </div>}
                 </div>
                 <div style={{ marginTop: '8px', padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                     <strong>Skill Format:</strong><br />
@@ -126,7 +126,7 @@ export default function SkillsTab(props: Props) {
                 </div>
             </div>
 
-            <FileBrowser api={adapter} rootPath="skills" features={{ newFile: true, edit: true, delete: canManage, newFolder: true, upload: true, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
+            <FileBrowser api={adapter} rootPath="skills" features={{ newFile: canManage, edit: canManage, delete: canManage, newFolder: canManage, upload: canManage, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
 
             {showAgentClawhub && (
                 <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentClawhub(false)}>
@@ -177,6 +177,7 @@ export default function SkillsTab(props: Props) {
                                         style={{ fontSize: '12px', padding: '5px 12px', marginLeft: '12px' }}
                                         disabled={agentClawhubInstalling === result.slug}
                                         onClick={async () => {
+                                            if (!canManage) return;
                                             setAgentClawhubInstalling(result.slug);
                                             try {
                                                 const response = await skillApi.agentImport.fromClawhub(agentId, result.slug);
@@ -221,6 +222,7 @@ export default function SkillsTab(props: Props) {
                                 className="btn btn-primary"
                                 disabled={!agentUrlInput.trim() || agentUrlImporting}
                                 onClick={async () => {
+                                    if (!canManage) return;
                                     setAgentUrlImporting(true);
                                     try {
                                         const response = await skillApi.agentImport.fromUrl(agentId, agentUrlInput.trim());
@@ -289,6 +291,7 @@ export default function SkillsTab(props: Props) {
                                             style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
                                             disabled={importingSkillId === skill.id}
                                             onClick={async () => {
+                                                if (!canManage) return;
                                                 setImportingSkillId(skill.id);
                                                 try {
                                                     const response = await fileApi.importSkill(agentId, skill.id);

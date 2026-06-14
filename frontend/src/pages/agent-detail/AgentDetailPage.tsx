@@ -2063,6 +2063,10 @@ export default function AgentDetailPage() {
     const [showAllFocus, setShowAllFocus] = useState(false);
     const [showCompletedFocus, setShowCompletedFocus] = useState(false);
     const [showAllReflections, setShowAllReflections] = useState(false);
+    // Sidebar Focus group expand states
+    const [showAllSideActive, setShowAllSideActive] = useState(false);
+    const [showAllSideSystem, setShowAllSideSystem] = useState(false);
+    const [showAllSideCompleted, setShowAllSideCompleted] = useState(false);
     const [awareView, setAwareView] = useState<'list' | 'calendar'>('list');
     const [awareCalendarMode, setAwareCalendarMode] = useState<'day' | 'week' | 'month'>('week');
     const [awareCalendarDate, setAwareCalendarDate] = useState<Date>(() => new Date());
@@ -4457,12 +4461,42 @@ export default function AgentDetailPage() {
                 </div>
             );
         };
-        const renderFocusGroup = (title: string, items: FocusItem[]) => {
+        const SIDE_FOCUS_LIMIT = 12;
+        const renderFocusGroup = (
+            title: string,
+            items: FocusItem[],
+            showAll: boolean,
+            setShowAll: (val: boolean) => void,
+        ) => {
             if (items.length === 0) return null;
+            const hasMore = items.length > SIDE_FOCUS_LIMIT;
+            const visibleItems = showAll ? items : items.slice(0, SIDE_FOCUS_LIMIT);
             return (
                 <div className="aware-side-focus-group">
-                    <div className="aware-side-subtitle">{title}</div>
-                    {items.slice(0, 12).map(renderFocusItem)}
+                    <div className="aware-side-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{title}</span>
+                        {hasMore && (
+                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                {showAll ? '' : `${SIDE_FOCUS_LIMIT}/${items.length}`}
+                            </span>
+                        )}
+                    </div>
+                    {visibleItems.map(renderFocusItem)}
+                    {hasMore && (
+                        <button
+                            type="button"
+                            className="aware-side-collapse"
+                            onClick={() => setShowAll(!showAll)}
+                            style={{ marginTop: '4px', width: '100%', textAlign: 'center', borderTop: '1px dashed var(--border-subtle)', paddingTop: '6px' }}
+                        >
+                            <span>
+                                {showAll
+                                    ? (isZh ? '收起' : 'Show less')
+                                    : (isZh ? `显示更多 (+${items.length - SIDE_FOCUS_LIMIT})` : `Show more (+${items.length - SIDE_FOCUS_LIMIT})`)
+                                }
+                            </span>
+                        </button>
+                    )}
                 </div>
             );
         };
@@ -4621,19 +4655,38 @@ export default function AgentDetailPage() {
                             <div className="aware-side-empty">{t('agent.aware.focusEmpty')}</div>
                         ) : (
                             <>
-                                {renderFocusGroup(isZh ? '进行中' : 'In progress', activeFocusItems)}
-                                {renderFocusGroup(isZh ? '系统 Focus' : 'System Focus', systemFocusItems)}
+                                {renderFocusGroup(isZh ? '进行中' : 'In progress', activeFocusItems, showAllSideActive, setShowAllSideActive)}
+                                {renderFocusGroup(isZh ? '系统 Focus' : 'System Focus', systemFocusItems, showAllSideSystem, setShowAllSideSystem)}
                                 {completedFocusItems.length > 0 && (
                                     <div className="aware-side-focus-group">
                                         <button
                                             type="button"
                                             className="aware-side-collapse"
-                                            onClick={() => setShowCompletedFocus(!showCompletedFocus)}
+                                            onClick={() => { setShowCompletedFocus(!showCompletedFocus); setShowAllSideCompleted(false); }}
                                         >
                                             <span>{showCompletedFocus ? (isZh ? '收起已完成' : 'Hide completed') : (isZh ? `已完成 (${completedFocusItems.length})` : `Completed (${completedFocusItems.length})`)}</span>
                                             <span className={`aware-side-chevron ${showCompletedFocus ? 'open' : ''}`}>▶</span>
                                         </button>
-                                        {showCompletedFocus && completedFocusItems.slice(0, 12).map(renderFocusItem)}
+                                        {showCompletedFocus && (
+                                            <>
+                                                {(showAllSideCompleted ? completedFocusItems : completedFocusItems.slice(0, SIDE_FOCUS_LIMIT)).map(renderFocusItem)}
+                                                {completedFocusItems.length > SIDE_FOCUS_LIMIT && (
+                                                    <button
+                                                        type="button"
+                                                        className="aware-side-collapse"
+                                                        onClick={() => setShowAllSideCompleted(!showAllSideCompleted)}
+                                                        style={{ marginTop: '4px', width: '100%', textAlign: 'center', borderTop: '1px dashed var(--border-subtle)', paddingTop: '6px' }}
+                                                    >
+                                                        <span>
+                                                            {showAllSideCompleted
+                                                                ? (isZh ? '收起' : 'Show less')
+                                                                : (isZh ? `显示更多 (+${completedFocusItems.length - SIDE_FOCUS_LIMIT})` : `Show more (+${completedFocusItems.length - SIDE_FOCUS_LIMIT})`)
+                                                            }
+                                                        </span>
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </>
@@ -4823,11 +4876,12 @@ export default function AgentDetailPage() {
                             </>
                             {(agent as any)?.agent_type !== 'openclaw' && (
                                 <>
-                                    {agent.status === 'stopped' ? (
+                                    {canManage && agent.status === 'stopped' && (
                                         <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
-                                    ) : agent.status === 'running' ? (
+                                    )}
+                                    {canManage && agent.status === 'running' && (
                                         <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
-                                    ) : null}
+                                    )}
                                 </>
                             )}
                         </div>
@@ -4838,7 +4892,7 @@ export default function AgentDetailPage() {
                 {activeTab !== 'chat' && <div className="tabs">
                     {AGENT_DETAIL_TABS.filter(tab => {
                         if (['aware', 'workspace', 'chat'].includes(tab)) return false;
-                        // 'use' access: hide settings and approvals tabs
+                        // 'use' access keeps the existing tab bar unchanged; settings remains available via its own entry.
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
                         }
@@ -5047,7 +5101,7 @@ export default function AgentDetailPage() {
                             {/* Quick Actions */}
                             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
-                                <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>
+                                {canManage && <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>}
                             </div>
                         </div>
                     );
@@ -5290,9 +5344,10 @@ export default function AgentDetailPage() {
                                                             {trig.is_enabled ? t('agent.aware.inProgress') : t('agent.aware.completed')}
                                                         </span>
                                                         <div style={{ display: 'flex', gap: '4px' }}>
-                                                            {!trig.is_system && <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
+                                                            {canManage && !trig.is_system && <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                                                 onClick={async (e) => {
                                                                     e.stopPropagation();
+                                                                    if (!canManage) return;
                                                                     const ok = await dialog.confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }), { title: '删除触发器', danger: true, confirmLabel: '删除' });
                                                                     if (ok) {
                                                                         await triggerApi.delete(id!, trig.id);
@@ -5719,7 +5774,7 @@ export default function AgentDetailPage() {
                             upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
-                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: canManage, directoryNavigation: true }} />;
+                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: canManage, newFile: canManage, newFolder: canManage, edit: canManage, delete: canManage, directoryNavigation: true }} />;
                     })()
                 }
 
@@ -6664,7 +6719,7 @@ export default function AgentDetailPage() {
 
                 {/* ── Approvals Tab ── */}
                 {
-                    activeTab === 'approvals' && id && <ApprovalsTab agentId={id} />
+                    activeTab === 'approvals' && id && <ApprovalsTab agentId={id} canManage={canManage} />
                 }
 
                 {/* ── Settings Tab ── */}

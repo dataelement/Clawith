@@ -68,30 +68,35 @@ export default function SettingsTab(props: Props) {
         onDeleteAgent,
     } = props;
     const { t, i18n } = useTranslation();
+    const readOnly = !canManage;
+    const canSave = canManage && hasChanges && !settingsSaving;
 
     if ((agent as any)?.agent_type === 'openclaw') {
-        return <OpenClawSettings agent={agent} agentId={agentId} />;
+        return <OpenClawSettings agent={agent} agentId={agentId} canManage={canManage} />;
     }
 
     return (
-        <div>
+        <fieldset disabled={readOnly} style={{ border: 0, padding: 0, margin: 0, minInlineSize: 0 }}>
+            <div>
             <div className="agent-settings-savebar">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
                     {settingsError && <span style={{ fontSize: '12px', color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)', whiteSpace: 'pre-line' }}>{settingsError}</span>}
-                    <button
+                    {canManage && <button
                         className="btn btn-primary"
-                        disabled={!hasChanges || settingsSaving}
-                        onClick={onSaveSettings}
+                        disabled={!canSave}
+                        onClick={() => {
+                            if (canManage) void onSaveSettings();
+                        }}
                         style={{
-                            opacity: hasChanges ? 1 : 0.5,
-                            cursor: hasChanges ? 'pointer' : 'default',
+                            opacity: canSave ? 1 : 0.5,
+                            cursor: canSave ? 'pointer' : 'default',
                             padding: '6px 20px',
                             fontSize: '13px',
                         }}
                     >
                         {settingsSaving ? t('agent.settings.saving', 'Saving...') : t('agent.settings.save', 'Save')}
-                    </button>
+                    </button>}
                 </div>
             </div>
 
@@ -237,7 +242,7 @@ export default function SettingsTab(props: Props) {
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
                             {isChinese ? '当用户在网页端发起新对话时，Agent 会自动发送的欢迎语。支持 Markdown 语法。留空则不发送。' : 'Greeting message sent automatically when a user starts a new web conversation. Supports Markdown. Leave empty to disable.'}
                         </p>
-                        <textarea className="input" rows={4} value={wmDraft} onChange={(e) => setWmDraft(e.target.value)} onBlur={onSaveWelcomeMessage} placeholder={isChinese ? '例如：你好！我是你的 AI 助手，有什么可以帮你的吗？' : "e.g. Hello! I'm your AI assistant. How can I help you?"} style={{ width: '100%', minHeight: '80px', resize: 'vertical', fontFamily: 'inherit', fontSize: '13px' }} />
+                        <textarea className="input" rows={4} value={wmDraft} onChange={(e) => setWmDraft(e.target.value)} onBlur={() => { if (canManage) void onSaveWelcomeMessage(); }} placeholder={isChinese ? '例如：你好！我是你的 AI 助手，有什么可以帮你的吗？' : "e.g. Hello! I'm your AI assistant. How can I help you?"} style={{ width: '100%', minHeight: '80px', resize: 'vertical', fontFamily: 'inherit', fontSize: '13px' }} />
                     </div>
                 );
             })()}
@@ -265,6 +270,7 @@ export default function SettingsTab(props: Props) {
                                     className="input"
                                     value={currentLevel}
                                     onChange={async (e) => {
+                                        if (!canManage) return;
                                         const newPolicy = { ...(agent?.autonomy_policy as any || {}), [action.key]: e.target.value };
                                         await agentApi.update(agentId, { autonomy_policy: newPolicy } as any);
                                         queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
@@ -394,10 +400,10 @@ export default function SettingsTab(props: Props) {
             </div>
 
             <div style={{ marginBottom: '12px' }}>
-                <ChannelConfig mode="edit" agentId={agentId} />
+                <ChannelConfig mode="edit" agentId={agentId} canManage={canManage} />
             </div>
 
-            <div className="card" style={{ borderColor: 'var(--error)' }}>
+            {canManage && <div className="card" style={{ borderColor: 'var(--error)' }}>
                 <h4 style={{ color: 'var(--error)', marginBottom: '12px' }}>{t('agent.settings.danger.title')}</h4>
                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>{t('agent.settings.danger.deleteWarning')}</p>
                 {!showDeleteConfirm ? (
@@ -409,7 +415,8 @@ export default function SettingsTab(props: Props) {
                         <button className="btn btn-secondary" onClick={() => setShowDeleteConfirm(false)}>{t('common.cancel')}</button>
                     </div>
                 )}
+            </div>}
             </div>
-        </div>
+        </fieldset>
     );
 }
