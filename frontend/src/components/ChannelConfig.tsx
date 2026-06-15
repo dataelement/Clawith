@@ -1139,14 +1139,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         </div>
                                     </div>
                                 )}
-                                {ch.id === 'external_http' && externalHttpSecrets?.api_key && (
+                                {ch.id === 'external_http' && (externalHttpSecrets?.api_key || externalHttpSecrets?.signing_secret) && (
                                     <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.24)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
                                         <div style={{ color: 'rgb(146,64,14)', fontWeight: 600, marginBottom: '6px' }}>Copy these credentials now. They are shown only once.</div>
-                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>API Key</div>
-                                        <div style={{ wordBreak: 'break-all', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                                            {externalHttpSecrets.api_key}
-                                            <LinearCopyButton textToCopy={externalHttpSecrets.api_key} label="Copy" iconOnly={true} className="" style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }} />
-                                        </div>
+                                        {externalHttpSecrets.api_key && (
+                                            <>
+                                                <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>API Key</div>
+                                                <div style={{ wordBreak: 'break-all', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                                                    {externalHttpSecrets.api_key}
+                                                    <LinearCopyButton textToCopy={externalHttpSecrets.api_key} label="Copy" iconOnly={true} className="" style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }} />
+                                                </div>
+                                            </>
+                                        )}
                                         {externalHttpSecrets.signing_secret && (
                                             <>
                                                 <div style={{ color: 'var(--text-tertiary)', marginTop: '8px', marginBottom: '4px' }}>Signing Secret</div>
