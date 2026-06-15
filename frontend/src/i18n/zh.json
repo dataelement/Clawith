@@ -1717,7 +1717,8 @@
       "wechat": "微信",
       "whatsapp": "WhatsApp",
       "dingtalk": "钉钉",
-      "wecom": "企业微信"
+      "wecom": "企业微信",
+      "externalHttp": "外部 HTTP"
     },
     "searching": "搜索中...",
     "upload": "⬆ 上传",
@@ -1877,6 +1878,13 @@
     "feishuPermFullDesc": "包含文档、云空间、多维表格、日历、审批等全部功能",
     "feishuPermCopy": "复制",
     "feishuPermCopied": "✓ 已复制",
+    "externalHttp": {
+      "step1": "在此数字员工设置页保存 External HTTP 渠道配置。",
+      "step2": "复制保存后显示的 API Key。该密钥只显示一次。",
+      "step3": "外部系统使用 Authorization: Bearer <API Key> 调用消息接口。",
+      "step4": "使用 conversation_id 将同一业务对象的多次调用归并到同一个网页会话。",
+      "note": "生产环境建议启用 HMAC。启用后，使用签名密钥对 '<x-timestamp>.<raw-body>' 做签名，并传入 X-Timestamp 和 X-Signature-SHA256。"
+    },
     "slack": {
       "step1": "打开 api.slack.com/apps → 点击 Create New App → 选择 From Scratch → 填写应用名称并选择你的 Workspace → 点击 Create App",
       "step2": "左侧菜单点击 OAuth & Permissions → 向下滚动到 Scopes → 在 Bot Token Scopes 下点击 Add an OAuth Scope → 依次添加：chat:write、im:history、app_mentions:read",

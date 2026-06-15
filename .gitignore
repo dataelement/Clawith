@@ -36,5 +36,7 @@ _agents/
 
 # Internal docs
 docs/
+!deploy/docs/
+!deploy/docs/**
 .agents/rules/deploy.md
 backend/tests/test_agent_api_live.py

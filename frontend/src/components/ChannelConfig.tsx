@@ -35,6 +35,7 @@ interface ChannelField {
     key: string;
     label: string;
     placeholder?: string;
+    description?: string;
     type?: 'text' | 'password';
     required?: boolean;
 }
@@ -90,6 +91,27 @@ const WeChatIcon = <img src="/wechat.svg" alt="WeChat" width="20" height="20" st
 const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
 const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
+
+const ExternalHttpIcon = (
+    <span
+        aria-label="External HTTP"
+        style={{
+            width: '20px',
+            height: '20px',
+            borderRadius: '4px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'var(--accent-subtle)',
+            color: 'var(--accent-primary)',
+            fontSize: '8px',
+            fontWeight: 700,
+            fontFamily: 'var(--font-mono)',
+        }}
+    >
+        HTTP
+    </span>
+);
 
 // Eye icons for password toggle
 const EyeOpen = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
@@ -228,6 +250,49 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         ],
         guide: { prefix: 'channelGuide.atlassian', steps: 5 },
     },
+    {
+        id: 'external_http',
+        icon: ExternalHttpIcon,
+        nameKey: 'common.channels.externalHttp',
+        nameFallback: 'External HTTP',
+        desc: 'Business system API',
+        apiSlug: 'external-http-channel',
+        editOnly: true,
+        fields: [
+            {
+                key: 'require_hmac',
+                label: '是否启用 HMAC 签名',
+                placeholder: 'false',
+                description: 'true 时请求必须携带 X-Timestamp 和 X-Signature-SHA256；false 时仅校验 API Key。',
+            },
+            {
+                key: 'sync_timeout_seconds',
+                label: '同步等待超时时间（秒）',
+                placeholder: '120',
+                description: 'mode=sync 时等待智能体回复的最长时间，范围 5-300，默认 120。',
+            },
+            {
+                key: 'max_payload_bytes',
+                label: '最大请求体大小（字节）',
+                placeholder: '65536',
+                description: '限制单次请求 JSON Body 的最大大小，默认 65536，最大 1048576。',
+            },
+            {
+                key: 'regenerate_api_key',
+                label: '重新生成 API Key',
+                placeholder: 'false',
+                description: 'true 时生成新的外部调用密钥，旧 API Key 会失效；新密钥只在保存后显示一次。',
+            },
+            {
+                key: 'regenerate_signing_secret',
+                label: '重新生成签名密钥',
+                placeholder: 'false',
+                description: 'true 时生成新的 HMAC 签名密钥；开启 HMAC 签名后外部系统需要使用它计算签名。',
+            },
+        ],
+        guide: { prefix: 'channelGuide.externalHttp', steps: 4 },
+        webhookLabel: '消息接口地址',
+    },
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
@@ -296,7 +361,7 @@ const FEISHU_PERM_FULL_DISPLAY = `{
 
 // ─── Main Component ─────────────────────────────────────
 export default function ChannelConfig({ mode, agentId, canManage = true, values, onChange }: ChannelConfigProps) {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const queryClient = useQueryClient();
 
     // Feishu Permission Mode
@@ -332,6 +397,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [atlassianTesting, setAtlassianTesting] = useState(false);
     const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
     const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [externalHttpSecrets, setExternalHttpSecrets] = useState<{ api_key?: string; signing_secret?: string; webhook_url?: string } | null>(null);
     const [wechatQr, setWechatQr] = useState<{ qrcode: string; qrcode_img_content: string } | null>(null);
     const [wechatQrImageSrc, setWechatQrImageSrc] = useState('');
     const [wechatQrStatus, setWechatQrStatus] = useState('');
@@ -405,6 +471,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => fetchAuth<any>(`/agents/${agentId}/atlassian-channel`).catch(() => null),
         enabled: enabled,
     });
+    const { data: externalHttpConfig } = useQuery({
+        queryKey: ['external-http-channel', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/external-http-channel`).catch(() => null),
+        enabled: enabled,
+    });
+    const { data: externalHttpWebhook } = useQuery({
+        queryKey: ['external_http-webhook-url', agentId],
+        queryFn: () => fetchAuth<any>(`/agents/${agentId}/external-http-channel/webhook-url`),
+        enabled: enabled,
+    });
     // Helper: get config data for a channel
     const getConfig = (id: string): any => {
         switch (id) {
@@ -416,6 +492,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'wechat': return wechatConfig;
             case 'wecom': return wecomConfig;
             case 'atlassian': return atlassianConfig;
+            case 'external_http': return externalHttpConfig;
             default: return null;
         }
     };
@@ -428,6 +505,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'discord': return discordWebhook;
             case 'teams': return teamsWebhook;
             case 'wecom': return wecomWebhook;
+            case 'external_http': return externalHttpWebhook;
             default: return null;
         }
     };
@@ -440,11 +518,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             }
             return fetchAuth(`/agents/${agentId}/${ch.apiSlug}`, { method: 'POST', body: JSON.stringify(data) });
         },
-        onSuccess: (_d, { ch }) => {
+        onSuccess: (_d: any, { ch }) => {
             const keys = ch.useChannelApi
                 ? [['channel', agentId]]
                 : [[`${ch.apiSlug}`, agentId], [`${ch.id}-webhook-url`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
+            if (ch.id === 'external_http') {
+                setExternalHttpSecrets({
+                    api_key: _d?.api_key,
+                    signing_secret: _d?.signing_secret,
+                    webhook_url: _d?.webhook_url,
+                });
+            }
             // Reset form
             setForms(prev => ({ ...prev, [ch.id]: {} }));
             setEditing(ch.id, false);
@@ -474,6 +559,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 : [[`${ch.apiSlug}`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
             if (ch.id === 'atlassian') setAtlassianTestResult(null);
+            if (ch.id === 'external_http') setExternalHttpSecrets(null);
             setEditing(ch.id, false);
             setActionFeedback({
                 type: 'success',
@@ -670,6 +756,19 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 },
             };
         }
+        if (ch.id === 'external_http') {
+            const requireHmacRaw = (form.require_hmac || '').trim().toLowerCase();
+            const regenerateApiKeyRaw = (form.regenerate_api_key || '').trim().toLowerCase();
+            const regenerateSigningSecretRaw = (form.regenerate_signing_secret || '').trim().toLowerCase();
+            const truthy = ['1', 'true', 'yes', 'y', 'on'];
+            return {
+                require_hmac: truthy.includes(requireHmacRaw),
+                sync_timeout_seconds: Number(form.sync_timeout_seconds || 120),
+                max_payload_bytes: Number(form.max_payload_bytes || 65536),
+                regenerate_api_key: truthy.includes(regenerateApiKeyRaw),
+                regenerate_signing_secret: truthy.includes(regenerateSigningSecretRaw),
+            };
+        }
         // Generic channels
         return form;
     };
@@ -740,12 +839,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const isSecret = field.type === 'password';
         const labelText = field.label.startsWith('channelGuide.') ? t(field.label) : field.label;
         const placeholderText = field.placeholder?.startsWith('channelGuide.') ? t(field.placeholder) : field.placeholder;
+        const descriptionText = field.description?.startsWith('channelGuide.') ? t(field.description) : field.description;
 
         return (
             <div key={field.key}>
                 <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>
                     {labelText} {field.required && '*'}
-                    {!field.required && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)' }}> (Optional)</span>}
+                    {!field.required && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)' }}>{i18n.language === 'zh' ? '（可选）' : ' (Optional)'}</span>}
                 </label>
                 <div style={{ position: 'relative' }}>
                     <input
@@ -763,6 +863,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                         </button>
                     )}
                 </div>
+                {descriptionText && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: 1.5 }}>
+                        {descriptionText}
+                    </div>
+                )}
                 {/* Tenant ID hint for Teams */}
                 {channelId === 'teams' && field.key === 'tenant_id' && (
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('channelGuide.teams.tenantIdHint')}</div>
@@ -873,7 +978,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         }
 
         // Webhook URL for this channel
-        const webhookUrl = webhook?.webhook_url || `${window.location.origin}/api/channel/${ch.id === 'feishu' ? 'feishu' : ch.apiSlug?.replace('-channel', '')}/${agentId}/webhook`;
+        const webhookUrl = webhook?.webhook_url || (
+            ch.id === 'external_http'
+                ? `${window.location.origin}/api/channel/external-http/${agentId}/message`
+                : `${window.location.origin}/api/channel/${ch.id === 'feishu' ? 'feishu' : ch.apiSlug?.replace('-channel', '')}/${agentId}/webhook`
+        );
 
         // Determine which fields to use (wecom websocket mode has different fields)
         const activeFields = (ch.connectionMode && isWs && ch.wsFields) ? ch.wsFields : ch.fields;
@@ -1017,6 +1126,38 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         {config.cloud_id && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Cloud ID: <code>{config.cloud_id}</code></div>}
                                     </div>
                                 )}
+                                {ch.id === 'external_http' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
+                                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>External HTTP endpoint enabled</div>
+                                        <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>
+                                            Auth: <code>Bearer API key</code>
+                                            {config.extra_config?.require_hmac ? ' + HMAC signature' : ''}
+                                        </div>
+                                        <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>
+                                            Timeout: <code>{config.extra_config?.sync_timeout_seconds || 120}s</code> · Max payload: <code>{config.extra_config?.max_payload_bytes || 65536} bytes</code>
+                                        </div>
+                                    </div>
+                                )}
+                                {ch.id === 'external_http' && externalHttpSecrets?.api_key && (
+                                    <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.24)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ color: 'rgb(146,64,14)', fontWeight: 600, marginBottom: '6px' }}>Copy these credentials now. They are shown only once.</div>
+                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>API Key</div>
+                                        <div style={{ wordBreak: 'break-all', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                                            {externalHttpSecrets.api_key}
+                                            <LinearCopyButton textToCopy={externalHttpSecrets.api_key} label="Copy" iconOnly={true} className="" style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }} />
+                                        </div>
+                                        {externalHttpSecrets.signing_secret && (
+                                            <>
+                                                <div style={{ color: 'var(--text-tertiary)', marginTop: '8px', marginBottom: '4px' }}>Signing Secret</div>
+                                                <div style={{ wordBreak: 'break-all', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                                                    {externalHttpSecrets.signing_secret}
+                                                    <LinearCopyButton textToCopy={externalHttpSecrets.signing_secret} label="Copy" iconOnly={true} className="" style={{ marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle' }} />
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
                                 {ch.id === 'wechat' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
                                         <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
@@ -1105,6 +1246,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 } else if (ch.id === 'atlassian') {
                                                     prefill.api_key = '';
                                                     prefill.cloud_id = config.cloud_id || '';
+                                                } else if (ch.id === 'external_http') {
+                                                    prefill.require_hmac = config.extra_config?.require_hmac ? 'true' : 'false';
+                                                    prefill.sync_timeout_seconds = String(config.extra_config?.sync_timeout_seconds || 120);
+                                                    prefill.max_payload_bytes = String(config.extra_config?.max_payload_bytes || 65536);
+                                                    prefill.regenerate_api_key = 'false';
+                                                    prefill.regenerate_signing_secret = 'false';
                                                 }
                                                 setForms(prev => ({ ...prev, [ch.id]: prefill }));
                                                 setEditing(ch.id, true);
