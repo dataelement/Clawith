@@ -1,4 +1,59 @@
 ---
+# v1.10.3 — Agent-to-Agent Messaging Session Consistency
+
+## What's New
+
+### Optimizations
+- **Agent-to-Agent Messaging Database Session Handling**: Refined database session management for agent-to-agent (A2A) messaging events. This optimization reduces the risk of transactional inconsistencies during message triggers, improving backend reliability and ensuring clean session boundaries for agent interactions.
+
+## Bug Fixes
+
+- **A2A Messaging Stability**: Fixed an issue where database sessions in agent-to-agent messaging could become mismanaged, preventing potential side effects such as lingering database transactions or message delivery failures. This results in more robust and predictable agent messaging.
+
+## Upgrade Guide
+
+### Docker Deployment
+
+```bash
+git pull origin main
+
+cd deploy
+# Rebuild and restart services
+docker compose down && docker compose up -d --build
+```
+
+### Source Deployment
+
+```bash
+git pull origin main
+
+cd backend
+cd ..
+
+cd frontend
+npm install
+npm run build
+cd ..
+
+./restart.sh
+```
+
+### Kubernetes / Helm
+
+```bash
+helm upgrade clawith helm/clawith/ -f values.yaml
+```
+
+## Notes
+
+- **Agent Messaging Reliability**: Tenants using agent-to-agent messaging will benefit from improved backend consistency and reduced risk of message-related faults.
+- **No manual database migration required**: Schema migrations run automatically on application startup.
+
+---
+
+---
+
+---
 # v1.10.2 — Transaction Granularity & Sandbox Stability Enhancements
 
 ## What's New
