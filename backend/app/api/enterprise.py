@@ -637,7 +637,7 @@ async def get_email_templates_endpoint(
         DEFAULT_EMAIL_TEMPLATES,
     )
 
-    templates = await get_email_templates(db=db)
+    templates = await get_email_templates()
     return {
         "templates": templates,
         "variables": EMAIL_TEMPLATE_VARIABLES,

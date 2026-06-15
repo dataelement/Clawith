@@ -1405,8 +1405,11 @@ async def _handle_feishu_file(
         )
         _history = convert_chat_messages_to_llm_format(reversed(_hist_r.scalars().all()))
 
-        await db.commit()
+        # Pre-load agent/model for LLM call before releasing DB connection
+        _agent_model_img, _llm_model_img, _fallback_model_img = await _load_agent_and_model(db, agent_id)
 
+        await db.commit()
+        # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
     # For images: call LLM so vision models can actually see the image
     if msg_type == "image":
         import json as _json_card_img
@@ -1499,20 +1502,20 @@ async def _handle_feishu_file(
             _img_heartbeat_task = asyncio.create_task(_img_heartbeat())
 
         # Call LLM with image marker — vision models will parse it
-        async with _async_session() as _db_img:
-            try:
-                reply_text = await _call_agent_llm(
-                    _db_img, agent_id, user_msg_content, history=_history,
-                    user_id=platform_user_id, session_id=session_conv_id, on_chunk=_img_on_chunk,
-                )
-            finally:
-                _img_llm_done = True
-                if _img_heartbeat_task:
-                    _img_heartbeat_task.cancel()
-                    try:
-                        await _img_heartbeat_task
-                    except Exception:
-                        pass
+        try:
+            reply_text = await _call_llm_with_config(
+                _agent_model_img, _llm_model_img, _fallback_model_img,
+                agent_id, user_msg_content, history=_history,
+                user_id=platform_user_id, session_id=session_conv_id, on_chunk=_img_on_chunk,
+            )
+        finally:
+            _img_llm_done = True
+            if _img_heartbeat_task:
+                _img_heartbeat_task.cancel()
+                try:
+                    await _img_heartbeat_task
+                except Exception:
+                    pass
 
         logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
 

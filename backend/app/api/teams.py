@@ -17,14 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import async_session as _async_session, get_db
 from app.models.agent import Agent as AgentModel
 from app.models.audit import ChatMessage
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
 from app.services.channel_session import find_or_create_channel_session
-from app.api.feishu import _call_agent_llm
+from app.api.feishu import _call_llm_with_config, _load_agent_and_model
 from app.services.agent_tools import channel_file_sender as _cfs_s
 from app.core.security import hash_password as _hp
 from pathlib import Path as _Path
@@ -483,7 +483,13 @@ async def teams_event_webhook(
         # Save user message
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
         sess.last_message_at = datetime.now(timezone.utc)
+
+        # Pre-load agent/model for LLM call before releasing DB connection
+        _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
+
         await db.commit()
+        # ── Phase 1 complete: release connection before slow LLM call ──
+        await db.close()
 
         # Set channel_file_sender contextvar for agent → user file delivery
         async def _teams_file_sender(file_path, msg: str = ""):
@@ -503,32 +509,38 @@ async def teams_event_webhook(
 
         _cfs_s_token = _cfs_s.set(_teams_file_sender)
 
-        # Call LLM
+        # Call LLM (no DB session needed)
         try:
-            reply_text = await _call_agent_llm(
-                db,
+            reply_text = await _call_llm_with_config(
+                _agent_model, _llm_model, _fallback_model,
                 agent_id,
                 user_text,
                 history=history,
                 user_id=platform_user_id,
                 session_id=session_conv_id,
             )
-            _cfs_s.reset(_cfs_s_token)
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:
             logger.exception(f"Teams: Failed to call LLM for agent {agent_id}: {e}")
             reply_text = "Sorry, I encountered an error processing your message."
+        finally:
             _cfs_s.reset(_cfs_s_token)
 
-        # Save reply
+        # Save reply (new short transaction)
         try:
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-            sess.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
+            async with _async_session() as _save_db:
+                _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                from app.models.chat_session import ChatSession
+                _sess_r = await _save_db.execute(
+                    select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
+                )
+                _sess_fresh = _sess_r.scalar_one_or_none()
+                if _sess_fresh:
+                    _sess_fresh.last_message_at = datetime.now(timezone.utc)
+                await _save_db.commit()
             logger.info(f"Teams: Saved reply to database for conversation {conversation_id}")
         except Exception as e:
             logger.exception(f"Teams: Failed to save reply to database: {e}")
-            await db.rollback()
 
         # Send to Teams
         use_managed_identity = config.extra_config.get("use_managed_identity", False)
