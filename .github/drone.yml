@@ -35,9 +35,17 @@ steps:
       - git config --global core.compression 0
       - git config --global http.postBuffer 524288000
       - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
+      # For forked pull requests, the head commit may not exist in the normal
+      # branch refs of dataelement/Clawith. Fetch the GitHub PR ref explicitly.
+      - |
+        if [ "$DRONE_BUILD_EVENT" = "pull_request" ] && [ -n "$DRONE_PULL_REQUEST" ]; then
+          git fetch origin "refs/pull/${DRONE_PULL_REQUEST}/head:refs/remotes/origin/pr/${DRONE_PULL_REQUEST}"
+          git checkout "refs/remotes/origin/pr/${DRONE_PULL_REQUEST}"
+        else
+          git checkout "$DRONE_COMMIT"
+        fi
       # 将 shallow clone 转换为完整克隆，获取完整 commit 历史
       - git fetch --unshallow --tags || git fetch --tags
-      - git checkout $DRONE_COMMIT
       - echo "当前 commit $(git log --oneline -1)"
       - echo "上一个 tag $(git describe --tags --abbrev=0 2>/dev/null || echo '无 tag')"
 
