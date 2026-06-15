@@ -15,9 +15,10 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
 interface OpenClawSettingsProps {
     agent: any;
     agentId: string;
+    canManage: boolean;
 }
 
-export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsProps) {
+export default function OpenClawSettings({ agent, agentId, canManage }: OpenClawSettingsProps) {
     const { t, i18n } = useTranslation();
     const queryClient = useQueryClient();
     const navigate = useNavigate();
@@ -34,6 +35,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     const hasKey = agent?.has_api_key || false;
 
     const handleRegenerate = async (autoCopy = false) => {
+        if (!canManage) return;
         setRegenerating(true);
         try {
             const result = await fetchAuth<{ api_key: string }>(`/agents/${agentId}/api-key`, { method: 'POST' });
@@ -56,6 +58,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     };
 
     const handleDelete = async () => {
+        if (!canManage) return;
         setDeleting(true);
         try {
             await agentApi.delete(agentId);
@@ -75,6 +78,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     });
 
     const handleScopeChange = async (newScope: string) => {
+        if (!canManage || !isOwner) return;
         try {
             await fetchAuth(`/agents/${agentId}/permissions`, {
                 method: 'PUT',
@@ -89,6 +93,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     };
 
     const handleAccessLevelChange = async (newLevel: string) => {
+        if (!canManage || !isOwner) return;
         try {
             await fetchAuth(`/agents/${agentId}/permissions`, {
                 method: 'PUT',
@@ -103,6 +108,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
     };
 
     const isOwner = permData?.is_owner ?? false;
+    const canEditPermissions = canManage && isOwner;
     const currentScope = permData?.scope_type === 'user' ? 'private' : (permData?.scope_type || 'company');
     const currentAccessLevel = permData?.access_level || 'use';
 
@@ -146,13 +152,13 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                     copiedLabel="Copied"
                                     style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap', minWidth: '70px', height: 'fit-content' }}
                                 />
-                                <button
+                                {canManage && <button
                                     className="btn btn-secondary"
                                     onClick={() => setShowConfirm(true)}
                                     style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}
                                 >
                                     {isChinese ? '重新生成' : 'Regenerate'}
-                                </button>
+                                </button>}
                             </div>
                         );
                     }
@@ -169,7 +175,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                     ? (isChinese ? '旧版密钥（已加密隐藏），请重新生成以查看明文' : 'Legacy key (encrypted), please regenerate to view')
                                     : (isChinese ? '未生成' : 'Not generated')}
                             </div>
-                            <button
+                            {canManage && <button
                                 className="btn btn-secondary"
                                 onClick={() => setShowConfirm(true)}
                                 style={{ padding: '6px 16px', fontSize: '12px', whiteSpace: 'nowrap' }}
@@ -177,7 +183,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                 {isLegacyHash
                                     ? (isChinese ? '重新生成' : 'Regenerate')
                                     : (isChinese ? '生成' : 'Generate')}
-                            </button>
+                            </button>}
                         </div>
                     );
                 })()}
@@ -214,7 +220,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                             <button
                                 className="btn btn-primary"
                                 onClick={() => handleRegenerate(false)}
-                                disabled={regenerating}
+                                disabled={!canManage || regenerating}
                                 style={{ padding: '5px 14px', fontSize: '12px' }}
                             >
                                 {regenerating
@@ -243,14 +249,14 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                             style={{
                                 display: 'flex', alignItems: 'center', gap: '10px',
                                 padding: '12px 14px', borderRadius: '8px',
-                                cursor: isOwner ? 'pointer' : 'default',
+                                cursor: canEditPermissions ? 'pointer' : 'default',
                                 border: currentScope === scope
                                     ? '1px solid var(--accent-primary)'
                                     : '1px solid var(--border-subtle)',
                                 background: currentScope === scope
                                     ? 'rgba(99,102,241,0.06)'
                                     : 'transparent',
-                                opacity: isOwner ? 1 : 0.7,
+                                opacity: canEditPermissions ? 1 : 0.7,
                                 transition: 'all 0.15s',
                             }}
                         >
@@ -258,7 +264,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                                 type="radio"
                                 name="perm_scope_oc"
                                 checked={currentScope === scope}
-                                disabled={!isOwner}
+                                disabled={!canEditPermissions}
                                 onChange={() => handleScopeChange(scope)}
                                 style={{ accentColor: 'var(--accent-primary)' }}
                             />
@@ -281,7 +287,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
                 </div>
 
                 {/* Access Level for company scope */}
-                {currentScope === 'company' && isOwner && (
+                {currentScope === 'company' && canEditPermissions && (
                     <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                         <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
                             {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
@@ -332,7 +338,7 @@ export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsPro
             </div>
 
             {/* ── Danger Zone: Delete Agent ── */}
-            {isOwner && (
+            {canEditPermissions && (
                 <div className="card" style={{
                     marginBottom: '12px',
                     border: '1px solid rgba(255,80,80,0.2)',

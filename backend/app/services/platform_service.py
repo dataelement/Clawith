@@ -3,9 +3,7 @@
 import os
 import re
 from fastapi import Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.system_settings import SystemSetting
 
 class PlatformService:
     """Service to handle platform-wide settings and URL resolution."""
@@ -40,15 +38,20 @@ class PlatformService:
         return "https://try.clawith.ai"
 
 
-    async def get_tenant_sso_base_url(self, db: AsyncSession, tenant, request: Request | None = None) -> str:
-        """Generate the SSO base URL for a tenant based on IP/Domain logic."""
-        # Check if custom domain SSO redirect is enabled globally
-        setting_result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
-        )
-        setting_s = setting_result.scalar_one_or_none()
-        sso_redirect_enabled = setting_s.value.get("enabled", True) if setting_s else True
+    async def get_tenant_sso_base_url(
+        self,
+        db: AsyncSession,
+        tenant,
+        request: Request | None = None,
+        *,
+        sso_redirect_enabled: bool = True,
+    ) -> str:
+        """Generate the SSO base URL for a tenant based on IP/Domain logic.
 
+        ``sso_redirect_enabled`` should be pre-resolved by the caller via
+        ``system_setting_dao.is_sso_custom_domain_redirect_enabled()`` so this
+        method never issues an extra DB round-trip for the setting.
+        """
         if sso_redirect_enabled and tenant.sso_domain:
             return tenant.sso_domain.rstrip("/")
 
@@ -56,21 +59,21 @@ class PlatformService:
             return await self.get_public_base_url(db, request)
 
         base_url = await self.get_public_base_url(db, request)
-        
+
         # Parse protocol and host
         # Example: http://1.2.3.4:8000 or http://clawith.ai
         parts = base_url.split("://")
         if len(parts) < 2:
             return base_url
-            
+
         protocol = parts[0]
         host_port = parts[1]
-        
+
         # Split host and port
         host_parts = host_port.split(":")
         host = host_parts[0]
         port = f":{host_parts[1]}" if len(host_parts) > 1 else ""
-        
+
         if self.is_ip_address(host):
             # IP: No subdomain, just base URL
             return base_url
@@ -79,15 +82,15 @@ class PlatformService:
             # Special case for localhost: keep it as is or handle it
             if host == "localhost":
                 return f"{protocol}://{host}{port}"
-                
-            # Generic logic: if host has a subdomain (e.g. try.clawith.ai), 
+
+            # Generic logic: if host has a subdomain (e.g. try.clawith.ai),
             # we strip the first component to form a base for tenant subdomains.
             h_parts = host.split(".")
             if len(h_parts) > 2:
                 target_host = ".".join(h_parts[1:])
             else:
                 target_host = host
-                
+
             return f"{protocol}://{tenant.slug}.{target_host}{port}"
 
 

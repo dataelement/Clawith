@@ -334,7 +334,15 @@
       "showMore": "显示更多 {{count}} 项...",
       "showLess": "收起",
       "hideCompleted": "隐藏已完成",
-      "showCompleted": "显示 {{count}} 项已完成"
+      "showCompleted": "显示 {{count}} 项已完成",
+      "triggerOnce": "一次性：{{time}}",
+      "triggerEveryMin": "每 {{min}} 分钟",
+      "triggerEveryHour": "每 {{hour}} 小时",
+      "triggerPoll": "轮询：{{url}}",
+      "triggerOnMessage": "收到 {{sender}} 的消息时",
+      "triggerUnknown": "未知对象",
+      "today": "今天",
+      "viewAll": "查看全部"
     },
     "soul": {
       "title": "Soul.md — 人格定义",

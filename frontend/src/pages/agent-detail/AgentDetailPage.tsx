@@ -1964,6 +1964,7 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
 
 export default function AgentDetailPage() {
     const { t, i18n } = useTranslation();
+    const tsLocale = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en-US';
     const dialog = useDialog();
     const toast = useToast();
     const { id } = useParams<{ id: string }>();
@@ -2005,17 +2006,9 @@ export default function AgentDetailPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [agent?.primary_model_id]);
 
-    const handleModelChange = useCallback(async (newModelId: string | null) => {
+    const handleModelChange = useCallback((newModelId: string | null) => {
         setOverrideModelId(newModelId);
-        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
-        if ((agent as any)?.access_level !== 'manage') return;
-        try {
-            await agentApi.update(id, { primary_model_id: newModelId });
-            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-        } catch {
-            setOverrideModelId(agent?.primary_model_id || null);
-        }
-    }, [id, agent?.primary_model_id, (agent as any)?.access_level, queryClient]);
+    }, []);
 
     // Track onboarding kickoff per (agent, session) so the agent only greets
     // once per session. The agent opens the conversation itself — no visible
@@ -2070,6 +2063,10 @@ export default function AgentDetailPage() {
     const [showAllFocus, setShowAllFocus] = useState(false);
     const [showCompletedFocus, setShowCompletedFocus] = useState(false);
     const [showAllReflections, setShowAllReflections] = useState(false);
+    // Sidebar Focus group expand states
+    const [showAllSideActive, setShowAllSideActive] = useState(false);
+    const [showAllSideSystem, setShowAllSideSystem] = useState(false);
+    const [showAllSideCompleted, setShowAllSideCompleted] = useState(false);
     const [awareView, setAwareView] = useState<'list' | 'calendar'>('list');
     const [awareCalendarMode, setAwareCalendarMode] = useState<'day' | 'week' | 'month'>('week');
     const [awareCalendarDate, setAwareCalendarDate] = useState<Date>(() => new Date());
@@ -2102,36 +2099,7 @@ export default function AgentDetailPage() {
         }
     };
 
-    const { data: soulContent } = useQuery({
-        queryKey: ['file', id, 'soul.md'],
-        queryFn: () => fileApi.read(id!, 'soul.md'),
-        enabled: !!id && activeTab === 'mind',
-    });
-
-    const { data: memoryFiles = [] } = useQuery({
-        queryKey: ['files', id, 'memory'],
-        queryFn: () => fileApi.list(id!, 'memory'),
-        enabled: !!id && activeTab === 'mind',
-    });
-    const [expandedMemory, setExpandedMemory] = useState<string | null>(null);
-    const { data: memoryFileContent } = useQuery({
-        queryKey: ['file', id, expandedMemory],
-        queryFn: () => fileApi.read(id!, expandedMemory!),
-        enabled: !!id && !!expandedMemory,
-    });
-
-    const { data: skillFiles = [] } = useQuery({
-        queryKey: ['files', id, 'skills'],
-        queryFn: () => fileApi.list(id!, 'skills'),
-        enabled: !!id && activeTab === 'skills',
-    });
-
     const [workspacePath, setWorkspacePath] = useState('workspace');
-    const { data: workspaceFiles = [] } = useQuery({
-        queryKey: ['files', id, workspacePath],
-        queryFn: () => fileApi.list(id!, workspacePath),
-        enabled: !!id && activeTab === 'workspace',
-    });
 
     const { data: activityLogs = [] } = useQuery({
         queryKey: ['activity', id],
@@ -3144,7 +3112,6 @@ export default function AgentDetailPage() {
                         setLivePanelVisible(true);
                         collapseSidebarsForLivePanel();
                     }
-                    queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
                 upsertToolCallMessage({
                     role: 'tool_call',
@@ -3586,9 +3553,9 @@ export default function AgentDetailPage() {
             const diffMs = now.getTime() - d.getTime();
             const isToday = d.toDateString() === now.toDateString();
             let timeStr = '';
-            if (isToday) timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            else if (diffMs < 7 * 86400000) timeStr = d.toLocaleDateString([], { weekday: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            else timeStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            if (isToday) timeStr = d.toLocaleTimeString(tsLocale, { hour: '2-digit', minute: '2-digit' });
+            else if (diffMs < 7 * 86400000) timeStr = d.toLocaleDateString(tsLocale, { weekday: 'short' }) + ' ' + d.toLocaleTimeString(tsLocale, { hour: '2-digit', minute: '2-digit' });
+            else timeStr = d.toLocaleDateString(tsLocale, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(tsLocale, { hour: '2-digit', minute: '2-digit' });
             return (
                 <div className="chat-msg-timestamp">
                     {timeStr}
@@ -3767,14 +3734,23 @@ export default function AgentDetailPage() {
 
             attachedFiles.forEach(file => {
                 filesDisplay += `[Attachment: ${file.name}] `;
+                const wsPath = file.path || '';
+                const codePath = wsPath.replace(/^workspace\//, '');
+                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document/send_email tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
+
                 if (file.imageUrl && supportsVision) {
                     filesPrompt += `[image_data:${file.imageUrl}]\n`;
+                    if (fileLoc) {
+                        filesPrompt += `[Image File Path Reference]${fileLoc}\n`;
+                    }
                 } else if (file.imageUrl) {
-                    filesPrompt += t('common.file.imageUploaded', '[图片文件已上传: {{name}}...]', { name: file.name }) + '\n';
+                    filesPrompt += t('common.file.imageUploaded', '[图片文件已上传: {{name}}...]', { name: file.name });
+                    if (fileLoc) {
+                        filesPrompt += `${fileLoc}\n`;
+                    } else {
+                        filesPrompt += '\n';
+                    }
                 } else {
-                    const wsPath = file.path || '';
-                    const codePath = wsPath.replace(/^workspace\//, '');
-                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
                     if (file.source === 'workspace_auto') {
                         filesPrompt += `[Workspace reference: ${file.name}]${fileLoc}\nUse read_file or read_document if you need the file contents.\n\n`;
                     } else {
@@ -4073,17 +4049,7 @@ export default function AgentDetailPage() {
         retry: false,
     });
 
-    const { data: channelConfig } = useQuery({
-        queryKey: ['channel', id],
-        queryFn: () => channelApi.get(id!),
-        enabled: !!id && activeTab === 'settings',
-    });
 
-    const { data: webhookData } = useQuery({
-        queryKey: ['webhook-url', id],
-        queryFn: () => channelApi.webhookUrl(id!),
-        enabled: !!id && activeTab === 'settings',
-    });
 
     const { data: llmModels = [], isLoading: llmModelsLoading } = useQuery({
         queryKey: ['llm-models'],
@@ -4142,17 +4108,7 @@ export default function AgentDetailPage() {
         enabled: !!id && activeTab === 'settings',
     });
 
-    // ─── Soul editor ─────────────────────────────────────
-    const [soulEditing, setSoulEditing] = useState(false);
-    const [soulDraft, setSoulDraft] = useState('');
 
-    const saveSoul = useMutation({
-        mutationFn: () => fileApi.write(id!, 'soul.md', soulDraft),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['file', id, 'soul.md'] });
-            setSoulEditing(false);
-        },
-    });
 
 
     const CopyBtn = ({ url }: { url: string }) => (
@@ -4165,9 +4121,6 @@ export default function AgentDetailPage() {
     );
 
     // ─── File viewer ─────────────────────────────────────
-    const [viewingFile, setViewingFile] = useState<string | null>(null);
-    const [fileEditing, setFileEditing] = useState(false);
-    const [fileDraft, setFileDraft] = useState('');
     const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -4183,31 +4136,13 @@ export default function AgentDetailPage() {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
     };
-    const { data: fileContent } = useQuery({
-        queryKey: ['file-content', id, viewingFile],
-        queryFn: () => fileApi.read(id!, viewingFile!),
-        enabled: !!viewingFile,
-    });
 
     // ─── Task creation & detail ───────────────────────────────────
     const [showTaskForm, setShowTaskForm] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [taskForm, setTaskForm] = useState({ title: '', description: '', priority: 'medium', type: 'todo' as 'todo' | 'supervision', supervision_target_name: '', remind_schedule: '', due_date: '' });
     const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-    const { data: taskLogs = [] } = useQuery({
-        queryKey: ['task-logs', id, selectedTaskId],
-        queryFn: () => taskApi.getLogs(id!, selectedTaskId!),
-        enabled: !!id && !!selectedTaskId,
-        refetchInterval: selectedTaskId ? 3000 : false,
-    });
 
-    // Schedule execution history (selectedTaskId format: 'sched-{uuid}')
-    const expandedScheduleId = selectedTaskId?.startsWith('sched-') ? selectedTaskId.slice(6) : null;
-    const { data: scheduleHistoryData } = useQuery({
-        queryKey: ['schedule-history', id, expandedScheduleId],
-        queryFn: () => scheduleApi.history(id!, expandedScheduleId!),
-        enabled: !!id && !!expandedScheduleId,
-    });
     const createTask = useMutation({
         mutationFn: (data: any) => {
             const cleaned = { ...data };
@@ -4240,7 +4175,7 @@ export default function AgentDetailPage() {
     const canManage = (agent as any).access_level === 'manage';
     const formatAgentDate = (d?: string | null) => {
         if (!d) return '—';
-        try { return new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return d; }
+        try { return new Date(d).toLocaleDateString(tsLocale, { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return d; }
     };
     const primaryModel = llmModels.find((m: any) => m.id === agent.primary_model_id);
     const showNoModelState = !llmModelsLoading && (agent as any).agent_type !== 'openclaw' && (enabledModelCount === 0 || !effectiveModelReady);
@@ -4276,7 +4211,7 @@ export default function AgentDetailPage() {
     const expiryLabel = (agent as any).is_expired
         ? t('agent.settings.expiry.expired')
         : (agent as any).expires_at
-            ? new Date((agent as any).expires_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            ? new Date((agent as any).expires_at).toLocaleDateString(tsLocale, { year: 'numeric', month: 'short', day: 'numeric' })
             : t('agent.settings.expiry.neverExpires');
     const renderAgentInfoCard = () => (
         <div className={`agent-info-card${infoCardOpen ? ' agent-info-card--open' : ''}`}>
@@ -4406,8 +4341,8 @@ export default function AgentDetailPage() {
         const isZh = i18n.language?.startsWith('zh');
         const formatTrigger = (trig: any) => {
             if (trig.type === 'cron' && trig.config?.expr) return `Cron ${trig.config.expr}`;
-            if (trig.type === 'interval' && trig.config?.minutes) return isZh ? `每 ${trig.config.minutes} 分钟` : `Every ${trig.config.minutes} min`;
-            if (trig.type === 'once' && trig.config?.at) return new Date(trig.config.at).toLocaleString();
+            if (trig.type === 'interval' && trig.config?.minutes) return t('agent.aware.triggerEveryMin', { min: trig.config.minutes });
+            if (trig.type === 'once' && trig.config?.at) return new Date(trig.config.at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
             return trig.name || trig.type;
         };
         const triggerTitle = (trig: any) => String(trig.reason || trig.name || trig.type || '').trim();
@@ -4526,12 +4461,42 @@ export default function AgentDetailPage() {
                 </div>
             );
         };
-        const renderFocusGroup = (title: string, items: FocusItem[]) => {
+        const SIDE_FOCUS_LIMIT = 12;
+        const renderFocusGroup = (
+            title: string,
+            items: FocusItem[],
+            showAll: boolean,
+            setShowAll: (val: boolean) => void,
+        ) => {
             if (items.length === 0) return null;
+            const hasMore = items.length > SIDE_FOCUS_LIMIT;
+            const visibleItems = showAll ? items : items.slice(0, SIDE_FOCUS_LIMIT);
             return (
                 <div className="aware-side-focus-group">
-                    <div className="aware-side-subtitle">{title}</div>
-                    {items.slice(0, 12).map(renderFocusItem)}
+                    <div className="aware-side-subtitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{title}</span>
+                        {hasMore && (
+                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                {showAll ? '' : `${SIDE_FOCUS_LIMIT}/${items.length}`}
+                            </span>
+                        )}
+                    </div>
+                    {visibleItems.map(renderFocusItem)}
+                    {hasMore && (
+                        <button
+                            type="button"
+                            className="aware-side-collapse"
+                            onClick={() => setShowAll(!showAll)}
+                            style={{ marginTop: '4px', width: '100%', textAlign: 'center', borderTop: '1px dashed var(--border-subtle)', paddingTop: '6px' }}
+                        >
+                            <span>
+                                {showAll
+                                    ? (isZh ? '收起' : 'Show less')
+                                    : (isZh ? `显示更多 (+${items.length - SIDE_FOCUS_LIMIT})` : `Show more (+${items.length - SIDE_FOCUS_LIMIT})`)
+                                }
+                            </span>
+                        </button>
+                    )}
                 </div>
             );
         };
@@ -4558,14 +4523,14 @@ export default function AgentDetailPage() {
         })();
         const calendarRangeLabel = (() => {
             if (awareCalendarMode === 'day') {
-                return calendarAnchor.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' });
+                return calendarAnchor.toLocaleDateString(tsLocale, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' });
             }
             if (awareCalendarMode === 'month') {
-                return calendarAnchor.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+                return calendarAnchor.toLocaleDateString(tsLocale, { year: 'numeric', month: 'long' });
             }
             const first = calendarDays[0];
             const last = calendarDays[calendarDays.length - 1];
-            return `${first.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${last.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+            return `${first.toLocaleDateString(tsLocale, { month: 'short', day: 'numeric' })} - ${last.toLocaleDateString(tsLocale, { month: 'short', day: 'numeric', year: 'numeric' })}`;
         })();
         const shiftCalendar = (direction: -1 | 1) => {
             setAwareCalendarDate(prev => {
@@ -4616,8 +4581,8 @@ export default function AgentDetailPage() {
                         return (
                             <div key={day.toISOString()} className={`aware-calendar-day ${isToday ? 'is-today' : ''}`}>
                                 <div className="aware-calendar-day-label" style={isToday ? { color: 'var(--accent-primary)', fontWeight: 600 } : {}}>
-                                    {day.toLocaleDateString(undefined, awareCalendarMode === 'month' ? { day: 'numeric' } : (awareCalendarMode === 'week' ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', month: 'numeric', day: 'numeric' }))}
-                                    {isToday && awareCalendarMode === 'day' && <span className="aware-calendar-today-pill">{isZh ? '今天' : 'Today'}</span>}
+                                    {day.toLocaleDateString(tsLocale, awareCalendarMode === 'month' ? { day: 'numeric' } : (awareCalendarMode === 'week' ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', month: 'numeric', day: 'numeric' }))}
+                                    {isToday && awareCalendarMode === 'day' && <span className="aware-calendar-today-pill">{t('agent.aware.today')}</span>}
                                 </div>
                                 {items.length === 0 ? (
                                     <div className="aware-calendar-empty">-</div>
@@ -4690,19 +4655,38 @@ export default function AgentDetailPage() {
                             <div className="aware-side-empty">{t('agent.aware.focusEmpty')}</div>
                         ) : (
                             <>
-                                {renderFocusGroup(isZh ? '进行中' : 'In progress', activeFocusItems)}
-                                {renderFocusGroup(isZh ? '系统 Focus' : 'System Focus', systemFocusItems)}
+                                {renderFocusGroup(isZh ? '进行中' : 'In progress', activeFocusItems, showAllSideActive, setShowAllSideActive)}
+                                {renderFocusGroup(isZh ? '系统 Focus' : 'System Focus', systemFocusItems, showAllSideSystem, setShowAllSideSystem)}
                                 {completedFocusItems.length > 0 && (
                                     <div className="aware-side-focus-group">
                                         <button
                                             type="button"
                                             className="aware-side-collapse"
-                                            onClick={() => setShowCompletedFocus(!showCompletedFocus)}
+                                            onClick={() => { setShowCompletedFocus(!showCompletedFocus); setShowAllSideCompleted(false); }}
                                         >
                                             <span>{showCompletedFocus ? (isZh ? '收起已完成' : 'Hide completed') : (isZh ? `已完成 (${completedFocusItems.length})` : `Completed (${completedFocusItems.length})`)}</span>
                                             <span className={`aware-side-chevron ${showCompletedFocus ? 'open' : ''}`}>▶</span>
                                         </button>
-                                        {showCompletedFocus && completedFocusItems.slice(0, 12).map(renderFocusItem)}
+                                        {showCompletedFocus && (
+                                            <>
+                                                {(showAllSideCompleted ? completedFocusItems : completedFocusItems.slice(0, SIDE_FOCUS_LIMIT)).map(renderFocusItem)}
+                                                {completedFocusItems.length > SIDE_FOCUS_LIMIT && (
+                                                    <button
+                                                        type="button"
+                                                        className="aware-side-collapse"
+                                                        onClick={() => setShowAllSideCompleted(!showAllSideCompleted)}
+                                                        style={{ marginTop: '4px', width: '100%', textAlign: 'center', borderTop: '1px dashed var(--border-subtle)', paddingTop: '6px' }}
+                                                    >
+                                                        <span>
+                                                            {showAllSideCompleted
+                                                                ? (isZh ? '收起' : 'Show less')
+                                                                : (isZh ? `显示更多 (+${completedFocusItems.length - SIDE_FOCUS_LIMIT})` : `Show more (+${completedFocusItems.length - SIDE_FOCUS_LIMIT})`)
+                                                            }
+                                                        </span>
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </>
@@ -4734,7 +4718,7 @@ export default function AgentDetailPage() {
                                     <div className="aware-side-trigger-main">
                                         <div className="aware-side-item-title">{formatReflectionTitle(session.title, !!isZh)}</div>
                                         <div className="aware-side-item-meta">
-                                            {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                            {new Date(session.created_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                             {session.message_count > 0 ? ` · ${session.message_count}` : ''}
                                         </div>
                                     </div>
@@ -4892,11 +4876,12 @@ export default function AgentDetailPage() {
                             </>
                             {(agent as any)?.agent_type !== 'openclaw' && (
                                 <>
-                                    {agent.status === 'stopped' ? (
+                                    {canManage && agent.status === 'stopped' && (
                                         <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
-                                    ) : agent.status === 'running' ? (
+                                    )}
+                                    {canManage && agent.status === 'running' && (
                                         <button className="btn btn-secondary" onClick={async () => { await agentApi.stop(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.stop')}</button>
-                                    ) : null}
+                                    )}
                                 </>
                             )}
                         </div>
@@ -4907,7 +4892,7 @@ export default function AgentDetailPage() {
                 {activeTab !== 'chat' && <div className="tabs">
                     {AGENT_DETAIL_TABS.filter(tab => {
                         if (['aware', 'workspace', 'chat'].includes(tab)) return false;
-                        // 'use' access: hide settings and approvals tabs
+                        // 'use' access keeps the existing tab bar unchanged; settings remains available via its own entry.
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
                         }
@@ -5098,13 +5083,13 @@ export default function AgentDetailPage() {
                                 <div className="card">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                         <h3 style={{ fontSize: '14px', fontWeight: 600 }}>{t('agent.activity.recent', 'Recent Activity')}</h3>
-                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>View All →</button>
+                                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => setActiveTab('activityLog')}>{t('agent.aware.viewAll')} →</button>
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                         {activityLogs.slice(0, 5).map((log: any, i: number) => (
                                             <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '6px 0', borderBottom: i < 4 ? '1px solid var(--border-subtle)' : 'none' }}>
                                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', minWidth: '60px', flexShrink: 0 }}>
-                                                    {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    {new Date(log.created_at).toLocaleTimeString(tsLocale, { hour: '2-digit', minute: '2-digit' })}
                                                 </span>
                                                 <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{log.summary || log.action_type}</span>
                                             </div>
@@ -5116,7 +5101,7 @@ export default function AgentDetailPage() {
                             {/* Quick Actions */}
                             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
                                 <button className="btn btn-secondary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
-                                <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>
+                                {canManage && <button className="btn btn-secondary" onClick={() => setActiveTab('settings')}>{t('agent.tabs.settings')}</button>}
                             </div>
                         </div>
                     );
@@ -5158,19 +5143,18 @@ export default function AgentDetailPage() {
                         }
                         if (trig.type === 'once' && trig.config?.at) {
                             try {
-                                return isZh
-                                    ? `一次性：${new Date(trig.config.at).toLocaleString()}`
-                                    : `Once at ${new Date(trig.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
-                            } catch { return isZh ? `一次性：${trig.config.at}` : `Once at ${trig.config.at}`; }
+                                const timeStr = new Date(trig.config.at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                                return t('agent.aware.triggerOnce', { time: timeStr });
+                            } catch { return t('agent.aware.triggerOnce', { time: trig.config.at }); }
                         }
                         if (trig.type === 'interval' && trig.config?.minutes) {
                             const m = trig.config.minutes;
-                            return isZh ? `每 ${m >= 60 ? `${m / 60} 小时` : `${m} 分钟`}` : (m >= 60 ? `Every ${m / 60}h` : `Every ${m} min`);
+                            return m >= 60 ? t('agent.aware.triggerEveryHour', { hour: m / 60 }) : t('agent.aware.triggerEveryMin', { min: m });
                         }
-                        if (trig.type === 'poll') return `${isZh ? '轮询' : 'Poll'}: ${trig.config?.url?.substring(0, 40) || 'URL'}`;
+                        if (trig.type === 'poll') return t('agent.aware.triggerPoll', { url: trig.config?.url?.substring(0, 40) || 'URL' });
                         if (trig.type === 'on_message') {
-                            const sender = trig.config?.from_agent_name || trig.config?.from_user_name || (isZh ? '未知对象' : 'unknown');
-                            return isZh ? `收到 ${sender} 的消息时` : `On message from ${sender}`;
+                            const sender = trig.config?.from_agent_name || trig.config?.from_user_name || t('agent.aware.triggerUnknown');
+                            return t('agent.aware.triggerOnMessage', { sender });
                         }
                         if (trig.type === 'webhook') {
                             return `Webhook${trig.config?.token ? ` (${trig.config.token.substring(0, 6)}...)` : ''}`;
@@ -5360,9 +5344,10 @@ export default function AgentDetailPage() {
                                                             {trig.is_enabled ? t('agent.aware.inProgress') : t('agent.aware.completed')}
                                                         </span>
                                                         <div style={{ display: 'flex', gap: '4px' }}>
-                                                            {!trig.is_system && <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
+                                                            {canManage && !trig.is_system && <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                                                                 onClick={async (e) => {
                                                                     e.stopPropagation();
+                                                                    if (!canManage) return;
                                                                     const ok = await dialog.confirm(t('agent.aware.deleteTriggerConfirm', { name: trig.name }), { title: '删除触发器', danger: true, confirmLabel: '删除' });
                                                                     if (ok) {
                                                                         await triggerApi.delete(id!, trig.id);
@@ -5398,7 +5383,7 @@ export default function AgentDetailPage() {
                                                                     fontWeight: 500,
                                                                 }}>{log.action_type?.replace('trigger_', '')}</span>
                                                                 <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                                                                    {new Date(log.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                                    {new Date(log.created_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                                                 </span>
                                                             </div>
                                                             <div style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{log.summary}</div>
@@ -5555,8 +5540,8 @@ export default function AgentDetailPage() {
                                                                     {formatReflectionTitle(session.title, !!isZh)}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
-                                                                    {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                                                    {session.message_count > 0 && ` · ${session.message_count} msg`}
+                                                                    {new Date(session.created_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                                    {session.message_count > 0 && ` · ${session.message_count}`}
                                                                 </div>
                                                             </div>
                                                             <span style={{
@@ -5789,7 +5774,7 @@ export default function AgentDetailPage() {
                             upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
-                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: canManage, directoryNavigation: true }} />;
+                        return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: canManage, newFile: canManage, newFolder: canManage, edit: canManage, delete: canManage, directoryNavigation: true }} />;
                     })()
                 }
 
@@ -5942,8 +5927,8 @@ export default function AgentDetailPage() {
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                                     {s.last_message_at
-                                                                        ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                                                                        : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                                                                        ? new Date(s.last_message_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                                        : new Date(s.created_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric' })}
                                                                     {s.message_count > 0 && <span className="session-msg-count" style={{ marginLeft: 'auto' }}>{s.message_count}</span>}
                                                                 </div>
                                                             </div>
@@ -6025,7 +6010,7 @@ export default function AgentDetailPage() {
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
                                                                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.username || ''}</span>
-                                                                    <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
+                                                                    <span style={{ flexShrink: 0 }}>{s.last_message_at ? new Date(s.last_message_at).toLocaleString(tsLocale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}{s.message_count > 0 ? ` · ${s.message_count}` : ''}</span>
                                                                 </div>
                                                             </div>
                                                         );
@@ -6171,6 +6156,17 @@ export default function AgentDetailPage() {
                                                 onTouchMoveCapture={handleChatTouchMoveCapture}
                                                 style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
                                             >
+                                                {chatHistoryLoadingMore && (
+                                                    <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--text-tertiary)', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                                                        <div className="cw-spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></div>
+                                                        {i18n.language?.startsWith('zh') ? '正在加载历史消息...' : 'Loading history...'}
+                                                    </div>
+                                                )}
+                                                {!chatHistoryHasMore && chatMessages.length > 0 && (
+                                                    <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                                        {i18n.language?.startsWith('zh') ? '已加载全部历史消息' : 'All history loaded'}
+                                                    </div>
+                                                )}
                                                 {chatMessages.length === 0 && !showNoModelState && (
                                                     <div className="chat-empty-state">
                                                         <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
@@ -6562,6 +6558,7 @@ export default function AgentDetailPage() {
                                     onTabChange={setSidePanelTab}
                                     awareContent={renderAwarePreview()}
                                     workspaceLocked={workspacePreviewLocked}
+                                    canManageWorkspace={canManage}
                                     onWorkspaceSelectPath={handleWorkspaceSelectPath}
                                     onWorkspaceToggleLock={handleWorkspaceToggleLock}
                                     onWorkspaceEditingChange={handleWorkspaceEditingChange}
@@ -6668,7 +6665,7 @@ export default function AgentDetailPage() {
                                                 heartbeat: <IconHeartbeat size={16} stroke={1.8} />,
                                                 plaza_post: <IconBuilding size={16} stroke={1.8} />,
                                             };
-                                            const time = log.created_at ? new Date(log.created_at).toLocaleString('zh-CN', {
+                                            const time = log.created_at ? new Date(log.created_at).toLocaleString(tsLocale, {
                                                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
                                             }) : '';
                                             const isExpanded = expandedLogId === log.id;
@@ -6722,7 +6719,7 @@ export default function AgentDetailPage() {
 
                 {/* ── Approvals Tab ── */}
                 {
-                    activeTab === 'approvals' && id && <ApprovalsTab agentId={id} />
+                    activeTab === 'approvals' && id && <ApprovalsTab agentId={id} canManage={canManage} />
                 }
 
                 {/* ── Settings Tab ── */}
@@ -6780,20 +6777,11 @@ export default function AgentDetailPage() {
                     setPromptModal(null);
                     if (action === 'newFolder') {
                         await fileApi.write(id!, `${workspacePath}/${value}/.gitkeep`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                     } else if (action === 'newFile') {
                         await fileApi.write(id!, `${workspacePath}/${value}`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
-                        setViewingFile(`${workspacePath}/${value}`);
-                        setFileEditing(true);
-                        setFileDraft('');
                     } else if (action === 'newSkill') {
                         const template = `---\nname: ${value}\ndescription: Describe what this skill does\n---\n\n# ${value}\n\n## Overview\nDescribe the purpose and when to use this skill.\n\n## Process\n1. Step one\n2. Step two\n\n## Output Format\nDescribe the expected output format.\n`;
                         await fileApi.write(id!, `skills/${value}/SKILL.md`, template);
-                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                        setViewingFile(`skills/${value}/SKILL.md`);
-                        setFileEditing(true);
-                        setFileDraft(template);
                     }
                 }}
             />
@@ -6811,9 +6799,6 @@ export default function AgentDetailPage() {
                     if (path) {
                         try {
                             await fileApi.delete(id!, path);
-                            setViewingFile(null);
-                            setFileEditing(false);
-                            queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                             showToast(t('common.delete'));
                         } catch (err: any) {
                             showToast(t('agent.upload.failed'), 'error');
@@ -6850,7 +6835,7 @@ export default function AgentDetailPage() {
                                         {(agent as any).is_expired
                                             ? <span className="agent-expiry-status agent-expiry-status--expired">{t('agent.settings.expiry.expired')}</span>
                                             : (agent as any).expires_at
-                                                ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
+                                                ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(tsLocale)}</strong></>
                                                 : <span className="agent-expiry-status">{t('agent.settings.expiry.neverExpires')}</span>
                                         }
                                     </div>

@@ -61,7 +61,7 @@ async def ensure_access_granted_platform_relationships(
 
     changed = False
     for user in users_result.scalars().all():
-        member = await registration_service.ensure_web_org_member(db, user)
+        member = await registration_service.ensure_web_org_member(user)
         if not member or member.status != "active":
             continue
         db.add(

@@ -7,6 +7,15 @@ from app.api import admin as admin_api
 from app.api import tenants as tenants_api
 from app.services.platform_service import platform_service
 from tests.test_auth import RecordingDB, DummyResult
+from app.database import _session_ctx
+
+
+async def run_with_db(db, func, *args, **kwargs):
+    token = _session_ctx.set(db)
+    try:
+        return await func(*args, **kwargs)
+    finally:
+        _session_ctx.reset(token)
 
 @pytest.mark.asyncio
 async def test_get_platform_settings_sso_toggle_default():
@@ -68,23 +77,20 @@ async def test_resolve_tenant_by_domain_sso_toggle():
 
 @pytest.mark.asyncio
 async def test_get_tenant_sso_base_url_toggle():
-    """Verify that get_tenant_sso_base_url respects the sso_custom_domain_redirect_enabled toggle."""
+    """Verify that get_tenant_sso_base_url respects the sso_redirect_enabled kwarg."""
     tenant = SimpleNamespace(slug="acme", sso_domain="https://acme.com")
-    
+
     # 1. Enabled: returns the custom sso_domain
-    db_enabled = RecordingDB(responses=[
-        DummyResult(),  # sso_custom_domain_redirect_enabled -> None (default True)
-    ])
-    url = await platform_service.get_tenant_sso_base_url(db=db_enabled, tenant=tenant)
+    url = await platform_service.get_tenant_sso_base_url(
+        db=None, tenant=tenant, sso_redirect_enabled=True
+    )
     assert url == "https://acme.com"
 
     # 2. Disabled: falls back to public base URL
-    setting_disabled = SimpleNamespace(key="sso_custom_domain_redirect_enabled", value={"enabled": False})
-    db_disabled = RecordingDB(responses=[
-        DummyResult(values=[setting_disabled]),  # sso_custom_domain_redirect_enabled -> False
-    ])
     with patch.object(platform_service, "get_public_base_url", return_value="https://try.clawith.ai"):
-        url = await platform_service.get_tenant_sso_base_url(db=db_disabled, tenant=tenant)
+        url = await platform_service.get_tenant_sso_base_url(
+            db=None, tenant=tenant, sso_redirect_enabled=False
+        )
         assert url == "https://try.clawith.ai"
 
 
@@ -110,7 +116,7 @@ async def test_switch_tenant_sso_toggle():
         DummyResult(),                     # platform_service setting check (default True)
     ])
     with patch("app.api.auth.create_access_token", return_value="jwt-token"):
-        res = await auth_api.switch_tenant(data, request, current_user, db_enabled)
+        res = await run_with_db(db_enabled, auth_api.switch_tenant, data, request, current_user)
         assert res.access_token == "jwt-token"
         assert res.redirect_url is not None
         assert "https://acme.com" in res.redirect_url
@@ -123,6 +129,6 @@ async def test_switch_tenant_sso_toggle():
         DummyResult(values=[setting_disabled]), # auth_api setting check (disabled)
     ])
     with patch("app.api.auth.create_access_token", return_value="jwt-token"):
-        res = await auth_api.switch_tenant(data, request, current_user, db_disabled)
+        res = await run_with_db(db_disabled, auth_api.switch_tenant, data, request, current_user)
         assert res.access_token == "jwt-token"
         assert res.redirect_url is None

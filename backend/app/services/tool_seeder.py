@@ -57,8 +57,8 @@ LEGACY_IMAGE_TOOL_MODEL_DEFAULTS = {
 
 def _global_builtin_config(tool_data: dict) -> dict:
     """Return config safe to store on the global builtin Tool row."""
-    if (tool_data.get("config_schema") or {}).get("fields"):
-        return {}
+    # Builtin tools specify defaults (like 'allow_network': True) in their 'config' dict.
+    # The actual sensitive data defaults are empty strings ("") so this is safe to store globally.
     return tool_data.get("config", {})
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
@@ -1420,7 +1420,7 @@ BUILTIN_TOOLS = [
                 "attachments": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of workspace-relative file paths to attach (optional)",
+                    "description": "List of workspace-relative file paths to attach (optional). E.g. ['workspace/filename.ext']. Always specify this parameter if the user uploads a file or mentions sending/attaching a file.",
                 },
             },
             "required": ["to", "subject", "body"],
@@ -3715,7 +3715,6 @@ async def seed_builtin_tools():
                     continue
                 legacy_config = meaningful_config(tool.config or {})
                 if not legacy_config:
-                    tool.config = {}
                     continue
                 setting_key = tenant_tool_config_key(tool.name)
                 existing_setting_r = await db.execute(
@@ -3731,7 +3730,15 @@ async def seed_builtin_tools():
                         value={"config": legacy_config},
                     ))
                     migrated += 1
-                tool.config = {}
+                
+                # Remove sensitive fields from global config instead of wiping it
+                clean_config = {}
+                schema_fields = (tool.config_schema or {}).get("fields", [])
+                sensitive_keys = {f["key"] for f in schema_fields if f.get("type") == "password"}
+                for k, v in (tool.config or {}).items():
+                    if k not in sensitive_keys:
+                        clean_config[k] = v
+                tool.config = clean_config
             if migrated:
                 logger.info(
                     f"[ToolSeeder] Migrated {migrated} legacy builtin tool config(s) "

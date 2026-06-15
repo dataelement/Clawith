@@ -250,7 +250,13 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     - Database → relationship network (human + agent)
     """
     # --- Soul ---
-    soul = await _read_file_safe(normalize_storage_key(f"{agent_id}/soul.md"), 2000)
+    # Soul is the agent's full author-curated identity; detailed souls (e.g.
+    # bundle agents) run 4-12k chars. A tight cap silently drops every tail
+    # section — rules, boundaries, facts — and the agent then confidently
+    # denies things its soul plainly states, with no log of the truncation.
+    # Memory and relationships below keep small caps because they grow
+    # unbounded at runtime; the soul does not (only seeded/explicitly edited).
+    soul = await _read_file_safe(normalize_storage_key(f"{agent_id}/soul.md"), 30000)
     # Strip markdown heading if present
     if soul.startswith("# "):
         soul = "\n".join(soul.split("\n")[1:]).strip()

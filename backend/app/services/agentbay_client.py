@@ -8,10 +8,20 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 from loguru import logger
+from pydantic import RootModel
 
-from agentbay import AgentBay, BrowserOption, CreateSessionParams
+
+class GenericExtractSchema(RootModel[Any]):
+    pass
+
+
+from agentbay import AgentBay, CreateSessionParams
+from app.core.logging_config import _disable_agentbay_logger_override, configure_logging
+
+_disable_agentbay_logger_override()
+configure_logging()
 
 
 @dataclass
@@ -72,7 +82,7 @@ class AgentBayClient:
             return
         try:
             await asyncio.to_thread(self._session.delete)
-            logger.info(f"[AgentBay] Closed session")
+            logger.info("[AgentBay] Closed session")
         except Exception as e:
             logger.warning(f"[AgentBay] Failed to close session: {e}")
         finally:
@@ -264,15 +274,18 @@ class AgentBayClient:
         await asyncio.sleep(3)
 
         from agentbay._common.models.browser_operator import ExtractOptions
-        # Use a generic dict schema since we cannot define a Pydantic model at runtime
+        # Use a generic RootModel schema since we cannot define a custom Pydantic model at runtime
         options = ExtractOptions(
             instruction=instruction,
-            schema=dict,
+            schema=GenericExtractSchema,
             selector=selector or None,
         )
         success, data = await asyncio.to_thread(
             self._session.browser.operator.extract, options
         )
+        if success and data:
+            if hasattr(data, "model_dump"):
+                data = data.model_dump()
         return {"success": success, "data": data}
 
     async def browser_observe(self, instruction: str, selector: str = "") -> dict:

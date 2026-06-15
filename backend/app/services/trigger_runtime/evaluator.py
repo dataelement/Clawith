@@ -370,6 +370,12 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                     .where(
                         ChatMessage.participant_id == from_participant,
                         ChatMessage.created_at > since,
+                        # Fix 1: Only match real conversational messages,
+                        # not internal tool_call / system records.
+                        ChatMessage.role.in_(["assistant", "user"]),
+                        # Fix 2: Exclude trigger internal "reflection"
+                        # sessions to avoid cross-trigger false matches.
+                        ChatSession.source_channel != "trigger",
                     )
                     .order_by(ChatMessage.created_at.desc())
                     .limit(1)

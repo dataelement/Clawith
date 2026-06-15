@@ -35,19 +35,25 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                 port = sock.getsockname()[1]
 
             profile_dir = tempfile.TemporaryDirectory(prefix="clawith-html-pdf-")
+            chrome_args = [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--allow-file-access-from-files",
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile_dir.name}",
+                "about:blank",
+            ]
+            import sys
+            if sys.platform.startswith("linux"):
+                # Linux environments (like Docker containers) require no-sandbox in standard restricted container contexts
+                chrome_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+
             proc = subprocess.Popen(
-                [
-                    chrome,
-                    "--headless=new",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--allow-file-access-from-files",
-                    f"--remote-debugging-port={port}",
-                    f"--user-data-dir={profile_dir.name}",
-                    "about:blank",
-                ],
+                chrome_args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -152,8 +158,12 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                 profile_dir.cleanup()
 
         try:
-            if await try_chrome_pdf():
+            chrome_success = await try_chrome_pdf()
+            if chrome_success:
                 return f"✅ Successfully converted HTML to PDF with Chrome: {target_path}"
+            else:
+                chrome_pdf_error = Exception("Chrome process timed out or failed to connect to debugging port")
+                logger.warning("Chrome HTML to PDF failed (timed out), falling back to WeasyPrint")
         except Exception as exc:
             chrome_pdf_error = exc
             logger.warning(f"Chrome HTML to PDF failed, falling back to WeasyPrint: {exc}")

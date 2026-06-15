@@ -49,28 +49,47 @@ class S3StorageBackend(StorageBackend):
         normalized = normalize_storage_key(key)
         return f"{self.prefix}/{normalized}" if self.prefix else normalized
 
+    def _is_gcs(self) -> bool:
+        """Return True if the endpoint targets Google Cloud Storage."""
+        if not self.endpoint_url:
+            return False
+        return "storage.googleapis.com" in self.endpoint_url
+
+    def _boto_config(self):
+        """Build a botocore Config appropriate for the target endpoint."""
+        from botocore.config import Config
+
+        if self._is_gcs():
+            # GCS S3-compatible API requires virtual-hosted-style addressing
+            # and an explicit region of "auto" for V4 signatures to verify.
+            addressing = "virtual"
+            region = "auto"
+        else:
+            addressing = "path"
+            region = self.region or None
+        return Config(
+            max_pool_connections=self.max_pool_connections,
+            proxies={},
+            s3={"addressing_style": addressing},
+            signature_version="s3v4",
+            connect_timeout=5,
+            read_timeout=30,
+            tcp_keepalive=True,
+            region_name=region,
+        )
+
     def _client_or_raise(self):
         if self._client is None:
             try:
                 import boto3
-                from botocore.config import Config
             except ImportError as exc:
                 raise RuntimeError("boto3 is required for S3 storage backend") from exc
             self._client = boto3.client(
                 "s3",
-                region_name=self.region or None,
                 endpoint_url=self.endpoint_url,
                 aws_access_key_id=self.access_key_id,
                 aws_secret_access_key=self.secret_access_key,
-                config=Config(
-                    max_pool_connections=self.max_pool_connections,
-                    proxies={},
-                    s3={"addressing_style": "path"},
-                    signature_version="s3v4",
-                    connect_timeout=5,
-                    read_timeout=30,
-                    tcp_keepalive=True,
-                ),
+                config=self._boto_config(),
             )
         return self._client
 
@@ -79,26 +98,16 @@ class S3StorageBackend(StorageBackend):
         """Shared aioboto3 session with aiohttp connection pool — reuses connections but detects stale ones correctly."""
         try:
             import aioboto3
-            from botocore.config import Config
         except ImportError as exc:
             raise RuntimeError("aioboto3 is required for async S3 writes") from exc
         if self._aioboto3_session is None:
             self._aioboto3_session = aioboto3.Session()
         async with self._aioboto3_session.client(
             "s3",
-            region_name=self.region or None,
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
-            config=Config(
-                max_pool_connections=self.max_pool_connections,
-                proxies={},
-                s3={"addressing_style": "path"},
-                signature_version="s3v4",
-                connect_timeout=5,
-                read_timeout=30,
-                tcp_keepalive=True,
-            ),
+            config=self._boto_config(),
         ) as client:
             yield client
 
@@ -177,13 +186,16 @@ class S3StorageBackend(StorageBackend):
         return await asyncio.to_thread(body.read)
 
     async def write_bytes(self, key: str, data: bytes, content_type: str | None = None) -> None:
+        # GCS S3-compatible API requires an explicit Content-Type; without it
+        # the V4 signature body-hash is calculated on an empty content-type,
+        # but GCS applies a different default — causing SignatureDoesNotMatch.
+        resolved_ct = content_type or "application/octet-stream"
         kwargs: dict[str, Any] = {
             "Bucket": self.bucket,
             "Key": self._object_key(key),
             "Body": data,
+            "ContentType": resolved_ct,
         }
-        if content_type:
-            kwargs["ContentType"] = content_type
         async with self._async_client() as client:
             await client.put_object(**kwargs)
 
@@ -302,8 +314,10 @@ class S3StorageBackend(StorageBackend):
             parsed_url = urlparse(url)
             parsed_endpoint = urlparse(self.endpoint_url)
             if parsed_url.netloc == parsed_endpoint.netloc:
+                # MinIO-style endpoint: rewrite path with /minio prefix
                 new_path = "/minio" + parsed_url.path
                 url = urlunparse(("", "", new_path, parsed_url.params, parsed_url.query, parsed_url.fragment))
+            # GCS (storage.googleapis.com): presigned URLs are already correct, no rewrite needed
         return url
 
 

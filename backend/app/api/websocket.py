@@ -8,15 +8,15 @@ from datetime import datetime, timezone as tz
 from time import perf_counter
 
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging_config import set_trace_id
 from app.core.permissions import check_agent_access, is_agent_expired
-from app.core.security import decode_access_token, get_current_user
-from app.database import async_session, get_db
+from app.core.security import decode_access_token
+from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -27,6 +27,7 @@ from app.services.activity_logger import log_activity
 from app.services.agentbay_live import detect_agentbay_env, get_browser_snapshot, get_desktop_screenshot
 from app.services.chat_session_service import ensure_primary_platform_session
 from app.services.llm import call_llm_with_failover
+from app.services.llm.utils import convert_chat_messages_to_llm_format, truncate_messages_with_pair_integrity
 from app.services.onboarding import is_onboarded, mark_onboarding_phase, resolve_onboarding_prompt
 from app.services.quota_guard import (
     AgentExpired,
@@ -38,7 +39,6 @@ from app.services.quota_guard import (
 )
 from app.services.realtime import realtime_router
 from app.services.task_executor import execute_task
-from app.services.vision_inject import sanitize_history_tool_result
 
 router = APIRouter(tags=["websocket"])
 
@@ -451,46 +451,7 @@ class WebSocketChatHandler:
 
     def _build_conversation_context(self) -> list[dict]:
         """Translates historical ChatMessages to LLM inputs."""
-        conversation = []
-        for msg in self.history_messages:
-            if msg.role == "tool_call":
-                try:
-                    tc_data = json.loads(msg.content)
-                    tc_name = tc_data.get("name") or tc_data.get("tool_name") or "unknown"
-                    tc_args = tc_data.get("args") or tc_data.get("arguments") or {}
-                    tc_result = tc_data.get("result", "")
-                    tc_id = f"call_{msg.id}"
-                    asst_msg = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": tc_id,
-                                "type": "function",
-                                "function": {"name": tc_name, "arguments": json.dumps(tc_args, ensure_ascii=False)},
-                            }
-                        ],
-                    }
-                    if tc_data.get("reasoning_content"):
-                        asst_msg["reasoning_content"] = tc_data["reasoning_content"]
-                    conversation.append(asst_msg)
-
-                    sanitized_result = sanitize_history_tool_result(str(tc_result))
-                    conversation.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "content": sanitized_result[:500],
-                        }
-                    )
-                except Exception:
-                    continue
-            else:
-                entry = {"role": msg.role, "content": msg.content}
-                if hasattr(msg, "thinking") and msg.thinking:
-                    entry["thinking"] = msg.thinking
-                conversation.append(entry)
-        return conversation
+        return convert_chat_messages_to_llm_format(self.history_messages)
 
     async def message_loop(self):
         """Core message processing loop."""
@@ -845,9 +806,7 @@ class WebSocketChatHandler:
                 async def _on_failover(reason: str):
                     await self.websocket.send_json({"type": "info", "content": f"Primary model error, {reason}"})
 
-                _truncated = self.conversation[-self.ctx_size :]
-                while _truncated and _truncated[0].get("role") == "tool":
-                    _truncated.pop(0)
+                _truncated = truncate_messages_with_pair_integrity(self.conversation, self.ctx_size)
 
                 # Resolve onboarding prompt
                 skip_tools_for_greeting = False

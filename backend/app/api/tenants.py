@@ -213,7 +213,7 @@ async def self_create_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
-        await registration_service.bind_org_member(db, new_user)
+        await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -227,7 +227,7 @@ async def self_create_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         await db.flush()
-        await registration_service.bind_org_member(db, current_user)
+        await registration_service.bind_org_member(current_user)
 
     await db.commit()
 
@@ -341,7 +341,7 @@ async def join_company(
             avatar_url=new_user.avatar_url,
         ))
         await db.flush()
-        await registration_service.bind_org_member(db, new_user)
+        await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
         access_token = create_access_token(str(new_user.id), new_user.role)
@@ -358,7 +358,7 @@ async def join_company(
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         final_role = current_user.role
         await db.flush()
-        await registration_service.bind_org_member(db, current_user)
+        await registration_service.bind_org_member(current_user)
 
     # Increment invitation code usage
     code_obj.used_count += 1

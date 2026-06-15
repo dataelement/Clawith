@@ -97,7 +97,6 @@ async def admin_update_user(
     if "email" in update_data or "primary_mobile" in update_data:
         from app.services.registration_service import registration_service
         await registration_service.sync_org_member_contact_from_user(
-            db,
             user,
             sync_email="email" in update_data,
             sync_phone="primary_mobile" in update_data,

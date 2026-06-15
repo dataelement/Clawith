@@ -16,8 +16,17 @@ role_contains() {
 
 # --- Permission fixing and privilege dropping ---
 if [ "$(id -u)" = '0' ]; then
-    echo "[entrypoint] Detected root user, fixing permissions..."
-    chown -R clawith:clawith ${AGENT_DATA_DIR}
+    echo "[entrypoint] Detected root user, checking permissions..."
+    TARGET_DIR="${AGENT_DATA_DIR:-/data/agents}"
+    if [ -d "${TARGET_DIR}" ]; then
+        CURRENT_OWNER=$(stat -c '%U:%G' "${TARGET_DIR}" 2>/dev/null || echo "")
+        if [ "${CURRENT_OWNER}" != "clawith:clawith" ]; then
+            echo "[entrypoint] Directory ${TARGET_DIR} owner is '${CURRENT_OWNER}', fixing permissions..."
+            chown -R clawith:clawith "${TARGET_DIR}"
+        else
+            echo "[entrypoint] Directory ${TARGET_DIR} is already owned by clawith:clawith, skipping chown."
+        fi
+    fi
 
     echo "[entrypoint] Dropping privileges to 'clawith' and re-executing..."
     exec gosu clawith /bin/bash "$0" "$@"

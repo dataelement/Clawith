@@ -79,7 +79,7 @@ async def _handle_google_sso_callback(
         auth_provider = GoogleWorkspaceAuthProvider(provider=provider, config=provider.config or {})
     else:
         auth_provider = await auth_provider_registry.get_provider(
-            db, "google_workspace", str(tenant_id) if tenant_id else None
+            "google_workspace", str(tenant_id) if tenant_id else None
         )
     if not auth_provider:
         return HTMLResponse("Auth failed: Google Workspace provider not configured for this tenant")

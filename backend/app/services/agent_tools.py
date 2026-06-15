@@ -188,7 +188,6 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
                 base_config = global_config or {}
                 tenant_config = {}
                 if tool_source == "builtin":
-                    base_config = {}
                     tenant_config = await get_tenant_tool_config(db, agent_tenant_id, db_tool_name, config_schema)
                 # Merge: agent overrides global
                 merged = {**base_config, **tenant_config, **(agent_config or {})}
@@ -206,7 +205,7 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
             tenant_config = {}
             if tool.source == "builtin":
                 tenant_config = await get_tenant_tool_config(db, agent_tenant_id, tool.name, tool.config_schema)
-            base_config = {} if tool.source == "builtin" else (tool.config or {})
+            base_config = tool.config or {}
             merged = {**base_config, **tenant_config}
         else:
             merged = {}
@@ -2002,6 +2001,7 @@ def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[d
 
     # Build the OS-aware description for agentbay_file_transfer
     new_file_transfer_desc = (
+        (
         "Transfer a file between any two endpoints: the agent workspace, "
         "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
         f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
@@ -2016,7 +2016,9 @@ def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[d
         "- workspace -> env: upload a workspace file into a cloud environment\n"
         "- env -> workspace: download a file from a cloud environment into the workspace\n"
         "- env A -> env B:   transfer between environments (transparent backend temp)"
-    ) if os_type == "windows" else (
+        )
+        if os_type == "windows"
+        else (
         "Transfer a file between any two endpoints: the agent workspace, "
         "the AgentBay browser environment, the cloud desktop (computer), or the code sandbox.\n\n"
         f"COMPUTER ENVIRONMENT OS: {computer_os_label}\n"
@@ -2031,6 +2033,7 @@ def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[d
         "- workspace -> env: upload a workspace file into a cloud environment\n"
         "- env -> workspace: download a file from a cloud environment into the workspace\n"
         "- env A -> env B:   transfer between environments (transparent backend temp)"
+        )
     )
 
     patched = []
@@ -7197,22 +7200,33 @@ async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_ag
     await wake_agent_with_context(agent_id, reason_context, **kwargs)
 
 
-async def _send_message_to_agent(
+from dataclasses import dataclass, field
+
+
+@dataclass
+class A2AContext:
+    source_agent: AgentModel
+    target_agent: AgentModel
+    chat_session_id: str
+    session_agent_id: uuid.UUID
+    owner_id: uuid.UUID
+    src_participant_id: uuid.UUID | None
+    tgt_participant_id: uuid.UUID | None
+    msg_type: str
+    message_text: str
+    origin_source_channel: str
+    origin_session_id: str | None
+    primary_model: Optional["LLMModel"] = None
+    fallback_model: Optional["LLMModel"] = None
+    conversation_history: list[dict] = field(default_factory=list)
+
+
+async def _build_a2a_context(
     from_agent_id: uuid.UUID,
     args: dict,
     user_id: uuid.UUID | None = None,
     origin_session_id: str | None = None,
-) -> str:
-    """Send a message to another digital employee.
-
-    Behaviour depends on ``msg_type``:
-    - notify:   fire-and-forget — message is saved, target is woken asynchronously.
-                Returns immediately.
-    - task_delegate: async with callback — message is saved, source agent sets up
-                a focus item + on_message trigger so it is notified when the
-                target completes the task.  Returns immediately.
-    - consult:  synchronous request-response (original behaviour).
-    """
+) -> A2AContext | str:
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
     msg_type = args.get("msg_type", "notify").strip().lower()
@@ -7226,7 +7240,6 @@ async def _send_message_to_agent(
         from app.models.llm import LLMModel
         from app.services.llm.utils import get_model_api_key
 
-        # Phase 1: Setup and database queries under a short-lived session
         origin_source_channel = "web"
         
         async with async_session() as db:
@@ -7327,50 +7340,6 @@ async def _send_message_to_agent(
                 await db.flush()
 
             session_id = str(chat_session.id)
-            target_id = target.id
-            target_name = target.name
-            target_agent_type = getattr(target, "agent_type", "native")
-            target_openclaw_last_seen = target.openclaw_last_seen
-            target_role_description = target.role_description
-            target_max_tool_rounds = target.max_tool_rounds or 50
-
-            # ── OpenClaw target: queue message for gateway poll ──
-            if target_agent_type == "openclaw":
-                # 1. Save the source message to the chat session
-                db.add(ChatMessage(
-                    agent_id=session_agent_id,
-                    user_id=owner_id,
-                    role="user",
-                    content=message_text,
-                    conversation_id=session_id,
-                    participant_id=src_participant_id,
-                ))
-                chat_session.last_message_at = datetime.now(timezone.utc)
-                
-                # 2. Queue for Gateway
-                from app.models.gateway_message import GatewayMessage as GMsg
-                gw_msg = GMsg(
-                    agent_id=target_id,
-                    sender_agent_id=from_agent_id,
-                    sender_user_id=owner_id,
-                    content=f"[From {source_name}] {message_text}",
-                    status="pending",
-                    conversation_id=session_id,
-                )
-                db.add(gw_msg)
-                await db.commit()
-                
-                # 3. Log activity
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    from_agent_id, "agent_msg_sent",
-                    f"Sent message to {target_name} (queued)",
-                    detail={"partner": target_name, "message": message_text[:200]},
-                )
-
-                online = target_openclaw_last_seen and (datetime.now(timezone.utc) - target_openclaw_last_seen).total_seconds() < 300
-                status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
-                return f"✅ Message sent to {target_name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
 
             # Save source message (common to all paths)
             db.add(ChatMessage(
@@ -7383,6 +7352,21 @@ async def _send_message_to_agent(
             ))
             chat_session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
+
+            if getattr(target, "agent_type", "native") == "openclaw":
+                return A2AContext(
+                    source_agent=source_agent,
+                    target_agent=target,
+                    chat_session_id=session_id,
+                    session_agent_id=session_agent_id,
+                    owner_id=owner_id,
+                    src_participant_id=src_participant_id,
+                    tgt_participant_id=tgt_participant_id,
+                    msg_type=msg_type,
+                    message_text=message_text,
+                    origin_source_channel=origin_source_channel,
+                    origin_session_id=origin_session_id,
+                )
 
             # ── Feature flag: async A2A (tenant-level) ──
             _a2a_async = False
@@ -7399,38 +7383,23 @@ async def _send_message_to_agent(
                 if msg_type in ("notify", "task_delegate"):
                     msg_type = "consult"
 
-            # If consult, we need target LLM model details inside the session
-            target_model_provider = None
-            target_model_base_url = None
-            target_model_name = None
-            target_model_temperature = None
-            target_model_request_timeout = 120.0
-            target_api_key = ""
-            conversation_messages: list[dict] = []
+            primary_model = None
+            fallback_model = None
+            conversation_history: list[dict] = []
 
             if msg_type == "consult":
                 # Load primary model
-                target_model = None
                 if target.primary_model_id:
                     model_r = await db.execute(select(LLMModel).where(LLMModel.id == target.primary_model_id))
-                    target_model = model_r.scalar_one_or_none()
+                    primary_model = model_r.scalar_one_or_none()
 
                 # Fallback model
-                if not target_model and target.fallback_model_id:
+                if target.fallback_model_id:
                     fb_r = await db.execute(select(LLMModel).where(LLMModel.id == target.fallback_model_id))
-                    target_model = fb_r.scalar_one_or_none()
-                    if target_model:
-                        logger.warning(f"[A2A] Primary model unavailable for {target_name}, using fallback: {target_model.model}")
+                    fallback_model = fb_r.scalar_one_or_none()
 
-                if not target_model:
-                    return f"⚠️ {target_name} has no LLM model configured"
-
-                target_model_provider = target_model.provider
-                target_model_base_url = target_model.base_url
-                target_model_name = target_model.model
-                target_model_temperature = target_model.temperature
-                target_model_request_timeout = float(getattr(target_model, 'request_timeout', None) or 120.0)
-                target_api_key = get_model_api_key(target_model)
+                if not primary_model and not fallback_model:
+                    return f"⚠️ {target.name} has no LLM model configured"
 
                 # Load recent history for context
                 hist_result = await db.execute(
@@ -7447,106 +7416,160 @@ async def _send_message_to_agent(
                         role = "user"
                     else:
                         role = "assistant"
-                    conversation_messages.append({"role": role, "content": m.content})
+                    conversation_history.append({"role": role, "content": m.content})
 
-        # ── notify: fire-and-forget ──
-        if msg_type == "notify":
-            try:
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    from_agent_id, "agent_msg_sent",
-                    f"Sent notification to {target_name}",
-                    detail={"partner": target_name, "message": message_text[:200], "msg_type": "notify"},
-                )
-            except Exception:
-                pass
-
-            try:
-                await _wake_agent_async(
-                    target_id,
-                    f"[From {source_name}] {message_text}",
-                    from_agent_id=from_agent_id,
-                    skip_dedup=True,
-                    a2a_session_id=session_id,
-                )
-            except Exception as e:
-                logger.warning(f"[A2A] Failed to wake {target_name} for notify: {e}")
-
-            return f"✅ Notification sent to {target_name}. They will process it asynchronously."
-
-        # ── task_delegate: async with callback ──
-        if msg_type == "task_delegate":
-            focus_id = f"wait_{target_name.lower().replace(' ', '_')}_task"
-            focus_desc = f"Waiting for {target_name} to complete delegated task: {message_text[:100]}"
-
-            try:
-                await _append_focus_item(from_agent_id, focus_id, focus_desc)
-            except Exception as e:
-                logger.warning(f"[A2A] Failed to write focus for delegate: {e}")
-
-            trigger_name = f"a2a_wait_{target_name.lower().replace(' ', '_')}"
-            trigger_reason = (
-                f"{target_name} has replied with the result of a delegated task. "
-                f"Original task: {message_text[:200]}. "
-                f"Steps: 1) Process {target_name}'s reply. "
-                f"2) Mark focus item '{focus_id}' as completed. "
-                f"3) Cancel this trigger. "
-                f"USER-FACING OUTPUT RULES: Your reply goes directly to the user's chat. "
-                f"Write in natural, conversational language as if talking to a colleague. "
-                f"NEVER use technical terms like: trigger name, focus item, a2a_wait, "
-                f"task_delegate, focus_ref, or any internal identifier. "
-                f"NEVER mention your internal operations (canceling triggers, updating focus, "
-                f"marking items complete, trigger status, etc.). "
-                f"Just summarize the task result in plain language."
+            return A2AContext(
+                source_agent=source_agent,
+                target_agent=target,
+                chat_session_id=session_id,
+                session_agent_id=session_agent_id,
+                owner_id=owner_id,
+                src_participant_id=src_participant_id,
+                tgt_participant_id=tgt_participant_id,
+                msg_type=msg_type,
+                message_text=message_text,
+                origin_source_channel=origin_source_channel,
+                origin_session_id=origin_session_id,
+                primary_model=primary_model,
+                fallback_model=fallback_model,
+                conversation_history=conversation_history,
             )
-            try:
-                await _create_on_message_trigger(
-                    agent_id=from_agent_id,
-                    trigger_name=trigger_name,
-                    from_agent_name=target_name,
-                    reason=trigger_reason,
-                    focus_ref=focus_id,
-                    notification_summary=f"等待{target_name}完成任务并回复",
-                    origin_session_id=origin_session_id,
-                    origin_user_id=str(owner_id) if owner_id else None,
-                    origin_source_channel=origin_source_channel,
-                )
-            except Exception as e:
-                logger.warning(f"[A2A] Failed to create trigger for delegate: {e}")
+    except Exception as e:
+        logger.exception(f"[A2A] _build_a2a_context failed: from={from_agent_id}")
+        return f"❌ A2A context error ({type(e).__name__}): {str(e)[:200]}"
 
-            try:
-                from app.services.activity_logger import log_activity
-                await log_activity(
-                    from_agent_id, "agent_msg_sent",
-                    f"Delegated task to {target_name}",
-                    detail={"partner": target_name, "message": message_text[:200], "msg_type": "task_delegate"},
-                )
-            except Exception:
-                pass
 
-            try:
-                await _wake_agent_async(
-                    target_id,
-                    f"[From {source_name}] {message_text}",
-                    from_agent_id=from_agent_id,
-                    skip_dedup=True,
-                    a2a_session_id=session_id,
-                )
-            except Exception as e:
-                logger.warning(f"[A2A] Failed to wake {target_name} for delegate: {e}")
+async def _a2a_handle_openclaw(ctx: A2AContext) -> str:
+    try:
+        async with async_session() as db:
+            # 2. Queue for Gateway
+            from app.models.gateway_message import GatewayMessage as GMsg
+            gw_msg = GMsg(
+                agent_id=ctx.target_agent.id,
+                sender_agent_id=ctx.source_agent.id,
+                sender_user_id=ctx.owner_id,
+                content=f"[From {ctx.source_agent.name}] {ctx.message_text}",
+                status="pending",
+                conversation_id=ctx.chat_session_id,
+            )
+            db.add(gw_msg)
+            await db.commit()
+            
+            # 3. Log activity
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                ctx.source_agent.id, "agent_msg_sent",
+                f"Sent message to {ctx.target_agent.name} (queued)",
+                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200]},
+            )
 
-            return f"✅ Task delegated to {target_name}. You will be notified when they complete it."
+            online = ctx.target_agent.openclaw_last_seen and (datetime.now(timezone.utc) - ctx.target_agent.openclaw_last_seen).total_seconds() < 300
+            status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
+            return f"✅ Message sent to {ctx.target_agent.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
+    except Exception as e:
+        logger.exception(f"[A2A] _a2a_handle_openclaw failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
+        return f"❌ OpenClaw send error ({type(e).__name__}): {str(e)[:200]}"
 
-        # ── consult (default): synchronous request-response ──
-        # Build target system prompt
-        from app.services.agent_context import build_agent_context
-        target_static, target_dynamic = await build_agent_context(
-            target_id,
-            target_name,
-            target_role_description or "",
-            current_user_name=source_name
+
+async def _a2a_handle_notify(ctx: A2AContext) -> str:
+    try:
+        try:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                ctx.source_agent.id, "agent_msg_sent",
+                f"Sent notification to {ctx.target_agent.name}",
+                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "msg_type": "notify"},
+            )
+        except Exception:
+            pass
+
+        try:
+            await _wake_agent_async(
+                ctx.target_agent.id,
+                f"[From {ctx.source_agent.name}] {ctx.message_text}",
+                from_agent_id=ctx.source_agent.id,
+                skip_dedup=True,
+                a2a_session_id=ctx.chat_session_id,
+            )
+        except Exception as e:
+            logger.warning(f"[A2A] Failed to wake {ctx.target_agent.name} for notify: {e}")
+
+        return f"✅ Notification sent to {ctx.target_agent.name}. They will process it asynchronously."
+    except Exception as e:
+        logger.exception(f"[A2A] _a2a_handle_notify failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
+        return f"❌ Notification error ({type(e).__name__}): {str(e)[:200]}"
+
+
+async def _a2a_handle_task_delegate(ctx: A2AContext) -> str:
+    try:
+        focus_id = f"wait_{ctx.target_agent.name.lower().replace(' ', '_')}_task"
+        focus_desc = f"Waiting for {ctx.target_agent.name} to complete delegated task: {ctx.message_text[:100]}"
+
+        try:
+            await _append_focus_item(ctx.source_agent.id, focus_id, focus_desc)
+        except Exception as e:
+            logger.warning(f"[A2A] Failed to write focus for delegate: {e}")
+
+        trigger_name = f"a2a_wait_{ctx.target_agent.name.lower().replace(' ', '_')}"
+        trigger_reason = (
+            f"{ctx.target_agent.name} has replied with the result of a delegated task. "
+            f"Original task: {ctx.message_text[:200]}. "
+            f"Steps: 1) Process {ctx.target_agent.name}'s reply. "
+            f"2) Mark focus item '{focus_id}' as completed. "
+            f"3) Cancel this trigger. "
+            f"USER-FACING OUTPUT RULES: Your reply goes directly to the user's chat. "
+            f"Write in natural, conversational language as if talking to a colleague. "
+            f"NEVER use technical terms like: trigger name, focus item, a2a_wait, "
+            f"task_delegate, focus_ref, or any internal identifier. "
+            f"NEVER mention your internal operations (canceling triggers, updating focus, "
+            f"marking items complete, trigger status, etc.). "
+            f"Just summarize the task result in plain language."
         )
-        target_dynamic += (
+        try:
+            await _create_on_message_trigger(
+                agent_id=ctx.source_agent.id,
+                trigger_name=trigger_name,
+                from_agent_name=ctx.target_agent.name,
+                reason=trigger_reason,
+                focus_ref=focus_id,
+                notification_summary=f"等待{ctx.target_agent.name}完成任务并回复",
+                origin_session_id=ctx.origin_session_id,
+                origin_user_id=str(ctx.owner_id) if ctx.owner_id else None,
+                origin_source_channel=ctx.origin_source_channel,
+            )
+        except Exception as e:
+            logger.warning(f"[A2A] Failed to create trigger for delegate: {e}")
+
+        try:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                ctx.source_agent.id, "agent_msg_sent",
+                f"Delegated task to {ctx.target_agent.name}",
+                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "msg_type": "task_delegate"},
+            )
+        except Exception:
+            pass
+
+        try:
+            await _wake_agent_async(
+                ctx.target_agent.id,
+                f"[From {ctx.source_agent.name}] {ctx.message_text}",
+                from_agent_id=ctx.source_agent.id,
+                skip_dedup=True,
+                a2a_session_id=ctx.chat_session_id,
+            )
+        except Exception as e:
+            logger.warning(f"[A2A] Failed to wake {ctx.target_agent.name} for delegate: {e}")
+
+        return f"✅ Task delegated to {ctx.target_agent.name}. You will be notified when they complete it."
+    except Exception as e:
+        logger.exception(f"[A2A] _a2a_handle_task_delegate failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
+        return f"❌ Task delegation error ({type(e).__name__}): {str(e)[:200]}"
+
+
+async def _a2a_handle_consult(ctx: A2AContext) -> str:
+    try:
+        suffix = (
             "\n\n--- Agent-to-Agent Message ---\n"
             "You are receiving a message from another digital employee. "
             "Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
@@ -7555,212 +7578,44 @@ async def _send_message_to_agent(
             "Do NOT output plain text without calling `finish`. "
             "Plain text responses will be REJECTED and you will be asked to redo.\n"
             "\n** CRITICAL FILE DELIVERY RULE **\n"
-            "After you write any file (report, document, analysis, etc.) that the requesting agent needs, "
-            "you MUST call `send_file_to_agent(agent_name=\"<requester_name>\", file_path=\"<path>\")` "
-            "to deliver it. The other agent CANNOT access your workspace. "
-            "Never just tell them the path — always deliver explicitly.\n"
+            f"After you write any file (report, document, analysis, etc.) that the requesting agent needs, "
+            f"you MUST call `send_file_to_agent(agent_name=\"{ctx.source_agent.name}\", file_path=\"<path>\")` "
+            f"to deliver it. The other agent CANNOT access your workspace. "
+            f"Never just tell them the path — always deliver explicitly.\n"
         )
 
-        conversation_messages.append({"role": "user", "content": f"[From {source_name}] {message_text}"})
+        conversation_messages = list(ctx.conversation_history)
+        conversation_messages.append({"role": "user", "content": f"[From {ctx.source_agent.name}] {ctx.message_text}"})
 
-        import random
-        import httpx
-        from app.services.llm import (
-            get_provider_base_url,
-            create_llm_client,
-            LLMMessage,
-            LLMError,
+        from app.services.llm.caller import call_llm_with_failover
+
+        target_reply = await call_llm_with_failover(
+            primary_model=ctx.primary_model,
+            fallback_model=ctx.fallback_model,
+            messages=conversation_messages,
+            agent_name=ctx.target_agent.name,
+            role_description=ctx.target_agent.role_description or "",
+            agent_id=ctx.target_agent.id,
+            user_id=ctx.owner_id,
+            session_id=ctx.chat_session_id,
+            current_user_name_override=ctx.source_agent.name,
+            system_prompt_suffix=suffix,
         )
-        base_url = get_provider_base_url(target_model_provider, target_model_base_url)
-        if not base_url:
-            return f"⚠️ {target_name}'s model has no API base URL configured"
 
-        full_msgs: list[LLMMessage] = [LLMMessage(role="system", content=target_static, dynamic_content=target_dynamic)] + [
-            LLMMessage(role=m["role"], content=m["content"]) for m in conversation_messages
-        ]
-
-        # Load tools for target agent
-        tools_for_llm = await get_agent_tools_for_llm(target_id)
-
-        target_reply = ""
-        _a2a_accumulated_usage = None
-
-        from app.services.token_tracker import (
-            TokenUsage,
-            record_token_usage,
-            extract_token_usage,
-            estimate_token_usage_from_chars,
-        )
-        _a2a_accumulated_usage = TokenUsage()
-
-        llm_client = create_llm_client(
-            provider=target_model_provider,
-            api_key=target_api_key,
-            model=target_model_name,
-            base_url=base_url,
-            timeout=target_model_request_timeout,
-        )
-        _A2A_RETRYABLE_MARKERS = (
-            "http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
-            "timeout", "timed out", "connection failed", "temporarily unavailable", "rate limit",
-        )
-        _A2A_MAX_RETRIES = 3
-
-        def _is_retryable_llm_error(exc: Exception) -> bool:
-            """Determine whether an LLM exception is transient and worth retrying."""
-            if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
-                return True
-            if isinstance(exc, LLMError):
-                lowered = (str(exc) or "").lower()
-                return any(m in lowered for m in _A2A_RETRYABLE_MARKERS)
-            return False
-
-        try:
-            for _round in range(target_max_tool_rounds):
-                response = None
-                for attempt in range(1, _A2A_MAX_RETRIES + 1):
-                    try:
-                        response = await llm_client.complete(
-                            messages=full_msgs,
-                            tools=tools_for_llm if tools_for_llm else None,
-                            temperature=target_model_temperature,
-                            max_tokens=4096,
-                        )
-                        break
-                    except Exception as llm_exc:
-                        if not _is_retryable_llm_error(llm_exc) or attempt >= _A2A_MAX_RETRIES:
-                            raise
-
-                        err_text = str(llm_exc) or type(llm_exc).__name__
-                        backoff = (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                        logger.warning(
-                            f"[A2A] LLM call failed for {target_name} (round={_round + 1}, "
-                            f"attempt={attempt}/{_A2A_MAX_RETRIES}): {err_text[:200]}. "
-                            f"Retrying in {backoff:.1f}s"
-                        )
-                        await asyncio.sleep(backoff)
-
-                if response is None:
-                    raise RuntimeError("A2A LLM response is unexpectedly empty after retries")
-
-                # Track tokens from API response
-                usage = extract_token_usage(response.usage)
-                if usage:
-                    _a2a_accumulated_usage.add(usage)
-                else:
-                    round_chars = sum(len(m.content or '') for m in full_msgs if isinstance(m.content, str))
-                    _a2a_accumulated_usage.add(estimate_token_usage_from_chars(round_chars))
-
-                # Check for tool calls
-                if response.tool_calls:
-                    # Add assistant message with tool calls to conversation
-                    full_msgs.append(LLMMessage(
-                        role="assistant",
-                        content=response.content or None,
-                        tool_calls=[{
-                            "id": tc.get("id", ""),
-                            "type": "function",
-                            "function": tc.get("function", {}),
-                        } for tc in response.tool_calls],
-                        reasoning_content=response.reasoning_content,
-                    ))
-
-                    finish_call = find_finish_call(response.tool_calls)
-                    if finish_call:
-                        if finish_call.valid:
-                            target_reply = finish_call.content
-                            break
-                        full_msgs.append(LLMMessage(
-                            role="tool",
-                            tool_call_id=finish_call.call_id,
-                            content=finish_call.error or "`finish` was invalid.",
-                        ))
-                        continue
-
-                    # Execute each tool call
-                    for tc in response.tool_calls:
-                        fn = tc.get("function", {})
-                        tool_name = fn.get("name", "")
-                        raw_args = fn.get("arguments", "{}")
-                        try:
-                            tool_args = parse_tool_arguments(raw_args)
-                        except Exception as parse_exc:
-                            logger.warning(f"[A2A] Invalid tool arguments for {tool_name}: {parse_exc}")
-                            tool_result = (
-                                f"❌ Invalid JSON arguments for `{tool_name}`: {parse_exc}. "
-                                "DO NOT retry with the same content. Please fix the JSON encoding: "
-                                "escape all double quotes inside string values as \\\" and all newlines as \\n."
-                            )
-                            # Add tool result to conversation
-                            full_msgs.append(LLMMessage(
-                                role="tool",
-                                tool_call_id=tc.get("id", ""),
-                                content=str(tool_result),
-                            ))
-                            continue
-
-                        tool_result = await execute_tool(tool_name, tool_args, target_id, owner_id)
-
-                        # Nudge: after write_file in A2A, remind to deliver via send_file_to_agent
-                        if tool_name == "write_file" and isinstance(tool_result, str) and tool_result.startswith("\u2705"):
-                            wrote_path = tool_args.get("path", "")
-                            tool_result += (
-                                f"\n\n⚠️ REMINDER: The requesting agent ({source_name}) cannot access your workspace. "
-                                f"You MUST now call `send_file_to_agent(agent_name=\"{source_name}\", file_path=\"{wrote_path}\")` "
-                                f"to deliver this file to them."
-                            )
-
-                        # Save tool_call to DB so it appears in chat history
-                        try:
-                            async with async_session() as _tc_db:
-                                _tc_db.add(ChatMessage(
-                                    agent_id=session_agent_id,
-                                    user_id=owner_id,
-                                    role="tool_call",
-                                    content=json.dumps({
-                                        "name": tool_name,
-                                        "args": tool_args,
-                                        "status": "done",
-                                        "result": str(tool_result)[:500],
-                                    }, ensure_ascii=False),
-                                    conversation_id=session_id,
-                                    participant_id=tgt_participant_id,
-                                ))
-                                await _tc_db.commit()
-                        except Exception as _tc_err:
-                            logger.error(f"[A2A] Failed to save tool_call: {_tc_err}")
-
-                        # Add tool result to conversation
-                        full_msgs.append(LLMMessage(
-                            role="tool",
-                            tool_call_id=tc.get("id", ""),
-                            content=str(tool_result)[:4000],
-                        ))
-                    continue  # Next LLM round
-
-                if response.content:
-                    full_msgs.append(LLMMessage(role="assistant", content=response.content))
-                full_msgs.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
-        finally:
-            await llm_client.close()
-
-        # Record accumulated A2A tokens for the target agent
-        if _a2a_accumulated_usage and _a2a_accumulated_usage.total_tokens > 0:
-            await record_token_usage(target_id, _a2a_accumulated_usage)
-
-        if not target_reply:
-            return f"⚠️ {target_name} did not respond (LLM returned empty)"
+        if not target_reply or target_reply.startswith("⚠️") or target_reply.startswith("[Error]") or target_reply.startswith("[LLM Error]") or target_reply.startswith("[LLM call error]"):
+            return target_reply or f"⚠️ {ctx.target_agent.name} did not respond (LLM returned empty)"
 
         # Save target reply
         async with async_session() as db2:
-            part_r = await db2.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_id))
+            from app.models.participant import Participant
+            part_r = await db2.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == ctx.target_agent.id))
             tgt_part = part_r.scalar_one_or_none()
             db2.add(ChatMessage(
-                agent_id=session_agent_id,
-                user_id=owner_id,
+                agent_id=ctx.session_agent_id,
+                user_id=ctx.owner_id,
                 role="assistant",
                 content=target_reply,
-                conversation_id=session_id,
+                conversation_id=ctx.chat_session_id,
                 participant_id=tgt_part.id if tgt_part else None,
             ))
             await db2.commit()
@@ -7768,31 +7623,52 @@ async def _send_message_to_agent(
         # Log activity
         from app.services.activity_logger import log_activity
         await log_activity(
-            target_id, "agent_msg_sent",
-            f"Replied to message from {source_name}",
-            detail={"partner": source_name, "message": message_text[:200], "reply": target_reply[:200]},
+            ctx.target_agent.id, "agent_msg_sent",
+            f"Replied to message from {ctx.source_agent.name}",
+            detail={"partner": ctx.source_agent.name, "message": ctx.message_text[:200], "reply": target_reply[:200]},
         )
         await log_activity(
-            from_agent_id, "agent_msg_sent",
-            f"Sent message to {target_name} and received reply",
-            detail={"partner": target_name, "message": message_text[:200], "reply": target_reply[:200]},
+            ctx.source_agent.id, "agent_msg_sent",
+            f"Sent message to {ctx.target_agent.name} and received reply",
+            detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "reply": target_reply[:200]},
         )
 
-        return f"💬 {target_name} replied:\n{target_reply}"
+        return f"💬 {ctx.target_agent.name} replied:\n{target_reply}"
 
     except Exception as e:
-        logger.exception(
-            f"[A2A] send_message_to_agent failed: from={from_agent_id}, to={args.get('agent_name', '')}"
-        )
-        error_type = type(e).__name__
-        error_detail = (str(e) or "").strip()
-        if not error_detail:
-            timeout_types = {"ReadTimeout", "ConnectTimeout", "TimeoutException"}
-            if error_type in timeout_types:
-                error_detail = "LLM request timed out while waiting for target agent response"
-            else:
-                error_detail = "No detailed error message returned from upstream"
-        return f"❌ Message send error ({error_type}): {error_detail[:200]}"
+        logger.exception(f"[A2A] _a2a_handle_consult failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
+        return f"❌ Consult request error ({type(e).__name__}): {str(e)[:200]}"
+
+
+async def _send_message_to_agent(
+    from_agent_id: uuid.UUID,
+    args: dict,
+    user_id: uuid.UUID | None = None,
+    origin_session_id: str | None = None,
+) -> str:
+    """Send a message to another digital employee.
+
+    Behaviour depends on ``msg_type``:
+    - notify:   fire-and-forget — message is saved, target is woken asynchronously.
+                Returns immediately.
+    - task_delegate: async with callback — message is saved, source agent sets up
+                a focus item + on_message trigger so it is notified when the
+                target completes the task.  Returns immediately.
+    - consult:  synchronous request-response (original behaviour).
+    """
+    ctx_or_err = await _build_a2a_context(from_agent_id, args, user_id, origin_session_id)
+    if isinstance(ctx_or_err, str):
+        return ctx_or_err
+    ctx = ctx_or_err
+
+    if ctx.target_agent.agent_type == "openclaw":
+        return await _a2a_handle_openclaw(ctx)
+    if ctx.msg_type == "notify":
+        return await _a2a_handle_notify(ctx)
+    if ctx.msg_type == "task_delegate":
+        return await _a2a_handle_task_delegate(ctx)
+    return await _a2a_handle_consult(ctx)
+
 
 
 
@@ -8211,6 +8087,7 @@ async def _execute_code(
             timeout=timeout,
             work_dir=str(work_dir),
             on_output=on_output,
+            agent_id=agent_id,
         )
 
         # Format result for user display
@@ -8560,6 +8437,12 @@ async def _handle_set_trigger(
                 reason=reason,
                 focus_ref=focus_ref,
             )
+            # Fix 4: Safety cap for on_message triggers —
+            # prevent infinite loops if agent creates broad watchers.
+            if ttype == "on_message":
+                trigger.max_fires = trigger.max_fires or 100
+                if not trigger.expires_at:
+                    trigger.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
             db.add(trigger)
             await db.commit()
 
@@ -11438,20 +11321,19 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     if not path.lower().endswith((".html", ".htm")):
         return "Only .html and .htm files can be published"
 
-    # Resolve and check file exists
-    full_path = (ws / path).resolve()
-    if not str(full_path).startswith(str(ws.resolve())):
-        return "Path traversal not allowed"
-    if not full_path.exists() or not full_path.is_file():
+    # Resolve via storage backend (supports local FS and S3)
+    storage = get_storage_backend()
+    storage_key = normalize_storage_key(f"{agent_id}/{path}")
+    if not await storage.exists(storage_key) or not await storage.is_file(storage_key):
         return f"File not found: {path}"
 
     # Extract title from HTML
     try:
-        content = full_path.read_text(encoding="utf-8", errors="replace")
+        content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
         title_match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip()[:200] if title_match else full_path.stem
+        title = title_match.group(1).strip()[:200] if title_match else Path(path).stem
     except Exception:
-        title = full_path.stem
+        title = Path(path).stem
 
     # Generate short_id
     short_id = secrets.token_urlsafe(6)[:8]  # 8-char URL-safe string
@@ -11925,6 +11807,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                agent_id=agent_id,
             )
         elif tool_name == "read_emails":
             return await read_emails(

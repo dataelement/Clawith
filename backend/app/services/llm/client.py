@@ -743,10 +743,20 @@ class OpenAIResponsesClient(LLMClient):
         input_items: list[dict[str, Any]] = []
 
         for msg in messages:
-            if msg.role in {"system", "user", "assistant"} and msg.content is not None:
-                item: dict[str, Any] = {"role": msg.role}
-                item["content"] = self._format_content_for_input(msg.content)
-                input_items.append(item)
+            # Handle system messages with dynamic_content
+            if msg.role == "system" and msg.content is not None:
+                content = msg.content
+                if msg.dynamic_content:
+                    content = f"{content}\n\n{msg.dynamic_content}"
+                input_items.append({
+                    "role": msg.role,
+                    "content": self._format_content_for_input(content),
+                })
+            elif msg.role in {"user", "assistant"} and msg.content is not None:
+                input_items.append({
+                    "role": msg.role,
+                    "content": self._format_content_for_input(msg.content),
+                })
 
             if msg.role == "assistant" and msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -768,7 +778,66 @@ class OpenAIResponsesClient(LLMClient):
                     "output": msg.content or "",
                 })
 
+        # Sanitize: ensure every function_call_output has a matching function_call.
+        # This prevents "No tool call found for function call output" API errors
+        # caused by context window truncation breaking assistant+tool pairs.
+        input_items = self._sanitize_input_items(input_items)
+
         return input_items
+
+    @staticmethod
+    def _sanitize_input_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove orphaned function_call_output items that have no matching function_call.
+
+        Also removes function_call items whose function_call_output is missing,
+        since the Responses API requires complete pairs.
+        """
+        # Collect all call_ids from function_call items
+        call_ids_with_fc: set[str] = set()
+        for item in items:
+            if item.get("type") == "function_call":
+                call_id = item.get("call_id", "")
+                if call_id:
+                    call_ids_with_fc.add(call_id)
+
+        # Collect all call_ids from function_call_output items
+        call_ids_with_fco: set[str] = set()
+        for item in items:
+            if item.get("type") == "function_call_output":
+                call_id = item.get("call_id", "")
+                if call_id:
+                    call_ids_with_fco.add(call_id)
+
+        # Determine which call_ids are orphaned (output without call, or call without output)
+        orphaned_fco = call_ids_with_fco - call_ids_with_fc
+        orphaned_fc = call_ids_with_fc - call_ids_with_fco
+
+        if not orphaned_fco and not orphaned_fc:
+            return items
+
+        if orphaned_fco:
+            logger.warning(
+                "[OpenAIResponses] Removing %d orphaned function_call_output item(s) "
+                "with no matching function_call: %s",
+                len(orphaned_fco),
+                orphaned_fco,
+            )
+        if orphaned_fc:
+            logger.warning(
+                "[OpenAIResponses] Removing %d orphaned function_call item(s) "
+                "with no matching function_call_output: %s",
+                len(orphaned_fc),
+                orphaned_fc,
+            )
+
+        # Filter out orphaned items
+        return [
+            item for item in items
+            if not (
+                (item.get("type") == "function_call_output" and item.get("call_id", "") in orphaned_fco)
+                or (item.get("type") == "function_call" and item.get("call_id", "") in orphaned_fc)
+            )
+        ]
 
     def _convert_tools(self, tools: list[dict] | None) -> list[dict] | None:
         """Convert OpenAI tool schema to Responses API function tool schema."""
@@ -1169,11 +1238,16 @@ class GeminiClient(LLMClient):
                             parsed_args = args
                         else:
                             parsed_args = {}
+
+                        func_call_dict: dict[str, Any] = {
+                            "name": fn.get("name", ""),
+                            "args": parsed_args,
+                        }
+                        if "_gemini_extra" in tc:
+                            func_call_dict.update(tc["_gemini_extra"])
+
                         parts.append({
-                            "functionCall": {
-                                "name": fn.get("name", ""),
-                                "args": parsed_args,
-                            }
+                            "functionCall": func_call_dict
                         })
                 if parts:
                     contents.append({"role": "model", "parts": parts})
@@ -1282,6 +1356,9 @@ class GeminiClient(LLMClient):
                     if dedup_key in seen_tool_calls:
                         continue
                     seen_tool_calls.add(dedup_key)
+                    
+                    extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
+                    
                     tool_calls.append({
                         "id": f"call_{len(tool_calls) + 1}",
                         "type": "function",
@@ -1289,6 +1366,7 @@ class GeminiClient(LLMClient):
                             "name": name,
                             "arguments": args_str,
                         },
+                        "_gemini_extra": extra,
                     })
 
         usage = self._normalize_usage(data.get("usageMetadata"))
@@ -1429,6 +1507,9 @@ class GeminiClient(LLMClient):
                             if dedup_key in seen_tool_calls:
                                 continue
                             seen_tool_calls.add(dedup_key)
+                            
+                            extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
+                            
                             tool_calls.append({
                                 "id": f"call_{len(tool_calls) + 1}",
                                 "type": "function",
@@ -1436,6 +1517,7 @@ class GeminiClient(LLMClient):
                                     "name": name,
                                     "arguments": args_str,
                                 },
+                                "_gemini_extra": extra,
                             })
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
@@ -2048,7 +2130,7 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     model_limits = spec.model_max_tokens if spec else MAX_TOKENS_BY_MODEL
 
     # Highest priority: per-model DB override
-    if max_output_tokens and max_output_tokens > 0:
+    if isinstance(max_output_tokens, int) and max_output_tokens > 0:
         return max_output_tokens
 
     # Check model-specific limits

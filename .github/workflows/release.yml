@@ -196,6 +196,7 @@ jobs:
           1. Title: Start with a top-level heading exactly formatted as: # {target_tag} — <Concise title summarizing the main theme of this release>
           2. ## What's New:
              - Group related changes into thematic subheadings (e.g., ### Core Features, ### UI/UX Enhancements, ### Optimizations).
+             - Sort subheadings and items within each group by importance: major features first, then enhancements, then minor tweaks.
              - Specifically list all newly added features and optimization items. Explain what value they add.
           3. ## Bug Fixes:
              - List resolved bugs, issues, or stability improvements.
@@ -211,6 +212,7 @@ jobs:
           - Prefer grouping related commits and summarizing the feature/improvement instead of listing every commit verbatim.
           - Do NOT invent or hallucinate any features or fixes that are not present or strongly implied in the commit list.
           - Keep the language clean and consistent with previous release notes.
+          - IMPORTANT: Within each section (What's New, Bug Fixes, etc.), sort items by impact and importance in descending order. New core features and major enhancements come first, followed by smaller improvements. Bug fixes that affect stability or data integrity come before minor UI tweaks.
 
           Style Reference (Mimic this structure and formatting):
           ---
@@ -244,21 +246,27 @@ jobs:
         if: ${{ inputs.use_ai_notes }}
         shell: bash
         env:
-          MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MODELS_TOKEN }}
         run: |
           set -euo pipefail
 
           python <<'PY'
           from pathlib import Path
           import json
-          import os
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "gpt-5.4",
+              "model": "openai/gpt-4.1",
               "messages": [
-                  {"role": "user", "content": prompt}
-              ],
+                  {
+                      "role": "system",
+                      "content": "You write concise, accurate release notes in markdown."
+                  },
+                  {
+                      "role": "user",
+                      "content": prompt
+                  }
+              ]
           }
           Path(".github/release-artifacts/openai-payload.json").write_text(
               json.dumps(payload, ensure_ascii=False),
@@ -266,11 +274,23 @@ jobs:
           )
           PY
 
-          curl -fsSL https://models.inference.ai.azure.com/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $MODELS_TOKEN" \
-            -d @.github/release-artifacts/openai-payload.json \
-            > .github/release-artifacts/openai-response.json
+          status_code=$(
+            curl -sS -L \
+              -o .github/release-artifacts/openai-response.json \
+              -w "%{http_code}" \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              -H "Content-Type: application/json" \
+              https://models.github.ai/inference/chat/completions \
+              -d @.github/release-artifacts/openai-payload.json
+          )
+
+          echo "HTTP status: $status_code"
+          cat .github/release-artifacts/openai-response.json
+
+          test "$status_code" -lt 400
 
           python <<'PY'
           from pathlib import Path
@@ -423,9 +443,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          release_notes=""
+          if [ -s .github/release-artifacts/release-notes.generated.md ]; then
+            release_notes="$(cat .github/release-artifacts/release-notes.generated.md)"
+          fi
+
           gh pr create \
             --title "chore(release): cut ${TARGET_TAG}" \
-            --body "Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it." \
+            --body "$(cat <<EOF
+          Automated release PR for ${TARGET_TAG}. Merging this PR will automatically tag the release and publish it.
+
+          ---
+
+          ${release_notes}
+          EOF
+          )" \
             --head "release/${TARGET_TAG}" \
             --base "${{ github.ref_name }}"
 

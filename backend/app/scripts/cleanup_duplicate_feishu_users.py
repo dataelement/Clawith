@@ -33,7 +33,7 @@ async def main():
 
     async with async_session() as db:
         # ── Step 0: Load org sync app credentials ──
-        provider = await auth_provider_registry.get_provider(db, "feishu")
+        provider = await auth_provider_registry.get_provider("feishu")
         if not provider:
             logger.warning("No feishu identity provider configured. Cannot resolve user_ids. Skipping backfill.")
             logger.info("You can still run Sync Now from the UI after configuring feishu identity provider.")

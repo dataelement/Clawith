@@ -296,9 +296,8 @@ class FeishuService:
             from app.services.registration_service import registration_service
             # No phone available in this specific Feishu login block, but it handles email/username matching
             identity = await registration_service.find_or_create_identity(
-                db,
                 email=email,
-                phone=user_info.get("mobile"),
+                phone=feishu_user.get("mobile"),
                 username=username,
                 password=open_id,
             )
