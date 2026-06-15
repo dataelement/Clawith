@@ -202,7 +202,7 @@ async def _process_external_http_message(
             },
         )
 
-        external_conv = (message.conversation_id or external_user_id).strip()
+        external_conv = (message.conversation_id or "").strip() or external_user_id
         external_conv_id = f"{CHANNEL_TYPE}:{external_conv}"
         session = await find_or_create_channel_session(
             db=db,
