@@ -425,6 +425,7 @@ async def call_llm(
     skip_tools: bool = False,
     on_code_output=None,
     current_user_name_override: str | None = None,
+    system_prompt_suffix: str | None = None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
@@ -462,6 +463,8 @@ async def call_llm(
     from app.services.agent_context import build_agent_context
     # Look up current user's display name so the agent knows who it's talking to
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_user_name)
+    if system_prompt_suffix:
+        dynamic_prompt += system_prompt_suffix
 
     # Load tools dynamically from DB. `skip_tools=True` is set by the WS
     # handler on the onboarding greeting turn; keep the runtime-level `finish`
@@ -657,6 +660,7 @@ async def call_llm_with_failover(
     skip_tools: bool = False,
     on_code_output=None,
     current_user_name_override: str | None = None,
+    system_prompt_suffix: str | None = None,
 ) -> str:
     """Call LLM with automatic failover support."""
     guard = FailoverGuard()
@@ -699,6 +703,7 @@ async def call_llm_with_failover(
         skip_tools=skip_tools,
         on_code_output=on_code_output,
         current_user_name_override=current_user_name_override,
+        system_prompt_suffix=system_prompt_suffix,
     )
 
     # Check if we need to failover
@@ -763,6 +768,7 @@ async def call_llm_with_failover(
         skip_tools=skip_tools,
         on_code_output=on_code_output,
         current_user_name_override=current_user_name_override,
+        system_prompt_suffix=system_prompt_suffix,
     )
 
     # Combine error messages if fallback also failed

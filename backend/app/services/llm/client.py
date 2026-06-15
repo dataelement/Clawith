@@ -2130,7 +2130,7 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     model_limits = spec.model_max_tokens if spec else MAX_TOKENS_BY_MODEL
 
     # Highest priority: per-model DB override
-    if max_output_tokens and max_output_tokens > 0:
+    if isinstance(max_output_tokens, int) and max_output_tokens > 0:
         return max_output_tokens
 
     # Check model-specific limits
