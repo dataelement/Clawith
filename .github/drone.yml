@@ -292,6 +292,7 @@ trigger:
   branch:
     - main
     - release
+    - ci/test-drone  # 临时添加，测试完成后删除
   event:
     - push
     - pull_request
