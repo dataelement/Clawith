@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import channel_user_service
+from app.services.llm.utils import convert_chat_messages_to_llm_format
 
 router = APIRouter(tags=["external-http"])
 
@@ -54,6 +55,14 @@ class ExternalHttpMessageIn(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=EXTERNAL_CONVERSATION_ID_MAX_LENGTH)
     metadata: dict[str, Any] | None = None
     mode: str = Field(default="sync", pattern="^(sync|async)$")
+
+    @field_validator("external_user_id", mode="before")
+    @classmethod
+    def normalize_external_user_id(cls, value: str) -> str:
+        stripped = (value or "").strip()
+        if not stripped:
+            raise ValueError("external_user_id cannot be blank")
+        return stripped
 
 
 def _hash_secret(value: str) -> str:
@@ -220,7 +229,7 @@ async def _process_external_http_message(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        history = [{"role": item.role, "content": item.content} for item in reversed(history_r.scalars().all())]
+        history = convert_chat_messages_to_llm_format(reversed(history_r.scalars().all()))
 
         content_for_llm = _llm_text(message)
         db.add(
