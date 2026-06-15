@@ -34,6 +34,9 @@ router = APIRouter(tags=["external-http"])
 CHANNEL_TYPE = "external_http"
 DEFAULT_MAX_PAYLOAD_BYTES = 64 * 1024
 DEFAULT_SYNC_TIMEOUT_SECONDS = 120
+EXTERNAL_USER_ID_MAX_LENGTH = 100
+EXTERNAL_USER_NAME_MAX_LENGTH = 100
+EXTERNAL_CONVERSATION_ID_MAX_LENGTH = 200 - len(f"{CHANNEL_TYPE}:")
 
 
 class ExternalHttpChannelConfigIn(BaseModel):
@@ -46,9 +49,9 @@ class ExternalHttpChannelConfigIn(BaseModel):
 
 class ExternalHttpMessageIn(BaseModel):
     content: str = Field(min_length=1, max_length=60000)
-    external_user_id: str = Field(default="external", min_length=1, max_length=255)
-    external_user_name: str | None = Field(default=None, max_length=255)
-    conversation_id: str | None = Field(default=None, max_length=255)
+    external_user_id: str = Field(default="external", min_length=1, max_length=EXTERNAL_USER_ID_MAX_LENGTH)
+    external_user_name: str | None = Field(default=None, max_length=EXTERNAL_USER_NAME_MAX_LENGTH)
+    conversation_id: str | None = Field(default=None, max_length=EXTERNAL_CONVERSATION_ID_MAX_LENGTH)
     metadata: dict[str, Any] | None = None
     mode: str = Field(default="sync", pattern="^(sync|async)$")
 
