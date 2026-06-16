@@ -1,0 +1,65 @@
+# ============================================================
+# CI 专用 Docker Compose
+# 用于 Drone CI 的本地部署测试和升级测试
+# 使用预构建镜像，不构建、不挂载持久化卷
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    networks:
+      - default
+    environment:
+      POSTGRES_USER: clawith
+      POSTGRES_PASSWORD: clawith
+      POSTGRES_DB: clawith
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clawith"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: clawith-backend:${IMAGE_TAG:-new}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      REDIS_URL: redis://redis:6379/0
+      AGENT_DATA_DIR: /data/agents
+      AGENT_TEMPLATE_DIR: /app/agent_template
+      SECRET_KEY: ci-test-secret
+      JWT_SECRET_KEY: ci-test-jwt-secret
+      PROCESS_ROLE: all
+      CORS_ORIGINS: '["*"]'
+    networks:
+      - default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: clawith-frontend:${IMAGE_TAG:-new}
+    ports:
+      - "3008:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      API_UPSTREAM: backend:8000
+    networks:
+      - default
+    depends_on:
+      - backend
+
+networks:
+  default:
+    name: clawith_network
