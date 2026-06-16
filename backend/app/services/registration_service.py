@@ -182,6 +182,7 @@ class RegistrationService:
             "registration_source": registration_source,
             "is_active": is_active or identity.is_platform_admin,
         })
+        user.identity = identity
 
         # Link to OrgMember if exists
         await self.bind_org_member(user)

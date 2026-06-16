@@ -223,6 +223,8 @@ async def register_init(
             user.is_active = is_first_user  # Active immediately if first user
             user.email_verified = identity.email_verified
             await session.flush()
+        else:
+            user.identity = identity
 
     # 5. Generate token outside transaction
     token = create_access_token(str(user.id), user.role)
