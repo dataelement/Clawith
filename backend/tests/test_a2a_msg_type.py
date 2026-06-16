@@ -66,8 +66,9 @@ class RecordingDB:
         self.flushed = True
 
 
-def _make_agent(agent_id=None, name="TestAgent", tenant_id=None, agent_type="native",
-                expired=False, primary_model_id=None):
+def _make_agent(
+    agent_id=None, name="TestAgent", tenant_id=None, agent_type="native", expired=False, primary_model_id=None
+):
     agent = MagicMock()
     agent.id = agent_id or uuid.uuid4()
     agent.name = name
@@ -99,6 +100,7 @@ def _make_tenant(a2a_async_enabled=True):
 
 # ── Tests ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_notify_returns_immediately():
     """notify msg_type should return immediately without calling LLM."""
@@ -117,27 +119,33 @@ async def test_notify_returns_immediately():
     session.id = session_id
     session.last_message_at = None
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=_make_tenant()),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=_make_tenant()),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake:
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake,
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Please review the document",
-            "msg_type": "notify",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Please review the document",
+                "msg_type": "notify",
+            },
+        )
 
     assert "Notification sent to Bob" in result
     assert "asynchronously" in result
@@ -162,29 +170,35 @@ async def test_task_delegate_creates_focus_and_trigger():
     session.id = session_id
     session.last_message_at = None
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=_make_tenant()),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=_make_tenant()),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools._append_focus_item", new_callable=AsyncMock) as mock_focus, \
-         patch("app.services.agent_tools._create_on_message_trigger", new_callable=AsyncMock) as mock_trigger, \
-         patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake:
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools._append_focus_item", new_callable=AsyncMock) as mock_focus,
+        patch("app.services.agent_tools._create_on_message_trigger", new_callable=AsyncMock) as mock_trigger,
+        patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake,
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Please prepare the Q3 report",
-            "msg_type": "task_delegate",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Please prepare the Q3 report",
+                "msg_type": "task_delegate",
+            },
+        )
 
     assert "Task delegated to Bob" in result
     assert "notified when they complete" in result
@@ -230,35 +244,42 @@ async def test_consult_calls_llm_synchronously():
 
     response = MagicMock()
     response.content = ""
-    response.tool_calls = [{
-        "id": "call_finish",
-        "type": "function",
-        "function": {
-            "name": "finish",
-            "arguments": json.dumps({"content": "Here is the answer"}),
-        },
-    }]
+    response.tool_calls = [
+        {
+            "id": "call_finish",
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "arguments": json.dumps({"content": "Here is the answer"}),
+            },
+        }
+    ]
     response.usage = None
 
     mock_llm_client = AsyncMock()
     mock_llm_client.complete = AsyncMock(return_value=response)
+    mock_llm_client.stream = AsyncMock(return_value=response)
     mock_llm_client.close = AsyncMock()
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=_make_tenant()),
-        DummyResult(scalar_value=model),
-        DummyResult(scalars_list=[]),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=_make_tenant()),
+            DummyResult(scalar_value=model),
+            DummyResult(scalars_list=[]),
+        ]
+    )
 
-    db2 = RecordingDB(responses=[
-        DummyResult(scalar_value=tgt_participant),
-    ])
+    db2 = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=tgt_participant),
+        ]
+    )
 
     call_count = 0
     session_dbs = [db, db2]
@@ -269,29 +290,37 @@ async def test_consult_calls_llm_synchronously():
         call_count += 1
         return result
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("static", "dynamic")), \
-         patch("app.services.llm.create_llm_client", return_value=mock_llm_client), \
-         patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]), \
-         patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"), \
-         patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock), \
-         patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
-
-        mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=[
-            db,
-            db2,
-        ])
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch(
+            "app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("static", "dynamic")
+        ),
+        patch("app.services.llm.caller.create_llm_client", return_value=mock_llm_client),
+        patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"),
+        patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock),
+        patch("app.services.activity_logger.log_activity", new_callable=AsyncMock),
+    ):
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(
+            side_effect=[
+                db,
+                db2,
+            ]
+        )
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "What is 2+2?",
-            "msg_type": "consult",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "What is 2+2?",
+                "msg_type": "consult",
+            },
+        )
 
     assert "Bob replied" in result
     assert "Here is the answer" in result
-    mock_llm_client.complete.assert_awaited()
+    mock_llm_client.stream.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -312,26 +341,32 @@ async def test_default_msg_type_is_notify():
     session.id = session_id
     session.last_message_at = None
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=_make_tenant()),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=_make_tenant()),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake:
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake,
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Heads up about the meeting",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Heads up about the meeting",
+            },
+        )
 
     assert "Notification sent" in result
     mock_wake.assert_awaited_once()
@@ -342,10 +377,13 @@ async def test_missing_agent_name_returns_error():
     """Missing agent_name should return an error."""
     from app.services.agent_tools import _send_message_to_agent
 
-    result = await _send_message_to_agent(uuid.uuid4(), {
-        "agent_name": "",
-        "message": "Hello",
-    })
+    result = await _send_message_to_agent(
+        uuid.uuid4(),
+        {
+            "agent_name": "",
+            "message": "Hello",
+        },
+    )
 
     assert "❌" in result
 
@@ -362,23 +400,28 @@ async def test_no_relationship_returns_error():
     src_participant = _make_participant(ref_id=from_agent_id)
     tgt_participant = _make_participant(ref_id=target_id)
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=None),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=None),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+        ]
+    )
 
     with patch("app.services.agent_tools.async_session") as mock_session_ctx:
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Hello",
-            "msg_type": "notify",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Hello",
+                "msg_type": "notify",
+            },
+        )
 
     assert "do not have a relationship" in result
 
@@ -401,12 +444,16 @@ async def test_create_on_message_trigger():
 
     agent_id = uuid.uuid4()
 
-    snap_db = RecordingDB(responses=[
-        DummyResult(scalar_value=None),
-    ])
-    trigger_db = RecordingDB(responses=[
-        DummyResult(scalar_value=None),
-    ])
+    snap_db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=None),
+        ]
+    )
+    trigger_db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=None),
+        ]
+    )
 
     enter_count = 0
     dbs = [snap_db, trigger_db]
@@ -417,8 +464,10 @@ async def test_create_on_message_trigger():
         enter_count += 1
         return db
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure,
+    ):
         mock_ensure.return_value = "test_focus"
         mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=_enter)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -462,12 +511,16 @@ async def test_create_on_message_trigger_resets_fire_count():
         max_fires=1,
     )
 
-    snap_db = RecordingDB(responses=[
-        DummyResult(scalar_value=None),
-    ])
-    trigger_db = RecordingDB(responses=[
-        DummyResult(scalar_value=existing_trigger),
-    ])
+    snap_db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=None),
+        ]
+    )
+    trigger_db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=existing_trigger),
+        ]
+    )
 
     enter_count = 0
     dbs = [snap_db, trigger_db]
@@ -478,8 +531,10 @@ async def test_create_on_message_trigger_resets_fire_count():
         enter_count += 1
         return db
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure,
+    ):
         mock_ensure.return_value = "new_focus"
         mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=_enter)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -531,26 +586,32 @@ async def test_openclaw_target_still_queues():
     session.id = session_id
     session.last_message_at = None
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.activity_logger.log_activity", new_callable=AsyncMock),
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "OpenClawBot",
-            "message": "Hello",
-            "msg_type": "notify",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "OpenClawBot",
+                "message": "Hello",
+                "msg_type": "notify",
+            },
+        )
 
     assert "OpenClaw agent" in result
     assert "queued" in result
@@ -589,52 +650,63 @@ async def test_feature_flag_off_falls_back_to_consult():
 
     response = MagicMock()
     response.content = ""
-    response.tool_calls = [{
-        "id": "call_finish",
-        "type": "function",
-        "function": {
-            "name": "finish",
-            "arguments": json.dumps({"content": "Got it"}),
-        },
-    }]
+    response.tool_calls = [
+        {
+            "id": "call_finish",
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "arguments": json.dumps({"content": "Got it"}),
+            },
+        }
+    ]
     response.usage = None
 
     mock_llm_client = AsyncMock()
     mock_llm_client.complete = AsyncMock(return_value=response)
+    mock_llm_client.stream = AsyncMock(return_value=response)
     mock_llm_client.close = AsyncMock()
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=tenant),
-        DummyResult(scalar_value=model),
-        DummyResult(scalars_list=[]),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=tenant),
+            DummyResult(scalar_value=model),
+            DummyResult(scalars_list=[]),
+        ]
+    )
 
-    db2 = RecordingDB(responses=[
-        DummyResult(scalar_value=tgt_participant),
-    ])
+    db2 = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=tgt_participant),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("s", "d")), \
-         patch("app.services.llm.create_llm_client", return_value=mock_llm_client), \
-         patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]), \
-         patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"), \
-         patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock), \
-         patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_context.build_agent_context", new_callable=AsyncMock, return_value=("s", "d")),
+        patch("app.services.llm.caller.create_llm_client", return_value=mock_llm_client),
+        patch("app.services.agent_tools.get_agent_tools_for_llm", new_callable=AsyncMock, return_value=[]),
+        patch("app.services.llm.get_provider_base_url", return_value="https://api.openai.com/v1"),
+        patch("app.services.token_tracker.record_token_usage", new_callable=AsyncMock),
+        patch("app.services.activity_logger.log_activity", new_callable=AsyncMock),
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(side_effect=[db, db2])
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Hello",
-            "msg_type": "notify",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Hello",
+                "msg_type": "notify",
+            },
+        )
 
     assert "Bob replied" in result
     assert "Got it" in result
@@ -662,27 +734,33 @@ async def test_feature_flag_on_uses_notify():
     session.id = session_id
     session.last_message_at = None
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=source_agent),
-        DummyResult(scalars_list=[target_agent]),
-        DummyResult(scalar_value=rel_id),
-        DummyResult(scalar_value=src_participant),
-        DummyResult(scalar_value=tgt_participant),
-        DummyResult(scalar_value=session),
-        DummyResult(scalar_value=tenant),
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source_agent),
+            DummyResult(scalars_list=[target_agent]),
+            DummyResult(scalar_value=rel_id),
+            DummyResult(scalar_value=src_participant),
+            DummyResult(scalar_value=tgt_participant),
+            DummyResult(scalar_value=session),
+            DummyResult(scalar_value=tenant),
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake:
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools._wake_agent_async", new_callable=AsyncMock) as mock_wake,
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await _send_message_to_agent(from_agent_id, {
-            "agent_name": "Bob",
-            "message": "Hello",
-            "msg_type": "notify",
-        })
+        result = await _send_message_to_agent(
+            from_agent_id,
+            {
+                "agent_name": "Bob",
+                "message": "Hello",
+                "msg_type": "notify",
+            },
+        )
 
     assert "Notification sent" in result
     mock_wake.assert_awaited_once()
@@ -710,14 +788,18 @@ async def test_handle_set_trigger_resets_fire_count():
         max_fires=1,
     )
 
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=agent_mock),  # Load agent to get per-agent trigger limit
-        DummyResult(scalar_value=0),           # Check max triggers (count)
-        DummyResult(scalar_value=existing_trigger), # Check for duplicate name
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=agent_mock),  # Load agent to get per-agent trigger limit
+            DummyResult(scalar_value=0),  # Check max triggers (count)
+            DummyResult(scalar_value=existing_trigger),  # Check for duplicate name
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure:
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.agent_tools.ensure_focus_item", new_callable=AsyncMock) as mock_ensure,
+    ):
         mock_ensure.return_value = "new_focus"
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -748,14 +830,17 @@ async def test_execute_tool_failure_writes_system_message():
     session_id = str(uuid.uuid4())
 
     tenant_id = uuid.uuid4()
-    db = RecordingDB(responses=[
-        DummyResult(scalar_value=tenant_id),     # tenant_id
-        DummyResult(scalar_value=None),          # query in _send_channel_message (returns empty -> fails)
-    ])
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=tenant_id),  # tenant_id
+            DummyResult(scalar_value=None),  # query in _send_channel_message (returns empty -> fails)
+        ]
+    )
 
-    with patch("app.services.agent_tools.async_session") as mock_session_ctx, \
-         patch("app.services.activity_logger.log_activity", new_callable=AsyncMock):
-
+    with (
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+        patch("app.services.activity_logger.log_activity", new_callable=AsyncMock),
+    ):
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
         mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -775,16 +860,9 @@ async def test_execute_tool_failure_writes_system_message():
     assert result.startswith("❌")
     assert db.committed
     assert len(db.added) == 1
-    
+
     error_msg = db.added[0]
     assert error_msg.conversation_id == session_id
     assert error_msg.role == "assistant"
     assert "系统提示" in error_msg.content
     assert "send_channel_message" in error_msg.content
-
-
-
-
-
-
-

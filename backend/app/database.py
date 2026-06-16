@@ -30,12 +30,15 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for getting async database sessions."""
     async with async_session() as session:
+        token = _session_ctx.set(session)
         try:
             yield session
             await session.commit()
         except Exception:
             await session.rollback()
             raise
+        finally:
+            _session_ctx.reset(token)
 
 
 _session_ctx: ContextVar[AsyncSession | None] = ContextVar("db_session_ctx", default=None)

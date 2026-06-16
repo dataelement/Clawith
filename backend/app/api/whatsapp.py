@@ -265,11 +265,12 @@ async def whatsapp_event_webhook(
                 if not user_text or not sender_phone:
                     continue
 
-                from app.api.feishu import _call_agent_llm
+                from app.api.feishu import _call_llm_with_config, _load_agent_and_model
                 from app.models.agent import Agent as AgentModel, DEFAULT_CONTEXT_WINDOW_SIZE
                 from app.models.audit import ChatMessage
                 from app.services.channel_session import find_or_create_channel_session
                 from app.services.channel_user_service import channel_user_service
+                from app.database import async_session as _async_session
 
                 agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
@@ -305,11 +306,17 @@ async def whatsapp_event_webhook(
 
                 db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
                 sess.last_message_at = datetime.now(timezone.utc)
+
+                # Pre-load agent/model before releasing connection
+                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
+
                 await db.commit()
+                await db.close()
+                # ── Phase 1 complete: release connection before slow LLM call ──
 
                 try:
-                    reply_text = await _call_agent_llm(
-                        db,
+                    reply_text = await _call_llm_with_config(
+                        _agent_model, _llm_model, _fallback_model,
                         agent_id,
                         user_text,
                         history=history,
@@ -322,13 +329,18 @@ async def whatsapp_event_webhook(
 
                 try:
                     await _send_whatsapp_messages(config, sender_phone, reply_text)
-                    config.is_connected = True
-                    db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-                    sess.last_message_at = datetime.now(timezone.utc)
-                    await db.commit()
+                    async with _async_session() as _save_db:
+                        _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                        from app.models.chat_session import ChatSession
+                        _sess_r = await _save_db.execute(
+                            select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
+                        )
+                        _sess_fresh = _sess_r.scalar_one_or_none()
+                        if _sess_fresh:
+                            _sess_fresh.last_message_at = datetime.now(timezone.utc)
+                        await _save_db.commit()
                 except Exception as exc:
                     logger.exception(f"[WhatsApp] Send failed for agent {agent_id}: {exc}")
-                    config.is_connected = False
-                    await db.commit()
+
 
     return {"ok": True}

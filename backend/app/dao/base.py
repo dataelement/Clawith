@@ -24,7 +24,17 @@ class BaseDAO(Generic[ModelType]):
             yield context_session
         else:
             async with async_session() as session:
-                yield session
+                token = _session_ctx.set(session)
+                try:
+                    yield session
+                    if hasattr(session, "commit"):
+                        await session.commit()
+                except Exception:
+                    if hasattr(session, "rollback"):
+                        await session.rollback()
+                    raise
+                finally:
+                    _session_ctx.reset(token)
 
     async def get(self, id: Any) -> ModelType | None:
         """Fetch a single record by its primary key ID."""
@@ -71,10 +81,14 @@ class BaseDAO(Generic[ModelType]):
     async def delete(self, *, id: Any) -> ModelType | None:
         """Delete a record by ID."""
         async with self.session() as db:
-            obj = await self.get(id)
+            if hasattr(db, "get"):
+                obj = await db.get(self.model, id)
+            else:
+                stmt = select(self.model).where(self.model.id == id)
+                result = await db.execute(stmt)
+                obj = result.scalar_one_or_none()
             if obj:
                 if hasattr(db, "delete"):
                     await db.delete(obj)
                 await db.flush()
             return obj
-

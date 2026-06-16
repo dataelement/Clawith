@@ -146,7 +146,7 @@ class DiscordGatewayManager:
         try:
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
-            from app.api.feishu import _call_agent_llm
+            from app.api.feishu import _call_llm_with_config, _load_agent_and_model
             from app.services.channel_session import find_or_create_channel_session
             from app.models.user import User as _User
             from app.core.security import hash_password as _hp
@@ -227,31 +227,43 @@ class DiscordGatewayManager:
                     conversation_id=session_conv_id,
                 ))
                 sess.last_message_at = datetime.now(timezone.utc)
+
+                # Pre-load agent/model before releasing connection
+                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
+
                 await db.commit()
+                # ── Phase 1 complete: release connection before slow LLM call ──
 
-                # Call LLM
-                reply_text = await _call_agent_llm(
-                    db,
-                    agent_id,
-                    user_text,
-                    history=history,
-                    user_id=platform_user_id,
-                    session_id=session_conv_id,
-                )
-                logger.info(f"[Discord GW] LLM reply for {agent_id}: {reply_text[:80]}")
+            # ── Phase 2: LLM call (no DB session) ──
+            reply_text = await _call_llm_with_config(
+                _agent_model, _llm_model, _fallback_model,
+                agent_id,
+                user_text,
+                history=history,
+                user_id=platform_user_id,
+                session_id=session_conv_id,
+            )
+            logger.info(f"[Discord GW] LLM reply for {agent_id}: {reply_text[:80]}")
 
-                # Save reply
-                db.add(ChatMessage(
+            # ── Phase 3: Save reply (new short transaction) ──
+            async with async_session() as _save_db:
+                _save_db.add(ChatMessage(
                     agent_id=agent_id,
                     user_id=platform_user_id,
                     role="assistant",
                     content=reply_text,
                     conversation_id=session_conv_id,
                 ))
-                sess.last_message_at = datetime.now(timezone.utc)
-                await db.commit()
+                from app.models.chat_session import ChatSession
+                _sess_r = await _save_db.execute(
+                    select(ChatSession).where(ChatSession.id == _uuid.UUID(session_conv_id))
+                )
+                _sess_fresh = _sess_r.scalar_one_or_none()
+                if _sess_fresh:
+                    _sess_fresh.last_message_at = datetime.now(timezone.utc)
+                await _save_db.commit()
 
-                return reply_text
+            return reply_text
 
         except Exception as e:
             logger.exception(
