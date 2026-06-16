@@ -105,7 +105,7 @@ steps:
       - name: docker-socket
         path: /var/run/docker.sock
     commands:
-      - apk add --no-cache docker-cli-compose curl bash
+      - apk add --no-cache bash
       - echo "========================================"
       - echo "本地部署测试 全新部署验证"
       - echo "========================================"
@@ -159,7 +159,7 @@ steps:
       - name: docker-socket
         path: /var/run/docker.sock
     commands:
-      - apk add --no-cache docker-cli-compose curl bash
+      - apk add --no-cache bash
       - echo "========================================"
       - echo "本地升级测试 旧版 → 新版数据库迁移验证"
       - echo "========================================"
