@@ -1624,7 +1624,8 @@
       "wechat": "WeChat",
       "whatsapp": "WhatsApp",
       "dingtalk": "DingTalk",
-      "wecom": "WeCom"
+      "wecom": "WeCom",
+      "externalHttp": "External HTTP"
     },
     "searching": "Searching...",
     "upload": "⬆ Upload",
@@ -1703,6 +1704,13 @@
     "feishuPermFullDesc": "Includes Docs, Drive, Bitable, Calendar, Approval",
     "feishuPermCopy": "Copy",
     "feishuPermCopied": "✓ Copied",
+    "externalHttp": {
+      "step1": "Open this agent's settings and save the External HTTP channel configuration.",
+      "step2": "Copy the API Key shown after saving. It is displayed only once.",
+      "step3": "Send POST requests to the message endpoint with Authorization: Bearer <API Key>.",
+      "step4": "Use conversation_id to merge related external calls into the same web session.",
+      "note": "Enable HMAC for production integrations. When enabled, sign '<x-timestamp>.<raw-body>' with the signing secret and send X-Timestamp and X-Signature-SHA256."
+    },
     "slack": {
       "step1": "Go to api.slack.com/apps → click Create New App → choose From Scratch → enter an app name and pick your workspace → click Create App",
       "step2": "In the left sidebar, click OAuth & Permissions → scroll down to Scopes → under Bot Token Scopes click Add an OAuth Scope → add: chat:write, im:history, app_mentions:read",
