@@ -1,0 +1,12 @@
+- local_key: au_data
+  server_name: AU Market Data
+  url: http://YOUR_DATA_HOST:8581
+  transport: sse
+# Replace YOUR_DATA_HOST / YOUR_HOST with your own deployment's host(s) before
+# seeding this bundle. paper_trading uses the sim's header-auth shared endpoint
+# (live data + per-team token isolation). Identity travels as Authorization:
+# Bearer, written into each agent's AgentTool.config["api_key"] at hire time.
+- local_key: paper_trading
+  server_name: AU Paper Trading
+  url: http://YOUR_HOST:8503/mcp/t
+  transport: sse

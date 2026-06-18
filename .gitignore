@@ -38,3 +38,9 @@ _agents/
 docs/
 .agents/rules/deploy.md
 backend/tests/test_agent_api_live.py
+
+# Local dev scratch / test scripts (workspace-only; not part of feature ship)
+/_*.sh
+backend/agent_bundles/*/_snapshot.json
+backend/agent_bundles/*/_toggles_snapshot.json
+backend/agent_bundles/*/_build_from_snapshot.py

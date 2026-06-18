@@ -1293,6 +1293,87 @@ select:focus {
   background: var(--error-subtle);
 }
 
+/* Bundle group — folds N agents from one bundle hire under a collapsible
+   header so a tenant who hires several bundles doesn't drown in a 30-row
+   agent list. Each agent inside still renders via .sidebar-agent-item so
+   pin / unread / active states behave identically to flat agents. */
+.sidebar-bundle-group {
+  margin: 6px 0 2px;
+}
+
+.sidebar-bundle-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: calc(100% - 2 * var(--space-3));
+  margin: 0 var(--space-3) 2px;
+  padding: 4px 8px 4px 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border-radius: 4px;
+  text-align: left;
+  transition: background 120ms ease-in-out, color 120ms ease-in-out;
+  user-select: none;
+}
+
+.sidebar-bundle-group-header:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-bundle-group-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  width: 14px;
+}
+
+.sidebar-bundle-group-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-bundle-group-count {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: 10.5px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+/* Collapsed-sidebar (icon-only) mode hides group headers — names can't be
+   read at that width anyway, and the agent rows underneath still render
+   as icons in the right order. */
+.sidebar.collapsed .sidebar-bundle-group-header {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-bundle-group {
+  margin: 0;
+}
+
+/* Yellow star next to the principal agent's name — bundle author declares
+   one agent as the point-of-contact via principal_slug in bundle.yaml, set
+   on the Agent row by the hire flow. Color hex matches Tailwind amber-500,
+   the same warm-yellow used elsewhere in the design system for "primary"
+   highlights without going full gold. */
+.sidebar-principal-star {
+  color: #f59e0b;
+  margin-left: 5px;
+  vertical-align: -2px;
+  flex-shrink: 0;
+}
+
 .sidebar-agent-unread {
   position: absolute;
   right: -7px;

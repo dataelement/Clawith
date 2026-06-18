@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconPlus, IconSearch, IconWorld, IconX } from '@tabler/icons-react';
-import { agentApi } from '../services/api';
+import { agentApi, bundleApi, type BundleSummary } from '../services/api';
 import PostHireSettingsModal from './PostHireSettingsModal';
+import BundleHireModal from './BundleHireModal';
 import CustomAgentModal from './CustomAgentModal';
 import { translateTemplate } from '../i18n/templateTranslations';
 import customAgentBackground from '../assets/talent-market/custom-agent-botanical.png';
@@ -42,7 +43,7 @@ const FEATURED_TEMPLATE_NAMES = new Set<string>([
     'Market Intel Aggregator',
 ]);
 
-type TabId = 'popular' | 'software-development' | 'marketing' | 'office' | 'trading';
+type TabId = 'popular' | 'software-development' | 'marketing' | 'office' | 'trading' | 'bundle';
 
 export default function TalentMarketModal({ open, onClose }: Props) {
     const { t, i18n } = useTranslation();
@@ -50,6 +51,8 @@ export default function TalentMarketModal({ open, onClose }: Props) {
     // Chosen template → hands off to PostHireSettingsModal. The market modal
     // stays mounted behind so the user can cancel and pick someone else.
     const [pendingTemplate, setPendingTemplate] = useState<Template | null>(null);
+    // Chosen bundle → hands off to BundleHireModal (parallel to pendingTemplate).
+    const [pendingBundle, setPendingBundle] = useState<BundleSummary | null>(null);
     const [customModalOpen, setCustomModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<TabId>('popular');
     const [searchQuery, setSearchQuery] = useState('');
@@ -60,22 +63,38 @@ export default function TalentMarketModal({ open, onClose }: Props) {
         enabled: open,
     });
 
+    const { data: bundlesRaw = [], isLoading: bundlesLoading } = useQuery({
+        queryKey: ['agent-bundles'],
+        queryFn: () => bundleApi.list(),
+        enabled: open,
+    });
+
+    // Filter bundles by current UI locale — a CN user only sees CN-native
+    // bundles (agent souls / names in Chinese), an EN user only sees EN-native
+    // ones. This avoids hiring English-speaking agents from a Chinese-looking
+    // card or vice versa. Bundles missing `language` (legacy) treated as 'zh'.
+    const bundles = bundlesRaw.filter((b: BundleSummary) => {
+        const lang = (b.language || 'zh').toLowerCase();
+        return isChinese ? lang === 'zh' : lang === 'en';
+    });
+
     const tabs: Array<{ id: TabId; label: string }> = [
-        { id: 'popular', label: t('talentMarket.tabPopular', isChinese ? '热门推荐' : 'Popular') },
-        { id: 'software-development', label: t('talentMarket.tabSWE', isChinese ? '软件开发' : 'Software Development') },
-        { id: 'marketing', label: t('talentMarket.tabMarketing', isChinese ? '营销' : 'Marketing') },
-        { id: 'office', label: t('talentMarket.tabOffice', isChinese ? '办公通用' : 'Office') },
-        { id: 'trading', label: t('talentMarket.tabTrading', isChinese ? '交易投资' : 'Trading') },
+        { id: 'popular', label: t('talentMarket.tabPopular') },
+        { id: 'software-development', label: t('talentMarket.tabSWE') },
+        { id: 'marketing', label: t('talentMarket.tabMarketing') },
+        { id: 'office', label: t('talentMarket.tabOffice') },
+        { id: 'trading', label: t('talentMarket.tabTrading') },
+        { id: 'bundle', label: t('talentMarket.tabBundle') },
     ];
 
     useEffect(() => {
         if (!open) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && !pendingTemplate && !customModalOpen) onClose();
+            if (e.key === 'Escape' && !pendingTemplate && !pendingBundle && !customModalOpen) onClose();
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [open, onClose, pendingTemplate, customModalOpen]);
+    }, [open, onClose, pendingTemplate, pendingBundle, customModalOpen]);
 
     if (!open) return null;
 
@@ -131,10 +150,10 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                         <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 600 }}>
-                            {t('talentMarket.title', isChinese ? '人才市场' : 'Talent Market')}
+                            {t('talentMarket.title')}
                         </h2>
                         <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                            {t('talentMarket.subtitle', isChinese ? '挑选一位专业成员加入你的公司' : 'Pick a professional to join your company')}
+                            {t('talentMarket.subtitle')}
                         </p>
                     </div>
                     {/* Search box */}
@@ -152,22 +171,19 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                             type="text"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder={t(
-                                'talentMarket.searchPlaceholder',
-                                isChinese ? '搜索 Agent 名称或能力…' : 'Search agents by name or skill…',
-                            )}
+                            placeholder={t('talentMarket.searchPlaceholder')}
                             style={{
                                 flex: 1, minWidth: 0,
                                 background: 'transparent', border: 'none', outline: 'none',
                                 color: 'var(--text-primary)', fontSize: '13px',
                                 height: '100%',
                             }}
-                            aria-label={t('talentMarket.searchLabel', isChinese ? '搜索 Agent' : 'Search agents')}
+                            aria-label={t('talentMarket.searchLabel')}
                         />
                         {searchQuery && (
                             <button
                                 onClick={() => setSearchQuery('')}
-                                title={t('common.clear', isChinese ? '清空' : 'Clear')}
+                                title={t('common.clear')}
                                 style={{
                                     background: 'transparent', border: 'none', cursor: 'pointer',
                                     color: 'var(--text-tertiary)', padding: '0', display: 'flex',
@@ -190,7 +206,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 {/* Category tabs */}
                 <div
                     role="tablist"
-                    aria-label={t('talentMarket.tabsAria', isChinese ? '分类筛选' : 'Category filters')}
+                    aria-label={t('talentMarket.tabsAria')}
                     style={{
                         display: 'flex',
                         padding: '0 28px',
@@ -243,32 +259,61 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     gap: '16px',
                     alignContent: 'start',
                 }}>
-                    {isLoading && (
-                        <div style={{ gridColumn: '1 / -1', padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                            {t('common.loading', 'Loading...')}
-                        </div>
+                    {/* Bundle tab — show bundle cards, no CustomCard / TemplateCard */}
+                    {!isSearching && activeTab === 'bundle' && (
+                        <>
+                            {bundlesLoading && (
+                                <div style={{ gridColumn: '1 / -1', padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                    {t('common.loading', 'Loading...')}
+                                </div>
+                            )}
+                            {!bundlesLoading && bundles.length === 0 && (
+                                <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {t('talentMarket.emptyBundles')}
+                                </div>
+                            )}
+                            {!bundlesLoading && bundles.map((b: BundleSummary) => (
+                                <BundleCard
+                                    key={b.id}
+                                    bundle={b}
+                                    isChinese={isChinese}
+                                    onHire={() => setPendingBundle(b)}
+                                />
+                            ))}
+                        </>
                     )}
-                    {!isLoading && (
-                        <CustomCard
-                            onClick={() => setCustomModalOpen(true)}
-                        />
+
+                    {/* Non-bundle tabs (popular + categories) and search — render templates */}
+                    {(isSearching || activeTab !== 'bundle') && (
+                        <>
+                            {isLoading && (
+                                <div style={{ gridColumn: '1 / -1', padding: '60px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                                    {t('common.loading', 'Loading...')}
+                                </div>
+                            )}
+                            {!isLoading && (
+                                <CustomCard
+                                    onClick={() => setCustomModalOpen(true)}
+                                />
+                            )}
+                            {!isLoading && visibleTemplates.length === 0 && (
+                                <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {isSearching
+                                        ? t('talentMarket.emptySearch', { query: trimmedQuery })
+                                        : t('talentMarket.empty')}
+                                </div>
+                            )}
+                            {!isLoading && visibleTemplates.map((tpl: Template) => (
+                                <TemplateCard
+                                    key={tpl.id}
+                                    tpl={tpl}
+                                    hiring={false}
+                                    isChinese={isChinese}
+                                    onHire={() => setPendingTemplate(tpl)}
+                                />
+                            ))}
+                        </>
                     )}
-                    {!isLoading && visibleTemplates.length === 0 && (
-                        <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                            {isSearching
-                                ? t('talentMarket.emptySearch', isChinese ? `没有匹配 "${trimmedQuery}" 的 Agent` : `No agents match "${trimmedQuery}"`)
-                                : t('talentMarket.empty', isChinese ? '这个分类下还没有模板' : 'No templates in this category yet')}
-                        </div>
-                    )}
-                    {!isLoading && visibleTemplates.map((tpl: Template) => (
-                        <TemplateCard
-                            key={tpl.id}
-                            tpl={tpl}
-                            hiring={false}
-                            isChinese={isChinese}
-                            onHire={() => setPendingTemplate(tpl)}
-                        />
-                    ))}
                 </div>
 
                 {/* Footer */}
@@ -276,7 +321,7 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                     padding: '12px 28px 16px', textAlign: 'center', fontSize: '12px',
                     color: 'var(--text-tertiary)', borderTop: '1px solid var(--border-subtle)',
                 }}>
-                    {t('talentMarket.footer', isChinese ? '点击聘用·可随时在设置中调整' : 'Hire now · adjust anything in settings later')}
+                    {t('talentMarket.footer')}
                 </div>
             </div>
 
@@ -286,12 +331,97 @@ export default function TalentMarketModal({ open, onClose }: Props) {
                 onClose={() => setPendingTemplate(null)}
                 onDone={() => { setPendingTemplate(null); onClose(); }}
             />
+            <BundleHireModal
+                bundle={pendingBundle}
+                open={!!pendingBundle}
+                onClose={() => setPendingBundle(null)}
+                onDone={() => { setPendingBundle(null); onClose(); }}
+            />
             <CustomAgentModal
                 open={customModalOpen}
                 initialMode="native"
                 onClose={() => setCustomModalOpen(false)}
                 onDone={() => { setCustomModalOpen(false); onClose(); }}
             />
+        </div>
+    );
+}
+
+function BundleCard({ bundle, isChinese, onHire }: {
+    bundle: BundleSummary;
+    isChinese: boolean;
+    onHire: () => void;
+}) {
+    const { t } = useTranslation();
+    // Pick lang-appropriate metadata. Bundle author can ship name_en /
+    // description_en / capability_bullets_en for full EN coverage; when
+    // absent (zh-only bundle), fall through to the primary CN field so the
+    // card still renders rather than going blank.
+    const displayName = (!isChinese && bundle.name_en) ? bundle.name_en : bundle.name;
+    const displayDescription = (!isChinese && bundle.description_en) ? bundle.description_en : bundle.description;
+    const displayBullets = (!isChinese && bundle.capability_bullets_en?.length)
+        ? bundle.capability_bullets_en
+        : bundle.capability_bullets;
+    const bullets = displayBullets?.length
+        ? displayBullets
+        : [displayDescription].filter(Boolean);
+
+    return (
+        <div style={{
+            border: '1px solid var(--border-subtle)', borderRadius: '10px',
+            padding: '18px', display: 'flex', flexDirection: 'column',
+            background: 'var(--bg-primary)',
+            transition: 'border-color 120ms',
+            position: 'relative',
+        }}>
+            {/* "Team" / "套装" badge in corner */}
+            <div style={{
+                position: 'absolute', top: '10px', right: '10px',
+                fontSize: '10px', fontWeight: 600, letterSpacing: '0.04em',
+                padding: '2px 8px', borderRadius: '10px',
+                background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+                textTransform: 'uppercase',
+            }}>
+                {t('talentMarket.bundleBadge')}
+            </div>
+
+            <div style={{
+                width: '40px', height: '40px', borderRadius: '8px',
+                background: 'var(--bg-secondary)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '13px', fontWeight: 600, marginBottom: '14px',
+                letterSpacing: '0.04em',
+            }}>
+                {bundle.icon || 'TM'}
+            </div>
+            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '2px' }}>
+                {displayName}
+            </div>
+            <div style={{
+                fontSize: '10.5px', fontWeight: 500, letterSpacing: '0.04em',
+                color: 'var(--text-tertiary)',
+                marginBottom: '12px',
+            }}>
+                {t('bundleHire.summary', { agentCount: bundle.agent_count, mcpCount: bundle.mcp_count, relCount: bundle.relationship_count })}
+            </div>
+            <ul style={{
+                margin: 0, padding: 0, listStyle: 'none', flex: 1,
+                fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.7,
+            }}>
+                {bullets.slice(0, 4).map((b, i) => (
+                    <li key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+                        <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>•</span>
+                        <span>{b}</span>
+                    </li>
+                ))}
+            </ul>
+            <button
+                className="btn btn-primary"
+                onClick={onHire}
+                style={{ marginTop: '16px', width: '100%' }}
+            >
+                {t('talentMarket.hireBundle')}
+            </button>
         </div>
     );
 }
@@ -351,7 +481,7 @@ function TemplateCard({ tpl, hiring, isChinese, onHire }: {
                 disabled={hiring}
                 style={{ marginTop: '16px', width: '100%' }}
             >
-                {hiring ? t('talentMarket.hiring', isChinese ? '聘用中…' : 'Hiring...') : t('talentMarket.hire', isChinese ? '聘用' : 'Hire')}
+                {hiring ? t('talentMarket.hiring') : t('talentMarket.hire')}
             </button>
         </div>
     );

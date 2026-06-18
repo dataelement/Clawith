@@ -1,0 +1,10 @@
+name: "DEAD-MCP test bundle (P1 negative)"
+description: "1-agent bundle whose MCP URL is unreachable — should return 502 on hire (P1 verification)."
+icon: "DM"
+category: "general"
+capability_bullets:
+  - "Negative test for P1 silent-MCP-failure verification"
+version: "0.1.0"
+# Bundle is opt-in for local negative testing only.
+# When you want to run the test, set is_test: false then re-seed; otherwise leave true.
+is_test: true

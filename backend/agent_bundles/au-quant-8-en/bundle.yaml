@@ -1,0 +1,27 @@
+name: Quant Trading Team
+description: 'Pre-wired quant trading decision team: start at the Research Manager → bull/bear debate → tri-perspective risk review → chair''s verdict → trader places the simulated order. After assembly, ping the Research Manager (★ principal) — "Take a look at the current main AU contract" — and the full chain runs end-to-end (on hire, an isolated paper-trading account is auto-provisioned for the team — no manual setup; fills/positions are viewable on the paper-trading web UI). Add an orchestrator agent if you want it on a cron.'
+name_en: Quant Trading Team
+description_en: 'Pre-wired quant trading decision team: start at the Research Manager → bull/bear debate → tri-perspective risk review → chair''s verdict → trader places the simulated order. After assembly, just ping the Research Manager (★ principal) — "Take a look at the current main AU contract" — and the full chain runs end-to-end (on hire, an isolated paper-trading account is auto-provisioned for the team — no manual setup; fills/positions are viewable on the paper-trading web UI). Add an orchestrator if you want it on a cron.'
+icon: AU8
+category: trading
+# Research Manager is the chain entry / coordinator — users usually
+# talk to it first after hiring. It kicks off the bull/bear debate,
+# produces the investment plan, hands off to the Chair, etc.
+# The sidebar tags this agent's name with a yellow star.
+principal_slug: 03-rm
+capability_bullets:
+- All eight agents prompt and respond in English (native)
+- Bull / Bear researchers debate head-to-head; three risk analysts review independently
+- Auto-feeds Shanghai Gold (AU) market, fundamentals, news, and sentiment data
+- An isolated paper-trading account is auto-provisioned on hire; chair's verdict fires the order (fills viewable on the paper-trading web UI)
+- 12 inter-agent collaboration links pre-wired
+capability_bullets_en:
+- All eight agents prompt and respond in English (native)
+- Bull / Bear researchers debate head-to-head; three risk analysts review independently
+- Auto-feeds Shanghai Gold (AU) market, fundamentals, news, and sentiment data
+- An isolated paper-trading account is auto-provisioned on hire; chair's verdict fires the order (fills viewable on the paper-trading web UI)
+- 12 inter-agent collaboration links pre-wired
+version: 0.2.1
+# Native content language. EN user sees this bundle in Talent Market only when
+# they are in English locale (see au-quant-8 for the Chinese counterpart).
+language: en

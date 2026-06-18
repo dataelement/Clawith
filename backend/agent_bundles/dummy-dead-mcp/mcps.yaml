@@ -1,0 +1,5 @@
+# Intentionally unreachable URL — port 65535 + unrouted RFC5737 IP
+- local_key: dead_endpoint
+  server_name: DeadMcpServer
+  url: http://192.0.2.99:65534
+  transport: streamable-http

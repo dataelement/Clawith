@@ -653,14 +653,16 @@ async def get_agent_tool_config(
     # Mask sensitive fields in global config for display
     masked_global = mask_sensitive_fields(raw_global, schema)
 
-    # Merged: agent overrides take precedence over global defaults.
-    # Use raw (non-masked) global as the base so the agent inherits actual values
-    # at runtime, but the UI will show masked_global for display hints.
+    # Per-agent sensitive fields are masked too: AgentTool.config may hold
+    # system-provisioned secrets (e.g. paper-trading team tokens written at
+    # bundle-hire time) that must never round-trip to the browser in plaintext.
+    # The PUT endpoint treats a "****xxxx" value as "unchanged" (see below).
+    masked_agent = mask_sensitive_fields(raw_agent or {}, schema)
     merged = {**raw_global, **(raw_agent or {})}
     return {
         "global_config": masked_global,
-        "agent_config": raw_agent or {},
-        "merged_config": merged,
+        "agent_config": masked_agent,
+        "merged_config": mask_sensitive_fields(merged, schema),
         "config_schema": tool.config_schema or {},
     }
 
@@ -685,12 +687,25 @@ async def update_agent_tool_config(
     # Encrypt sensitive fields using the tool's config_schema for field type awareness
     tool_r2 = await db.execute(select(Tool).where(Tool.id == tool_id))
     tool_for_schema = tool_r2.scalar_one_or_none()
-    encrypted_config = _encrypt_sensitive_fields(data.config, tool_for_schema.config_schema if tool_for_schema else None)
+    schema_for_tool = tool_for_schema.config_schema if tool_for_schema else None
 
     at_r = await db.execute(
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
     at = at_r.scalar_one_or_none()
+
+    # 掩码值往返保护:GET 端点对敏感字段只回 "****xxxx";若前端把掩码原样存回,
+    # 会把真实值(含系统发放的 team token)毁掉。凡 incoming 敏感字段是掩码形态
+    # 且已有存量值 → 视为"未修改",保留存量。
+    incoming = dict(data.config)
+    if at and at.config:
+        existing_dec = _decrypt_sensitive_fields(dict(at.config), schema_for_tool)
+        for k in get_sensitive_keys(schema_for_tool):
+            v = incoming.get(k)
+            if isinstance(v, str) and v.startswith("****") and existing_dec.get(k):
+                incoming[k] = existing_dec[k]
+
+    encrypted_config = _encrypt_sensitive_fields(incoming, schema_for_tool)
     if at:
         at.config = encrypted_config
     else:
@@ -798,7 +813,8 @@ async def get_agent_tools_with_config(
             "mcp_server_url": t.mcp_server_url,
             "config_schema": t.config_schema or {},
             "global_config": masked_global,
-            "agent_config": raw_agent,
+            # 同 global:per-agent 敏感字段不回明文(可能含系统发放的 team token)
+            "agent_config": mask_sensitive_fields(raw_agent, t.config_schema),
             "source": t.source,
         })
     return result

@@ -1,0 +1,24 @@
+name: 量化交易团队
+description: 一支预配好的量化交易决策团队：从研究经理切入 → 多空研究员对辩 → 三方风险评审 → 主席裁决 → 交易员模拟盘下单。组建后直接跟研究经理（★ 主理人）说一句"看看当前主力 AU 合约最近走势"就能跑完整链路（招聘后系统已自动为团队开好专属隔离模拟盘账户，无需手动开户；成交/持仓可在模拟盘网页查看）；想自动化可以再挂一个总指挥定时触发。
+name_en: Quant Trading Team
+description_en: 'Pre-wired quant trading decision team: start at the Research Manager → bull/bear debate → tri-perspective risk review → chair''s verdict → trader places the simulated order. After assembly, just ping the Research Manager (★ principal) — "Look at AU2606 on 2026-05-14" — and the full chain runs end-to-end (open and connect your paper-trading account in the Proving Ground before live orders). Add an orchestrator if you want it on a cron.'
+icon: AU8
+category: trading
+# 研究经理是决策链的主入口 / 协调者 —— 用户聘请后一般先和它说话
+# （研究经理触发多/空研究员的辩论 → 产出投资计划 → 提交主席 → 风险评审 → 交易员）。
+# Sidebar 会在它名字后面挂一个黄星。
+principal_slug: 03-rm
+capability_bullets:
+- 多/空研究员同台对辩，三位风险分析师独立评审
+- 自带沪金（AU）行情 / 基本面 / 新闻 / 情绪四份数据源
+- 招聘即自动开通团队专属隔离模拟盘账户，主席决策即可下单（成交可在模拟盘网页查看）
+- 12 条 Agent 协作链路开箱可用
+capability_bullets_en:
+- Bull/bear researchers debate head-to-head; three risk analysts review independently
+- Auto-feeds Shanghai Gold (AU) market / fundamentals / news / sentiment data
+- Connect your own paper-trading account (opened in the Proving Ground); chair's verdict fires the order
+- 12 inter-agent collaboration links pre-wired
+version: 0.2.0
+# Native content language. CN user sees this bundle in Talent Market only when
+# they are in Chinese locale (see au-quant-8-en for the English counterpart).
+language: zh

@@ -190,6 +190,45 @@ async def check_agent_creation_quota(user_id: uuid.UUID) -> None:
             )
 
 
+async def check_bundle_hire_quota(user_id: uuid.UUID, bundle_size: int) -> None:
+    """Check if user can hire a bundle of ``bundle_size`` agents.
+
+    Mirrors ``check_agent_creation_quota`` but accounts for the batch of N
+    agents being created in one atomic operation. Admins bypass the quota.
+
+    Raises QuotaExceeded with a message including current_count/quota_max_agents/N.
+    """
+    from app.models.user import User
+    from app.models.agent import Agent
+
+    if bundle_size <= 0:
+        return
+
+    async with async_session() as db:
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return
+
+        if user.role in ("platform_admin", "org_admin"):
+            return
+
+        count_result = await db.execute(
+            select(sa_func.count()).select_from(Agent).where(
+                Agent.creator_id == user_id,
+                Agent.is_expired == False,  # noqa: E712
+            )
+        )
+        current_count = count_result.scalar() or 0
+
+        if current_count + bundle_size > user.quota_max_agents:
+            raise QuotaExceeded(
+                f"Bundle hire would exceed agent quota "
+                f"({current_count} existing + {bundle_size} new > {user.quota_max_agents} limit).",
+                quota_type="max_agents",
+            )
+
+
 # ── Heartbeat floor enforcement ────────────────────────────────────
 
 async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None, db=None) -> int:

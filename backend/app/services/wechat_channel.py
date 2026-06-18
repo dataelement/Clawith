@@ -124,18 +124,19 @@ def update_wechat_context_cache(
 ) -> dict[str, Any]:
     extra = dict(extra_config or {})
     cache = dict(extra.get(WECHAT_CONTEXT_CACHE_KEY) or {})
+    # Re-insert so the most recently touched user_id is always the last entry.
+    # Python dicts preserve insertion order, which makes this a stable LRU even
+    # when many writes share the same ``updated_at`` second/millisecond — the
+    # ``sorted(..., reverse=True)`` approach used previously would keep ties in
+    # their original (oldest-first) position and silently retain stale entries.
+    cache.pop(from_user_id, None)
     cache[from_user_id] = {
         "context_token": context_token,
         "conv_id": conv_id,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if len(cache) > WECHAT_CONTEXT_CACHE_LIMIT:
-        ordered = sorted(
-            cache.items(),
-            key=lambda item: str((item[1] or {}).get("updated_at") or ""),
-            reverse=True,
-        )
-        cache = dict(ordered[:WECHAT_CONTEXT_CACHE_LIMIT])
+    while len(cache) > WECHAT_CONTEXT_CACHE_LIMIT:
+        cache.pop(next(iter(cache)))
     extra[WECHAT_CONTEXT_CACHE_KEY] = cache
     return extra
 

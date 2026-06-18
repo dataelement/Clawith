@@ -294,6 +294,12 @@ class AgentOut(BaseModel):
     # True so list endpoints that don't care about onboarding don't leak
     # stale "needs onboarding" UI to users they shouldn't prompt.
     onboarded_for_me: bool = True
+    # Bundle origin / grouping fields — populated when the agent was created
+    # by a bundle hire. Sidebar uses these to fold mates under one collapsible
+    # header and mark the principal with a yellow star.
+    bundle_slug: str | None = None
+    bundle_hire_group_id: uuid.UUID | None = None
+    is_bundle_principal: bool = False
     created_at: datetime
     last_active_at: datetime | None = None
 

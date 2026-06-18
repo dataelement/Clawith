@@ -1,0 +1,12 @@
+name: "Smoke Test 2-Agent Bundle"
+description: "Minimal 2-agent team used to smoke-test the bundle hire flow. Do not use in production."
+icon: "ST"
+category: "general"
+capability_bullets:
+  - "Two-agent harness for E2E hire verification"
+  - "Single internal collaborator relationship"
+  - "Zero MCP dependencies"
+version: "0.1.0"
+# Skip-from-seed marker: this bundle exists for local smoke tests only;
+# the seeder honors this and won't expose it in the Talent Market.
+is_test: true

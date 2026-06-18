@@ -659,7 +659,16 @@ async def import_mcp_direct(
         full_url = f"{mcp_url}?apiKey={api_key}"
 
     display_name = server_name or mcp_url.split("//")[-1].split("/")[0].split(":")[0]
-    safe_name = display_name.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
+    # safe_name is used to derive tool.name (mcp_{safe_name}_{tool_name}). OpenAI
+    # and several other providers enforce a strict ^[a-zA-Z0-9_-]+$ pattern on
+    # function names, so we strip anything outside that set (spaces, dots,
+    # slashes, colons, hyphens... etc). Without this, server_name like
+    # "AU Market Data" produces tool names with spaces and the LLM rejects the
+    # whole tool list with HTTP 400, breaking every chat that uses this MCP.
+    import re as _re
+    safe_name = _re.sub(r"[^A-Za-z0-9_]", "_", display_name)
+    # Collapse repeated underscores for tidiness
+    safe_name = _re.sub(r"_+", "_", safe_name).strip("_") or "mcp"
 
     # Try to list tools from the endpoint
     tools_discovered = []
@@ -697,8 +706,16 @@ async def import_mcp_direct(
 
         if tools_discovered:
             for mcp_tool in tools_discovered:
-                tool_name = f"mcp_{safe_name}_{mcp_tool['name']}"
-                tool_display = f"{display_name}: {mcp_tool['name']}"
+                # Sanitize mcp_tool['name'] the same way safe_name was — OpenAI
+                # rejects any function name with chars outside ^[a-zA-Z0-9_-]+$,
+                # so a tool whose upstream name contains '.', ':' or whitespace
+                # would break every chat that mounts this MCP. Display label
+                # keeps the original for human readability.
+                raw_tool_name = mcp_tool["name"]
+                safe_tool_name = _re.sub(r"[^A-Za-z0-9_]", "_", raw_tool_name)
+                safe_tool_name = _re.sub(r"_+", "_", safe_tool_name).strip("_") or "tool"
+                tool_name = f"mcp_{safe_name}_{safe_tool_name}"
+                tool_display = f"{display_name}: {raw_tool_name}"
 
                 existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 existing_tool = existing_r.scalar_one_or_none()

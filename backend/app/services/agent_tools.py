@@ -92,6 +92,23 @@ _TOOL_CONFIG_CACHE_TTL_SECONDS = 60
 # Sensitive field keys that should be encrypted/decrypted
 SENSITIVE_FIELD_KEYS = {"api_key", "private_key", "auth_code", "password", "secret", "atlassian_api_key"}
 
+def _looks_like_encrypted(value: str) -> bool:
+    """Heuristic: does this string look like core.security.encrypt_data() output?
+
+    encrypt_data returns STANDARD base64 of (16-byte IV + AES-256-CBC ciphertext);
+    CBC + PKCS7 padding makes the ciphertext a multiple of the 16-byte block, so the
+    decoded length is a multiple of 16 and at least 32 (IV + ≥1 block). Plaintext
+    credentials (e.g. ``ptk_…`` tokens use urlsafe ``-``/``_``) fail strict base64
+    decode, so this is a tight discriminator with very low false-positive rate.
+    """
+    import base64
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        return False
+    return len(raw) >= 32 and len(raw) % 16 == 0
+
+
 def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -> dict:
     """Decrypt sensitive fields in config dict.
 
@@ -123,8 +140,27 @@ def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -
                 try:
                     result[key] = decrypt_data(value, settings.SECRET_KEY)
                 except Exception:
-                    # If decryption fails, assume it's plaintext
-                    pass
+                    # Decryption failed — two very different situations:
+                    #  (a) value is genuinely plaintext (legacy / never
+                    #      encrypted) → pass through unchanged (backward compat).
+                    #  (b) value LOOKS like our AES ciphertext but won't decrypt
+                    #      → almost always a SECRET_KEY rotation (or corrupted
+                    #      DB). Silently passing it through means the ciphertext
+                    #      gets used AS the credential — e.g. sent as a Bearer
+                    #      token, producing silent 401s with no clue why. Scream
+                    #      loudly and blank the field so the failure is loud, not
+                    #      silently-wrong; re-saving the tool config re-encrypts.
+                    if _looks_like_encrypted(value):
+                        logger.error(
+                            f"[Security] Could not decrypt sensitive field "
+                            f"'{key}' that appears encrypted — likely a "
+                            f"SECRET_KEY rotation or corrupted value. Blanking it "
+                            f"to avoid sending ciphertext as a live credential. "
+                            f"Re-save the tool config to re-encrypt with the "
+                            f"current key."
+                        )
+                        result[key] = ""
+                    # else: genuine plaintext, leave as-is
 
     return result
 
@@ -4260,7 +4296,22 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
                 logger.warning(f"[MCP] Unknown tool: {tool_name}")
                 return f"Unknown tool: {tool_name}"
 
-            # Load per-agent config override
+            # ── Authorization closure (defense in depth) ──
+            # get_agent_tools_for_llm() already filters the tool list the LLM
+            # sees by enablement, but the EXECUTION path must re-check it too —
+            # otherwise a stale/hallucinated/forged tool call (or any non-LLM
+            # caller) could run a tool the agent doesn't actually have enabled.
+            # Mirror the exact visibility rule used in get_agent_tools_for_llm:
+            #   visible = AgentTool.enabled if a binding exists, else Tool.is_default
+            # with the global Tool.enabled flag as a hard gate on top. (Do this
+            # while the rows are still attached to the live session.)
+            if not tool.enabled:
+                logger.warning(
+                    f"[MCP] Blocked globally-disabled tool: {tool_name} agent={agent_id}"
+                )
+                return f"❌ 工具 {tool_name} 未启用，无法调用。"
+
+            # Load per-agent config override + enforce per-agent enablement
             agent_config = {}
             if tool and agent_id:
                 at_r = await db.execute(
@@ -4270,6 +4321,36 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
                     )
                 )
                 at = at_r.scalar_one_or_none()
+                effective_enabled = at.enabled if at is not None else tool.is_default
+                if not effective_enabled:
+                    logger.warning(
+                        f"[MCP] Blocked tool not enabled for agent: {tool_name} "
+                        f"agent={agent_id} (binding={'present' if at else 'absent'})"
+                    )
+                    return f"❌ 工具 {tool_name} 未对该 Agent 启用，无法调用。"
+                # Tenant/source visibility — same boundary as the LLM tool list
+                # (get_agent_tools_for_llm visible_clauses): an explicit binding
+                # makes any tool visible; without one, builtin is visible to all,
+                # admin tools only when global (tenant_id NULL) or same-tenant,
+                # and agent-installed tools never. Without this, a forged call
+                # naming another tenant's is_default admin MCP would execute.
+                if at is None and tool.source != "builtin":
+                    if tool.source == "admin":
+                        if tool.tenant_id is not None:
+                            # _get_agent_tenant_id returns str|None; tool.tenant_id is UUID
+                            agent_tenant_id = await _get_agent_tenant_id(agent_id)
+                            if str(tool.tenant_id) != agent_tenant_id:
+                                logger.warning(
+                                    f"[MCP] Blocked cross-tenant tool: {tool_name} "
+                                    f"tool_tenant={tool.tenant_id} agent={agent_id}"
+                                )
+                                return f"❌ 工具 {tool_name} 不在该 Agent 的可见范围内，无法调用。"
+                    else:
+                        logger.warning(
+                            f"[MCP] Blocked unbound {tool.source}-source tool: "
+                            f"{tool_name} agent={agent_id}"
+                        )
+                        return f"❌ 工具 {tool_name} 不在该 Agent 的可见范围内，无法调用。"
                 agent_config = (at.config or {}) if at else {}
 
         if not tool.mcp_server_url:

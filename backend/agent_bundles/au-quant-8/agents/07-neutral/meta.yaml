@@ -1,0 +1,124 @@
+name: 中性风险分析师
+role_description: ''
+position: 7
+primary_model_hint: null
+default_skills: []
+default_autonomy_policy:
+  read_files: L1
+  write_workspace_files: L2
+  send_feishu_message: L2
+  send_external_message: L3
+  modify_soul: L3
+  access_business_system_read: L2
+  access_business_system_write: L3
+  delete_files: L3
+  create_calendar_event: L2
+  financial_operations: L3
+default_mcp_attach:
+- au_data
+- paper_trading
+default_tool_toggles:
+  agentbay_browser_click: false
+  agentbay_browser_extract: false
+  agentbay_browser_login: false
+  agentbay_browser_navigate: false
+  agentbay_browser_observe: false
+  agentbay_browser_save_screenshot: false
+  agentbay_browser_screenshot: false
+  agentbay_browser_type: false
+  agentbay_code_edit_file: false
+  agentbay_code_execute: false
+  agentbay_code_read_file: false
+  agentbay_code_write_file: false
+  agentbay_command_exec: false
+  agentbay_computer_activate_window: false
+  agentbay_computer_click: false
+  agentbay_computer_close_window: false
+  agentbay_computer_dismiss_dialog: false
+  agentbay_computer_drag_mouse: false
+  agentbay_computer_get_active_window: false
+  agentbay_computer_get_cursor_position: false
+  agentbay_computer_get_installed_apps: false
+  agentbay_computer_get_screen_size: false
+  agentbay_computer_input_text: false
+  agentbay_computer_list_visible_apps: false
+  agentbay_computer_list_windows: false
+  agentbay_computer_move_mouse: false
+  agentbay_computer_precision_screenshot: false
+  agentbay_computer_press_keys: false
+  agentbay_computer_save_screenshot: false
+  agentbay_computer_screenshot: false
+  agentbay_computer_scroll: false
+  agentbay_computer_start_app: false
+  agentbay_file_transfer: false
+  cancel_trigger: false
+  complete_focus_item: false
+  convert_csv_to_xlsx: false
+  convert_html_to_pdf: false
+  convert_html_to_pptx: false
+  convert_markdown_to_docx: false
+  convert_markdown_to_pdf: false
+  delete_file: false
+  discover_resources: false
+  duckduckgo_search: true
+  edit_file: false
+  exa_search: false
+  execute_code: true
+  execute_code_e2b: false
+  find_files: true
+  finish: true
+  generate_image_custom: false
+  generate_image_google: false
+  generate_image_openai: false
+  generate_image_siliconflow: false
+  get_my_okr: true
+  get_okr: true
+  google_search: false
+  import_mcp_server: false
+  install_skill: false
+  jina_read: false
+  jina_search: false
+  list_files: true
+  list_focus_items: false
+  list_published_pages: false
+  list_triggers: false
+  move_file: false
+  plaza_add_comment: false
+  plaza_create_post: false
+  plaza_get_new_posts: false
+  publish_page: false
+  read_document: false
+  read_emails: false
+  read_file: true
+  read_webpage: true
+  reply_email: false
+  search_clawhub: false
+  search_files: true
+  send_channel_file: false
+  send_email: false
+  send_file_to_agent: false
+  send_message_to_agent: false
+  send_platform_message: false
+  set_trigger: false
+  tavily_search: false
+  update_kr_content: false
+  update_kr_progress: true
+  update_trigger: false
+  upload_image: true
+  upsert_focus_item: false
+  web_search: true
+  write_file: false
+default_mcp_tool_toggles:
+  au_data:
+    get_au_all_reports: false
+  paper_trading:
+    create_paper_account: false
+    get_market_daily_prices: false
+    get_market_latest_price: false
+    get_paper_account_status: false
+    get_paper_trade_history: false
+    list_paper_accounts: false
+    paper_trade_buy: false
+    paper_trade_close_long: false
+    paper_trade_close_short: false
+    paper_trade_sell: false
