@@ -4,7 +4,7 @@ import { Outlet, NavLink, useNavigate, useMatch, useLocation } from 'react-route
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
-import { agentApi, tenantApi, authApi, onboardingApi } from '../services/api';
+import { agentApi, tenantApi, authApi, onboardingApi, bundleApi, type BundleSummary } from '../services/api';
 import { useToast } from '../components/Toast/ToastProvider';
 
 import {
@@ -30,6 +30,7 @@ import {
     IconChevronRight,
     IconCheck,
     IconChevronDown,
+    IconStarFilled,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
 import TalentMarketModal from '../components/TalentMarketModal';
@@ -902,6 +903,42 @@ export default function Layout() {
         return bTime - aTime;
     });
 
+    // Bundle metadata for sidebar group headers — same query the Talent
+    // Market uses (so it's already cached when the user has opened that
+    // modal). Cheap and global so no tenant scoping needed.
+    const { data: bundles = [] } = useQuery<BundleSummary[]>({
+        queryKey: ['agent-bundles'],
+        queryFn: () => bundleApi.list(),
+    });
+    const bundleMap = useMemo(() => {
+        const m = new Map<string, BundleSummary>();
+        bundles.forEach(b => m.set(b.slug, b));
+        return m;
+    }, [bundles]);
+
+    // Collapsed-bundle-group state — persisted to localStorage so refreshing
+    // doesn't re-expand every group the user just folded away. Keyed by
+    // bundle_hire_group_id (UUID) so a tenant who hires the same bundle
+    // twice gets independent fold state per cohort.
+    const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+        try {
+            const raw = localStorage.getItem('sidebar_collapsed_bundle_groups');
+            const arr = raw ? JSON.parse(raw) : [];
+            return new Set(Array.isArray(arr) ? arr.filter((x: any) => typeof x === 'string') : []);
+        } catch { return new Set<string>(); }
+    });
+    const toggleGroupCollapsed = useCallback((groupId: string) => {
+        setCollapsedGroups(prev => {
+            const next = new Set(prev);
+            if (next.has(groupId)) next.delete(groupId);
+            else next.add(groupId);
+            try {
+                localStorage.setItem('sidebar_collapsed_bundle_groups', JSON.stringify([...next]));
+            } catch { /* ignore quota errors */ }
+            return next;
+        });
+    }, []);
+
     const agentSearchBox = (force = false) => (force || agents.length >= 5) && (
         <div className="sidebar-agent-search">
             <IconSearch size={14} stroke={2} className="sidebar-agent-search-icon" />
@@ -946,7 +983,16 @@ export default function Layout() {
                             </span>
                         )}
                     </span>
-                    <span className="sidebar-item-text">{agent.name}</span>
+                    <span className="sidebar-item-text">
+                        {agent.name}
+                        {agent.is_bundle_principal && (
+                            <IconStarFilled
+                                size={11}
+                                className="sidebar-principal-star"
+                                aria-label={isChinese ? '主理人' : 'Principal'}
+                            />
+                        )}
+                    </span>
                 </NavLink>
                 {showPin && (
                     <button
@@ -968,21 +1014,92 @@ export default function Layout() {
         );
     };
 
-    const agentListContent = (drawer = false) => (
-        <>
-            {sortedAgents.map(agent => renderAgent(agent, { drawer }))}
-            {agents.length === 0 && (
-                <div className="sidebar-section">
-                    <div className="sidebar-section-title">{t('nav.myAgents')}</div>
-                </div>
-            )}
-            {agents.length > 0 && sortedAgents.length === 0 && q && (
-                <div className="sidebar-agent-empty">
-                    {isChinese ? '无匹配结果' : 'No matches'}
-                </div>
-            )}
-        </>
-    );
+    const agentListContent = (drawer = false) => {
+        // Split agents into flat (pinned + non-bundle) and bundle groups.
+        // Pinned agents always float to the top regardless of bundle
+        // membership — pinning means "I want to see this on every render";
+        // hiding it inside a folded group would defeat that.
+        const flat: any[] = [];
+        const groups = new Map<string, any[]>();
+        for (const agent of sortedAgents) {
+            if (pinnedAgents.has(agent.id)) {
+                flat.push(agent);
+                continue;
+            }
+            const gid = agent.bundle_hire_group_id;
+            if (gid) {
+                if (!groups.has(gid)) groups.set(gid, []);
+                groups.get(gid)!.push(agent);
+            } else {
+                flat.push(agent);
+            }
+        }
+        // Inside each group: principal first, then by creation order — so
+        // the user's "talk to here first" agent is always at the top of the
+        // fold and the chain of supporting agents reads in hire order.
+        for (const list of groups.values()) {
+            list.sort((a, b) => {
+                const ap = a.is_bundle_principal ? 1 : 0;
+                const bp = b.is_bundle_principal ? 1 : 0;
+                if (ap !== bp) return bp - ap;
+                const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return at - bt;
+            });
+        }
+        // During an active search, force-expand all groups so matches don't
+        // get hidden inside a folded section the user can't see.
+        const isSearching = q.length > 0;
+
+        return (
+            <>
+                {flat.map(agent => renderAgent(agent, { drawer }))}
+
+                {[...groups.entries()].map(([groupId, list]) => {
+                    const slug = list[0]?.bundle_slug as string | undefined;
+                    const bundle = slug ? bundleMap.get(slug) : undefined;
+                    // Header text falls back: en > zh > generic "Team"
+                    // (covers the case where the bundle was uninstalled
+                    // after hire so we can't look up its name).
+                    const headerName = (!isChinese && bundle?.name_en)
+                        ? bundle.name_en
+                        : (bundle?.name ?? (isChinese ? '团队' : 'Team'));
+                    const collapsed = !isSearching && collapsedGroups.has(groupId);
+                    return (
+                        <div key={groupId} className="sidebar-bundle-group">
+                            <button
+                                type="button"
+                                className="sidebar-bundle-group-header"
+                                onClick={() => toggleGroupCollapsed(groupId)}
+                                title={collapsed ? (isChinese ? '展开' : 'Expand') : (isChinese ? '折叠' : 'Collapse')}
+                                aria-expanded={!collapsed}
+                            >
+                                <span className="sidebar-bundle-group-chevron">
+                                    {collapsed
+                                        ? <IconChevronRight size={12} stroke={2} />
+                                        : <IconChevronDown size={12} stroke={2} />}
+                                </span>
+                                <span className="sidebar-bundle-group-name">{headerName}</span>
+                                <span className="sidebar-bundle-group-count">{list.length}</span>
+                            </button>
+                            {!collapsed && list.map(agent => renderAgent(agent, { drawer }))}
+                        </div>
+                    );
+                })}
+
+                {agents.length === 0 && (
+                    <div className="sidebar-section">
+                        <div className="sidebar-section-title">{t('nav.myAgents')}</div>
+                    </div>
+                )}
+                {agents.length > 0 && sortedAgents.length === 0 && q && (
+                    <div className="sidebar-agent-empty">
+                        {isChinese ? '无匹配结果' : 'No matches'}
+                    </div>
+                )}
+            </>
+        );
+    };
 
     const agentDrawer = isSidebarCollapsed && agentDrawerOpen && typeof document !== 'undefined' && createPortal(
         <div

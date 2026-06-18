@@ -1,0 +1,8 @@
+- from_slug: "01-alice"
+  to_slug: "02-bob"
+  relation: "collaborator"
+  description: "Alice ↔ Bob smoke test bidirectional verification"
+- from_slug: "02-bob"
+  to_slug: "01-alice"
+  relation: "collaborator"
+  description: "Bob ↔ Alice smoke test bidirectional verification"

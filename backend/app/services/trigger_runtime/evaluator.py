@@ -352,8 +352,28 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                     from_agent_name = from_agent_name[0] if from_agent_name else ""
                 if not isinstance(from_agent_name, str):
                     return False
+
+                # Tenant scoping: the source agent we look up MUST be in the
+                # same tenant as the trigger's owner. Without this, name
+                # collisions across tenants (e.g. multiple "研究经理" rows
+                # from parallel bundle hires by different tenants) caused the
+                # ilike query to return the OLDEST match — typically a
+                # foreign tenant — making participant_id mismatch and the
+                # trigger never fire.
+                owner_r = await db.execute(
+                    select(AgentModel).where(AgentModel.id == trigger.agent_id)
+                )
+                owner = owner_r.scalar_one_or_none()
+                if not owner or not owner.tenant_id:
+                    return False
+
                 safe_agent_name = from_agent_name.replace("%", "").replace("_", r"\_")
-                agent_r = await db.execute(select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%")))
+                agent_r = await db.execute(
+                    select(AgentModel).where(
+                        AgentModel.name.ilike(f"%{safe_agent_name}%"),
+                        AgentModel.tenant_id == owner.tenant_id,
+                    )
+                )
                 source_agent = agent_r.scalars().first()
                 if not source_agent:
                     return False

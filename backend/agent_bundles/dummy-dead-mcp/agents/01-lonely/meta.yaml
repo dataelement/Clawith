@@ -1,0 +1,8 @@
+name: "孤独 Dead-MCP Agent"
+role_description: "Test agent: tries to bind to a dead MCP, should fail at hire."
+position: 1
+primary_model_hint: null
+default_skills: []
+default_autonomy_policy: {}
+default_mcp_attach:
+  - dead_endpoint

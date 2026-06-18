@@ -242,6 +242,16 @@ async def resolve_onboarding_prompt(
     proceed normally. Otherwise returns an :class:`OnboardingInjection` with
     either the first greeting prompt or the second configuration prompt.
     """
+    # Bundle-hired agents ship pre-configured (soul / tools / MCP / A2A) and
+    # don't need the per-user calibration ritual. Without this short-circuit,
+    # every org member who later opens a company-visible bundle agent would
+    # trigger the 4-step ritual again (with skip_tools=True on the greeting
+    # turn, hiding the agent's own MCP tools from the LLM and breaking the
+    # first user turn). Mark-and-skip behavior must therefore live on the
+    # agent, not on the (agent, user) onboarding row, so it applies globally.
+    if getattr(agent, "is_from_bundle", False):
+        return None
+
     existing_result = await db.execute(
         select(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent.id,
@@ -387,7 +397,20 @@ async def is_onboarded(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> bool:
-    """Shortcut for API serializers that need ``onboarded_for_me`` on AgentOut."""
+    """Shortcut for API serializers that need ``onboarded_for_me`` on AgentOut.
+
+    Bundle-hired agents are always considered onboarded for every user — they
+    ship pre-configured and don't run the per-user calibration ritual. This
+    also makes the websocket's ``onboarding_trigger`` guard correctly ignore
+    the synthetic greeting kickoff for these agents, regardless of viewer.
+    """
+    from app.models.agent import Agent  # local import to avoid model import cycles
+    bundle_check = await db.execute(
+        select(Agent.is_from_bundle).where(Agent.id == agent_id)
+    )
+    if bundle_check.scalar_one_or_none() is True:
+        return True
+
     result = await db.execute(
         select(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent_id,

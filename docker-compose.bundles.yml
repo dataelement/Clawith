@@ -1,0 +1,27 @@
+# Override file for the isolated "feat/agent-bundles" dev stack.
+#
+# Usage:
+#   docker compose -p clawith-bundles \
+#                  -f docker-compose.yml \
+#                  -f docker-compose.bundles.yml \
+#                  up -d --build
+#
+# Avoids collision with the existing clawith-* stack running on 3008 by:
+#   - project name "clawith-bundles" → containers prefixed clawith-bundles-*
+#   - named volumes auto-scoped by project name (pgdata, redisdata)
+#   - frontend port host:3018 (vs 3008 on the existing stack)
+#   - network name "clawith_bundles_network" (vs "clawith_network")
+#   - DOCKER_NETWORK env override matches so spawned agent containers join the new net
+
+services:
+  frontend:
+    ports:
+      - "3018:3000"
+
+  backend:
+    environment:
+      DOCKER_NETWORK: clawith_bundles_network
+
+networks:
+  default:
+    name: clawith_bundles_network

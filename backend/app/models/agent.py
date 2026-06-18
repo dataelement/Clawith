@@ -117,6 +117,37 @@ class Agent(Base):
     # Template
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_templates.id"))
 
+    # Bundle origin: True when this agent was created by bundle hire. Bundle
+    # agents ship pre-configured (soul / tools / MCP / A2A) so the per-user
+    # onboarding ritual ("define who I am" / "what's your style" / "your
+    # boundaries" / "finalize") would only get in the way — for the hire-er
+    # AND every other org member who later opens a company-visible bundle
+    # agent. Onboarding service + WS guard short-circuit on this flag so no
+    # user, ever, sees the ritual on a bundle agent.
+    is_from_bundle: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+
+    # Bundle group identification — populated at hire time when an agent is
+    # part of a bundle hire. Used by the sidebar to fold N bundle-mates under
+    # a single collapsible header so a tenant who hires multiple bundles isn't
+    # drowned by a 30-row agent list.
+    #
+    # - bundle_slug: which bundle this agent came from (e.g. "au-quant-8") —
+    #   denormalized so the sidebar can look up the bundle display name
+    #   without joining every render.
+    # - bundle_hire_group_id: UUID generated once per hire transaction. If
+    #   the same tenant hires the same bundle twice, the two cohorts get
+    #   distinct group_ids so they fold separately.
+    # - is_bundle_principal: True for the one agent the bundle author named
+    #   as the "primary contact" (see AgentBundle.principal_slug). Rendered
+    #   with a yellow star in the sidebar so users know who to talk to first.
+    bundle_slug: Mapped[str | None] = mapped_column(String(100), default=None, nullable=True)
+    bundle_hire_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), default=None, nullable=True
+    )
+    is_bundle_principal: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     # Heartbeat (proactive agent awareness)
     heartbeat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=240)

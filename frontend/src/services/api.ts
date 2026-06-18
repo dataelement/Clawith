@@ -591,3 +591,93 @@ export const controlApi = {
     unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
         request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
+
+
+// ─── Agent Bundles ────────────────────────────────────
+// Multi-agent team templates. A bundle hire transactionally creates N agents
+// + R MCP attachments + K internal A2A relationships in the caller's tenant.
+
+export interface BundleSummary {
+    id: string;
+    slug: string;
+    name: string;
+    description: string;
+    /** Optional English-language counterparts. Frontend should prefer these when i18n.language starts with "en". */
+    name_en?: string | null;
+    description_en?: string | null;
+    icon: string;
+    category: string;
+    capability_bullets: string[];
+    capability_bullets_en?: string[] | null;
+    version: string;
+    /**
+     * Author-declared content language: "zh" or "en". Talent Market only shows
+     * a bundle when language matches the user's current i18n locale — the
+     * EN bundle has English souls / agent names, so showing it to a CN user
+     * would hire English-speaking agents whose card-side localised name is
+     * Chinese; that's the mismatch we want to avoid.
+     */
+    language: 'zh' | 'en';
+    is_builtin: boolean;
+    agent_count: number;
+    mcp_count: number;
+    relationship_count: number;
+}
+
+export interface BundleAgentSpec {
+    slug: string;
+    position: number;
+    name: string;
+    role_description: string;
+    primary_model_hint: string | null;
+    default_skills: string[];
+    default_autonomy_policy: Record<string, any>;
+    default_mcp_attach: string[];
+    soul_md?: string | null;
+}
+
+export interface BundleMcpSpec {
+    local_key: string;
+    server_name: string;
+    url: string;
+    transport: string;
+}
+
+export interface BundleRelSpec {
+    from_slug: string;
+    to_slug: string;
+    relation: string;
+    description: string;
+}
+
+export interface BundleDetail extends BundleSummary {
+    /** Bundle-local slug of the "principal" / point-of-contact agent. The
+     *  sidebar marks this agent with a yellow star post-hire so users know
+     *  who to talk to first. May be null when the bundle author didn't pick. */
+    principal_slug?: string | null;
+    agents: BundleAgentSpec[];
+    mcp_servers: BundleMcpSpec[];
+    relationships: BundleRelSpec[];
+}
+
+export interface BundleHireResponse {
+    bundle_slug: string;
+    /** Bundle-local slug of the principal (point-of-contact, ★). The UI lands
+     *  the user on this agent post-hire. Null when the bundle didn't pick one. */
+    principal_slug?: string | null;
+    agents: Array<{ agent_id: string; slug: string; name: string }>;
+    relationship_count: number;
+    mcp_attach_count: number;
+}
+
+export const bundleApi = {
+    list: () => request<BundleSummary[]>('/bundles'),
+
+    get: (slug: string) => request<BundleDetail>(`/bundles/${slug}`),
+
+    hire: (slug: string, body: { visibility: 'only_me' | 'company' | 'custom' }) =>
+        request<BundleHireResponse>(`/bundles/${slug}/hire`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }),
+};

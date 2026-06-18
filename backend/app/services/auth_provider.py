@@ -278,6 +278,9 @@ class FeishuAuthProvider(BaseAuthProvider):
     FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token"
     FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
     FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+    # Contact API exposes the stable employee user_id (and authoritative email /
+    # mobile), which we prefer over the per-app open_id for identity binding.
+    FEISHU_CONTACT_URL = "https://open.feishu.cn/open-apis/contact/v3/users"
 
     def __init__(self, provider: IdentityProvider | None = None, config: dict | None = None):
         super().__init__(provider, config)
@@ -324,14 +327,44 @@ class FeishuAuthProvider(BaseAuthProvider):
             info_data = info_resp.json().get("data", {})
             logger.info(f"Feishu user info: {info_data}")
 
+            # Prefer the contact-API user_id (stable across apps inside the
+            # tenant) over the per-app open_id when we have an app token; fall
+            # back gracefully if the call fails.
+            contact_user: dict = {}
+            open_id = info_data.get("open_id")
+            if open_id:
+                try:
+                    app_token = await self.get_app_access_token()
+                    contact_resp = await client.get(
+                        f"{self.FEISHU_CONTACT_URL}/{open_id}",
+                        params={"user_id_type": "user_id"},
+                        headers={"Authorization": f"Bearer {app_token}"},
+                    )
+                    contact_payload = contact_resp.json()
+                    if contact_payload.get("code", 0) == 0:
+                        contact_user = (contact_payload.get("data") or {}).get("user") or {}
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"Feishu contact lookup failed for open_id {open_id}: {exc}")
+
+            provider_user_id = contact_user.get("user_id") or None
+            email = contact_user.get("email") or info_data.get("email", "") or ""
+            mobile = contact_user.get("mobile") or info_data.get("mobile", "") or ""
+
+            raw_data = dict(info_data)
+            if provider_user_id:
+                raw_data["user_id"] = provider_user_id
+            if contact_user:
+                raw_data["contact_user"] = contact_user
+
             return ExternalUserInfo(
                 provider_type=self.provider_type,
                 provider_union_id=info_data.get("union_id"),
+                provider_user_id=provider_user_id,
                 name=info_data.get("name", ""),
-                email=info_data.get("email", ""),
+                email=email,
                 avatar_url=info_data.get("avatar_url", ""),
-                mobile=info_data.get("mobile", ""),
-                raw_data=info_data,
+                mobile=mobile,
+                raw_data=raw_data,
             )
 
     async def _find_user_by_legacy_fields(self, db: AsyncSession, user_info: ExternalUserInfo) -> User | None:

@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # Exa AI (Search API)
     EXA_API_KEY: str = ""
 
+    # ── 模拟盘发号(招聘交易团队 bundle 时,给团队建专用账户 + team token)──
+    # SIM_PROVISION_URL 为空 → 不发号,bundle 的交易 MCP 按 mcps.yaml 原样绑(行为不变,
+    # 部署本改动默认零影响)。配上 URL+KEY 才启用"每团队独立 key"。
+    SIM_PROVISION_URL: str = ""              # e.g. http://YOUR_HOST:8503/api/provision/team-token
+    SIM_PROVISION_KEY: str = ""              # Bearer(须与模拟盘 PROVISION_ADMIN_KEY 一致)
+    SIM_TEAM_MCP_LOCAL_KEY: str = "paper_trading"  # bundle 里哪个 MCP local_key 走 team token
+    SIM_PROVISION_TIMEOUT: float = 10.0
 
     # Sandbox configuration
     SANDBOX_TYPE: SandboxType = SandboxType.SUBPROCESS

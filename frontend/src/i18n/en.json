@@ -69,7 +69,21 @@
     "customTitle": "Build custom",
     "customCategory": "Custom",
     "customDescription": "Define identity, personality, permissions, and tools from scratch.",
-    "customStart": "Start"
+    "customStart": "Start",
+    "tabPopular": "Popular",
+    "tabSWE": "Software Development",
+    "tabMarketing": "Marketing",
+    "tabOffice": "Office",
+    "tabTrading": "Trading",
+    "tabBundle": "Teams",
+    "tabsAria": "Category filters",
+    "searchPlaceholder": "Search agents by name or skill…",
+    "searchLabel": "Search agents",
+    "empty": "No templates in this category yet",
+    "emptySearch": "No agents match \"{{query}}\"",
+    "emptyBundles": "No teams yet",
+    "bundleBadge": "Team",
+    "hireBundle": "Assemble team"
   },
   "auth": {
     "login": "Login",
@@ -1638,6 +1652,7 @@
     "expandSidebar": "Expand Sidebar",
     "deleting": "Deleting...",
     "create": "Create",
+    "clear": "Clear",
     "noPermission": "You don't have permission to access this page.",
     "status": {
       "saved": "Saved",
@@ -2072,5 +2087,24 @@
     "selectLoginMethod": "Select your login method",
     "loginWith": "Login with {{provider}}",
     "noProviders": "No SSO providers configured."
+  },
+  "bundleHire": {
+    "title": "Assemble team",
+    "summary": "{{agentCount}} agents · {{mcpCount}} MCPs · {{relCount}} relationships",
+    "agentsHeading": "Will create {{count}} agents",
+    "mcpsHeading": "Will register {{count}} MCP servers",
+    "relsHeading": "Will create {{count}} internal relationships",
+    "mcpBadge": "{{count}} MCP",
+    "visibility": "Visibility",
+    "visOnlyMeTitle": "Only me",
+    "visOnlyMeHint": "The {{count}} new agents are only visible to you",
+    "visCompanyTitle": "Everyone at the company",
+    "visCompanyHint": "All members of the company can use this team",
+    "visCustomTitle": "Custom",
+    "visCustomHint": "Start with creator-only access, then add specific platform users per agent in Settings later",
+    "hiring": "Assembling...",
+    "confirm": "Assemble team ({{count}})",
+    "error": "Failed to assemble team",
+    "principal": "Principal — primary point of contact; start your conversation here"
   }
 }

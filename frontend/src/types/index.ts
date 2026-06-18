@@ -52,6 +52,13 @@ export interface Agent {
     // True when the viewing user has already been onboarded to this agent.
     // Defaults to true on list endpoints that don't compute per-viewer state.
     onboarded_for_me?: boolean;
+    // Bundle grouping — populated when this agent was created by a bundle
+    // hire. Sidebar folds all agents with the same bundle_hire_group_id under
+    // one collapsible header; the agent with is_bundle_principal=true gets a
+    // yellow star next to its name as the point-of-contact marker.
+    bundle_slug?: string | null;
+    bundle_hire_group_id?: string | null;
+    is_bundle_principal?: boolean;
     created_at: string;
     last_active_at?: string;
 }

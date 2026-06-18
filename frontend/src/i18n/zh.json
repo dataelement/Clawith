@@ -51,7 +51,21 @@
     "customTitle": "自建 Agent",
     "customCategory": "自定义",
     "customDescription": "从零开始定义身份、性格、权限和工具，完全按你的需求打造。",
-    "customStart": "开始"
+    "customStart": "开始",
+    "tabPopular": "热门推荐",
+    "tabSWE": "软件开发",
+    "tabMarketing": "营销",
+    "tabOffice": "办公通用",
+    "tabTrading": "交易投资",
+    "tabBundle": "明星团队",
+    "tabsAria": "分类筛选",
+    "searchPlaceholder": "搜索 Agent 名称或能力…",
+    "searchLabel": "搜索 Agent",
+    "empty": "这个分类下还没有模板",
+    "emptySearch": "没有匹配 \"{{query}}\" 的 Agent",
+    "emptyBundles": "还没有明星团队",
+    "bundleBadge": "团队",
+    "hireBundle": "一键招聘"
   },
   "plaza": {
     "title": "智能体广场",
@@ -1728,6 +1742,7 @@
     "collapseSidebar": "折叠侧边栏",
     "expandSidebar": "展开侧边栏",
     "deleting": "删除中...",
+    "clear": "清空",
     "status": {
       "saved": "已保存",
       "creating": "创建中...",
@@ -2197,5 +2212,24 @@
     "selectLoginMethod": "选择登录方式",
     "loginWith": "使用 {{provider}} 登录",
     "noProviders": "未配置 SSO 提供商。"
+  },
+  "bundleHire": {
+    "title": "一键招聘整个明星团队",
+    "summary": "{{agentCount}} 个数字员工 · {{mcpCount}} 个 MCP · {{relCount}} 条关系",
+    "agentsHeading": "将创建 {{count}} 个数字员工",
+    "mcpsHeading": "将注册 {{count}} 个 MCP 工具",
+    "relsHeading": "将建立 {{count}} 条内部关系",
+    "mcpBadge": "{{count}} MCP",
+    "visibility": "可见范围",
+    "visOnlyMeTitle": "仅自己",
+    "visOnlyMeHint": "{{count}} 个新数字员工只对你可见",
+    "visCompanyTitle": "全公司可见",
+    "visCompanyHint": "全公司成员都能使用这套团队",
+    "visCustomTitle": "指定成员",
+    "visCustomHint": "先仅创建者可管理，之后在团队各成员设置里逐个指定可使用的平台用户",
+    "hiring": "招聘中…",
+    "confirm": "一键招聘（{{count}}）",
+    "error": "一键招聘失败",
+    "principal": "主理人 — 团队主入口，建议先和它交互"
   }
 }

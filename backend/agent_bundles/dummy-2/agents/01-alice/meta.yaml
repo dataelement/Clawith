@@ -1,0 +1,8 @@
+name: "Smoke Alice"
+role_description: "Smoke test partner agent #1"
+position: 1
+default_skills: []
+default_autonomy_policy:
+  read_files: "L1"
+  write_workspace_files: "L1"
+default_mcp_attach: []

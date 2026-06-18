@@ -178,6 +178,7 @@ async def lifespan(app: FastAPI):
             import app.models.onboarding     # noqa
 
             import app.models.identity       # noqa
+            import app.models.agent_bundle   # noqa  Agent Bundle (multi-agent team templates)
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("[startup] Database tables ready")
@@ -243,6 +244,12 @@ async def lifespan(app: FastAPI):
             await seed_agent_templates()
         except Exception as e:
             logger.warning(f"[startup] Agent templates seed failed: {e}")
+
+        try:
+            from app.services.bundle_seeder import seed_agent_bundles
+            await seed_agent_bundles()
+        except Exception as e:
+            logger.warning(f"[startup] Agent bundles seed failed: {e}")
 
         try:
             from app.services.skill_seeder import seed_skills, push_default_skills_to_existing_agents
@@ -392,9 +399,11 @@ from app.api.agent_credentials import router as credentials_router
 from app.api.agentbay_control import router as agentbay_control_router
 from app.api.okr import router as okr_router
 from app.api.onboarding import router as onboarding_router
+from app.api.agent_bundles import router as agent_bundles_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
+app.include_router(agent_bundles_router, prefix=settings.API_PREFIX)
 app.include_router(tasks_router, prefix=settings.API_PREFIX)
 app.include_router(files_router, prefix=settings.API_PREFIX)
 app.include_router(feishu_router, prefix=settings.API_PREFIX)

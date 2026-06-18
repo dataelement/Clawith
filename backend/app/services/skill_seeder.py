@@ -1022,6 +1022,90 @@ async def seed_skills():
         logger.info("[SkillSeeder] Skills seeded")
 
 
+def _push_default_skills_to_agent(agent, default_skills, agent_manager) -> tuple[int, int, int]:
+    """Deploy ``default_skills`` (all is_default Skill rows) into one agent's
+    workspace. Returns ``(pushed, updated, removed_legacy)`` for caller stats.
+
+    Idempotent: skill files whose on-disk content already matches the DB
+    snapshot are skipped silently. Legacy ``MCP_INSTALLER.md`` (pre-folder
+    layout) is removed if present.
+    """
+    pushed = 0
+    updated = 0
+    removed_legacy = 0
+    agent_dir = agent_manager._agent_dir(agent.id)
+    skills_dir = agent_dir / "skills"
+    legacy_mcp_file = skills_dir / "MCP_INSTALLER.md"
+    if legacy_mcp_file.exists():
+        try:
+            legacy_mcp_file.unlink()
+            removed_legacy += 1
+        except OSError as exc:
+            logger.warning(f"[SkillSeeder] Failed to remove legacy MCP_INSTALLER.md for agent {agent.id}: {exc}")
+    for skill in default_skills:
+        if not skill.files:
+            continue
+        skill_folder = skills_dir / skill.folder_name
+        skill_folder.mkdir(parents=True, exist_ok=True)
+        for sf in skill.files:
+            fp = (skill_folder / sf.path).resolve()
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            if fp.exists():
+                existing_content = fp.read_text(encoding="utf-8")
+                if existing_content == sf.content:
+                    continue  # already up-to-date
+                fp.write_text(sf.content, encoding="utf-8")
+                updated += 1
+            else:
+                fp.write_text(sf.content, encoding="utf-8")
+                pushed += 1
+                logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+    return pushed, updated, removed_legacy
+
+
+async def push_default_skills_to_agents(agent_ids):
+    """Deploy all is_default skills into the workspace of the listed agents only.
+
+    Intended for "just-created N agents" callers (e.g. bundle hire) so the
+    site-wide ``push_default_skills_to_existing_agents`` scan + rewrite of
+    every other agent's workspace is avoided. ``agent_ids`` may be a list,
+    tuple, set, dict_values, or any iterable of ``uuid.UUID``.
+    """
+    from app.models.agent import Agent
+    from app.models.skill import Skill
+    from app.models.system_settings import SystemSetting
+    from sqlalchemy.orm import selectinload
+    from app.services.agent_manager import agent_manager
+    from app.services.storage import get_storage_backend
+    import hashlib
+
+    ids = list(agent_ids)
+    if not ids:
+        return
+
+    async with async_session() as db:
+        default_skills_r = await db.execute(
+            select(Skill).where(Skill.is_default == True).options(selectinload(Skill.files))  # noqa: E712
+        )
+        default_skills = default_skills_r.scalars().all()
+        if not default_skills:
+            return
+
+        agents_r = await db.execute(select(Agent).where(Agent.id.in_(ids)))
+        agents = agents_r.scalars().all()
+
+        total_pushed = total_updated = total_removed_legacy = 0
+        for agent in agents:
+            p, u, r = _push_default_skills_to_agent(agent, default_skills, agent_manager)
+            total_pushed += p; total_updated += u; total_removed_legacy += r
+
+        if total_pushed or total_updated or total_removed_legacy:
+            logger.info(
+                f"[SkillSeeder] Pushed {total_pushed} new + {total_updated} updated skill files "
+                f"to {len(agents)} target agent(s); removed {total_removed_legacy} legacy MCP installer files"
+            )
+
+
 async def push_default_skills_to_existing_agents():
     """Deploy all is_default skills into the workspace of every existing agent that is missing them.
     
