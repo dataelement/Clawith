@@ -179,7 +179,7 @@ def test_format_roster_agent_marks_stopped_agent_uncontactable():
     assert payload["unavailable_reason"] == "agent_stopped"
 
 
-def test_format_roster_human_prefers_platform_then_feishu_tools():
+def test_format_roster_human_prefers_platform_then_channel_tools():
     tenant_id = uuid.uuid4()
     provider_id = uuid.uuid4()
     source = _make_agent(tenant_id=tenant_id)
@@ -198,7 +198,7 @@ def test_format_roster_human_prefers_platform_then_feishu_tools():
     assert payload["target_member_id"] == str(member.id)
     assert payload["platform_user_id"] == str(member.user_id)
     assert payload["department"]["name"] == "产品部"
-    assert payload["contact_tools"] == ["send_platform_message", "send_feishu_message"]
+    assert payload["contact_tools"] == ["send_platform_message", "send_channel_message"]
     assert payload["provider"]["provider_type"] == "feishu"
     assert payload["provider"]["external_id"] == "user_xxx"
 

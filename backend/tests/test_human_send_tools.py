@@ -7,6 +7,14 @@ import pytest
 from app.services import agent_tools
 
 
+def _tool_schema(tool_name):
+    return next(
+        tool["function"]["parameters"]
+        for tool in agent_tools.AGENT_TOOLS
+        if tool["function"]["name"] == tool_name
+    )
+
+
 def _make_agent(**overrides):
     values = {
         "id": uuid.uuid4(),
@@ -172,6 +180,23 @@ async def test_send_platform_message_uses_target_member_id():
     assert db.committed is True
     assert len(db.added) == 1
     assert db.added[0].user_id == user.id
+
+
+def test_human_send_tool_schemas_are_id_first():
+    platform_schema = _tool_schema("send_platform_message")
+    channel_schema = _tool_schema("send_channel_message")
+    feishu_schema = _tool_schema("send_feishu_message")
+
+    assert "target_member_id" in platform_schema["properties"]
+    assert "platform_user_id" in platform_schema["properties"]
+    assert platform_schema["required"] == ["message"]
+
+    assert "target_member_id" in channel_schema["properties"]
+    assert "provider_user_id" in channel_schema["properties"]
+    assert channel_schema["required"] == ["message"]
+    assert "teams" in channel_schema["properties"]["channel"]["enum"]
+
+    assert "target_member_id" not in feishu_schema["properties"]
 
 
 @pytest.mark.asyncio

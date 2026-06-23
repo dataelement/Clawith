@@ -647,9 +647,8 @@ AGENT_TOOLS = [
         "function": {
             "name": "send_feishu_message",
             "description": (
-                "Send a Feishu IM message to a colleague. "
-                "You can provide either the colleague's name "
-                "or their Feishu user_id directly. "
+                "Legacy shortcut for sending a Feishu IM message to a human colleague. "
+                "Prefer query_roster followed by send_channel_message(channel='feishu') for new calls. "
                 "To contact digital employees use send_message_to_agent instead."
             ),
             "parameters": {
@@ -657,11 +656,11 @@ AGENT_TOOLS = [
                 "properties": {
                     "member_name": {
                         "type": "string",
-                        "description": "Recipient's name, e.g. '覃睿'. Will be looked up automatically.",
+                        "description": "Legacy fallback: recipient's exact name. Prefer target_member_id via send_channel_message.",
                     },
                     "user_id": {
                         "type": "string",
-                        "description": "Recipient's Feishu user_id (preferred, tenant-stable). Get from feishu_user_search.",
+                        "description": "Legacy fallback: recipient's Feishu user_id.",
                     },
                     "message": {
                         "type": "string",
@@ -677,17 +676,24 @@ AGENT_TOOLS = [
         "function": {
             "name": "send_channel_message",
             "description": (
-                "Send a message to a colleague via their configured external channel "
-                "(Feishu, DingTalk, WeCom). Automatically detects the recipient's channel "
-                "based on their org relationship. Use this only for channel users. "
-                "For relationships labeled Platform User / 平台用户, use send_platform_message instead."
+                "Send a message to a human colleague via their configured external channel "
+                "(Feishu, DingTalk, WeCom, Slack, Teams, WeChat). Use query_roster first, "
+                "then pass the returned target_member_id. For platform users, use send_platform_message."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "target_member_id": {
+                        "type": "string",
+                        "description": "Stable human member ID returned by query_roster. Preferred recipient identifier.",
+                    },
+                    "provider_user_id": {
+                        "type": "string",
+                        "description": "Legacy fallback: external channel user ID such as Feishu user_id/open_id.",
+                    },
                     "member_name": {
                         "type": "string",
-                        "description": "Recipient's name as shown in relationships, e.g. '张三'. Must be a person in your relationship network.",
+                        "description": "Legacy fallback: exact recipient name. Prefer target_member_id to avoid duplicate-name mistakes.",
                     },
                     "message": {
                         "type": "string",
@@ -695,11 +701,11 @@ AGENT_TOOLS = [
                     },
                     "channel": {
                         "type": "string",
-                        "description": "Optional: Specific channel to use (feishu, dingtalk, wecom). Use this if multiple people have the same name in different channels.",
-                        "enum": ["feishu", "dingtalk", "wecom"]
+                        "description": "Optional: specific external channel to use.",
+                        "enum": ["feishu", "dingtalk", "wecom", "slack", "teams", "microsoft_teams", "wechat"]
                     },
                 },
-                "required": ["member_name", "message"],
+                "required": ["message"],
             },
         },
     },
@@ -711,16 +717,24 @@ AGENT_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "target_member_id": {
+                        "type": "string",
+                        "description": "Stable human member ID returned by query_roster. Preferred recipient identifier.",
+                    },
+                    "platform_user_id": {
+                        "type": "string",
+                        "description": "Platform user ID returned by query_roster for first-party platform users.",
+                    },
                     "username": {
                         "type": "string",
-                        "description": "Username or display name of the recipient (must be a registered platform user)",
+                        "description": "Legacy fallback: username or display name of the recipient. Prefer target_member_id or platform_user_id.",
                     },
                     "message": {
                         "type": "string",
                         "description": "Message content to send",
                     },
                 },
-                "required": ["username", "message"],
+                "required": ["message"],
             },
         },
     },
@@ -6080,8 +6094,9 @@ def _format_roster_human(
     contact_tools: list[str] = []
     if visibility.can_contact and member.user_id:
         contact_tools.append("send_platform_message")
-    if visibility.can_contact and provider_type == "feishu" and (member.external_id or member.open_id):
-        contact_tools.append("send_feishu_message")
+    channel_provider_types = {"feishu", "dingtalk", "wecom", "slack", "teams", "microsoft_teams", "wechat"}
+    if visibility.can_contact and provider_type in channel_provider_types and (member.external_id or member.open_id):
+        contact_tools.append("send_channel_message")
 
     can_contact = visibility.can_contact and bool(contact_tools)
     unavailable_reason = visibility.unavailable_reason
