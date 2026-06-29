@@ -18,18 +18,18 @@ async def ensure_access_granted_platform_relationships(
     *,
     created_by_user_id: uuid.UUID | None = None,
 ) -> bool:
-    """Ensure private/custom platform users are in the agent's human network.
+    """Ensure private creator access is present in the legacy human network.
 
-    Platform messages intentionally require an active human relationship. For
-    private/custom agents, the access list is already the user's explicit
-    relationship boundary, so we materialize those platform users as human
-    relationships. Company-wide agents stay explicit to avoid adding every
-    tenant user to every public agent.
+    The roster-driven model no longer uses legacy relationship rows to decide
+    who can contact whom. This helper only keeps the old Relationships surface
+    usable for private agents, where the creator is still the sole human member
+    worth materializing. Company and custom agents both have company-wide use
+    access, so materializing them would add every tenant user to legacy data.
 
     Returns True when new relationship rows were added.
     """
     access_mode = getattr(agent, "access_mode", None) or "company"
-    if access_mode not in ("private", "custom") or not agent.tenant_id:
+    if access_mode != "private" or not agent.tenant_id:
         return False
 
     user_ids = await get_agent_accessible_user_ids(db, agent)

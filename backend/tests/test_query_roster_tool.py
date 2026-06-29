@@ -37,6 +37,18 @@ def _make_member(**overrides):
         "provider_id": None,
         "open_id": None,
         "external_id": None,
+        "unionid": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _make_user(**overrides):
+    values = {
+        "id": uuid.uuid4(),
+        "tenant_id": uuid.uuid4(),
+        "display_name": "张三",
+        "is_active": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -137,11 +149,12 @@ async def test_query_roster_rejects_agent_type_with_target_member_id_before_db()
 async def test_query_roster_target_member_id_returns_exact_human_without_agent_lookup():
     tenant_id = uuid.uuid4()
     source = _make_agent(tenant_id=tenant_id)
-    member = _make_member(tenant_id=tenant_id, user_id=uuid.uuid4())
+    user = _make_user(tenant_id=tenant_id)
+    member = _make_member(tenant_id=tenant_id, user_id=user.id)
     db = RecordingDB(
         responses=[
             DummyResult(scalar_value=source),
-            DummyResult(values=[(member, None, None)]),
+            DummyResult(values=[(member, None, None, user)]),
         ]
     )
 
@@ -194,16 +207,17 @@ def test_format_roster_human_prefers_platform_then_channel_tools():
     tenant_id = uuid.uuid4()
     provider_id = uuid.uuid4()
     source = _make_agent(tenant_id=tenant_id)
+    user = _make_user(tenant_id=tenant_id)
     member = _make_member(
         tenant_id=tenant_id,
-        user_id=uuid.uuid4(),
+        user_id=user.id,
         provider_id=provider_id,
         external_id="user_xxx",
     )
     provider = SimpleNamespace(id=provider_id, provider_type="feishu")
     department = SimpleNamespace(name="产品部")
 
-    payload = agent_tools._format_roster_human(source, member, provider, department)
+    payload = agent_tools._format_roster_human(source, member, provider, department, user)
 
     assert payload["member_type"] == "human"
     assert payload["target_member_id"] == str(member.id)
@@ -212,6 +226,36 @@ def test_format_roster_human_prefers_platform_then_channel_tools():
     assert payload["contact_tools"] == ["send_platform_message", "send_channel_message"]
     assert payload["provider"]["provider_type"] == "feishu"
     assert payload["provider"]["external_id"] == "user_xxx"
+
+
+def test_format_roster_human_requires_active_platform_user_for_platform_tool():
+    tenant_id = uuid.uuid4()
+    source = _make_agent(tenant_id=tenant_id)
+    inactive_user = _make_user(tenant_id=tenant_id, is_active=False)
+    member = _make_member(tenant_id=tenant_id, user_id=inactive_user.id)
+
+    payload = agent_tools._format_roster_human(source, member, None, None, inactive_user)
+
+    assert payload["can_contact"] is False
+    assert "send_platform_message" not in payload["contact_tools"]
+    assert payload["unavailable_reason"] == "missing_contact_target"
+
+
+def test_format_roster_human_requires_channel_ready_identity():
+    tenant_id = uuid.uuid4()
+    source = _make_agent(tenant_id=tenant_id)
+    feishu_open_id_only = _make_member(tenant_id=tenant_id, open_id="ou_1")
+    feishu_provider = SimpleNamespace(id=uuid.uuid4(), provider_type="feishu")
+    teams_member = _make_member(tenant_id=tenant_id, external_id="teams_1")
+    teams_provider = SimpleNamespace(id=uuid.uuid4(), provider_type="microsoft_teams")
+
+    feishu_payload = agent_tools._format_roster_human(source, feishu_open_id_only, feishu_provider, None)
+    teams_payload = agent_tools._format_roster_human(source, teams_member, teams_provider, None)
+
+    assert feishu_payload["can_contact"] is False
+    assert "send_channel_message" not in feishu_payload["contact_tools"]
+    assert teams_payload["can_contact"] is False
+    assert "send_channel_message" not in teams_payload["contact_tools"]
 
 
 def test_format_roster_human_without_contact_target_is_uncontactable():

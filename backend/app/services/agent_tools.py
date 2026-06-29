@@ -2293,6 +2293,8 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 # Skip feishu tools if the agent has no Feishu channel configured
                 if t.category == "feishu" and not has_feishu:
                     continue
+                if t.name in _CHANNEL_MESSAGE_TOOL_NAMES and not has_any_channel:
+                    continue
                 # Match the Agent Tools UI: regular agents must not receive
                 # OKR-system-only tools, even if the DB default says enabled.
                 if (t.config or {}).get("okr_agent_only") and not is_system_agent:
@@ -6041,8 +6043,9 @@ def _format_roster_human(
     member: OrgMember,
     provider: IdentityProvider | None,
     department: OrgDepartment | None,
+    platform_user: UserModel | None = None,
 ) -> dict | None:
-    return agent_roster.format_roster_human(source_agent, member, provider, department)
+    return agent_roster.format_roster_human(source_agent, member, provider, department, platform_user)
 
 
 async def _query_roster(agent_id: uuid.UUID, args: dict) -> str:

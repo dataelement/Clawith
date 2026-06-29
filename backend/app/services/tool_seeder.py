@@ -507,7 +507,7 @@ BUILTIN_TOOLS = [
         "description": "Send a message to a human colleague via their configured external channel (Feishu, DingTalk, WeCom, Slack, Teams, WeChat). Use query_roster first, then pass target_member_id.",
         "category": "communication",
         "icon": "💬",
-        "is_default": True,
+        "is_default": False,
         "parameters_schema": {
             "type": "object",
             "properties": {

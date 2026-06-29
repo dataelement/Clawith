@@ -229,6 +229,7 @@ def test_seeded_human_send_tool_schemas_are_id_first():
     assert "provider_user_id" not in channel_schema["properties"]
     assert "member_name" not in channel_schema["properties"]
     assert channel_schema["required"] == ["message"]
+    assert channel_tool["is_default"] is False
     assert "teams" in channel_schema["properties"]["channel"]["enum"]
 
     assert "target_member_id" in file_schema["properties"]
@@ -336,6 +337,52 @@ async def test_get_agent_tools_for_llm_rewrites_stale_a2a_schema_from_db():
     assert "target_agent_id" in schema["required"]
     assert "agent_name" not in schema["properties"]
     assert "agent_name" not in schema["required"]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_tools_for_llm_hides_channel_message_without_configured_channel():
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    source = _make_agent(id=agent_id, tenant_id=tenant_id, is_system=False)
+    platform_tool = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="send_platform_message",
+        description="Send platform message",
+        category="communication",
+        is_default=True,
+        parameters_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+        config={},
+    )
+    stale_channel_tool = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="send_channel_message",
+        description="Legacy default channel message",
+        category="communication",
+        is_default=True,
+        parameters_schema={"type": "object", "properties": {"member_name": {"type": "string"}}},
+        config={},
+    )
+    db = RecordingDB([
+        DummyResult(scalar_value=source),
+        DummyResult(scalar_value=None),
+        DummyResult(values=[]),
+        DummyResult(values=[platform_tool, stale_channel_tool]),
+    ])
+
+    with (
+        patch("app.services.agent_tools._agent_has_feishu", new_callable=AsyncMock, return_value=False),
+        patch("app.services.agent_tools._agent_has_any_channel", new_callable=AsyncMock, return_value=False),
+        patch("app.services.agent_tools._get_computer_os_type", new_callable=AsyncMock, return_value=None),
+        patch("app.services.agent_tools.async_session") as mock_session_ctx,
+    ):
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        tools = await agent_tools.get_agent_tools_for_llm(agent_id)
+
+    tool_names = {tool["function"]["name"] for tool in tools}
+    assert "send_platform_message" in tool_names
+    assert "send_channel_message" not in tool_names
 
 
 @pytest.mark.asyncio

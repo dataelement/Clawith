@@ -94,10 +94,14 @@ async def can_manage_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
 
 def _roster_agent_unavailable_reason(agent: Agent) -> str | None:
     status_value = getattr(agent, "status", None)
-    if status_value == "stopped":
+    if status_value in (None, "running", "idle"):
+        pass
+    elif status_value == "stopped":
         return "agent_stopped"
-    if status_value == "error":
+    elif status_value == "error":
         return "agent_error"
+    else:
+        return f"agent_status_{status_value}"
     if is_agent_expired(agent):
         return "agent_expired"
     return None

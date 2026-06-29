@@ -5,6 +5,7 @@ import pytest
 
 from app.core import permissions
 from app.core.permissions import build_visible_agents_query
+from app.services.access_relationships import ensure_access_granted_platform_relationships
 
 
 def make_user(**overrides):
@@ -67,6 +68,24 @@ class _RelationshipStatusDb:
 
     async def execute(self, _stmt):
         return _ScalarResult(self.source)
+
+
+class _NoExecuteDb:
+    async def execute(self, _stmt):
+        raise AssertionError("execute() should not be called")
+
+
+@pytest.mark.asyncio
+async def test_custom_agents_do_not_materialize_company_wide_legacy_relationships():
+    agent = make_agent(access_mode="custom", tenant_id=uuid.uuid4())
+
+    changed = await ensure_access_granted_platform_relationships(
+        _NoExecuteDb(),
+        agent,
+        created_by_user_id=uuid.uuid4(),
+    )
+
+    assert changed is False
 
 
 @pytest.mark.asyncio

@@ -144,13 +144,13 @@ async def poll_messages(
             history=history,
         ))
 
-    # Fetch agent relationships for context
+    # Fetch legacy relationships for the gateway compatibility payload
     from app.models.org import AgentRelationship, AgentAgentRelationship
     from sqlalchemy.orm import selectinload
 
     rel_items = []
 
-    # Human relationships (with available channels)
+    # Legacy human relationships (with available channels)
     h_result = await db.execute(
         select(AgentRelationship)
         .where(AgentRelationship.agent_id == agent.id)
@@ -172,7 +172,7 @@ async def poll_messages(
                 channels=channels,
             ))
 
-    # Agent-to-agent relationships
+    # Legacy agent-to-agent relationships
     a_result = await db.execute(
         select(AgentAgentRelationship)
         .where(AgentAgentRelationship.agent_id == agent.id)
@@ -597,7 +597,7 @@ async def send_message(
                 "message": f"Message sent to {target_agent.name}. Reply will appear in your next poll.",
             }
 
-    # 2. Try to find target as a human (via relationships)
+    # 2. Try to find target as a human via the legacy gateway directory payload
     from app.models.org import AgentRelationship
     from sqlalchemy.orm import selectinload
 
@@ -626,7 +626,7 @@ async def send_message(
         await db.commit()
         raise HTTPException(
             status_code=404,
-            detail=f"Target '{target_name}' not found. Check your relationships list."
+            detail=f"Target '{target_name}' not found. Check the gateway directory payload returned by poll."
         )
 
     # Send via feishu if available
@@ -701,6 +701,7 @@ async def send_message(
 async def get_setup_guide(
     agent_id: uuid.UUID,
     x_api_key: str = Header(..., alias="X-Api-Key"),
+    accept_language: str | None = Header(None, alias="Accept-Language"),
     db: AsyncSession = Depends(get_db),
 ):
     """Return the pre-filled Skill file and Heartbeat instruction for this agent."""
@@ -710,8 +711,60 @@ async def get_setup_guide(
 
     # Note: we use the raw key from the header since the agent already authenticated
     base_url = "https://try.clawith.ai"
+    is_zh = (accept_language or "").lower().startswith("zh")
 
-    skill_content = f"""---
+    skill_content = f"""请在 OpenClaw Agent 中创建技能文件 skills/clawith_sync.md，内容如下；然后把「使用 clawith_sync 技能检查 Clawith inbox 并处理待办消息」加入 HEARTBEAT.md：
+
+---
+name: clawith_sync
+description: Sync with Clawith platform — check inbox, submit results, and send messages.
+---
+
+# Clawith Sync
+
+## 使用场景
+在每次 heartbeat 时检查 Clawith 平台是否有新消息。
+你也可以主动给 gateway 通讯录 payload 中返回的精确目标发送消息。
+
+## 操作说明
+
+### 1. 检查 inbox
+发起 HTTP GET 请求：
+- URL: {base_url}/api/gateway/poll
+- Header: X-Api-Key: {x_api_key}
+
+响应中包含 messages 数组。每条消息包括：
+- id：消息 ID，回报结果时使用
+- content：消息内容
+- sender_user_name：发送消息的 Clawith 用户名
+- sender_user_id：发送者 ID
+- conversation_id：消息所属会话
+- history：该会话的历史消息，用于理解上下文
+
+为了兼容旧协议，响应中还包含 relationships 数组。请把它当作 gateway 通讯录 payload，用其中的精确 name 作为发送目标：
+- name：人或 Agent 的名称
+- type："human" 或 "agent"
+- role：旧关系标签，不要把它当作访问规则
+- channels：可用通信渠道，例如 ["feishu"] 或 ["agent"]
+
+重要：回复前先阅读 history 理解上下文。不同 sender_user_name 代表不同用户，请按对应用户回复。
+
+### 2. 回报处理结果
+每处理完一条消息，发起 HTTP POST 请求：
+- URL: {base_url}/api/gateway/report
+- Header: X-Api-Key: {x_api_key}
+- Header: Content-Type: application/json
+- Body: {{"message_id": "<messages 中的 id>", "result": "<你的回复>"}}
+
+### 3. 主动发送消息
+如果需要主动联系某个人或 Agent，发起 HTTP POST 请求：
+- URL: {base_url}/api/gateway/send-message
+- Header: X-Api-Key: {x_api_key}
+- Header: Content-Type: application/json
+- Body: {{"target": "<gateway 通讯录 payload 中的精确 name>", "content": "<消息内容>"}}
+
+系统会自动选择合适渠道。发给 Agent 时，回复会出现在下一次 poll 中；发给人类成员时，会通过可用渠道投递，例如飞书。
+""" if is_zh else f"""---
 name: clawith_sync
 description: Sync with Clawith platform — check inbox, submit results, and send messages.
 ---
@@ -720,7 +773,7 @@ description: Sync with Clawith platform — check inbox, submit results, and sen
 
 ## When to use
 Check for new messages from the Clawith platform during every heartbeat cycle.
-You can also proactively send messages to people and agents in your relationships.
+You can proactively send messages to exact targets returned in the gateway directory payload.
 
 ## Instructions
 
@@ -737,10 +790,10 @@ The response contains a `messages` array. Each message includes:
 - `conversation_id` — the conversation this message belongs to
 - `history` — array of previous messages in this conversation for context
 
-The response also contains a `relationships` array describing your colleagues:
+For compatibility, the response also contains a `relationships` array. Treat it as a gateway directory payload for exact target names:
 - `name` — the person or agent name
 - `type` — "human" or "agent"
-- `role` — relationship type (e.g. collaborator, supervisor)
+- `role` — legacy relationship label; do not use it as an access rule
 - `channels` — available communication channels (e.g. ["feishu"], ["agent"])
 
 **IMPORTANT**: Use the `history` array to understand conversation context before replying.
@@ -758,13 +811,17 @@ To proactively contact a person or agent, make an HTTP POST request:
 - URL: {base_url}/api/gateway/send-message
 - Header: X-Api-Key: {x_api_key}
 - Header: Content-Type: application/json
-- Body: {{"target": "<name of person or agent>", "content": "<your message>"}}
+- Body: {{"target": "<exact name from the gateway directory payload>", "content": "<your message>"}}
 
 The system auto-detects the best channel. For agents, the reply appears in your next poll.
 For humans, the message is delivered via their available channel (e.g. Feishu).
 """
 
-    heartbeat_line = "- Check Clawith inbox using the clawith_sync skill and process any pending messages"
+    heartbeat_line = (
+        "- 使用 clawith_sync 技能检查 Clawith inbox 并处理待办消息"
+        if is_zh
+        else "- Check Clawith inbox using the clawith_sync skill and process any pending messages"
+    )
 
     return {
         "skill_filename": "clawith_sync.md",

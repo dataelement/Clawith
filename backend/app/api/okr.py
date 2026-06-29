@@ -57,23 +57,27 @@ def _dashboard_write_forbidden() -> HTTPException:
 
 
 async def _sync_okr_agent_relationships(db, tenant_id: uuid.UUID, okr_agent_id: uuid.UUID) -> None:
-    """Auto-connect the OKR Agent to all active org members and company-visible agents.
+    """Maintain legacy OKR tracking rows for collection/report workflows.
 
-    Idempotent — clears existing relationships first for a clean re-sync.
+    These rows are not the Agent Directory source of truth. OKR still uses them
+    as an explicit tracked-target list, so migration to roster should be handled
+    as a separate OKR product change.
+
+    Idempotent — clears existing tracking rows first for a clean re-sync.
     Rules:
-      - Human relationships : every active OrgMember in this tenant
-      - Agent relationships : every non-system, non-stopped agent in this tenant
-                              (excludes the OKR Agent itself)
+      - Human tracking rows : every active OrgMember in this tenant
+      - Agent tracking rows : every non-system, non-stopped company agent in this tenant
+                              (excluding the OKR Agent itself)
     """
     from app.models.agent import Agent
     from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
     from sqlalchemy import delete as sa_delete
 
-    # 1. Clear existing relationships (clean-slate re-sync)
+    # 1. Clear existing legacy OKR tracking rows (clean-slate re-sync)
     await db.execute(sa_delete(AgentRelationship).where(AgentRelationship.agent_id == okr_agent_id))
     await db.execute(sa_delete(AgentAgentRelationship).where(AgentAgentRelationship.agent_id == okr_agent_id))
 
-    # 2. Link all active org members as team_member relationships
+    # 2. Link all active org members as OKR-tracked team members.
     member_result = await db.execute(
         select(OrgMember.id).where(
             OrgMember.tenant_id == tenant_id,
@@ -88,7 +92,7 @@ async def _sync_okr_agent_relationships(db, tenant_id: uuid.UUID, okr_agent_id: 
             description="OKR tracking — auto-linked via Sync Relationships",
         ))
 
-    # 3. Link all company-visible non-system agents as collaborators.
+    # 3. Link all company-visible non-system agents as OKR-tracked collaborators.
     agent_result = await db.execute(
         select(Agent.id).where(
             Agent.tenant_id == tenant_id,
@@ -105,7 +109,7 @@ async def _sync_okr_agent_relationships(db, tenant_id: uuid.UUID, okr_agent_id: 
             relation="collaborator",
         ))
 
-    # 4. Regenerate the OKR Agent's relationships file (best-effort)
+    # 4. Legacy no-op retained for old file-based consumers (best-effort)
     try:
         from app.api.relationships import _regenerate_relationships_file
         await _regenerate_relationships_file(db, okr_agent_id)
@@ -1404,14 +1408,14 @@ async def members_without_okr(user=Depends(get_current_user)):
         okr_agent_id_val: uuid.UUID | None = settings.okr_agent_id
         okr_agent_id_str: str | None = str(okr_agent_id_val) if okr_agent_id_val else None
 
-        # ── Fetch tracked members from OKR Agent's relationship list ──────────
+        # ── Fetch tracked members from OKR Agent's legacy tracking rows ───────
         tracked_user_ids: list[str] = []
         tracked_agent_ids: list[str] = []
         members_without_okr: list[dict] = []
 
         if okr_agent_id_val:
             # ── Human members ─────────────────────────────────────────────────
-            # Fetch ALL OrgMembers in OKR Agent's relationships, regardless of
+            # Fetch ALL OrgMembers in OKR Agent's tracking rows, regardless of
             # whether they have a platform account (user_id) or not.
             # This includes members from any channel (Feishu, Slack, etc.) and
             # members who haven't joined the platform yet (user_id=NULL).
@@ -1822,11 +1826,11 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
         # Determine channel hint
         has_channel = bool(org_member.open_id or org_member.external_id)
         if has_channel:
-            channel_hint = f'send_channel_message(member_name="{org_member.name}", message=...)'
+            channel_hint = f'send_channel_message(target_member_id="{org_member.id}", message=...)'
             if platform_uid:
                 channel_hint += "  (They also have a Platform account, but prefer channel message here)"
         elif platform_uid:
-            channel_hint = 'send_platform_message(username="<their_username>", message=...)'
+            channel_hint = f'send_platform_message(target_member_id="{org_member.id}", message=...)'
         else:
             channel_hint = "No channel available — note this in your summary"
 
@@ -1852,12 +1856,13 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
             if u_row and u_row.display_name:
                 username_hint = (
                     f'\n  Platform account: "{u_row.display_name}"'
-                    f"  (use this as the recipient identifier in send_platform_message)"
+                    f"  (use target_member_id, not this display name, when sending)"
                 )
 
         member_block = (
             f"--- Member {index}: {org_member.name} ---\n"
             f"  Type: Channel member{username_hint}\n"
+            f"  target_member_id: {org_member.id}\n"
             f"  How to send: {channel_hint}\n"
             f"  Recent chat history (last 3 messages):\n"
             f"{history_str}"
@@ -1872,7 +1877,7 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
         # cannot accidentally substitute a placeholder or nil UUID.
         member_block = (
             f"--- Member {index}: {agent_member.name} [Agent] ---\n"
-            f"  STEP 1 → send_message_to_agent(agent_name=\"{agent_member.name}\",\n"
+            f"  STEP 1 → send_message_to_agent(target_agent_id=\"{agent_member.id}\",\n"
             f"             message=\"[OKR Agent] 请根据公司 OKR，描述您在本周期（{ps.isoformat()} ~ {pe.isoformat()}）"
             f"的主要目标（Objective）和关键结果（Key Results）。\")\n"
             f"  STEP 2 → Read the reply carefully from the tool result.\n"
@@ -1937,8 +1942,8 @@ Contact the {len(members_to_contact)} member(s) below who have NOT set their OKR
   → Follow the STEP 1-4 sequence in their block exactly.
   → Use ONLY send_message_to_agent — never channel tools for agents.
 • For human members:
-  → If Platform account shown: send_platform_message(username="<display_name>", message="...")
-  → If Feishu/DingTalk channel: send_channel_message(member_name="<name>", message="...")
+  → If Platform account shown: send_platform_message(target_member_id="<target_member_id from the member block>", message="...")
+  → If Feishu/DingTalk channel: send_channel_message(target_member_id="<target_member_id from the member block>", message="...")
   → If neither: skip and note in summary.
   → Humans are fire-and-forget — do NOT wait for their reply.
 
@@ -1979,7 +1984,7 @@ Contact the {len(members_to_contact)} member(s) below who have NOT set their OKR
 
 @router.post("/trigger-daily-collection")
 async def trigger_daily_collection(user=Depends(get_current_user)):
-    """Admin-triggered daily collection for tracked OKR relationships only."""
+    """Admin-triggered daily collection for legacy OKR tracking rows only."""
     if getattr(user, "role", None) not in ("org_admin", "platform_admin"):
         raise HTTPException(403, "Only org admins can trigger daily collection")
     from app.services.okr_daily_collection import trigger_daily_collection_for_tenant

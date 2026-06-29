@@ -10,6 +10,7 @@ from app.core.permissions import evaluate_roster_agent_visibility, evaluate_rost
 from app.models.agent import Agent as AgentModel
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
+from app.models.user import User as UserModel
 
 RosterMemberType = Literal["all", "agent", "human"]
 
@@ -26,6 +27,33 @@ def provider_type_value(provider_type: Any) -> str | None:
     if provider_type is None:
         return None
     return getattr(provider_type, "value", provider_type)
+
+
+def normalize_provider_type(provider_type: Any) -> str | None:
+    value = provider_type_value(provider_type)
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized == "microsoft_teams":
+        return "teams"
+    return normalized or None
+
+
+def channel_message_ready(provider_type: str | None, member: OrgMember) -> bool:
+    """Return whether send_channel_message has the identifiers it actually uses."""
+    if not provider_type:
+        return False
+    if provider_type == "feishu":
+        return bool((member.external_id or "").strip())
+    if provider_type == "dingtalk":
+        return bool((member.external_id or member.unionid or member.open_id or "").strip())
+    if provider_type == "wecom":
+        return bool((member.external_id or member.open_id or "").strip())
+    if provider_type == "slack":
+        return bool((member.external_id or "").strip())
+    # Teams and WeChat proactive sends require per-user inbound conversation state
+    # that this pure roster formatter cannot verify, so do not advertise them here.
+    return False
 
 
 def query_text_match_rank(member: dict, query: str) -> int:
@@ -88,17 +116,22 @@ def format_roster_human(
     member: OrgMember,
     provider: IdentityProvider | None,
     department: OrgDepartment | None,
+    platform_user: UserModel | None = None,
 ) -> dict | None:
     visibility = evaluate_roster_human_visibility(source_agent, member)
     if not visibility.visible:
         return None
 
-    provider_type = provider_type_value(getattr(provider, "provider_type", None))
+    provider_type = normalize_provider_type(getattr(provider, "provider_type", None))
     contact_tools: list[str] = []
-    if visibility.can_contact and member.user_id:
+    platform_user_ready = (
+        platform_user is not None
+        and getattr(platform_user, "tenant_id", None) == getattr(source_agent, "tenant_id", None)
+        and bool(getattr(platform_user, "is_active", False))
+    )
+    if visibility.can_contact and member.user_id and platform_user_ready:
         contact_tools.append("send_platform_message")
-    channel_provider_types = {"feishu", "dingtalk", "wecom", "slack", "teams", "microsoft_teams", "wechat"}
-    if visibility.can_contact and provider_type in channel_provider_types and (member.external_id or member.open_id):
+    if visibility.can_contact and channel_message_ready(provider_type, member):
         contact_tools.append("send_channel_message")
 
     can_contact = visibility.can_contact and bool(contact_tools)
@@ -210,6 +243,11 @@ async def query_agent_roster(
                 AgentModel.name.ilike(f"%{query}%"),
                 AgentModel.role_description.ilike(f"%{query}%"),
             ))
+        if not include_uncontactable:
+            agent_conditions.extend([
+                AgentModel.status.in_(["running", "idle"]),
+                AgentModel.is_expired == False,  # noqa: E712
+            ])
 
         agent_result = await db.execute(
             select(AgentModel)
@@ -236,15 +274,16 @@ async def query_agent_roster(
             ))
 
         human_result = await db.execute(
-            select(OrgMember, IdentityProvider, OrgDepartment)
+            select(OrgMember, IdentityProvider, OrgDepartment, UserModel)
             .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
             .outerjoin(OrgDepartment, OrgMember.department_id == OrgDepartment.id)
+            .outerjoin(UserModel, OrgMember.user_id == UserModel.id)
             .where(*human_conditions)
             .order_by(OrgMember.name.asc(), OrgMember.synced_at.asc())
             .limit(fetch_size)
         )
-        for member, provider, department in human_result.all():
-            payload = format_roster_human(source, member, provider, department)
+        for member, provider, department, platform_user in human_result.all():
+            payload = format_roster_human(source, member, provider, department, platform_user)
             if payload and (include_uncontactable or payload["can_contact"]):
                 members.append(payload)
 

@@ -85,6 +85,8 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
     await _cleanup_legacy_daily_reply_triggers(okr_agent.id)
 
     async with async_session() as db:
+        # OKR still uses legacy relationship rows as an explicit tracking list.
+        # Directory/roster visibility is intentionally not the source of truth here.
         rel_result = await db.execute(
             select(AgentRelationship, OrgMember)
             .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
@@ -158,12 +160,12 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         if has_external_channel:
             send_result = await _send_channel_message(
                 okr_agent.id,
-                {"member_name": org_member.name, "message": message_text},
+                {"target_member_id": str(org_member.id), "message": message_text},
             )
         elif platform_name:
             send_result = await _send_platform_message(
                 okr_agent.id,
-                {"username": platform_name, "message": message_text},
+                {"target_member_id": str(org_member.id), "message": message_text},
             )
 
         if send_result.startswith("✅"):
@@ -173,7 +175,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         send_result = await _send_message_to_agent(
             okr_agent.id,
             {
-                "agent_name": agent_member.name,
+                "target_agent_id": str(agent_member.id),
                 "message": _agent_request_message(agent_member.name, report_day),
                 "msg_type": "task_delegate",
                 "force_async": True,

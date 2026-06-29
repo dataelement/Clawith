@@ -590,18 +590,18 @@
       },
       "perm": {
         "title": "访问权限",
-        "description": "控制谁可以查看和与这个数字员工互动。只有创建者或管理员可以更改此设置。",
+        "description": "控制可见范围、Plaza 可用性，以及谁可以管理此数字员工。只有创建者或管理员可以更改此设置。",
         "companyWide": "全公司",
-        "companyWideDesc": "组织中的所有用户都可以使用此数字员工",
-        "onlyMe": "仅我可见",
-        "onlyMeDesc": "只有创建者可以使用此数字员工",
-        "custom": "指定成员",
-        "customDesc": "在设置中指定可使用的平台用户",
+        "companyWideDesc": "所有平台用户和数字员工都可使用；Plaza 开启",
+        "onlyMe": "仅自己",
+        "onlyMeDesc": "仅创建者可使用和管理；Plaza 关闭",
+        "custom": "指定管理者",
+        "customDesc": "所有人都可使用；只显式指定管理者。Plaza 关闭",
         "defaultAccess": "默认访问级别",
         "useAccess": "使用",
         "useAccessDesc": "任务、聊天、工具、技能、工作区",
         "manageAccess": "管理",
-        "manageAccessDesc": "完全访问权限，包括设置、思维、关系"
+        "manageAccessDesc": "完全访问权限，包括设置、心智、通讯录"
       },
       "tools": {
         "platformTools": "平台预置工具",
@@ -982,16 +982,16 @@
     "step4": {
       "title": "权限设置",
       "companyWide": "全公司可见",
-      "companyWideDesc": "所有人都可以使用此数字员工",
+      "companyWideDesc": "所有人都可以使用此数字员工；Plaza 开启",
       "department": "指定部门",
       "departmentDesc": "仅选定部门成员可使用",
       "selfOnly": "仅自己",
-      "selfOnlyDesc": "仅创建者本人可使用",
+      "selfOnlyDesc": "仅创建者本人可使用；Plaza 关闭",
       "accessLevel": "默认访问级别",
       "useLevel": "使用",
       "useDesc": "可以使用任务、聊天、工具、技能、工作区",
       "manageLevel": "管理",
-      "manageDesc": "完全访问权限，包括设置、心智、关系"
+      "manageDesc": "完全访问权限，包括设置、心智、通讯录"
     },
     "step5": {
       "title": "渠道配置",
@@ -2095,7 +2095,7 @@
     "visibilityOnlyMeTitle": "仅自己",
     "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
     "visibilityCustomTitle": "指定成员",
-    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定可使用的平台用户",
+    "visibilityCustomHint": "所有人都可使用，之后在设置里指定管理者",
     "model": "首选模型",
     "defaultSuffix": "默认",
     "createOnly": "仅创建",
@@ -2146,7 +2146,7 @@
     "visibilityOnlyMe": "仅自己",
     "visibilityOnlyMeHint": "只有你能使用，可以之后在设置里分享",
     "visibilityCustom": "指定成员",
-    "visibilityCustomHint": "先仅创建者可管理，之后在设置里指定成员",
+    "visibilityCustomHint": "所有人都可使用，之后在设置里指定管理者",
     "model": "首选模型",
     "modelFallback": "模型",
     "defaultModel": "默认",

@@ -559,18 +559,18 @@
       },
       "perm": {
         "title": "Access Permissions",
-        "description": "Control who can see and interact with this agent. Only the creator or admin can change this.",
+        "description": "Control visibility, Plaza availability, and who can manage this agent. Only the creator or admin can change this.",
         "companyWide": "Company-wide",
-        "companyWideDesc": "All users in the organization can use this agent",
+        "companyWideDesc": "All platform users and agents can use it; Plaza is enabled",
         "onlyMe": "Only Me",
-        "onlyMeDesc": "Only the creator can use this agent",
+        "onlyMeDesc": "Only the creator can use and manage it; Plaza is disabled",
         "custom": "Custom",
-        "customDesc": "Choose specific platform users in Settings",
+        "customDesc": "Everyone can use it; choose managers explicitly. Plaza is disabled",
         "defaultAccess": "Default Access Level",
         "useAccess": "Use",
         "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
         "manageAccess": "Manage",
-        "manageAccessDesc": "Full access including Settings, Mind, Relationships"
+        "manageAccessDesc": "Full access including Settings, Mind, and Directory"
       },
       "timezone": {
         "label": "Timezone",
@@ -872,11 +872,11 @@
     "step4": {
       "title": "Permissions",
       "companyWide": "Company-wide",
-      "companyWideDesc": "Everyone can use this digital employee",
+      "companyWideDesc": "Everyone can use this digital employee; Plaza is enabled",
       "department": "Department",
       "departmentDesc": "Only selected department members can use",
       "selfOnly": "Self Only",
-      "selfOnlyDesc": "Only the creator can use"
+      "selfOnlyDesc": "Only the creator can use; Plaza is disabled"
     },
     "step5": {
       "title": "Feishu Bot Configuration (Optional)",
@@ -2053,7 +2053,7 @@
     "visibilityOnlyMe": "Only me",
     "visibilityOnlyMeHint": "Only you can use it; you can share it later",
     "visibilityCustom": "Custom",
-    "visibilityCustomHint": "Start private, then choose members in settings",
+    "visibilityCustomHint": "Everyone can use it; choose managers in settings",
     "model": "Preferred model",
     "modelFallback": "Model",
     "defaultModel": "default",
