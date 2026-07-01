@@ -34,3 +34,15 @@ In practice:
 
 - At the end of each completed task, play a short local completion sound on the user's machine (for example with `afplay` on macOS) so the user notices work has finished even when reading or working in another window.
 - This reminder should be treated as a default behavior for this repository across sessions unless the user explicitly asks to skip it for a specific task.
+
+## GitHub Handoff Workflow
+
+For ChatGPT Web <-> Codex Desktop handoff tasks:
+
+1. Read `agent-inbox/task-current.md` before making changes.
+2. Stay within the task's allowed scope.
+3. Do not modify `.env`, `.env.*`, secrets, credentials, database backups, production data, or deployment credentials.
+4. Write execution results to `agent-outbox/`.
+5. Run `scripts/verify-codex-bridge.sh` when the handoff structure is relevant.
+6. Commit task-related changes on the current task branch when requested.
+7. Do not push unless explicitly instructed.

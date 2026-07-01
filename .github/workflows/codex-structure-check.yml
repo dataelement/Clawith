@@ -1,0 +1,27 @@
+name: Codex Structure Check
+
+on:
+  pull_request:
+    paths:
+      - ".github/ISSUE_TEMPLATE/codex_task.yml"
+      - ".github/pull_request_template.md"
+      - ".github/workflows/codex-structure-check.yml"
+      - "agent-inbox/**"
+      - "agent-outbox/**"
+      - "ops/**"
+      - "scripts/verify-codex-bridge.sh"
+      - "docs/chatgpt-codex-workflow.md"
+      - "docs/codex-desktop-operating-rules.md"
+      - "CODEX_PASTE_PROMPT.md"
+      - "AGENTS.md"
+  workflow_dispatch:
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Codex bridge files
+        run: bash scripts/verify-codex-bridge.sh

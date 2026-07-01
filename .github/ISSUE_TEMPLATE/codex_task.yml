@@ -1,0 +1,74 @@
+name: Codex Task
+description: Hand off a scoped implementation task to Codex Desktop.
+title: "[Codex] "
+labels:
+  - codex
+  - agent-task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to hand off a bounded task from ChatGPT Web to Codex Desktop.
+  - type: input
+    id: task_id
+    attributes:
+      label: Task ID
+      description: Stable identifier for this handoff.
+      placeholder: Stage-41B-SMOKE-TEST
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What should Codex accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: allowed_scope
+    attributes:
+      label: Allowed Scope
+      description: Files, directories, and behaviors Codex may change.
+      placeholder: |
+        - README.md
+        - docs/
+    validations:
+      required: true
+  - type: textarea
+    id: forbidden_scope
+    attributes:
+      label: Forbidden Scope
+      description: Files, directories, or data Codex must not touch.
+      value: |
+        - .env
+        - .env.*
+        - secret files
+        - credential files
+        - database backups
+        - production data
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Concrete checks that must pass before the task is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Commands or manual checks Codex should run.
+      placeholder: |
+        npm test
+        git status --short
+    validations:
+      required: true
+  - type: textarea
+    id: rollback_plan
+    attributes:
+      label: Rollback Plan
+      description: How to undo the change if needed.
+    validations:
+      required: true

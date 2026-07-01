@@ -1,0 +1,32 @@
+# Acceptance Checklist
+
+## Stage-41A-GITHUB-BRIDGE
+- [ ] Branch is `codex/stage-41a-github-bridge`.
+- [ ] Required directories exist:
+  - [ ] `.github/ISSUE_TEMPLATE`
+  - [ ] `.github/workflows`
+  - [ ] `agent-inbox`
+  - [ ] `agent-outbox`
+  - [ ] `ops`
+  - [ ] `scripts`
+  - [ ] `docs`
+- [ ] Required files exist:
+  - [ ] `.github/ISSUE_TEMPLATE/codex_task.yml`
+  - [ ] `.github/pull_request_template.md`
+  - [ ] `.github/workflows/codex-structure-check.yml`
+  - [ ] `agent-inbox/task-current.md`
+  - [ ] `agent-inbox/task-queue.md`
+  - [ ] `agent-outbox/codex-report.md`
+  - [ ] `agent-outbox/execution-log.md`
+  - [ ] `agent-outbox/error-report.md`
+  - [ ] `agent-outbox/next-actions.md`
+  - [ ] `ops/rollback-plan.md`
+  - [ ] `scripts/verify-codex-bridge.sh`
+  - [ ] `docs/chatgpt-codex-workflow.md`
+  - [ ] `docs/codex-desktop-operating-rules.md`
+  - [ ] `CODEX_PASTE_PROMPT.md`
+  - [ ] `AGENTS.md`
+- [ ] No secret, credential, backup, production data, or environment file is staged.
+- [ ] Verification script passes locally.
+- [ ] Commit is created successfully.
+- [ ] No push is performed unless explicitly instructed.
