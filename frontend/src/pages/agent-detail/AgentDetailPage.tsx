@@ -56,6 +56,7 @@ import MindTab from './tabs/MindTab';
 import SettingsTab from './tabs/SettingsTab';
 import SkillsTab from './tabs/SkillsTab';
 import ToolsTab from './tabs/ToolsTab';
+import AgentDirectory from './AgentDirectory';
 import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
 import { fetchAuth } from './utils/fetchAuth';
 
@@ -427,6 +428,7 @@ function AccessPermissionsPanel({
             body: JSON.stringify(payload),
         });
         queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
+        queryClient.invalidateQueries({ queryKey: ['agent-directory', agentId] });
         queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
         queryClient.invalidateQueries({ queryKey: ['agents'] });
     };
@@ -448,13 +450,13 @@ function AccessPermissionsPanel({
             value: 'custom',
             icon: <IconLock size={14} stroke={1.8} />,
             label: isChinese ? '指定访问' : 'Custom',
-            desc: isChinese ? '指定可访问的平台用户；不可参与 Plaza。Agent 关系请在“关系”里配置。' : 'Choose platform users explicitly; Plaza is disabled. Agent relationships are configured in Relationships.',
+            desc: isChinese ? '指定成员和数字员工可见、可用；不可参与 Plaza。' : 'Only selected members and agents can see and use it; Plaza is disabled.',
         },
     ] as const;
 
     const accessLevels = [
         { val: 'use', label: <><IconEye size={13} stroke={1.8} /> {t('agent.settings.perm.useAccess', 'Use')}</>, desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-        { val: 'manage', label: <><IconSettings size={13} stroke={1.8} /> {t('agent.settings.perm.manageAccess', 'Manage')}</>, desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') },
+        { val: 'manage', label: <><IconSettings size={13} stroke={1.8} /> {t('agent.settings.perm.manageAccess', 'Manage')}</>, desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, and Directory') },
     ];
 
     const setScope = async (scope: string) => {
@@ -5756,10 +5758,14 @@ export default function AgentDetailPage() {
                     )
                 }
 
-                {/* ── Relationships Tab ── */}
+                {/* ── Directory Tab ── */}
                 {
                     activeTab === 'relationships' && (
-                        <RelationshipEditor agentId={id!} readOnly={!canManage} />
+                        <AgentDirectory
+                            agentId={id!}
+                            accessMode={(agent as any)?.access_mode}
+                            canManage={canManage}
+                        />
                     )
                 }
 

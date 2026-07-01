@@ -145,29 +145,11 @@ async def _load_skills_index(agent_id: uuid.UUID) -> str:
 
 async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
     """Query relationships directly from the database and format as a markdown list."""
-    from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
+    from app.models.org import AgentRelationship, OrgMember
     from app.models.identity import IdentityProvider
-    from app.core.permissions import evaluate_human_relationship_status, evaluate_agent_relationship_status
+    from app.core.permissions import evaluate_human_relationship_status
     from sqlalchemy.orm import selectinload
     from sqlalchemy import select
-
-    RELATION_LABELS = {
-        "direct_leader": "直属上级",
-        "collaborator": "协作伙伴",
-        "stakeholder": "利益相关者",
-        "team_member": "团队成员",
-        "subordinate": "下属",
-        "mentor": "导师",
-        "other": "其他",
-    }
-
-    AGENT_RELATION_LABELS = {
-        "peer": "同级协作",
-        "supervisor": "上级数字员工",
-        "assistant": "助手",
-        "collaborator": "协作伙伴",
-        "other": "其他",
-    }
 
     # Load human relationships
     h_result = await db.execute(
@@ -193,46 +175,23 @@ async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
                 return pn
             human_rows.append((rel, _display_provider_name(provider_name, provider_type)))
 
-    # Load agent relationships
-    a_result = await db.execute(
-        select(AgentAgentRelationship)
-        .where(AgentAgentRelationship.agent_id == agent_id)
-        .options(selectinload(AgentAgentRelationship.target_agent))
-    )
-    agent_rels = []
-    for rel in a_result.scalars().all():
-        status_info = await evaluate_agent_relationship_status(db, rel)
-        if status_info["access_status"] == "active":
-            agent_rels.append(rel)
-
-    if not human_rows and not agent_rels:
+    if not human_rows:
         return ""
 
     lines = []
 
-    # Human relationships
+    # Human relationship notes are context only. Contact resolution must still
+    # go through query_directory so duplicate names and stale relationship rows do
+    # not become a send path.
     if human_rows:
-        lines.append("## 人类同事\n")
+        lines.append("## 人类协作备注\n")
+        lines.append("这些备注只用于理解协作背景，不是联系人或发送入口。联系人类前必须重新使用 query_directory 获取当次返回的稳定 ID。\n")
         for r, provider_name in human_rows:
             m = r.member
             if not m:
                 continue
-            label = RELATION_LABELS.get(r.relation, r.relation)
             source = f"（通过 {provider_name} 同步）" if provider_name else ""
             lines.append(f"### {m.name} — {m.title or '未设置职位'}{source}")
-            if r.description:
-                lines.append(f"- {r.description}")
-            lines.append("")
-
-    # Agent relationships
-    if agent_rels:
-        lines.append("## 🤖 数字员工同事\n")
-        for r in agent_rels:
-            a = r.target_agent
-            if not a:
-                continue
-            label = AGENT_RELATION_LABELS.get(r.relation, r.relation)
-            lines.append(f"### {a.name} — {a.role_description or '数字员工'}")
             if r.description:
                 lines.append(f"- {r.description}")
             lines.append("")
@@ -277,7 +236,6 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
         relationships = await _load_relationships_from_db(db, agent_id)
 
     # --- Compose static and dynamic system prompt blocks ---
-    from datetime import datetime, timezone as _tz
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
     agent_tz_name = await get_agent_timezone(agent_id)
     agent_local_now = now_in_timezone(agent_tz_name)
@@ -322,6 +280,15 @@ When installing or importing an MCP server via `discover_resources` / `import_mc
 - Never claim an MCP server was imported unless you received a real tool result confirming success.
 """)
 
+    static_parts.append("""
+## Digital Employee Roster
+
+To find or contact digital employees, use `query_directory`.
+Do not rely on preloaded colleague lists for digital employees.
+If you know a target name, role, or capability, call `query_directory` with `member_type="agent"` and a query.
+Then use the returned `target_agent_id` when calling `send_message_to_agent` or `send_file_to_agent`.
+""")
+
     dynamic_parts = []
 
     # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
@@ -329,12 +296,13 @@ When installing or importing an MCP server via `discover_resources` / `import_mc
     try:
         from app.models.channel_config import ChannelConfig
         from app.database import async_session as _ctx_session
+        from sqlalchemy import select as sa_select
         async with _ctx_session() as _ctx_db:
             _cfg_r = await _ctx_db.execute(
-                select(ChannelConfig).where(
+                sa_select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "feishu",
-                    ChannelConfig.is_configured == True,
+                    ChannelConfig.is_configured.is_(True),
                 )
             )
             _has_feishu = _cfg_r.scalar_one_or_none() is not None
@@ -373,7 +341,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 | `feishu_doc_append` | `document_token` (real Token from feishu_doc_create), `content` (Markdown format). |
 | `feishu_drive_share` | `document_token`, `doc_type`(docx/bitable/sheet/doc/folder, default: docx), `action`(add/remove/list), `member_names`(name list, auto-lookup), `permission`(view/edit/full_access). |
 | `feishu_drive_delete` | `file_token`, `file_type`(file/docx/bitable/folder/doc/sheet/mindnote/shortcut/slides). Moves to recycle bin. |
-| `send_feishu_message` | `open_id` or `email`, `content`. |
+| `send_channel_message` | `target_member_id`, optional `channel`, `message`. Use `query_directory(member_type="human")` first. |
 
 🚫 **NEVER**:
 - Use `discover_resources` or `import_mcp_server` for any Feishu tool above
@@ -390,8 +358,10 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 → **Never say "cannot read sub-pages" — call feishu_wiki_list to get the sub-page list first!**
 
 ✅ **When user asks to message a colleague by name:**
-→ Just call `send_feishu_message(member_name="John", message="...")` — it auto-searches.
-→ Or use `open_id` directly if you already have it from `feishu_user_search`.
+→ First call `query_directory(member_type="human", query="John")`.
+→ If the returned human has `send_platform_message` in `contact_tools`, call `send_platform_message(target_member_id="...", message="...")`.
+→ If the returned human has `send_channel_message` in `contact_tools`, call `send_channel_message(target_member_id="...", message="...", channel="<provider_type if needed>")`.
+→ Do not guess names or IDs. If multiple humans match, use the exact `target_member_id` from query_directory.
 
 ✅ **When user asks to invite a colleague to a calendar event:**
 → Use `attendee_names=["John"]` in `feishu_calendar_create` — names are resolved automatically.
@@ -416,7 +386,7 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
                 sa_select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "atlassian",
-                    ChannelConfig.is_configured == True,
+                    ChannelConfig.is_configured.is_(True),
                 )
             )
             atlassian_config = result.scalar_one_or_none()
@@ -620,13 +590,14 @@ Default visual style for generated HTML or rich visual documents:
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-9. **Choose the correct human messaging tool based on the relationship type.**
-   - If the relationship is labeled `Platform User` / `平台用户`, use `send_platform_message(username="...", message="...")`.
-   - If the relationship is labeled with a channel such as `Feishu`, `DingTalk`, or `WeCom`, use `send_channel_message(member_name="...", message="...")`.
-   - `send_channel_message` is for external channels only. Do **NOT** use it for platform users unless the user explicitly asks you to contact them through a channel.
-   - `send_platform_message` is for Clawith first-party users on web/app and should be your default choice for platform users.
-   - If a person exists in multiple channels (e.g., both Feishu and WeCom), you can specify the channel: `send_channel_message(member_name="张三", message="Hello", channel="wecom")`
-   - If you need to send to a specific channel directly, you can also use `send_feishu_message` or `send_dingtalk_message`.
+9. **Choose the correct human messaging tool from query_directory results.**
+   - Human colleague background is context only; do not use it as a send entry.
+   - Before messaging a human colleague, call `query_directory(member_type="human", query="...")`.
+   - Use the returned stable IDs. Prefer `target_member_id`; use `platform_user_id` only when `target_member_id` is unavailable.
+   - If the chosen human has `send_platform_message` in `contact_tools`, call `send_platform_message(target_member_id="...", message="...")`.
+   - If the chosen human has `send_channel_message` in `contact_tools`, call `send_channel_message(target_member_id="...", message="...", channel="<provider_type if needed>")`.
+   - For Feishu humans, use `send_channel_message(channel="feishu")` with the returned `target_member_id`.
+   - Do not guess recipient names or IDs. If search returns multiple plausible humans, choose by the returned `target_member_id` or ask the user which person they mean.
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
    - Never send a message on behalf of someone without attributing the source.
@@ -634,9 +605,10 @@ Default visual style for generated HTML or rich visual documents:
      Example: After sending a message to John, create:
      `set_trigger(name="wait_john_reply", type="on_message", config={"from_user_name": "John"}, reason="John replied about the XX task. Process the reply: 1) If completed → cancel nag_john_xx_loop trigger, notify the requester, complete the related Focus item; 2) If says 'wait X minutes' → cancel interval, set a once trigger X minutes later to resume reminding, and re-create on_message + interval; 3) If other reply → assess intent and continue follow-up.")`
 
-   **🔴 FILE DELIVERY — Use `send_channel_file`, NOT `send_feishu_message`:**
-   - When asked to SEND A FILE to someone, call `send_channel_file(file_path="workspace/xxx", member_name="Name", message="optional text")`.
-   - `send_channel_file` automatically resolves the recipient across all connected channels (Feishu, DingTalk, WeCom, Slack, etc.) and delivers the file.
+   **🔴 FILE DELIVERY — Use `send_channel_file` for attachments:**
+   - When asked to SEND A FILE to someone, call `query_directory(member_type="human", query="...")` first.
+   - Then call `send_channel_file(file_path="workspace/xxx", target_member_id="...", channel="<provider_type if needed>", message="optional text")`.
+   - `send_channel_file` uses the stable Directory member ID and delivers via supported file channels such as Feishu or Slack.
    - **Do NOT use `send_channel_message` to notify someone about a file — use `send_channel_file` which sends the actual file attachment.**
    - Just send it directly — don't ask the recipient how they want to receive it.
 
@@ -692,7 +664,7 @@ If no search or webpage-reading tool is available, say that web lookup is not en
             result = await db.execute(
                 sa_select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
-                    AgentTrigger.is_enabled == True,
+                    AgentTrigger.is_enabled.is_(True),
                 )
             )
             triggers = result.scalars().all()

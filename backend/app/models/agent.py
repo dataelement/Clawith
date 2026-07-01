@@ -103,10 +103,12 @@ class Agent(Base):
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Access model:
-    # - company: all platform users in the tenant can access; all tenant agents can interact.
+    # - company: all platform users and non-private tenant agents can access; Plaza is enabled.
     # - private: only the creator can use/manage; hidden from Plaza.
-    # - custom: explicit user access rows; agent-to-agent access is configured via Relationships.
+    # - custom: everyone can use it like company mode, but explicit user rows grant management; Plaza is disabled.
     access_mode: Mapped[str] = mapped_column(String(20), default="company", nullable=False)
+    # Legacy/default UI field. Runtime use access is determined by access_mode;
+    # custom user rows grant management and do not restrict who can use the agent.
     company_access_level: Mapped[str] = mapped_column(String(20), default="use", nullable=False)
 
     # Daily LLM call limit

@@ -4,8 +4,6 @@ Uses the same agent context (soul, memory, skills, relationships, tools)
 as the chat dialog. Supports tool-calling loop for autonomous execution.
 """
 
-import asyncio
-import json
 import uuid
 from datetime import datetime, timezone
 
@@ -15,7 +13,6 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.models.agent import Agent
-from app.models.llm import LLMModel
 from app.models.task import Task, TaskLog
 
 settings = get_settings()
@@ -74,7 +71,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
 - Break down complex tasks into steps and execute each step.
 - Use your tools actively to gather information, send messages, read/write files, etc.
 - Provide a detailed execution report at the end.
-- If the task involves contacting someone, use `send_feishu_message` to reach them.
+- If the task involves contacting someone, first use `query_directory(member_type="human", query="...")`, then use the returned stable IDs with `send_platform_message` or `send_channel_message`.
 - If the task requires data or information, use your tools to fetch it.
 - Do NOT ask the user follow-up questions — take initiative and complete the task autonomously.
 """

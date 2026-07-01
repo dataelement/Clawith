@@ -361,6 +361,7 @@ from app.api.enterprise import router as enterprise_router
 from app.api.advanced import router as advanced_router
 from app.api.upload import router as upload_router
 from app.api.relationships import router as relationships_router
+from app.api.directory import router as directory_router
 from app.api.files import upload_router as files_upload_router, enterprise_kb_router
 from app.api.activity import router as activity_router
 from app.api.messages import router as messages_router
@@ -404,6 +405,7 @@ app.include_router(enterprise_router, prefix=settings.API_PREFIX)
 app.include_router(advanced_router, prefix=settings.API_PREFIX)
 app.include_router(upload_router, prefix=settings.API_PREFIX)
 app.include_router(relationships_router, prefix=settings.API_PREFIX)
+app.include_router(directory_router, prefix=settings.API_PREFIX)
 app.include_router(activity_router, prefix=settings.API_PREFIX)
 app.include_router(messages_router, prefix=settings.API_PREFIX)
 app.include_router(tenants_router, prefix=settings.API_PREFIX)

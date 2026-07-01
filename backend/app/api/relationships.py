@@ -1,4 +1,8 @@
-"""Agent relationship management API — human + agent-to-agent."""
+"""Legacy agent relationship management API.
+
+These endpoints are retained for OKR, gateway, and historical compatibility.
+They do not decide who appears in the Agent Directory; roster visibility does.
+"""
 
 import uuid
 
@@ -26,7 +30,7 @@ from app.services.access_relationships import ensure_access_granted_platform_rel
 from app.services.org_sync_adapter import derive_member_department_paths
 from app.services.storage import store_agent_bytes
 
-router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["relationships"])
+router = APIRouter(prefix="/agents/{agent_id}/relationships", tags=["legacy-relationships"])
 
 RELATION_LABELS = {
     "direct_leader": "直属上级",
@@ -119,7 +123,7 @@ def _dedupe_agent_relationships(items: list[AgentRelationshipIn], agent_id: uuid
     return list(deduped.values())
 
 
-# ─── Human Relationships (existing) ───────────────────
+# ─── Legacy Human Relationships ────────────────────────
 
 @router.get("/")
 async def get_relationships(
@@ -127,7 +131,7 @@ async def get_relationships(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all human relationships for this agent."""
+    """Legacy: get manually stored human relationship rows for this agent."""
     from app.models.identity import IdentityProvider
     source_agent, _access_level = await check_agent_access(db, current_user, agent_id)
     if await ensure_access_granted_platform_relationships(
@@ -185,12 +189,12 @@ async def search_human_relationship_candidates(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search org members that are eligible for this agent's human relationships."""
+    """Legacy: search org members that can be stored as relationship rows."""
     from app.models.identity import IdentityProvider
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
 
     search_text = (search or "").strip()
     access_mode = getattr(agent, "access_mode", None) or "company"
@@ -295,10 +299,10 @@ async def save_relationships(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Replace all human relationships for this agent."""
+    """Legacy: replace all manually stored human relationship rows."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
 
     existing_result = await db.execute(select(AgentRelationship).where(AgentRelationship.agent_id == agent_id))
     existing_by_member = {r.member_id: r for r in existing_result.scalars().all()}
@@ -380,7 +384,7 @@ async def delete_relationship(
     """Delete a single human relationship."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
     result = await db.execute(
         select(AgentRelationship).where(AgentRelationship.id == rel_id, AgentRelationship.agent_id == agent_id)
     )
@@ -406,7 +410,7 @@ async def search_visible_agents(
     """Search manageable agent candidates for relationship creation."""
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
 
     stmt = build_visible_agents_query(current_user, tenant_id=source_agent.tenant_id).where(Agent.id != agent_id)
     if search:
@@ -443,7 +447,7 @@ async def get_agent_relationships(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all agent-to-agent relationships."""
+    """Legacy: get manually stored agent-to-agent relationship rows."""
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentAgentRelationship)
@@ -478,7 +482,7 @@ async def get_agent_relationship_candidates(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Backward-compatible alias for searchable agent candidates."""
+    """Legacy: backward-compatible alias for searchable agent candidates."""
     return await search_visible_agents(
         agent_id=agent_id,
         search=None,
@@ -494,10 +498,10 @@ async def save_agent_relationships(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Replace all agent-to-agent relationships."""
+    """Legacy: replace all manually stored agent-to-agent relationship rows."""
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
 
     existing_result = await db.execute(select(AgentAgentRelationship).where(AgentAgentRelationship.agent_id == agent_id))
     existing_by_target = {r.target_agent_id: r for r in existing_result.scalars().all()}
@@ -539,10 +543,10 @@ async def delete_agent_relationship(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a single agent-to-agent relationship."""
+    """Legacy: delete a single manually stored agent-to-agent relationship row."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if not _can_manage_relationships(current_user, access_level):
-        raise HTTPException(status_code=403, detail="Only org admins or managers can modify relationships")
+        raise HTTPException(status_code=403, detail="Only org admins or managers can modify legacy relationships")
     result = await db.execute(
         select(AgentAgentRelationship).where(
             AgentAgentRelationship.id == rel_id,
@@ -559,7 +563,7 @@ async def delete_agent_relationship(
     return {"status": "ok"}
 
 
-# ─── relationships.md Generation ──────────────────────
+# ─── Legacy relationships.md Generation ────────────────
 
 async def _regenerate_relationships_file(db: AsyncSession, agent_id: uuid.UUID):
     """Obsolete. relationships.md is no longer generated as relationships are read directly from the database."""

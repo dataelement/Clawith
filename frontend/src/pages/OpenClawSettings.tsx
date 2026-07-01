@@ -277,9 +277,9 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                             : t('agent.settings.perm.custom', 'Custom')}
                                 </div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                    {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                    {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
-                                    {scope === 'custom' && t('agent.settings.perm.customDesc', 'Start private, then choose platform users in Settings')}
+                                    {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All platform users and agents can use it; Plaza is enabled')}
+                                    {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use and manage it; Plaza is disabled')}
+                                    {scope === 'custom' && t('agent.settings.perm.customDesc', 'Only selected members and agents can see and use it. Plaza is disabled')}
                                 </div>
                             </div>
                         </label>
@@ -295,7 +295,7 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                         <div style={{ display: 'flex', gap: '8px' }}>
                             {[
                                 { val: 'use', label: t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') },
+                                { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, and Directory') },
                             ].map(opt => (
                                 <label key={opt.val}
                                     style={{

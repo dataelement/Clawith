@@ -217,7 +217,7 @@
       "mind": "Mind",
       "tools": "Tools",
       "skills": "Skills",
-      "relationships": "Relationships",
+      "relationships": "Directory",
       "workspace": "Workspace",
       "chat": "Chat",
       "activityLog": "Activity Log",
@@ -279,6 +279,33 @@
       "assistant": "Assistant",
       "direct_leader": "Direct Leader",
       "other": "Other"
+    },
+    "directory": {
+      "title": "Directory",
+      "subtitle": "People and agents this agent can currently contact.",
+      "searchPlaceholder": "Search people or agents this agent can contact...",
+      "all": "All",
+      "people": "People",
+      "agents": "Agents",
+      "showUnavailable": "Show unavailable",
+      "contactable": "Contactable",
+      "unavailable": "Unavailable",
+      "loadMore": "Load more",
+      "loadingMore": "Loading...",
+      "emptyTitle": "No contactable targets found",
+      "emptyDesc": "Try syncing the organization directory, or check this agent's visibility settings.",
+      "count": "{{count}} targets",
+      "digitalEmployee": "Agent",
+      "clawithUser": "Clawith User",
+      "provider": {
+        "feishu": "Feishu User",
+        "dingtalk": "DingTalk User",
+        "wecom": "WeCom User",
+        "slack": "Slack User",
+        "googleWorkspace": "Google User",
+        "microsoftTeams": "Microsoft Teams User",
+        "fallback": "{{provider}} User"
+      }
     },
     "tasks": {
       "todo": "Todo",
@@ -540,18 +567,18 @@
       },
       "perm": {
         "title": "Access Permissions",
-        "description": "Control who can see and interact with this agent. Only the creator or admin can change this.",
+        "description": "Control visibility, Plaza availability, and who can manage this agent. Only the creator or admin can change this.",
         "companyWide": "Company-wide",
-        "companyWideDesc": "All users in the organization can use this agent",
+        "companyWideDesc": "All platform users and agents can use it; Plaza is enabled",
         "onlyMe": "Only Me",
-        "onlyMeDesc": "Only the creator can use this agent",
+        "onlyMeDesc": "Only the creator can use and manage it; Plaza is disabled",
         "custom": "Custom",
-        "customDesc": "Choose specific platform users in Settings",
+        "customDesc": "Only selected members and agents can see and use it. Plaza is disabled",
         "defaultAccess": "Default Access Level",
         "useAccess": "Use",
         "useAccessDesc": "Task, Chat, Tools, Skills, Workspace",
         "manageAccess": "Manage",
-        "manageAccessDesc": "Full access including Settings, Mind, Relationships"
+        "manageAccessDesc": "Full access including Settings, Mind, and Directory"
       },
       "timezone": {
         "label": "Timezone",
@@ -853,11 +880,11 @@
     "step4": {
       "title": "Permissions",
       "companyWide": "Company-wide",
-      "companyWideDesc": "Everyone can use this digital employee",
+      "companyWideDesc": "Everyone can use this digital employee; Plaza is enabled",
       "department": "Department",
       "departmentDesc": "Only selected department members can use",
       "selfOnly": "Self Only",
-      "selfOnlyDesc": "Only the creator can use"
+      "selfOnlyDesc": "Only the creator can use; Plaza is disabled"
     },
     "step5": {
       "title": "Feishu Bot Configuration (Optional)",
@@ -2034,7 +2061,7 @@
     "visibilityOnlyMe": "Only me",
     "visibilityOnlyMeHint": "Only you can use it; you can share it later",
     "visibilityCustom": "Custom",
-    "visibilityCustomHint": "Start private, then choose members in settings",
+    "visibilityCustomHint": "Only selected members and agents can see and use it",
     "model": "Preferred model",
     "modelFallback": "Model",
     "defaultModel": "default",

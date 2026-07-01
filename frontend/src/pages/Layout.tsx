@@ -906,10 +906,13 @@ export default function Layout() {
         <div className="sidebar-agent-search">
             <IconSearch size={14} stroke={2} className="sidebar-agent-search-icon" />
             <input
+                id="sidebar-agent-search"
+                name="sidebar_agent_search"
                 type="text"
                 value={sidebarSearch}
                 onChange={e => setSidebarSearch(e.target.value)}
                 placeholder={isChinese ? '搜索...' : 'Search...'}
+                aria-label={isChinese ? '搜索智能体' : 'Search agents'}
             />
             {sidebarSearch && (
                 <button onClick={() => setSidebarSearch('')} aria-label={isChinese ? '清空搜索' : 'Clear search'}>
