@@ -608,7 +608,7 @@ Default visual style for generated HTML or rich visual documents:
    **🔴 FILE DELIVERY — Use `send_channel_file` for attachments:**
    - When asked to SEND A FILE to someone, call `query_directory(member_type="human", query="...")` first.
    - Then call `send_channel_file(file_path="workspace/xxx", target_member_id="...", channel="<provider_type if needed>", message="optional text")`.
-   - `send_channel_file` uses the stable roster ID and delivers via supported file channels such as Feishu or Slack.
+   - `send_channel_file` uses the stable Directory member ID and delivers via supported file channels such as Feishu or Slack.
    - **Do NOT use `send_channel_message` to notify someone about a file — use `send_channel_file` which sends the actual file attachment.**
    - Just send it directly — don't ask the recipient how they want to receive it.
 

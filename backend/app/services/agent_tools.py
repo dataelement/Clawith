@@ -596,7 +596,7 @@ AGENT_TOOLS = [
                     "channel": {
                         "type": "string",
                         "enum": ["feishu", "slack"],
-                        "description": "Optional channel override when the roster member has multiple reachable providers.",
+                        "description": "Optional channel override when the Directory member has multiple reachable providers.",
                     },
                     "message": {
                         "type": "string",
@@ -4065,7 +4065,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     """Send a file to a person or back to the current channel.
     
     Priority:
-    1. If target_member_id is provided, deliver via that roster member's channel.
+    1. If target_member_id is provided, deliver via that Directory member's channel.
     2. If channel_file_sender ContextVar is set (channel-initiated), use it directly.
     3. Fall back to web chat download URL when no explicit recipient is requested.
     """

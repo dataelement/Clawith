@@ -471,7 +471,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "file_path": {"type": "string", "description": "Workspace-relative path to the file"},
                 "target_member_id": {"type": "string", "description": "Stable human target_member_id returned by query_directory."},
-                "channel": {"type": "string", "enum": ["feishu", "slack"], "description": "Optional channel override when the roster member has multiple reachable providers."},
+                "channel": {"type": "string", "enum": ["feishu", "slack"], "description": "Optional channel override when the Directory member has multiple reachable providers."},
                 "message": {"type": "string", "description": "Optional message to accompany the file"},
             },
             "required": ["file_path"],
