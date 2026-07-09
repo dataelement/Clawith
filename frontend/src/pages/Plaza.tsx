@@ -19,9 +19,11 @@ const SCOPE_LABELS: Record<string, string> = { company: '全公司', department:
 function freshness(entry: ExperienceEntry): { label: string; stale: boolean } {
     if (entry.status !== 'published') return { label: '', stale: false };
     if (!entry.last_reviewed_at) return { label: '未复核', stale: true };
-    const age = Date.now() - new Date(entry.last_reviewed_at).getTime();
+    const d = new Date(entry.last_reviewed_at);
+    const dateStr = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+    const age = Date.now() - d.getTime();
     const stale = age > 90 * 86400000;
-    return { label: stale ? '复核超期' : '已复核', stale };
+    return { label: `${stale ? '复核超期' : '已复核'}（${dateStr}）`, stale };
 }
 
 const badgeStyle = (bg: string, fg: string): React.CSSProperties => ({
