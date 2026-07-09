@@ -83,15 +83,17 @@ export function DraftEditor({ draft, onClose, onSaved, docked }: { draft: Draft;
     const [err, setErr] = useState('');
     const isNew = !draft.id;
 
+    const buildPayload = (): Draft => ({
+        title: form.title, scenario: form.scenario, problem: form.problem,
+        solution: form.solution, applicability: form.applicability, tags: form.tags,
+        visibility_scope: form.visibility_scope, visibility_scope_id: form.visibility_scope_id || null,
+        // Provenance (chat-sourced drafts): records the source agent + conversation.
+        origin_agent_id: form.origin_agent_id, origin_session_id: form.origin_session_id,
+    });
+
     const save = useMutation({
         mutationFn: async () => {
-            const payload: Draft = {
-                title: form.title, scenario: form.scenario, problem: form.problem,
-                solution: form.solution, applicability: form.applicability, tags: form.tags,
-                visibility_scope: form.visibility_scope, visibility_scope_id: form.visibility_scope_id || null,
-                // Provenance (chat-sourced drafts): records the source agent + conversation.
-                origin_agent_id: form.origin_agent_id, origin_session_id: form.origin_session_id,
-            };
+            const payload = buildPayload();
             if (isNew) return experienceApi.create(payload);
             return experienceApi.update(draft.id!, payload);
         },
@@ -100,9 +102,11 @@ export function DraftEditor({ draft, onClose, onSaved, docked }: { draft: Draft;
     });
 
     const publish = useMutation({
+        // Calls the API directly (not the `save` mutation) so onSaved fires once, not twice.
         mutationFn: async () => {
-            const id = isNew ? (await save.mutateAsync()).id : draft.id!;
-            if (!isNew) await experienceApi.update(id, form);
+            const payload = buildPayload();
+            const id = isNew ? (await experienceApi.create(payload)).id : draft.id!;
+            if (!isNew) await experienceApi.update(id, payload);
             return experienceApi.publish(id);
         },
         onSuccess: onSaved,
