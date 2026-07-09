@@ -191,8 +191,10 @@ async def _serialize_entries(db, entries: list[ExperienceEntry]) -> list[EntryOu
     agent_ids = {e.origin_agent_id for e in entries if e.origin_agent_id}
     users = {}
     if user_ids:
+        # Use the real `display_name` column only — `User.username` is an association_proxy
+        # to Identity and must not be touched in this async path.
         users = {
-            u.id: (u.display_name or u.username or None)
+            u.id: (u.display_name or None)
             for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
         }
     agents = {}
