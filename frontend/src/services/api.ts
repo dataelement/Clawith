@@ -617,7 +617,7 @@ export interface ExperienceEntry {
     origin_agent_name?: string | null;
 }
 
-export type ExperienceView = 'team' | 'mine' | 'history' | 'all';
+export type ExperienceView = 'team' | 'mine' | 'all';
 
 export const experienceApi = {
     list: (params: { view?: ExperienceView; status?: string; tag?: string; q?: string } = {}) => {

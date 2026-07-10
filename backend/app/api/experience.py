@@ -242,7 +242,6 @@ async def list_entries(
       - team    (default): published entries visible to me (P0-6 human filter). The
                  "公司最新经验" feed / 团队经验 view.
       - mine    : entries I can manage (I distilled, or I created the source agent).
-      - history : the 历史沉淀 (待整理) partition (origin=legacy_plaza).
       - all     : whole tenant, no visibility filter (admins).
     """
     eff = _effective_tenant_id(current_user)
@@ -252,10 +251,8 @@ async def list_entries(
         if eff:
             query = query.where(ExperienceEntry.tenant_id == eff)
 
-        if view == "history":
-            query = query.where(ExperienceEntry.origin == "legacy_plaza")
-        else:
-            query = query.where(ExperienceEntry.origin != "legacy_plaza")
+        # legacy_plaza imports are hard-isolated — never surfaced through any view.
+        query = query.where(ExperienceEntry.origin != "legacy_plaza")
 
         if view == "team":
             query = query.where(ExperienceEntry.status == "published")

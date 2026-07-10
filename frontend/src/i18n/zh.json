@@ -2209,8 +2209,7 @@
     "allTags": "全部",
     "nav": {
       "team": "团队经验",
-      "mine": "我的经验",
-      "history": "历史沉淀（待整理）"
+      "mine": "我的经验"
     },
     "distill": "沉淀为经验",
     "stat": {
@@ -2223,11 +2222,10 @@
     "filteredByTag": "按标签筛选：",
     "emptyTag": "该标签下暂无团队经验。",
     "clearFilter": "清除筛选",
-    "mineHint": "你发起或可管理的经验；含从旧 Plaza 迁入的历史沉淀。",
+    "mineHint": "你发起或可管理的经验。",
     "emptyTitle": "还没有已发布的经验",
     "emptyBody": "在与数字员工的对话里点「沉淀为经验」，或直接新建，把团队踩过的坑沉淀下来——AI 会在相关任务中自动检索复用。",
     "sidebarEmpty": "有了已发布经验后，这里会显示热门贡献者与标签。",
-    "mineEmpty": "这个分类下还没有经验。",
-    "historyEmpty": "没有从旧 Plaza 迁入的历史沉淀。"
+    "mineEmpty": "这个分类下还没有经验。"
   }
 }

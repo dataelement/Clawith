@@ -4,7 +4,6 @@
  * Human-curated, AI-consumed private knowledge. Replaces the old social feed.
  * - 团队经验: published entries visible to me (P0-6 filtered server-side).
  * - 我的经验: entries I can manage (I distilled, or I created the source agent).
- * - 历史沉淀: legacy Plaza imports (drafts, hard-isolated) awaiting triage.
  * Draft review drawer sets the four parts + tags + visibility before publish.
  */
 import React, { useMemo, useState, useEffect } from 'react';
@@ -53,7 +52,7 @@ const Icons = {
     hash: sicon('M3 6h10M3 10h10M6.5 2.5l-1 11M10.5 2.5l-1 11'),
 };
 
-const MINE_ALL = '全部', MINE_DRAFTS = '草稿箱', MINE_UNTAGGED = '未分类', MINE_HISTORY = '历史沉淀';
+const MINE_ALL = '全部', MINE_DRAFTS = '草稿箱', MINE_UNTAGGED = '未分类';
 
 export default function Plaza() {
     const { t } = useTranslation();
@@ -68,7 +67,6 @@ export default function Plaza() {
     const teamQ = useQuery({ queryKey: ['experience', 'team'], queryFn: () => experienceApi.list({ view: 'team' }), enabled: view === 'team' });
     const statsQ = useQuery({ queryKey: ['experience-stats'], queryFn: () => experienceApi.stats(), enabled: view === 'team' });
     const mineQ = useQuery({ queryKey: ['experience', 'mine'], queryFn: () => experienceApi.list({ view: 'mine' }), enabled: view === 'mine' });
-    const historyQ = useQuery({ queryKey: ['experience', 'history'], queryFn: () => experienceApi.list({ view: 'history' }), enabled: view === 'mine' });
 
     // Deep-links: ?draft=<id> opens the review drawer (from chat 沉淀); ?entry=<id> opens the
     // entry (from a chat citation pill) — published → detail drawer, draft → editor.
@@ -93,7 +91,6 @@ export default function Plaza() {
     const teamEntries = teamQ.data ?? [];
     const teamShown = teamTag ? teamEntries.filter(e => (e.tags || []).includes(teamTag)) : teamEntries;
     const mineEntries = mineQ.data ?? [];
-    const historyEntries = historyQ.data ?? [];
 
     const trending = useMemo(() => {
         const m = new Map<string, number>();
@@ -107,8 +104,7 @@ export default function Plaza() {
         return [...m.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]);
     }, [mineEntries]);
 
-    const mineShown = cat === MINE_HISTORY ? historyEntries
-        : cat === MINE_DRAFTS ? mineEntries.filter(e => e.status === 'draft')
+    const mineShown = cat === MINE_DRAFTS ? mineEntries.filter(e => e.status === 'draft')
         : cat === MINE_UNTAGGED ? mineEntries.filter(e => !(e.tags || []).length)
         : cat === MINE_ALL ? mineEntries
         : mineEntries.filter(e => (e.tags || []).includes(cat));
@@ -145,8 +141,8 @@ export default function Plaza() {
                     onTag={(tg) => setTeamTag(prev => prev === tg ? null : tg)}
                     onClearTag={() => setTeamTag(null)} />
             ) : (
-                <MineView loading={mineQ.isLoading || historyQ.isLoading}
-                    cats={[MINE_ALL, MINE_DRAFTS, MINE_UNTAGGED, MINE_HISTORY, ...mineTags]}
+                <MineView loading={mineQ.isLoading}
+                    cats={[MINE_ALL, MINE_DRAFTS, MINE_UNTAGGED, ...mineTags]}
                     cat={cat} setCat={setCat} entries={mineShown} onOpen={openEntry} />
             )}
 
@@ -334,7 +330,7 @@ function MineView({ loading, cats, cat, setCat, entries, onOpen }: {
                 <div style={{ color: 'var(--text-tertiary)', padding: '40px 0', textAlign: 'center', fontSize: 'var(--text-sm)' }}>{t('common.loading', '加载中...')}</div>
             ) : entries.length === 0 ? (
                 <div style={{ color: 'var(--text-tertiary)', padding: '40px 0', textAlign: 'center', fontSize: 'var(--text-sm)' }}>
-                    {cat === MINE_HISTORY ? t('experience.historyEmpty', '没有从旧 Plaza 迁入的历史沉淀。') : t('experience.mineEmpty', '这个分类下还没有经验。')}
+                    {t('experience.mineEmpty', '这个分类下还没有经验。')}
                 </div>
             ) : (
                 <div style={{ display: 'grid', gap: 12 }}>
