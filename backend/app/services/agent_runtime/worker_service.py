@@ -39,6 +39,7 @@ from app.services.agent_runtime.langgraph_driver import (
 from app.services.agent_runtime.model_step_service import RuntimeModelStepService
 from app.services.agent_runtime.node_executor import DeterministicRuntimeNodeExecutor
 from app.services.agent_runtime.projector import RuntimeProjector
+from app.services.agent_runtime.run_compactor import RuntimeRunCompactorService
 from app.services.agent_runtime.session_context_service import SessionContextService
 from app.services.agent_runtime.session_context_compactor import LLMSessionContextCompactor
 from app.services.agent_runtime.session_context_completion import (
@@ -165,10 +166,15 @@ def build_runtime_worker_components(
         session_factory=session_factory,
         cancel_source=cancel_source,
     )
+    run_compactor = RuntimeRunCompactorService(
+        session_factory=session_factory,
+        settings=runtime_settings,
+    )
     node_executor = DeterministicRuntimeNodeExecutor(
         cancel_source=cancel_source,
         model_service=model_service,
         tool_service=tool_service,
+        run_compactor=run_compactor,
     )
     graph = build_agent_runtime_graph(
         checkpointer=checkpointer,
