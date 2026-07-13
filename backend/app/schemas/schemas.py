@@ -598,3 +598,4 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+    message_id: uuid.UUID | None = None  # Optional idempotency key for Agent delivery.

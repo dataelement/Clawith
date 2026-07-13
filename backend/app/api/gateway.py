@@ -4,7 +4,6 @@ OpenClaw agents authenticate via X-Api-Key header and use these endpoints
 to poll for messages, report results, send messages, and send heartbeat pings.
 """
 
-import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +18,10 @@ from app.core.permissions import evaluate_agent_relationship_status, evaluate_hu
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
 from app.models.user import User
+from app.services.agent_runtime.a2a_runtime import (
+    A2ARuntimeError,
+    enqueue_gateway_a2a_runtime,
+)
 from app.schemas.schemas import (
     GatewayPollResponse, GatewayMessageOut, GatewayReportRequest,
     GatewayHistoryItem, GatewayRelationshipItem, GatewaySendMessageRequest,
@@ -289,186 +292,6 @@ async def heartbeat(
 
 # ─── Send message ───────────────────────────────────────
 
-# Track background tasks to prevent garbage collection
-_background_tasks: set = set()
-
-async def _send_to_agent_background(
-    source_agent_id: str,
-    source_agent_name: str,
-    target_agent_id: str,
-    target_agent_name: str,
-    target_primary_model_id: str,
-    target_role_description: str,
-    target_creator_id: str,
-    content: str,
-):
-    """Background task: invoke target agent LLM and write reply to gateway_messages.
-    
-    Accepts plain values (not ORM objects) to avoid stale session references
-    since this runs after the request's DB session has closed.
-    """
-    logger.info(f"[Gateway] _send_to_agent_background started: {source_agent_name} -> {target_agent_name}")
-    try:
-        from app.services.llm import call_llm
-        from app.models.llm import LLMModel
-        from app.models.audit import ChatMessage
-        from app.models.chat_session import ChatSession
-
-        async with async_session() as db:
-            # Load target agent's LLM model
-            if not target_primary_model_id:
-                logger.warning(f"Target agent {target_agent_name} has no LLM model")
-                return
-            result = await db.execute(select(LLMModel).where(LLMModel.id == target_primary_model_id))
-            model = result.scalar_one_or_none()
-            if not model:
-                return
-            # Skip if model is disabled by admin
-            if not model.enabled:
-                logger.warning(f"Target agent {target_agent_name}'s model {model.model} is disabled, skipping")
-                return
-
-            # Create or find a ChatSession for this agent pair
-            # Use deterministic UUID so the same pair always gets the same session
-            import uuid as _uuid
-            _ns = _uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-            # Sort IDs so session is the same regardless of who initiates
-            session_agent_id = min(source_agent_id, target_agent_id, key=str)
-            session_peer_id = max(source_agent_id, target_agent_id, key=str)
-            session_uuid = _uuid.uuid5(_ns, f"{session_agent_id}_{session_peer_id}")
-            conv_id = str(session_uuid)
-
-            # Find or create the ChatSession
-            existing = await db.execute(
-                select(ChatSession).where(ChatSession.id == session_uuid)
-            )
-            session = existing.scalar_one_or_none()
-            if not session:
-                from datetime import datetime, timezone
-                session = ChatSession(
-                    id=session_uuid,
-                    agent_id=session_agent_id,
-                    user_id=target_creator_id,
-                    title=f"{source_agent_name} ↔ {target_agent_name}",
-                    source_channel="agent",
-                    peer_agent_id=session_peer_id,
-                    created_at=datetime.now(timezone.utc),
-                )
-                db.add(session)
-                await db.commit()
-                await db.refresh(session)
-
-                # Migrate any existing messages from old gw_agent_ format
-                old_conv_id = f"gw_agent_{source_agent_id}_{target_agent_id}"
-                from sqlalchemy import update
-                await db.execute(
-                    update(ChatMessage)
-                    .where(ChatMessage.conversation_id == old_conv_id)
-                    .values(conversation_id=conv_id)
-                )
-                await db.commit()
-
-            # Update last_message_at
-            from datetime import datetime, timezone
-            session.last_message_at = datetime.now(timezone.utc)
-
-
-            # Agent-to-agent communication context (injected as prefix to user message
-            # since call_llm builds the full system prompt internally)
-            agent_comm_alert = (
-                "--- Agent-to-Agent Communication Alert ---\n"
-                f"You are receiving a direct message from another digital employee ({source_agent_name}). "
-                "CRITICAL INSTRUCTION: Your direct text reply will automatically be delivered back to them. "
-                "DO NOT use the `send_message_to_agent` tool to reply to this conversation. Just reply naturally in text.\n"
-                "If they are asking you to create or analyze a file, deliver the file using `send_file_to_agent` after writing it."
-            )
-
-            # Load recent conversation history for context
-            hist_result = await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conv_id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(10)
-            )
-            hist_msgs = list(reversed(hist_result.scalars().all()))
-
-            from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
-            messages = _conv(hist_msgs)
-
-            # Add the new message with agent communication context
-            user_msg = f"{agent_comm_alert}\n\n[Message from agent: {source_agent_name}]\n{content}"
-            messages.append({"role": "user", "content": user_msg})
-
-            from app.models.participant import Participant
-            
-            # Lookup participants for both agents
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == source_agent_id))
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
-            src_participant = src_part_r.scalar_one_or_none()
-            tgt_participant = tgt_part_r.scalar_one_or_none()
-            
-            # Save user message to conversation
-            db.add(ChatMessage(
-                agent_id=target_agent_id,
-                conversation_id=conv_id,
-                role="user",
-                content=user_msg,
-                user_id=target_creator_id,
-                participant_id=src_participant.id if src_participant else None,
-            ))
-            await db.commit()
-
-        # Call LLM
-        collected = []
-        async def on_chunk(text):
-            collected.append(text)
-
-        reply = await call_llm(
-            model=model,
-            messages=messages,
-            agent_name=target_agent_name,
-            role_description=target_role_description,
-            agent_id=target_agent_id,
-            user_id=target_creator_id,
-            session_id=conv_id,
-            on_chunk=on_chunk,
-        )
-        final_reply = reply or "".join(collected)
-
-        # Save assistant reply to conversation
-        async with async_session() as db:
-            from app.models.participant import Participant
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
-            tgt_participant = tgt_part_r.scalar_one_or_none()
-            
-            db.add(ChatMessage(
-                agent_id=target_agent_id,
-                conversation_id=conv_id,
-                role="assistant",
-                content=final_reply,
-                user_id=target_creator_id,
-                participant_id=tgt_participant.id if tgt_participant else None,
-            ))
-
-            # Write reply to gateway_messages for source (OpenClaw) to poll
-            gw_reply = GatewayMessage(
-                agent_id=source_agent_id,
-                sender_agent_id=target_agent_id,
-                content=final_reply,
-                status="pending",
-                conversation_id=conv_id,
-            )
-            db.add(gw_reply)
-            await db.commit()
-
-        logger.info(f"[Gateway] Agent {target_agent_name} replied to {source_agent_name}")
-
-    except Exception as e:
-        logger.error(f"[Gateway] send_to_agent_background failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-
 @router.post("/send-message")
 async def send_message(
     body: GatewaySendMessageRequest,
@@ -532,27 +355,37 @@ async def send_message(
                 "message": f"Message sent to {target_agent.name}. Reply will appear in your next poll.",
             }
         else:
-            # Native agent: async LLM processing
-            # Extract plain values before session closes to avoid stale ORM references
-            _src_id = str(agent.id)
-            _src_name = agent.name
-            _tgt_id = str(target_agent.id)
-            _tgt_name = target_agent.name
-            _tgt_model = str(target_agent.primary_model_id) if target_agent.primary_model_id else ""
-            _tgt_role = target_agent.role_description or ""
-            _tgt_creator = str(target_agent.creator_id) if target_agent.creator_id else ""
+            try:
+                intake = await enqueue_gateway_a2a_runtime(
+                    db,
+                    source_agent=agent,
+                    target_agent=target_agent,
+                    content=content,
+                    message_id=body.message_id,
+                )
+            except A2ARuntimeError as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": exc.code, "message": str(exc)},
+                ) from exc
+            if intake is None:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "runtime_disabled",
+                        "message": "Durable Runtime is not enabled for native A2A.",
+                    },
+                )
             await db.commit()
-            task = asyncio.create_task(_send_to_agent_background(
-                _src_id, _src_name, _tgt_id, _tgt_name,
-                _tgt_model, _tgt_role, _tgt_creator, content,
-            ))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
             return {
                 "status": "accepted",
                 "target": target_agent.name,
                 "type": "agent",
                 "message": f"Message sent to {target_agent.name}. Reply will appear in your next poll.",
+                "message_id": str(intake.gateway_message_id),
+                "run_id": str(intake.target_run_id),
             }
 
     # 2. Try to find target as a human (via relationships)

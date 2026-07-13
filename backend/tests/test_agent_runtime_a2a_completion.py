@@ -13,6 +13,7 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.gateway_message import GatewayMessage
 from app.services.agent_runtime.a2a_completion import (
     A2ARuntimeCompletionHandler,
 )
@@ -50,8 +51,13 @@ class _Transaction:
 
 
 class _Session:
-    def __init__(self, *results: object) -> None:
+    def __init__(
+        self,
+        *results: object,
+        records: dict[tuple[type, uuid.UUID], object] | None = None,
+    ) -> None:
         self.results = deque(results)
+        self.records = records or {}
         self.added: list[object] = []
         self.flushes = 0
         self.in_transaction = False
@@ -67,6 +73,9 @@ class _Session:
 
     async def execute(self, _statement) -> _ScalarResult:
         return _ScalarResult(self.results.popleft())
+
+    async def get(self, model, identity):
+        return self.records.get((model, identity))
 
     def add(self, value: object) -> None:
         self.added.append(value)
@@ -276,6 +285,71 @@ async def test_completed_request_projects_message_and_resumes_source_atomically(
             "error": None,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_gateway_target_completion_queues_reply_without_a_source_run() -> None:
+    run, checkpoint, target_run, _, target_agent, session = _records()
+    source_agent_id = target_run.origin_agent_id
+    assert source_agent_id is not None
+    gateway_message_id = uuid.uuid4()
+    checkpoint.state["snapshots"] = RunInputSnapshots(
+        session_context={},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={
+            "gateway_message_id": str(gateway_message_id),
+            "gateway_reply_agent_id": str(source_agent_id),
+        },
+    )
+    target_run.parent_run_id = None
+    target_run.root_run_id = None
+    inbound = GatewayMessage(
+        id=gateway_message_id,
+        agent_id=target_agent.id,
+        sender_agent_id=source_agent_id,
+        content="Research the facts",
+        status="delivered",
+        conversation_id=str(session.id),
+    )
+    db = _Session(
+        target_run,
+        target_agent,
+        session,
+        None,
+        records={(GatewayMessage, gateway_message_id): inbound},
+    )
+    participant = SimpleNamespace(id=uuid.uuid4())
+
+    with (
+        patch(
+            "app.services.agent_runtime.a2a_completion.get_or_create_agent_participant",
+            new=AsyncMock(return_value=participant),
+        ),
+        patch(
+            "app.services.agent_runtime.a2a_completion.TransactionalAgentRuntimeAdapter.resume_run",
+            new=AsyncMock(),
+        ) as resume_run,
+    ):
+        await A2ARuntimeCompletionHandler(
+            session_factory=_SessionFactory(db),  # type: ignore[arg-type]
+        ).handle(run=run, checkpoint=checkpoint)
+
+    resume_run.assert_not_awaited()
+    assert inbound.status == "completed"
+    assert inbound.result == "Verified research result"
+    chat_message = next(value for value in db.added if isinstance(value, ChatMessage))
+    assert chat_message.content == "Verified research result"
+    assert chat_message.participant_id == participant.id
+    reply = next(value for value in db.added if isinstance(value, GatewayMessage))
+    assert reply.id == uuid.uuid5(
+        run.run_id,
+        "gateway-a2a-terminal:target-terminal",
+    )
+    assert reply.agent_id == source_agent_id
+    assert reply.sender_agent_id == target_agent.id
+    assert reply.status == "pending"
 
 
 @pytest.mark.asyncio

@@ -14,11 +14,13 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_tool_execution import AgentToolExecution
 from app.models.audit import ChatMessage
+from app.models.gateway_message import GatewayMessage
 from app.services.agent_runtime.a2a_runtime import (
     A2ARuntimeError,
     RuntimeA2AService,
     a2a_mode_from_correlation,
     a2a_waiting_request,
+    enqueue_gateway_a2a_runtime,
 )
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
 from app.services.agent_runtime.cycle_guard import AgentCycleGuardError
@@ -171,6 +173,124 @@ def _records() -> tuple[uuid.UUID, Agent, Agent, AgentRun, ToolExecutionReservat
 
 
 @pytest.mark.asyncio
+async def test_gateway_message_and_native_target_run_are_accepted_atomically() -> None:
+    tenant_id = uuid.uuid4()
+    source = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="OpenClaw Coordinator",
+        status="running",
+        is_expired=False,
+        agent_type="openclaw",
+    )
+    target = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Native Researcher",
+        primary_model_id=uuid.uuid4(),
+        status="idle",
+        is_expired=False,
+        agent_type="native",
+    )
+    db = _Session()
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        agent_id=min((source.id, target.id), key=str),
+        last_message_at=None,
+    )
+    source_participant_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    target_run_id = uuid.uuid4()
+    handle = RunHandle(
+        tenant_id=tenant_id,
+        run_id=target_run_id,
+        thread_id=str(target_run_id),
+        command_id=uuid.uuid4(),
+        runtime_type="langgraph",
+        created=True,
+    )
+
+    with (
+        patch(
+            "app.services.agent_runtime.a2a_runtime.ensure_a2a_session",
+            new=AsyncMock(
+                return_value=(session, source_participant_id, uuid.uuid4())
+            ),
+        ),
+        patch(
+            "app.services.agent_runtime.a2a_runtime.TransactionalAgentRuntimeAdapter.start_run",
+            new=AsyncMock(return_value=handle),
+        ) as start_run,
+    ):
+        intake = await enqueue_gateway_a2a_runtime(
+            db,  # type: ignore[arg-type]
+            source_agent=source,
+            target_agent=target,
+            content="Research the incident",
+            message_id=message_id,
+            settings=_settings(enabled=True),
+        )
+
+    assert intake is not None
+    assert intake.gateway_message_id == message_id
+    assert intake.target_run_id == target_run_id
+    assert intake.session_id == session.id
+    inbound = next(value for value in db.added if isinstance(value, GatewayMessage))
+    assert inbound.agent_id == target.id
+    assert inbound.sender_agent_id == source.id
+    assert inbound.status == "delivered"
+    chat_message = next(value for value in db.added if isinstance(value, ChatMessage))
+    assert chat_message.id == uuid.uuid5(message_id, "gateway-a2a-input")
+    assert chat_message.content == "Research the incident"
+    assert chat_message.participant_id == source_participant_id
+    command = start_run.await_args.args[0]
+    assert isinstance(command, StartRunCommand)
+    assert command.source_execution_id == f"gateway-a2a:{message_id}"
+    assert command.origin_agent_id == source.id
+    assert command.payload["gateway_message_id"] == str(message_id)
+    assert command.payload["gateway_reply_agent_id"] == str(source.id)
+    assert command.payload["input_content"].endswith("Research the incident")
+
+
+@pytest.mark.asyncio
+async def test_gateway_native_target_fails_closed_when_a2a_runtime_is_disabled() -> None:
+    tenant_id = uuid.uuid4()
+    source = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="OpenClaw Coordinator",
+        status="running",
+        is_expired=False,
+        agent_type="openclaw",
+    )
+    target = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Native Researcher",
+        primary_model_id=uuid.uuid4(),
+        status="idle",
+        is_expired=False,
+        agent_type="native",
+    )
+    db = _Session()
+
+    intake = await enqueue_gateway_a2a_runtime(
+        db,  # type: ignore[arg-type]
+        source_agent=source,
+        target_agent=target,
+        content="Research the incident",
+        settings=_settings(enabled=False),
+    )
+
+    assert intake is None
+    assert db.added == []
+
+
+@pytest.mark.asyncio
 async def test_delegate_creates_target_run_and_receipt_in_one_transaction() -> None:
     tenant_id, source, target, source_run, reservation = _records()
     db = _Session(source_run, source)
@@ -205,7 +325,7 @@ async def test_delegate_creates_target_run_and_receipt_in_one_transaction() -> N
             new=AsyncMock(return_value=target),
         ),
         patch(
-            "app.services.agent_runtime.a2a_runtime._ensure_a2a_session",
+            "app.services.agent_runtime.a2a_runtime.ensure_a2a_session",
             new=AsyncMock(
                 return_value=(session, source_participant_id, uuid.uuid4())
             ),

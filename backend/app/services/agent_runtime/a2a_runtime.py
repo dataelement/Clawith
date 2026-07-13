@@ -16,6 +16,7 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.gateway_message import GatewayMessage
 from app.models.org import AgentAgentRelationship
 from app.services.agent_runtime.adapter import TransactionalAgentRuntimeAdapter
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
@@ -57,6 +58,15 @@ class A2ARuntimeToolResult:
     outcome: ToolExecutionOutcome
     target_run_id: uuid.UUID | None
     waiting_request: dict | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayA2ARuntimeIntake:
+    """Durable acceptance receipt for an OpenClaw-to-native message."""
+
+    gateway_message_id: uuid.UUID
+    target_run_id: uuid.UUID
+    session_id: uuid.UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +278,7 @@ async def _resolve_target(
     return target
 
 
-async def _ensure_a2a_session(
+async def ensure_a2a_session(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -331,6 +341,172 @@ async def _ensure_a2a_session(
             "A2A session exists outside the requested tenant scope",
         )
     return session, source_participant.id, target_participant.id
+
+
+async def enqueue_gateway_a2a_runtime(
+    db: AsyncSession,
+    *,
+    source_agent: Agent,
+    target_agent: Agent,
+    content: str,
+    message_id: uuid.UUID | None = None,
+    settings: Settings | None = None,
+) -> GatewayA2ARuntimeIntake | None:
+    """Atomically persist a gateway message, Chat input, and target Run Command."""
+    runtime_settings = settings or get_settings()
+    message = content.strip()
+    if not message:
+        raise A2ARuntimeError(
+            "a2a_input_missing",
+            "Gateway A2A content must not be blank",
+        )
+    if (
+        source_agent.tenant_id is None
+        or source_agent.tenant_id != target_agent.tenant_id
+        or source_agent.id == target_agent.id
+    ):
+        raise A2ARuntimeError(
+            "a2a_scope_mismatch",
+            "Gateway A2A Agents must be distinct members of one tenant",
+        )
+    if source_agent.agent_type != "openclaw" or target_agent.agent_type == "openclaw":
+        raise A2ARuntimeError(
+            "a2a_gateway_type_mismatch",
+            "Gateway Runtime intake requires an OpenClaw source and native target",
+        )
+    if target_agent.is_expired or target_agent.status not in {
+        "creating",
+        "running",
+        "idle",
+    }:
+        raise A2ARuntimeError(
+            "a2a_target_unavailable",
+            f"Agent {target_agent.name} is unavailable",
+        )
+    if target_agent.primary_model_id is None:
+        raise A2ARuntimeError(
+            "a2a_target_model_missing",
+            f"Agent {target_agent.name} has no primary model",
+        )
+    decision = decide_runtime_v2(
+        agent_id=target_agent.id,
+        source_type="a2a",
+        settings=runtime_settings,
+    )
+    if not decision.use_v2:
+        return None
+
+    tenant_id = source_agent.tenant_id
+    owner_user_id = source_agent.creator_id
+    session, source_participant_id, _ = await ensure_a2a_session(
+        db,
+        tenant_id=tenant_id,
+        source_agent=source_agent,
+        target_agent=target_agent,
+        owner_user_id=owner_user_id,
+    )
+    resolved_message_id = message_id or uuid.uuid4()
+    inbound = await db.get(GatewayMessage, resolved_message_id)
+    if inbound is None:
+        inbound = GatewayMessage(
+            id=resolved_message_id,
+            agent_id=target_agent.id,
+            sender_agent_id=source_agent.id,
+            content=message,
+            status="delivered",
+            conversation_id=str(session.id),
+            delivered_at=datetime.now(UTC),
+        )
+        db.add(inbound)
+    elif (
+        inbound.agent_id != target_agent.id
+        or inbound.sender_agent_id != source_agent.id
+        or inbound.content != message
+        or inbound.conversation_id != str(session.id)
+    ):
+        raise A2ARuntimeError(
+            "a2a_gateway_message_mismatch",
+            "Gateway message ID already exists with different immutable input",
+        )
+
+    chat_message_id = uuid.uuid5(
+        resolved_message_id,
+        "gateway-a2a-input",
+    )
+    chat_message = await db.get(ChatMessage, chat_message_id)
+    if chat_message is None:
+        db.add(
+            ChatMessage(
+                id=chat_message_id,
+                agent_id=session.agent_id,
+                user_id=owner_user_id,
+                role="user",
+                content=message,
+                conversation_id=str(session.id),
+                participant_id=source_participant_id,
+                mentions=[],
+            )
+        )
+    elif (
+        chat_message.conversation_id != str(session.id)
+        or chat_message.content != message
+        or chat_message.participant_id != source_participant_id
+    ):
+        raise A2ARuntimeError(
+            "a2a_input_mismatch",
+            "Gateway A2A Chat input has different immutable content",
+        )
+
+    source_execution_id = f"gateway-a2a:{resolved_message_id}"
+    handle = await TransactionalAgentRuntimeAdapter(
+        db,
+        settings=runtime_settings,
+    ).start_run(
+        StartRunCommand(
+            tenant_id=tenant_id,
+            agent_id=target_agent.id,
+            session_id=session.id,
+            source_type="a2a",
+            source_id=str(session.id),
+            source_execution_id=source_execution_id,
+            correlation_id=f"gateway:a2a:{resolved_message_id}",
+            goal=(
+                "Answer this message from an OpenClaw Agent and return the result "
+                f"through the gateway. Source Agent: {source_agent.name}. Request: {message}"
+            ),
+            run_kind="delegated",
+            model_id=target_agent.primary_model_id,
+            origin_user_id=owner_user_id,
+            origin_agent_id=source_agent.id,
+            delivery_status="not_required",
+            idempotency_key=f"start:{source_execution_id}",
+            payload={
+                "message_id": str(chat_message_id),
+                "input_content": f"[Message from Agent {source_agent.name}]\n{message}",
+                "runtime_instruction": (
+                    "This Run was initiated by another digital employee through the "
+                    "OpenClaw gateway. Reply naturally; the verified final answer is "
+                    "delivered back automatically. Do not call send_message_to_agent "
+                    "merely to return this answer."
+                ),
+                "application_tools_enabled": True,
+                "a2a_mode": "consult",
+                "a2a_message": message,
+                "source_agent_id": str(source_agent.id),
+                "source_agent_name": source_agent.name,
+                "gateway_message_id": str(resolved_message_id),
+                "gateway_reply_agent_id": str(source_agent.id),
+            },
+            actor_user_id=owner_user_id,
+            actor_agent_id=source_agent.id,
+        )
+    )
+    session.last_message_at = datetime.now(UTC)
+    return GatewayA2ARuntimeIntake(
+        gateway_message_id=resolved_message_id,
+        target_run_id=handle.run_id,
+        session_id=session.id,
+    )
 
 
 def _target_goal(source_agent: Agent, request: _A2ARequest) -> str:
@@ -460,7 +636,7 @@ class RuntimeA2AService:
                         source_agent_id=source_agent.id,
                         target_agent_id=target.id,
                     )
-                    session, source_participant_id, _ = await _ensure_a2a_session(
+                    session, source_participant_id, _ = await ensure_a2a_session(
                         db,
                         tenant_id=tenant_id,
                         source_agent=source_agent,
@@ -581,7 +757,10 @@ class RuntimeA2AService:
 __all__ = [
     "A2ARuntimeError",
     "A2ARuntimeToolResult",
+    "GatewayA2ARuntimeIntake",
     "RuntimeA2AService",
     "a2a_mode_from_correlation",
     "a2a_waiting_request",
+    "enqueue_gateway_a2a_runtime",
+    "ensure_a2a_session",
 ]
