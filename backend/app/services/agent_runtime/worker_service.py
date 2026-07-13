@@ -31,6 +31,9 @@ from app.services.agent_runtime.command_worker import (
 )
 from app.services.agent_runtime.context_builder import ContextBuilder
 from app.services.agent_runtime.graph import AgentRuntimeGraph, build_agent_runtime_graph
+from app.services.agent_runtime.heartbeat_completion import (
+    HeartbeatRuntimeCompletionHandler,
+)
 from app.services.agent_runtime.langgraph_driver import (
     LangGraphRuntimeDriver,
     RuntimeGraphRegistry,
@@ -203,6 +206,7 @@ def build_runtime_worker_components(
             ),
             TaskRuntimeCompletionHandler(session_factory=session_factory),
             TriggerRuntimeCompletionHandler(session_factory=session_factory),
+            HeartbeatRuntimeCompletionHandler(session_factory=session_factory),
         ),
     )
     worker = RuntimeCommandWorker(

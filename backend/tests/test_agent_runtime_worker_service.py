@@ -13,6 +13,9 @@ import pytest
 
 from app.config import Settings
 from app.services.agent_runtime.command_worker import CommandWorkResult, RuntimeRunRecord
+from app.services.agent_runtime.heartbeat_completion import (
+    HeartbeatRuntimeCompletionHandler,
+)
 from app.services.agent_runtime.session_context_completion import (
     SessionContextCompletionHandler,
 )
@@ -159,6 +162,7 @@ def test_component_builder_installs_one_pinned_graph_and_shared_driver() -> None
         SessionContextCompletionHandler,
         TaskRuntimeCompletionHandler,
         TriggerRuntimeCompletionHandler,
+        HeartbeatRuntimeCompletionHandler,
     ]
 
 
