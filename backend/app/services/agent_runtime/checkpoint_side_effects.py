@@ -193,33 +193,41 @@ class RuntimeCheckpointSideEffects:
                         "projector did not apply the observed checkpoint",
                     )
 
+        errors: list[Exception] = []
+        delivery = delivery_from_checkpoint(run, checkpoint)
+        if delivery is not None:
+            try:
+                async with self._session_factory() as db:
+                    async with db.begin():
+                        status_result = await db.execute(
+                            select(AgentRun.delivery_status).where(
+                                AgentRun.tenant_id == run.tenant_id,
+                                AgentRun.id == run.run_id,
+                            )
+                        )
+                        delivery_status = status_result.scalar_one_or_none()
+                        if delivery_status is None:
+                            raise RuntimeCheckpointSideEffectError(
+                                "run_not_found",
+                                "post-checkpoint delivery Run does not exist",
+                            )
+                        if delivery_status != "not_required":
+                            await deliver_runtime_message(db, delivery)
+            except Exception as exc:
+                errors.append(exc)
+
         if authoritative_status in _TERMINAL_STATUSES:
             for terminal_handler in self._terminal_handlers:
-                await terminal_handler.handle(
-                    run=run,
-                    checkpoint=checkpoint,
-                )
+                try:
+                    await terminal_handler.handle(
+                        run=run,
+                        checkpoint=checkpoint,
+                    )
+                except Exception as exc:
+                    errors.append(exc)
 
-        delivery = delivery_from_checkpoint(run, checkpoint)
-        if delivery is None:
-            return
-        async with self._session_factory() as db:
-            async with db.begin():
-                status_result = await db.execute(
-                    select(AgentRun.delivery_status).where(
-                        AgentRun.tenant_id == run.tenant_id,
-                        AgentRun.id == run.run_id,
-                    )
-                )
-                delivery_status = status_result.scalar_one_or_none()
-                if delivery_status is None:
-                    raise RuntimeCheckpointSideEffectError(
-                        "run_not_found",
-                        "post-checkpoint delivery Run does not exist",
-                    )
-                if delivery_status == "not_required":
-                    return
-                await deliver_runtime_message(db, delivery)
+        if errors:
+            raise errors[0]
 
 
 __all__ = [

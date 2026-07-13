@@ -97,6 +97,20 @@ class _Projector:
         )
 
 
+class _TerminalHandler:
+    def __init__(self, timeline: list[str], *, error: Exception | None = None) -> None:
+        self.timeline = timeline
+        self.error = error
+        self.calls = 0
+
+    async def handle(self, *, run, checkpoint) -> None:
+        del run, checkpoint
+        self.calls += 1
+        self.timeline.append("terminal_handler")
+        if self.error is not None:
+            raise self.error
+
+
 def _records(
     *,
     status: str = "completed",
@@ -180,6 +194,66 @@ async def test_projects_then_delivers_completed_checkpoint() -> None:
 
     assert timeline.index("project") < timeline.index("deliver")
     deliver.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_delivery_happens_before_a_failing_derived_handler() -> None:
+    timeline: list[str] = []
+    run, command, checkpoint = _records(lifecycle={"final_answer": "done"})
+    terminal = _TerminalHandler(timeline, error=RuntimeError("compact failed"))
+    handler = RuntimeCheckpointSideEffects(
+        session_factory=_SessionFactory(timeline),  # type: ignore[arg-type]
+        projector=_Projector(
+            timeline,
+            status="completed",
+            checkpoint_id=checkpoint.checkpoint_id,
+        ),  # type: ignore[arg-type]
+        terminal_handlers=(terminal,),
+    )
+
+    async def delivered(_db, _request):
+        timeline.append("deliver")
+
+    with (
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
+            new=AsyncMock(side_effect=delivered),
+        ) as deliver,
+        pytest.raises(RuntimeError, match="compact failed"),
+    ):
+        await handler.handle(run=run, command=command, checkpoint=checkpoint)
+
+    assert timeline.index("deliver") < timeline.index("terminal_handler")
+    deliver.assert_awaited_once()
+    assert terminal.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_does_not_skip_terminal_product_handlers() -> None:
+    timeline: list[str] = []
+    run, command, checkpoint = _records(lifecycle={"final_answer": "done"})
+    terminal = _TerminalHandler(timeline)
+    handler = RuntimeCheckpointSideEffects(
+        session_factory=_SessionFactory(timeline),  # type: ignore[arg-type]
+        projector=_Projector(
+            timeline,
+            status="completed",
+            checkpoint_id=checkpoint.checkpoint_id,
+        ),  # type: ignore[arg-type]
+        terminal_handlers=(terminal,),
+    )
+
+    with (
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
+            new=AsyncMock(side_effect=RuntimeError("delivery failed")),
+        ),
+        pytest.raises(RuntimeError, match="delivery failed"),
+    ):
+        await handler.handle(run=run, command=command, checkpoint=checkpoint)
+
+    assert terminal.calls == 1
+    assert "terminal_handler" in timeline
 
 
 def test_waiting_delivery_uses_correlation_id_and_prompt() -> None:
