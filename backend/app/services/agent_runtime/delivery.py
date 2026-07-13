@@ -285,7 +285,11 @@ def _descriptor_with_session_scope(
             "invalid_delivery_target",
             "stored group target does not match its requested session",
         )
-    if descriptor.user_id is not None and descriptor.user_id != session.user_id:
+    if (
+        session.session_type == "direct"
+        and descriptor.user_id is not None
+        and descriptor.user_id != session.user_id
+    ):
         raise DeliveryServiceError(
             "invalid_delivery_target",
             "stored user target does not match its requested session",
@@ -468,11 +472,22 @@ async def _validate_group_target(
     session: ChatSession,
     participant: Participant | None,
 ) -> None:
-    if session.session_type != "group" or session.group_id is None:
+    if session.session_type != "group":
         raise DeliveryServiceError(
             "group_scope_mismatch",
             "group delivery requires a group session",
         )
+    if session.group_id is None:
+        if (
+            session.external_conv_id is None
+            or session.source_channel == "web"
+            or session.agent_id != run.agent_id
+        ):
+            raise DeliveryServiceError(
+                "external_group_scope_mismatch",
+                "external group delivery does not match the Run Agent and channel scope",
+            )
+        return
     result = await db.execute(
         select(Group).where(
             Group.id == session.group_id,

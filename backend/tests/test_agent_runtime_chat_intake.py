@@ -188,6 +188,61 @@ async def test_chat_message_and_start_command_share_the_caller_session() -> None
 
 
 @pytest.mark.asyncio
+async def test_external_group_chat_uses_unified_session_without_native_group_scope() -> None:
+    agent, user, _direct_session, model = _records()
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=agent.tenant_id,
+        session_type="group",
+        group_id=None,
+        agent_id=agent.id,
+        user_id=agent.creator_id,
+        title="Feishu Group",
+        source_channel="feishu",
+        external_conv_id="feishu_group_oc_123",
+        is_group=True,
+        is_primary=False,
+    )
+    db = _Session()
+    participant = SimpleNamespace(id=uuid.uuid4())
+    handle = _handle(agent.tenant_id)
+
+    with (
+        patch(
+            "app.services.agent_runtime.chat_intake.get_or_create_user_participant",
+            new=AsyncMock(return_value=participant),
+        ),
+        patch(
+            "app.services.agent_runtime.chat_intake.TransactionalAgentRuntimeAdapter.start_run",
+            new=AsyncMock(return_value=handle),
+        ) as start_run,
+    ):
+        intake = await enqueue_chat_runtime(
+            db,  # type: ignore[arg-type]
+            agent=agent,
+            user=user,
+            session=session,
+            model=model,
+            content="[发送者: Ada] Review this update",
+            source_channel="feishu",
+            settings_override=_settings(enabled=True),
+        )
+
+    assert intake is not None
+    message = db.added[0]
+    assert isinstance(message, ChatMessage)
+    assert message.agent_id is None
+    assert message.user_id is None
+    assert message.participant_id == participant.id
+    command = start_run.await_args.args[0]
+    assert command.delivery_target == {
+        "kind": "session",
+        "session_id": str(session.id),
+    }
+    assert command.payload["source_channel"] == "feishu"
+
+
+@pytest.mark.asyncio
 async def test_chat_resume_persists_explicit_correlation_with_the_user_message() -> None:
     agent, user, session, model = _records()
     run_id = uuid.uuid4()

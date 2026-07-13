@@ -294,6 +294,56 @@ async def test_group_terminal_delivery_is_one_transaction_with_agent_identity() 
 
 
 @pytest.mark.asyncio
+async def test_external_group_delivery_uses_channel_scope_without_native_membership() -> None:
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    sender_user_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="group",
+        group_id=None,
+        agent_id=agent_id,
+        user_id=uuid.uuid4(),
+        created_by_participant_id=uuid.uuid4(),
+        title="Feishu Group",
+        source_channel="feishu",
+        external_conv_id="feishu_group_oc_123",
+        is_group=True,
+        is_primary=False,
+        deleted_at=None,
+    )
+    run = _run(
+        tenant_id=tenant_id,
+        session=session,
+        agent_id=agent_id,
+        origin_user_id=sender_user_id,
+        delivery_target={"kind": "session", "session_id": str(session.id)},
+    )
+    participant = _participant(agent_id)
+    db = _RecordingDB(
+        run,
+        None,
+        session,
+        _agent(tenant_id, agent_id),
+        participant,
+    )
+
+    receipt = await deliver_runtime_message(
+        db,
+        _terminal_request(run, content="External group result"),
+        clock=lambda: NOW,
+    )
+
+    assert receipt.status == "delivered"
+    message = _added(db, ChatMessage)[0]
+    assert message.conversation_id == str(session.id)
+    assert message.participant_id == participant.id
+    assert message.user_id is None
+    assert len(db.statements) == 5
+
+
+@pytest.mark.asyncio
 async def test_duplicate_delivery_returns_the_stored_receipt_without_a_message() -> None:
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()

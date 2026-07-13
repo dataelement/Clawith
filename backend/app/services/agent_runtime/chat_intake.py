@@ -1,4 +1,4 @@
-"""Transaction-scoped Web Chat intake for the durable Agent Runtime."""
+"""Transaction-scoped single-Agent chat intake for the durable Runtime."""
 
 from __future__ import annotations
 
@@ -81,6 +81,7 @@ def _validate_scope(
     user: User,
     session: ChatSession,
     model: LLMModel,
+    source_channel: str,
 ) -> uuid.UUID:
     tenant_id = agent.tenant_id
     if tenant_id is None:
@@ -93,17 +94,28 @@ def _validate_scope(
             "chat_tenant_mismatch",
             "Chat user and Agent do not belong to the same tenant",
         )
+    is_direct = (
+        session.session_type == "direct"
+        and session.group_id is None
+        and session.agent_id == agent.id
+        and session.user_id == user.id
+    )
+    is_external_group = (
+        source_channel != "web"
+        and session.session_type == "group"
+        and session.group_id is None
+        and session.agent_id == agent.id
+        and session.external_conv_id is not None
+    )
     if (
         session.tenant_id != tenant_id
-        or session.session_type != "direct"
-        or session.agent_id != agent.id
-        or session.user_id != user.id
-        or session.source_channel != "web"
+        or session.source_channel != source_channel
         or session.deleted_at is not None
+        or not (is_direct or is_external_group)
     ):
         raise ChatRuntimeIntakeError(
             "chat_session_scope_mismatch",
-            "Web Chat session is not an active direct session for this user and Agent",
+            "Chat session is not active in the requested user, Agent, and channel scope",
         )
     if agent.is_expired or agent.status not in _ACTIVE_AGENT_STATUSES:
         raise ChatRuntimeIntakeError(
@@ -198,11 +210,12 @@ async def _persist_user_message(
     )
     existing = await db.get(ChatMessage, message_id)
     if existing is None:
+        group_message = session.session_type == "group"
         db.add(
             ChatMessage(
                 id=message_id,
-                agent_id=agent.id,
-                user_id=user.id,
+                agent_id=None if group_message else agent.id,
+                user_id=None if group_message else user.id,
                 role="user",
                 content=content,
                 conversation_id=str(session.id),
@@ -211,8 +224,8 @@ async def _persist_user_message(
             )
         )
     elif (
-        existing.agent_id != agent.id
-        or existing.user_id != user.id
+        existing.agent_id != (None if session.session_type == "group" else agent.id)
+        or existing.user_id != (None if session.session_type == "group" else user.id)
         or existing.role != "user"
         or existing.content != content
         or existing.conversation_id != str(session.id)
@@ -225,7 +238,7 @@ async def _persist_user_message(
 
     now = datetime.now(UTC)
     session.last_message_at = now
-    if session.title.startswith("Session "):
+    if session.session_type == "direct" and session.title.startswith("Session "):
         clean_title = content.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
         session.title = clean_title[:40] or "New chat"
     await db.flush()
@@ -244,9 +257,10 @@ async def enqueue_chat_runtime(
     message_id: uuid.UUID | None = None,
     resume_run_id: uuid.UUID | None = None,
     resume_correlation_id: str | None = None,
+    source_channel: str = "web",
     settings_override: Settings | None = None,
 ) -> ChatRuntimeIntake | None:
-    """Persist one Web Chat message and its start/resume Command atomically.
+    """Persist one chat message and its start/resume Command atomically.
 
     Returning ``None`` means the rollout gate selected the untouched legacy
     path. This function never commits; the WebSocket ingress owns the boundary.
@@ -265,11 +279,18 @@ async def enqueue_chat_runtime(
             "invalid_chat_input",
             "Runtime Chat content must not be blank",
         )
+    normalized_channel = source_channel.strip()
+    if not normalized_channel:
+        raise ChatRuntimeIntakeError(
+            "invalid_source_channel",
+            "Runtime Chat source_channel must not be blank",
+        )
     tenant_id = _validate_scope(
         agent=agent,
         user=user,
         session=session,
         model=model,
+        source_channel=normalized_channel,
     )
     if (resume_run_id is None) != (resume_correlation_id is None):
         raise ChatRuntimeIntakeError(
@@ -350,15 +371,22 @@ async def enqueue_chat_runtime(
             run_kind="foreground",
             model_id=model.id,
             delivery_status="pending",
-            delivery_target={
-                "kind": "direct",
-                "session_id": str(session.id),
-                "user_id": str(user.id),
-            },
+            delivery_target=(
+                {
+                    "kind": "direct",
+                    "session_id": str(session.id),
+                    "user_id": str(user.id),
+                }
+                if session.session_type == "direct"
+                else {
+                    "kind": "session",
+                    "session_id": str(session.id),
+                }
+            ),
             idempotency_key=f"start:{source_execution_id}",
             payload={
                 "message_id": str(resolved_message_id),
-                "source_channel": "web",
+                "source_channel": normalized_channel,
                 "user_id": str(user.id),
             },
             origin_user_id=user.id,
