@@ -20,6 +20,13 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+_CHECKPOINT_SCHEMA = "langgraph_checkpoint"
+_CREATE_CHECKPOINT_SCHEMA_SQL = (
+    f'CREATE SCHEMA IF NOT EXISTS "{_CHECKPOINT_SCHEMA}"'
+)
+_DROP_CHECKPOINT_SCHEMA_SQL = f'DROP SCHEMA IF EXISTS "{_CHECKPOINT_SCHEMA}"'
+
+
 ColumnSpec = tuple[tuple[object, ...], bool, str | None]
 ForeignKeySpec = tuple[tuple[str, ...], str, tuple[str, ...], str | None]
 
@@ -987,6 +994,9 @@ _CREATE_ORDER = (
 
 
 def upgrade() -> None:
+    # The pinned LangGraph saver owns its tables and migration ledger. Alembic
+    # only guarantees that its isolated target schema exists before saver.setup().
+    op.execute(sa.text(_CREATE_CHECKPOINT_SCHEMA_SQL))
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
@@ -1030,3 +1040,6 @@ def downgrade() -> None:
     _require_empty_tables(bind, tables_to_drop)
     for table_name in tables_to_drop:
         op.drop_table(table_name)
+    # Intentionally omit CASCADE. PostgreSQL must refuse the downgrade while
+    # saver-owned checkpoints still exist instead of deleting resumable state.
+    op.execute(sa.text(_DROP_CHECKPOINT_SCHEMA_SQL))

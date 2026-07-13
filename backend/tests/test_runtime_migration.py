@@ -159,8 +159,14 @@ class MetadataInspector:
 def _install_upgrade_doubles(monkeypatch, migration, inspector):
     created_tables: list[tuple[str, tuple[object, ...]]] = []
     created_indexes: list[tuple[str, str, tuple[str, ...], bool, object | None]] = []
+    executed_statements: list[str] = []
     monkeypatch.setattr(migration.op, "get_bind", lambda: object())
     monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+    monkeypatch.setattr(
+        migration.op,
+        "execute",
+        lambda statement: executed_statements.append(str(statement)),
+    )
     monkeypatch.setattr(
         migration.op,
         "create_table",
@@ -179,7 +185,7 @@ def _install_upgrade_doubles(monkeypatch, migration, inspector):
         )
 
     monkeypatch.setattr(migration.op, "create_index", record_index)
-    return created_tables, created_indexes
+    return created_tables, created_indexes, executed_statements
 
 
 def test_runtime_migration_extends_model_capability_revision() -> None:
@@ -197,7 +203,9 @@ def test_empty_schema_creates_parent_then_dependants_with_all_indexes(monkeypatc
         def get_table_names() -> list[str]:
             return []
 
-    tables, indexes = _install_upgrade_doubles(monkeypatch, migration, EmptyInspector())
+    tables, indexes, statements = _install_upgrade_doubles(
+        monkeypatch, migration, EmptyInspector()
+    )
     migration.upgrade()
 
     assert [name for name, _elements in tables] == [
@@ -209,6 +217,7 @@ def test_empty_schema_creates_parent_then_dependants_with_all_indexes(monkeypatc
     ]
     assert {name for name, *_rest in indexes} == set(migration._INDEXES)
     assert len(indexes) == len(migration._INDEXES)
+    assert statements == [migration._CREATE_CHECKPOINT_SCHEMA_SQL]
 
     run_constraints = {
         element.name
@@ -247,7 +256,9 @@ def test_created_table_definitions_match_the_validated_contract(monkeypatch) -> 
         def get_table_names() -> list[str]:
             return []
 
-    tables, _indexes = _install_upgrade_doubles(monkeypatch, migration, EmptyInspector())
+    tables, _indexes, _statements = _install_upgrade_doubles(
+        monkeypatch, migration, EmptyInspector()
+    )
     migration.upgrade()
 
     for table_name, elements in tables:
@@ -295,18 +306,23 @@ def test_created_table_definitions_match_the_validated_contract(monkeypatch) -> 
 
 def test_current_runtime_metadata_is_check_first_noop(monkeypatch) -> None:
     migration = _load_migration()
-    tables, indexes = _install_upgrade_doubles(monkeypatch, migration, MetadataInspector())
+    tables, indexes, statements = _install_upgrade_doubles(
+        monkeypatch, migration, MetadataInspector()
+    )
 
     migration.upgrade()
 
     assert tables == []
     assert indexes == []
+    assert statements == [migration._CREATE_CHECKPOINT_SCHEMA_SQL]
 
 
 def test_subset_of_existing_tables_is_validated_and_missing_tables_are_created(monkeypatch) -> None:
     migration = _load_migration()
     inspector = MetadataInspector(table_names={"agent_runs", "agent_run_events"})
-    tables, indexes = _install_upgrade_doubles(monkeypatch, migration, inspector)
+    tables, indexes, _statements = _install_upgrade_doubles(
+        monkeypatch, migration, inspector
+    )
 
     migration.upgrade()
 
@@ -330,7 +346,7 @@ def test_subset_of_existing_tables_is_validated_and_missing_tables_are_created(m
 def test_missing_index_is_repaired_without_other_writes(monkeypatch) -> None:
     migration = _load_migration()
     missing = "uq_agent_runs_source_execution"
-    tables, indexes = _install_upgrade_doubles(
+    tables, indexes, _statements = _install_upgrade_doubles(
         monkeypatch,
         migration,
         MetadataInspector(missing_indexes={missing}),
@@ -415,6 +431,7 @@ def test_incompatible_existing_runtime_schema_is_rejected(monkeypatch, broken_sc
 
     monkeypatch.setattr(migration.op, "get_bind", lambda: object())
     monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+    monkeypatch.setattr(migration.op, "execute", lambda _statement: None)
 
     with pytest.raises(RuntimeError):
         migration.upgrade()
@@ -463,9 +480,15 @@ def test_downgrade_locks_and_drops_dependants_before_agent_runs(monkeypatch) -> 
     migration = _load_migration()
     connection = _Connection()
     dropped: list[str] = []
+    statements: list[str] = []
     monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
     monkeypatch.setattr(migration.sa, "inspect", lambda _bind: _RuntimeTableInspector())
     monkeypatch.setattr(migration.op, "drop_table", dropped.append)
+    monkeypatch.setattr(
+        migration.op,
+        "execute",
+        lambda statement: statements.append(str(statement)),
+    )
 
     migration.downgrade()
 
@@ -481,6 +504,7 @@ def test_downgrade_locks_and_drops_dependants_before_agent_runs(monkeypatch) -> 
         '"agent_tool_executions", "session_context_states", "agent_runs" '
         "IN ACCESS EXCLUSIVE MODE"
     )
+    assert statements == [migration._DROP_CHECKPOINT_SCHEMA_SQL]
 
 
 @pytest.mark.parametrize("nonempty_table", [table.name for table in RUNTIME_TABLES])
