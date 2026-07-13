@@ -3,7 +3,9 @@
 from unittest.mock import AsyncMock, patch
 import uuid
 
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 import pytest
+from psycopg.conninfo import conninfo_to_dict
 
 from app.config import Settings
 from app.services.agent_runtime.checkpointer import (
@@ -54,8 +56,30 @@ def test_checkpoint_url_preserves_existing_options_and_forces_isolated_schema() 
 
     assert checkpoint_database_url(settings) == (
         "postgresql://checkpoint:secret@db.example/checkpoints?sslmode=require&"
-        "options=-cstatement_timeout%3D5000+-csearch_path%3Dlanggraph_checkpoint"
+        "options=-cstatement_timeout%3D5000%20-csearch_path%3Dlanggraph_checkpoint"
     )
+
+
+def test_psycopg_parses_search_path_as_a_separate_server_option() -> None:
+    settings = _settings(
+        LANGGRAPH_CHECKPOINT_DATABASE_URL=(
+            "postgresql://checkpoint:secret@db.example/checkpoints?options=-cstatement_timeout%3D5000"
+        )
+    )
+
+    parsed = conninfo_to_dict(checkpoint_database_url(settings))
+
+    assert parsed["options"] == ("-cstatement_timeout=5000 -csearch_path=langgraph_checkpoint")
+
+
+def test_installed_saver_uses_unqualified_checkpoint_tables() -> None:
+    migration_sql = "\n".join(AsyncPostgresSaver.MIGRATIONS)
+
+    assert "CREATE TABLE IF NOT EXISTS checkpoint_migrations" in migration_sql
+    assert "CREATE TABLE IF NOT EXISTS checkpoints" in migration_sql
+    assert "CREATE TABLE IF NOT EXISTS checkpoint_blobs" in migration_sql
+    assert "CREATE TABLE IF NOT EXISTS checkpoint_writes" in migration_sql
+    assert "langgraph_checkpoint." not in migration_sql
 
 
 @pytest.mark.parametrize("database_url", ["sqlite:///tmp.db", "", "not-a-url"])

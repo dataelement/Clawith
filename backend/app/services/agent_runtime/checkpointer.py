@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from typing import cast
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import uuid
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -27,7 +27,7 @@ def runtime_thread_config(run_id: uuid.UUID) -> dict[str, dict[str, str]]:
 
 
 def _to_psycopg_url(database_url: str) -> str:
-    """Remove SQLAlchemy driver markers before handing a DSN to psycopg."""
+    """Normalize a PostgreSQL URI and force the checkpoint-only search path."""
     value = database_url.strip()
     if not value:
         raise CheckpointerConfigurationError("Checkpoint database URL must not be blank")
@@ -43,12 +43,24 @@ def _to_psycopg_url(database_url: str) -> str:
         raise CheckpointerConfigurationError("Checkpoint database URL must use PostgreSQL")
     normalized = f"{scheme}://{remainder}"
     parts = urlsplit(normalized)
-    query = parse_qsl(parts.query, keep_blank_values=True)
-    existing_options = [value for key, value in query if key == "options"]
-    other_query = [(key, value) for key, value in query if key != "options"]
+    existing_options: list[str] = []
+    other_query_parts: list[str] = []
+    for query_part in parts.query.split("&"):
+        if not query_part:
+            continue
+        encoded_key, separator, encoded_value = query_part.partition("=")
+        if unquote(encoded_key) == "options":
+            existing_options.append(unquote(encoded_value) if separator else "")
+        else:
+            # Preserve unrelated libpq parameters byte-for-byte. In PostgreSQL
+            # connection URIs, unlike HTML form encoding, ``+`` is literal.
+            other_query_parts.append(query_part)
+
     search_path_option = f"-csearch_path={_CHECKPOINT_SCHEMA}"
-    options = " ".join([*existing_options, search_path_option])
-    return urlunsplit(parts._replace(query=urlencode([*other_query, ("options", options)])))
+    options = " ".join([option for option in existing_options if option] + [search_path_option])
+    encoded_options = quote(options, safe="")
+    query = "&".join([*other_query_parts, f"options={encoded_options}"])
+    return urlunsplit(parts._replace(query=query))
 
 
 def checkpoint_database_url(settings: Settings | None = None) -> str:
