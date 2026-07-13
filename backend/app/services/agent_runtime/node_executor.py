@@ -139,16 +139,6 @@ class RuntimeFinalizer(Protocol):
     ) -> FinalizationResult: ...
 
 
-class RuntimeTerminalHandler(Protocol):
-    """Apply idempotent product side effects after terminal state is checkpointed."""
-
-    async def handle_terminal(
-        self,
-        state: RuntimeGraphState,
-        context: RuntimeContext,
-    ) -> None: ...
-
-
 class DeterministicRuntimeVerifier:
     """The v1 fallback verifier when no task-specific verifier is registered."""
 
@@ -283,7 +273,6 @@ class DeterministicRuntimeNodeExecutor:
         cancel_source: RuntimeCancelSource,
         model_service: RuntimeModelStepService,
         tool_service: RuntimeToolStepService,
-        terminal_handler: RuntimeTerminalHandler,
         verifier: RuntimeVerifier | None = None,
         finalizer: RuntimeFinalizer | None = None,
         max_model_steps: int = 50,
@@ -294,7 +283,6 @@ class DeterministicRuntimeNodeExecutor:
         self._cancel_source = cancel_source
         self._model_service = model_service
         self._tool_service = tool_service
-        self._terminal_handler = terminal_handler
         self._verifier = verifier or DeterministicRuntimeVerifier()
         self._finalizer = finalizer or DefaultRuntimeFinalizer()
         self._max_model_steps = max_model_steps
@@ -661,9 +649,8 @@ class DeterministicRuntimeNodeExecutor:
             if state["lifecycle"]["status"] not in _TERMINAL_STATUSES:
                 raise RuntimeNodeTransitionError(
                     "run_not_terminal",
-                    "terminal handler requires a terminal lifecycle",
+                    "terminal node requires a terminal lifecycle",
                 )
-            await self._terminal_handler.handle_terminal(state, context)
             return {"lifecycle": dict(state["lifecycle"])}
         raise RuntimeNodeTransitionError(
             "unsupported_runtime_node",
@@ -682,7 +669,6 @@ __all__ = [
     "RuntimeFinalizer",
     "RuntimeModelStepService",
     "RuntimeNodeTransitionError",
-    "RuntimeTerminalHandler",
     "RuntimeToolStepService",
     "RuntimeVerifier",
     "ToolStepResult",

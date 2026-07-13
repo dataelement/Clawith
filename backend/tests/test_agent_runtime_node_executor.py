@@ -149,41 +149,24 @@ class Finalizer:
         )
 
 
-class TerminalHandler:
-    def __init__(self) -> None:
-        self.states: list[RuntimeGraphState] = []
-
-    async def handle_terminal(
-        self,
-        state: RuntimeGraphState,
-        context: RuntimeContext,
-    ) -> None:
-        del context
-        self.states.append(state)
-
-
 def _executor(
     model: ModelService,
     *,
     cancel: CancelSource | None = None,
     tools: ToolService | None = None,
     verifier: Verifier | None = None,
-    terminal: TerminalHandler | None = None,
     max_model_steps: int = 50,
     max_verification_repairs: int = 2,
-) -> tuple[DeterministicRuntimeNodeExecutor, TerminalHandler]:
-    terminal_handler = terminal or TerminalHandler()
-    executor = DeterministicRuntimeNodeExecutor(
+) -> DeterministicRuntimeNodeExecutor:
+    return DeterministicRuntimeNodeExecutor(
         cancel_source=cancel or CancelSource(),
         model_service=model,
         tool_service=tools or ToolService(),
         verifier=verifier,
         finalizer=Finalizer(),
-        terminal_handler=terminal_handler,
         max_model_steps=max_model_steps,
         max_verification_repairs=max_verification_repairs,
     )
-    return executor, terminal_handler
 
 
 def _context(
@@ -218,7 +201,7 @@ async def _invoke(
 
 
 @pytest.mark.asyncio
-async def test_finish_is_verified_finalized_and_delivered_after_checkpoint_transition() -> None:
+async def test_finish_is_verified_and_finalized_into_terminal_checkpoint_state() -> None:
     run_id = uuid.uuid4()
     model = ModelService(
         ModelStepResult(
@@ -228,7 +211,7 @@ async def test_finish_is_verified_finalized_and_delivered_after_checkpoint_trans
         )
     )
     verifier = Verifier(VerificationResult(outcome="pass", details={"code": "ok"}))
-    executor, terminal = _executor(model, verifier=verifier)
+    executor = _executor(model, verifier=verifier)
 
     result = await _invoke(run_id, executor)
 
@@ -244,8 +227,6 @@ async def test_finish_is_verified_finalized_and_delivered_after_checkpoint_trans
     assert lifecycle["delivery_request"] == {"content": "done"}
     assert lifecycle["last_applied_command_ids"] == ["command-1"]
     assert verifier.calls == ["done"]
-    assert len(terminal.states) == 1
-    assert terminal.states[0]["lifecycle"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -265,7 +246,7 @@ async def test_tool_batch_is_executed_before_the_next_model_step() -> None:
         ModelStepResult(intent="finish", finish_content="tool-backed answer"),
     )
     tools = ToolService(ToolStepResult(messages=({"role": "tool", "tool_call_id": "call-1", "content": "result"},)))
-    executor, _ = _executor(model, tools=tools)
+    executor = _executor(model, tools=tools)
 
     result = await _invoke(run_id, executor)
 
@@ -294,7 +275,7 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
         ),
         ModelStepResult(intent="finish", finish_content="resumed"),
     )
-    executor, terminal = _executor(model)
+    executor = _executor(model)
     graph = build_agent_runtime_graph(
         checkpointer=InMemorySaver(),
         settings=_settings(),
@@ -308,7 +289,6 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
     )
 
     assert interrupted["lifecycle"]["status"] == "waiting_user"
-    assert terminal.states == []
     waiting = await graph.compiled.aget_state(config)
     assert waiting.next == ("wait",)
 
@@ -333,7 +313,6 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
             "runtime_input": "resume",
         }
     ]
-    assert len(terminal.states) == 1
 
 
 @pytest.mark.asyncio
@@ -341,7 +320,7 @@ async def test_cancel_is_observed_before_the_model_or_a_new_tool_can_start() -> 
     run_id = uuid.uuid4()
     model = ModelService(ModelStepResult(intent="finish", finish_content="too late"))
     cancel = CancelSource(CancelSignal(command_id="cancel-1", reason="user_abort"))
-    executor, terminal = _executor(model, cancel=cancel)
+    executor = _executor(model, cancel=cancel)
 
     result = await _invoke(run_id, executor, command_id="worker-command")
 
@@ -350,7 +329,6 @@ async def test_cancel_is_observed_before_the_model_or_a_new_tool_can_start() -> 
     assert lifecycle["reason"] == "user_abort"
     assert lifecycle["last_applied_command_ids"] == ["cancel-1", "worker-command"]
     assert model.calls == 0
-    assert len(terminal.states) == 1
 
 
 @pytest.mark.asyncio
@@ -362,7 +340,7 @@ async def test_plain_text_repair_stops_at_the_model_step_limit() -> None:
             assistant_message={"role": "assistant", "content": "plain text"},
         )
     )
-    executor, terminal = _executor(model, max_model_steps=1)
+    executor = _executor(model, max_model_steps=1)
 
     result = await _invoke(run_id, executor)
 
@@ -372,7 +350,6 @@ async def test_plain_text_repair_stops_at_the_model_step_limit() -> None:
     assert lifecycle["model_step_count"] == 1
     assert model.calls == 1
     assert lifecycle["run_messages"][-1]["role"] == "user"
-    assert len(terminal.states) == 1
 
 
 @pytest.mark.asyncio
@@ -386,7 +363,7 @@ async def test_verification_repairs_are_bounded() -> None:
         VerificationResult(outcome="repair", reason="add evidence"),
         VerificationResult(outcome="repair", reason="still incomplete"),
     )
-    executor, terminal = _executor(
+    executor = _executor(
         model,
         verifier=verifier,
         max_verification_repairs=1,
@@ -406,4 +383,3 @@ async def test_verification_repairs_are_bounded() -> None:
         }
     ]
     assert verifier.calls == ["first", "second"]
-    assert len(terminal.states) == 1

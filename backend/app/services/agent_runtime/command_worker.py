@@ -112,6 +112,18 @@ class RuntimeCommandExecutor(Protocol):
     ) -> None: ...
 
 
+class RuntimePostCheckpointHandler(Protocol):
+    """Apply idempotent side effects after a command is visible in a checkpoint."""
+
+    async def handle(
+        self,
+        *,
+        run: RuntimeRunRecord,
+        command: RuntimeCommandRecord,
+        checkpoint: CheckpointObservation,
+    ) -> None: ...
+
+
 class CommandWorkerError(RuntimeError):
     """Command processing failed with a stable, non-sensitive code."""
 
@@ -177,6 +189,7 @@ class RuntimeCommandWorker:
         lock_engine: AsyncEngine,
         checkpoint_reader: RuntimeCheckpointReader,
         command_executor: RuntimeCommandExecutor,
+        post_checkpoint_handler: RuntimePostCheckpointHandler,
         claimant: str,
         settings: Settings | None = None,
         claim_ttl_seconds: int | None = None,
@@ -188,6 +201,7 @@ class RuntimeCommandWorker:
         self._lock_engine = lock_engine
         self._checkpoint_reader = checkpoint_reader
         self._command_executor = command_executor
+        self._post_checkpoint_handler = post_checkpoint_handler
         self._claimant = claimant
         self._claim_ttl_seconds = (
             claim_ttl_seconds
@@ -427,6 +441,27 @@ class RuntimeCommandWorker:
             error_code=error_code,
         )
 
+    async def _handle_observed_checkpoint(
+        self,
+        *,
+        run: RuntimeRunRecord,
+        command: RuntimeCommandRecord,
+        checkpoint: CheckpointObservation,
+    ) -> None:
+        try:
+            await self._post_checkpoint_handler.handle(
+                run=run,
+                command=command,
+                checkpoint=checkpoint,
+            )
+        except RetryableCommandError:
+            raise
+        except Exception as exc:
+            raise RetryableCommandError(
+                "post_checkpoint_handler_failed",
+                "post-checkpoint side effects did not complete",
+            ) from exc
+
     async def _process_locked(
         self,
         connection: AsyncConnection,
@@ -442,6 +477,11 @@ class RuntimeCommandWorker:
             run=run,
         )
         if checkpoint is not None and self._command_is_observed(run, checkpoint, command):
+            await self._handle_observed_checkpoint(
+                run=run,
+                command=command,
+                checkpoint=checkpoint,
+            )
             await self._mark_applied(command, checkpoint.checkpoint_id)
             return CommandWorkResult(
                 status="reconciled",
@@ -481,6 +521,11 @@ class RuntimeCommandWorker:
         )
         if observed is None or not self._command_is_observed(run, observed, command):
             raise CommandCheckpointNotObserved(command.id)
+        await self._handle_observed_checkpoint(
+            run=run,
+            command=command,
+            checkpoint=observed,
+        )
         await self._mark_applied(command, observed.checkpoint_id)
         return CommandWorkResult(
             status="applied",

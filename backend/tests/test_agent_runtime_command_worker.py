@@ -149,6 +149,19 @@ class _Executor:
         self.timeline.append("executor_end")
 
 
+class _PostCheckpointHandler:
+    def __init__(self, timeline: list[str], *, error: Exception | None = None) -> None:
+        self.timeline = timeline
+        self.error = error
+        self.calls: list[tuple[RuntimeRunRecord, RuntimeCommandRecord, CheckpointObservation]] = []
+
+    async def handle(self, *, run, command, checkpoint) -> None:
+        self.timeline.append(f"post_checkpoint:{checkpoint.checkpoint_id}")
+        self.calls.append((run, command, checkpoint))
+        if self.error is not None:
+            raise self.error
+
+
 def _run(*, tenant_id: uuid.UUID | None = None) -> AgentRun:
     run_id = uuid.uuid4()
     return AgentRun(
@@ -233,6 +246,7 @@ def _worker(
     run: AgentRun,
     reader: _Reader,
     executor: _Executor,
+    post_checkpoint_handler: _PostCheckpointHandler | None = None,
     acquired: bool = True,
     claim_renew_seconds: float = 10,
 ) -> RuntimeCommandWorker:
@@ -241,6 +255,7 @@ def _worker(
         lock_engine=_Engine(_Connection(timeline, acquired=acquired)),  # type: ignore[arg-type]
         checkpoint_reader=reader,
         command_executor=executor,
+        post_checkpoint_handler=post_checkpoint_handler or _PostCheckpointHandler(timeline),
         claimant="worker-1",
         claim_ttl_seconds=60,
         claim_renew_seconds=claim_renew_seconds,
@@ -267,6 +282,8 @@ async def test_claim_commits_before_lock_and_heartbeat_runs_during_execution() -
     async def applied(*_args, **kwargs):
         timeline.append(f"applied:{kwargs['applied_checkpoint_id']}")
 
+    post_checkpoint_handler = _PostCheckpointHandler(timeline)
+
     with (
         patch(
             "app.services.agent_runtime.command_worker.claim_next_command",
@@ -286,6 +303,7 @@ async def test_claim_commits_before_lock_and_heartbeat_runs_during_execution() -
             run=run,
             reader=reader,
             executor=executor,
+            post_checkpoint_handler=post_checkpoint_handler,
             claim_renew_seconds=0.01,
         ).run_once()
 
@@ -293,6 +311,7 @@ async def test_claim_commits_before_lock_and_heartbeat_runs_during_execution() -
     assert result.checkpoint_id == "checkpoint-1"
     assert timeline.index("transaction_exit") < timeline.index("lock_acquire")
     assert timeline.index("claim_renewed") < timeline.index("executor_end")
+    assert timeline.index("post_checkpoint:checkpoint-1") < timeline.index("applied:checkpoint-1")
     assert timeline.index("applied:checkpoint-1") < timeline.index("lock_release")
     renew_claim.assert_awaited()
     mark_applied.assert_awaited_once()
@@ -317,6 +336,7 @@ async def test_checkpoint_reconciliation_marks_applied_without_invoking_graph() 
         )
     )
     executor = _Executor(timeline)
+    post_checkpoint_handler = _PostCheckpointHandler(timeline)
 
     with (
         patch(
@@ -333,12 +353,62 @@ async def test_checkpoint_reconciliation_marks_applied_without_invoking_graph() 
             run=run,
             reader=reader,
             executor=executor,
+            post_checkpoint_handler=post_checkpoint_handler,
         ).run_once()
 
     assert result.status == "reconciled"
     assert result.checkpoint_id == "checkpoint-reconciled"
     assert executor.calls == []
+    assert post_checkpoint_handler.calls[0][2].checkpoint_id == "checkpoint-reconciled"
     assert mark_applied.await_args.kwargs["applied_checkpoint_id"] == "checkpoint-reconciled"
+
+
+@pytest.mark.asyncio
+async def test_post_checkpoint_failure_releases_command_before_marking_applied() -> None:
+    timeline: list[str] = []
+    run = _run()
+    command = _command(run)
+    reader = _Reader(
+        _checkpoint(
+            run,
+            status="waiting_user",
+            command_ids=[str(command.id)],
+            checkpoint_id="checkpoint-side-effects",
+        )
+    )
+    executor = _Executor(timeline)
+    post_checkpoint_handler = _PostCheckpointHandler(
+        timeline,
+        error=RuntimeError("delivery unavailable"),
+    )
+
+    with (
+        patch(
+            "app.services.agent_runtime.command_worker.claim_next_command",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "app.services.agent_runtime.command_worker.release_command_claim",
+            new=AsyncMock(),
+        ) as release,
+        patch(
+            "app.services.agent_runtime.command_worker.mark_command_applied",
+            new=AsyncMock(),
+        ) as mark_applied,
+    ):
+        result = await _worker(
+            timeline=timeline,
+            run=run,
+            reader=reader,
+            executor=executor,
+            post_checkpoint_handler=post_checkpoint_handler,
+        ).run_once()
+
+    assert result.status == "retry"
+    assert result.error_code == "post_checkpoint_handler_failed"
+    assert executor.calls == []
+    assert release.await_args.kwargs["error_code"] == "post_checkpoint_handler_failed"
+    mark_applied.assert_not_awaited()
 
 
 @pytest.mark.asyncio
