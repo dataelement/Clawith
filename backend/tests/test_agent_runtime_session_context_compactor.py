@@ -1,13 +1,20 @@
-"""Strict Session Compact model selection, batching, and failover tests."""
+"""Strict Session Compact model selection and batching tests."""
 
 from __future__ import annotations
 
+from collections import deque
+from contextlib import asynccontextmanager
+from dataclasses import replace
 import json
 import uuid
 
 import pytest
 
+from app.config import Settings
+from app.models.agent import Agent
+from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
+from app.services.agent_runtime import session_context_compactor as compactor_module
 from app.services.agent_runtime.session_context_compactor import (
     CompactModelSelection,
     LLMSessionContextCompactor,
@@ -108,6 +115,34 @@ class _UnusedSessionFactory:
         raise AssertionError("injected model resolver must avoid database access")
 
 
+class _Result:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _DB:
+    def __init__(self, *values) -> None:
+        self.results = deque(_Result(value) for value in values)
+        self.calls = 0
+
+    async def execute(self, _statement):
+        self.calls += 1
+        if not self.results:
+            raise AssertionError("unexpected database query")
+        return self.results.popleft()
+
+
+def _session_factory(db):
+    @asynccontextmanager
+    async def factory():
+        yield db
+
+    return factory
+
+
 @pytest.mark.asyncio
 async def test_compact_accepts_only_the_commit_tool_and_sets_code_owned_watermark() -> None:
     message_id = uuid.uuid4()
@@ -132,7 +167,6 @@ async def test_compact_accepts_only_the_commit_tool_and_sets_code_owned_watermar
         model_resolver=_resolver(
             CompactModelSelection(
                 primary=model,
-                fallback=None,
                 usage_agent_id=request.source_agent_id,
             )
         ),
@@ -146,6 +180,86 @@ async def test_compact_accepts_only_the_commit_tool_and_sets_code_owned_watermar
     assert len(calls) == 1
     assert calls[0][2]["agent_id"] == request.source_agent_id
     assert calls[0][2]["tools"][0]["function"]["name"] == "commit_session_context"
+
+
+@pytest.mark.asyncio
+async def test_group_compact_resolves_only_the_platform_compact_model(monkeypatch) -> None:
+    request = _request()
+    group_session = ChatSession(
+        id=request.session_id,
+        tenant_id=request.tenant_id,
+        session_type="group",
+        group_id=uuid.uuid4(),
+        title="Group",
+        source_channel="web",
+        is_group=True,
+        is_primary=True,
+    )
+    platform_model = _model(request.tenant_id, name="group-compact")
+    platform_model.tenant_id = None
+    settings = Settings(MULTI_AGENT_COMPACT_MODEL_ID=platform_model.id)
+    db = _DB(group_session)
+    resolver_calls = []
+
+    async def resolve(db_arg, settings_arg):
+        resolver_calls.append((db_arg, settings_arg))
+        return platform_model
+
+    monkeypatch.setattr(
+        compactor_module,
+        "resolve_multi_agent_compact_model",
+        resolve,
+    )
+    compactor = LLMSessionContextCompactor(
+        session_factory=_session_factory(db),  # type: ignore[arg-type]
+        settings=settings,
+    )
+
+    selection = await compactor._resolve_models(request)  # type: ignore[attr-defined]
+
+    assert selection.primary is platform_model
+    assert selection.usage_agent_id is None
+    assert resolver_calls == [(db, settings)]
+    assert db.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_compact_selects_current_primary_without_querying_fallback() -> None:
+    request = _request()
+    primary = _model(request.tenant_id, name="current-primary")
+    agent = Agent(
+        id=request.source_agent_id,
+        tenant_id=request.tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Direct Agent",
+        status="idle",
+        is_expired=False,
+        primary_model_id=primary.id,
+        fallback_model_id=uuid.uuid4(),
+    )
+    direct_session = ChatSession(
+        id=request.session_id,
+        tenant_id=request.tenant_id,
+        session_type="direct",
+        agent_id=agent.id,
+        user_id=uuid.uuid4(),
+        title="Direct",
+        source_channel="web",
+        is_primary=True,
+    )
+    db = _DB(direct_session, agent, primary)
+    compactor = LLMSessionContextCompactor(
+        session_factory=_session_factory(db),  # type: ignore[arg-type]
+    )
+
+    selection = await compactor._resolve_models(  # type: ignore[attr-defined]
+        replace(request, source_agent_id=agent.id)
+    )
+
+    assert selection.primary is primary
+    assert selection.usage_agent_id == agent.id
+    assert db.calls == 3
+    assert not db.results
 
 
 @pytest.mark.asyncio
@@ -171,7 +285,7 @@ async def test_oversized_session_is_compacted_in_complete_message_batches() -> N
     compactor = LLMSessionContextCompactor(
         session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
         model_resolver=_resolver(
-            CompactModelSelection(primary=model, fallback=None, usage_agent_id=None)
+            CompactModelSelection(primary=model, usage_agent_id=None)
         ),
         completion=complete,
     )
@@ -186,41 +300,37 @@ async def test_oversized_session_is_compacted_in_complete_message_batches() -> N
 
 
 @pytest.mark.asyncio
-async def test_retryable_primary_failure_restarts_compact_on_fallback() -> None:
+async def test_retryable_failure_does_not_switch_session_compact_models() -> None:
     request = _request()
     primary = _model(request.tenant_id, name="primary")
-    fallback = _model(request.tenant_id, name="fallback")
     called: list[uuid.UUID] = []
 
     async def complete(model, _messages, **_kwargs):
         called.append(model.id)
-        if model.id == primary.id:
-            raise TimeoutError("provider timeout")
-        return _step("fallback summary")
+        raise TimeoutError("provider timeout")
 
     compactor = LLMSessionContextCompactor(
         session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
         model_resolver=_resolver(
             CompactModelSelection(
                 primary=primary,
-                fallback=fallback,
                 usage_agent_id=request.source_agent_id,
             )
         ),
         completion=complete,
     )
 
-    candidate = await compactor.compact(request)
+    with pytest.raises(SessionContextCompactorError) as exc_info:
+        await compactor.compact(request)
 
-    assert candidate.summary == "fallback summary"
-    assert called == [primary.id, fallback.id]
+    assert exc_info.value.code == "session_compact_model_failed"
+    assert called == [primary.id]
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_compact_failure_does_not_call_fallback() -> None:
+async def test_non_retryable_compact_failure_keeps_the_previous_context() -> None:
     request = _request()
     primary = _model(request.tenant_id, name="primary")
-    fallback = _model(request.tenant_id, name="fallback")
     calls = 0
 
     async def complete(*_args, **_kwargs):
@@ -231,7 +341,7 @@ async def test_non_retryable_compact_failure_does_not_call_fallback() -> None:
     compactor = LLMSessionContextCompactor(
         session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
         model_resolver=_resolver(
-            CompactModelSelection(primary=primary, fallback=fallback, usage_agent_id=None)
+            CompactModelSelection(primary=primary, usage_agent_id=None)
         ),
         completion=complete,
     )
@@ -260,7 +370,7 @@ async def test_free_text_compact_output_is_rejected_without_repair_loop() -> Non
     compactor = LLMSessionContextCompactor(
         session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
         model_resolver=_resolver(
-            CompactModelSelection(primary=model, fallback=None, usage_agent_id=None)
+            CompactModelSelection(primary=model, usage_agent_id=None)
         ),
         completion=complete,
     )

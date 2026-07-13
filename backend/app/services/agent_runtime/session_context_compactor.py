@@ -19,6 +19,7 @@ from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
+    PlatformModelConfigurationError,
     resolve_multi_agent_compact_model,
 )
 from app.services.agent_runtime.session_context_completion import (
@@ -30,7 +31,6 @@ from app.services.agent_runtime.session_context_service import (
 )
 from app.services.agent_runtime.state import JsonObject, JsonValue
 from app.services.llm.client import LLMMessage
-from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
 from app.services.llm.utils import get_max_tokens
 
@@ -90,10 +90,9 @@ class SessionContextCompactorError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CompactModelSelection:
-    """Models allowed for one Session Compact operation."""
+    """The one model allowed for a Session Compact operation."""
 
     primary: LLMModel
-    fallback: LLMModel | None
     usage_agent_id: uuid.UUID | None
 
 
@@ -313,7 +312,6 @@ class LLMSessionContextCompactor:
                 model = await resolve_multi_agent_compact_model(db, self._settings)
                 return CompactModelSelection(
                     primary=model,
-                    fallback=None,
                     usage_agent_id=None,
                 )
 
@@ -346,23 +344,12 @@ class LLMSessionContextCompactor:
                     "session_compact_model_unavailable",
                     "Session Agent primary model is not usable",
                 )
-            fallback = None
-            if agent.fallback_model_id is not None and agent.fallback_model_id != primary.id:
-                fallback_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
-                )
-                fallback = self._usable_model(
-                    fallback_result.scalar_one_or_none(),
-                    tenant_id=request.tenant_id,
-                )
             return CompactModelSelection(
                 primary=primary,
-                fallback=fallback,
                 usage_agent_id=agent.id,
             )
 
-    @staticmethod
-    def _budget(model: LLMModel):
+    def _budget(self, model: LLMModel):
         requested_output = get_max_tokens(
             model.provider,
             model.model,
@@ -375,6 +362,7 @@ class LLMSessionContextCompactor:
             tool_schema_tokens=_estimate_tokens(_COMPACT_TOOL),
             reserved_runtime_tokens=128,
             safety_margin_tokens=256,
+            compact_threshold_ratio=self._settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO,
         )
 
     async def _complete_batch(
@@ -404,7 +392,9 @@ class LLMSessionContextCompactor:
         budget = self._budget(model)
         current = request.snapshot
         remaining = list(request.messages)
-        delta: JsonObject | None = request.delta.to_json()
+        delta: JsonObject | None = (
+            request.delta.to_json() if request.delta is not None else None
+        )
         candidate: SessionContextCandidate | None = None
 
         while remaining or candidate is None:
@@ -457,8 +447,8 @@ class LLMSessionContextCompactor:
         return candidate
 
     async def compact(self, request: SessionCompactRequest) -> SessionContextCandidate:
-        selection = await self._model_resolver(request)
         try:
+            selection = await self._model_resolver(request)
             return await self._compact_with_model(
                 request,
                 model=selection.primary,
@@ -466,28 +456,16 @@ class LLMSessionContextCompactor:
             )
         except (SessionContextCompactorError, ModelCapabilityError):
             raise
-        except Exception as primary_error:
-            if (
-                classify_error(primary_error) != FailoverErrorType.RETRYABLE
-                or selection.fallback is None
-            ):
-                raise SessionContextCompactorError(
-                    "session_compact_model_failed",
-                    "Session Compact primary model failed",
-                ) from primary_error
-        try:
-            return await self._compact_with_model(
-                request,
-                model=selection.fallback,
-                usage_agent_id=selection.usage_agent_id,
-            )
-        except (SessionContextCompactorError, ModelCapabilityError):
-            raise
-        except Exception as fallback_error:
+        except PlatformModelConfigurationError as exc:
             raise SessionContextCompactorError(
-                "session_compact_failover_failed",
-                "Session Compact fallback model failed",
-            ) from fallback_error
+                "session_compact_model_unavailable",
+                str(exc),
+            ) from exc
+        except Exception as exc:
+            raise SessionContextCompactorError(
+                "session_compact_model_failed",
+                "Session Compact model failed; the previous Session Context remains active",
+            ) from exc
 
 
 __all__ = [

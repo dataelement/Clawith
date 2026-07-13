@@ -45,7 +45,7 @@ class SessionCompactRequest:
     checkpoint_id: str
     snapshot: SessionContextSnapshot
     messages: tuple[JsonObject, ...]
-    delta: SessionContextDelta
+    delta: SessionContextDelta | None
 
 
 class SessionContextCompactor(Protocol):
@@ -129,7 +129,7 @@ class SessionContextCompletionHandler:
                 tenant_id=run.tenant_id,
                 session_id=stored_run.session_id,
             )
-            messages = await self._context_service.load_messages_after_watermark(
+            messages = await self._context_service.load_compactable_messages_after_watermark(
                 db,
                 tenant_id=run.tenant_id,
                 session_id=stored_run.session_id,

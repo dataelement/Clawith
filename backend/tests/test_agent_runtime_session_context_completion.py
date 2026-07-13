@@ -91,7 +91,7 @@ class _ContextService:
         del db, tenant_id, session_id
         return self.snapshots.popleft()
 
-    async def load_messages_after_watermark(
+    async def load_compactable_messages_after_watermark(
         self,
         db,
         *,

@@ -64,6 +64,11 @@ from app.services.agent_runtime.run_compactor import RuntimeRunCompactorService
 from app.services.agent_runtime.scheduling_lane import SchedulingLaneCompletionHandler
 from app.services.agent_runtime.session_context_service import SessionContextService
 from app.services.agent_runtime.session_context_compactor import LLMSessionContextCompactor
+from app.services.agent_runtime.session_context_background import (
+    SessionCompactPolicyResolver,
+    SessionContextCompactionScanner,
+    SessionContextMessageCompactionService,
+)
 from app.services.agent_runtime.session_context_completion import (
     SessionContextCompletionHandler,
 )
@@ -101,6 +106,7 @@ class RuntimeWorkerComponents:
     graph_registry: RuntimeGraphRegistry
     driver: LangGraphRuntimeDriver
     worker: RuntimeCommandWorker
+    session_context_scanner: SessionContextCompactionScanner
 
 
 def runtime_worker_claimant() -> str:
@@ -237,6 +243,18 @@ def build_runtime_worker_components(
         session_factory=session_factory,
         settings=runtime_settings,
     )
+    session_context_scanner = SessionContextCompactionScanner(
+        session_factory=session_factory,
+        service=SessionContextMessageCompactionService(
+            lock_engine=lock_engine,
+            compactor=session_context_compactor,
+            context_service=session_context_service,
+            policy_resolver=SessionCompactPolicyResolver(
+                settings=runtime_settings,
+            ),
+        ),
+        settings=runtime_settings,
+    )
     post_checkpoint_handler = RuntimeCheckpointSideEffects(
         session_factory=session_factory,
         projector=projector,
@@ -278,6 +296,7 @@ def build_runtime_worker_components(
         graph_registry=graph_registry,
         driver=driver,
         worker=worker,
+        session_context_scanner=session_context_scanner,
     )
 
 
@@ -386,13 +405,20 @@ async def running_runtime_worker_context(
             daemon.run(stop),
             name="agent-runtime-command-worker",
         )
+        compact_task = asyncio.create_task(
+            components.session_context_scanner.run(stop),
+            name="agent-runtime-session-context-compact",
+        )
         try:
             yield components
         finally:
             stop.set()
             task.cancel()
+            compact_task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            with suppress(asyncio.CancelledError):
+                await compact_task
 
 
 __all__ = [
