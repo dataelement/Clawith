@@ -35,11 +35,10 @@ from app.database import async_session
 from app.models.task import Task
 from app.models.agent import Agent as AgentModel
 from app.models.org import AgentRelationship, OrgMember, AgentAgentRelationship
-from app.models.audit import ChatMessage, AuditLog
+from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
 from app.models.user import User as UserModel
-from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.services.document_conversion import (
@@ -57,7 +56,6 @@ from app.services.workspace_collaboration import (
     delete_workspace_file,
     move_workspace_path,
     normalize_workspace_path,
-    read_text_if_exists,
     write_workspace_file,
 )
 from app.services.storage import get_storage_backend, normalize_storage_key
@@ -67,11 +65,8 @@ from app.core.permissions import evaluate_agent_relationship_status, evaluate_hu
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.config import get_settings
 from app.services.llm.finish import (
-    FINISH_PROTOCOL_REMINDER,
     FINISH_TOOL_DEFINITION,
     FINISH_TOOL_NAME,
-    find_finish_call,
-    parse_tool_arguments,
 )
 
 
@@ -2112,36 +2107,6 @@ async def _agent_has_any_channel(agent_id: uuid.UUID) -> bool:
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
 
 
-def _strip_a2a_msg_type(tools: list[dict]) -> list[dict]:
-    """Remove the msg_type parameter from send_message_to_agent when async A2A is disabled.
-
-    This prevents the LLM from seeing and selecting notify/task_delegate modes
-    that would be silently overridden to consult anyway, which confuses users
-    who see the tool call arguments in the chat UI.
-    """
-    import copy
-    result = []
-    for t in tools:
-        fn = t.get("function", {})
-        if fn.get("name") == "send_message_to_agent":
-            t = copy.deepcopy(t)
-            fn = t["function"]
-            # Simplify description to only mention consult
-            fn["description"] = (
-                "Send a message to a digital employee colleague and receive their reply synchronously."
-            )
-            params = fn.get("parameters", {})
-            props = params.get("properties", {})
-            # Remove msg_type parameter entirely
-            props.pop("msg_type", None)
-            # Remove msg_type from required list
-            req = params.get("required", [])
-            if "msg_type" in req:
-                params["required"] = [r for r in req if r != "msg_type"]
-        result.append(t)
-    return result
-
-
 async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
 
@@ -2154,20 +2119,16 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     Also patches agentbay_file_transfer description with OS-specific paths based on
     the agent's computer tool configuration (os_type: 'windows' | 'linux').
 
-    When the tenant's a2a_async_enabled flag is False, the msg_type parameter is
-    removed from the send_message_to_agent tool so the LLM only sees the
-    synchronous consult behaviour.
+    A2A always exposes notify, consult, and task_delegate; the durable Runtime
+    owns their different wait/resume behavior.
     """
     has_feishu = await _agent_has_feishu(agent_id)
     has_any_channel = await _agent_has_any_channel(agent_id)
     _always_tools = _always_core_tools + (_feishu_tools if has_feishu else []) + (_channel_tools if has_any_channel else [])
 
-    # Check tenant-level a2a_async_enabled flag
-    _a2a_async = False
     is_system_agent = False
     agent_tenant_id = None
     try:
-        from app.models.tenant import Tenant
         from app.models.agent import Agent as AgentModel
         async with async_session() as _flag_db:
             _ag_r = await _flag_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
@@ -2175,11 +2136,6 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             _tid = _agent.tenant_id if _agent else None
             agent_tenant_id = _tid
             is_system_agent = bool(_agent and _agent.is_system)
-            if _tid:
-                _t_r = await _flag_db.execute(select(Tenant).where(Tenant.id == _tid))
-                _tenant = _t_r.scalar_one_or_none()
-                if _tenant:
-                    _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
     except Exception:
         pass
 
@@ -2290,9 +2246,6 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     )
                 # Inject OS-aware paths into computer-related tool descriptions
                 result = _patch_computer_tool_descriptions(result, computer_os_type)
-                # Strip msg_type from send_message_to_agent when async A2A is disabled
-                if not _a2a_async:
-                    result = _strip_a2a_msg_type(result)
                 # Final diagnostic: log the complete tool list and assignment stats
                 final_names = sorted(t["function"]["name"] for t in result)
                 logger.info(
@@ -2315,8 +2268,6 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     # can leak disabled tools (for example search tools) into the LLM. Keep only
     # the minimal always-available core/channel tools.
     fallback = _patch_computer_tool_descriptions(_always_tools, computer_os_type)
-    if not _a2a_async:
-        fallback = _strip_a2a_msg_type(fallback)
     return fallback
 
 
@@ -6852,658 +6803,23 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
         return f"❌ Agent file send error: {str(e)[:200]}"
 
 
-async def _resolve_a2a_target(
-    db, from_agent_id: uuid.UUID, agent_name: str
-) -> tuple[AgentModel | None, str | None]:
-    """Resolve the target agent for A2A communication.
-
-    Returns (target_agent, error_message). If target is None, error_message
-    explains why.  Caller is responsible for relationship / expiry checks.
-    """
-    src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
-    source_agent = src_result.scalar_one_or_none()
-    source_tenant_id = source_agent.tenant_id if source_agent else None
-
-    base_filter = [AgentModel.id != from_agent_id]
-    if source_tenant_id:
-        base_filter.append(AgentModel.tenant_id == source_tenant_id)
-
-    exact_result = await db.execute(
-        select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
-    )
-    target = exact_result.scalars().first()
-    if not target:
-        safe_name = agent_name.replace("%", "").replace("_", r"\_")
-        fuzzy_result = await db.execute(
-            select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
-        )
-        target = fuzzy_result.scalars().first()
-    if not target:
-        rel_r = await db.execute(
-            select(AgentModel.name).join(
-                AgentAgentRelationship,
-                (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
-            )
-        )
-        rel_names = [n for (n,) in rel_r.all()]
-        return None, f"❌ No agent found matching '{agent_name}'. Your connected colleagues: {', '.join(rel_names) if rel_names else 'none — ask your administrator to set up relationships'}"
-
-    return target, None
-
-
-async def _ensure_a2a_session(
-    db, from_agent_id: uuid.UUID, target_id: uuid.UUID, source_name: str, owner_id: uuid.UUID
-) -> tuple[ChatSession, str]:
-    """Find or create the ChatSession for a pair of agents.
-
-    Returns (chat_session, session_id_str).
-    """
-    from app.models.participant import Participant
-
-    session_agent_id = min(from_agent_id, target_id, key=str)
-    session_peer_id = max(from_agent_id, target_id, key=str)
-    sess_r = await db.execute(
-        select(ChatSession).where(
-            ChatSession.agent_id == session_agent_id,
-            ChatSession.peer_agent_id == session_peer_id,
-            ChatSession.source_channel == "agent",
-        )
-    )
-    chat_session = sess_r.scalar_one_or_none()
-    if not chat_session:
-        src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
-        src_participant = src_part_r.scalar_one_or_none()
-        src_part_id = src_participant.id if src_participant else None
-        chat_session = ChatSession(
-            agent_id=session_agent_id,
-            user_id=owner_id,
-            title=f"{source_name} ↔ {(await db.execute(select(AgentModel.name).where(AgentModel.id == target_id))).scalar() or 'Unknown'}",
-            source_channel="agent",
-            participant_id=src_part_id,
-            peer_agent_id=session_peer_id,
-        )
-        db.add(chat_session)
-        await db.flush()
-    return chat_session, str(chat_session.id)
-
-
-async def _create_on_message_trigger(
-    agent_id: uuid.UUID,
-    trigger_name: str,
-    from_agent_name: str,
-    reason: str,
-    focus_ref: str | None = None,
-    notification_summary: str | None = None,
-    origin_session_id: str | None = None,
-    origin_user_id: str | None = None,
-    origin_source_channel: str | None = None,
-) -> None:
-    """Programmatically create an on_message trigger for an agent."""
-    from app.models.trigger import AgentTrigger
-
-    focus_ref = await ensure_focus_item(
-        agent_id,
-        focus_ref=focus_ref,
-        description=reason or trigger_name,
-    )
-
-    config: dict = {"from_agent_name": from_agent_name}
-    if notification_summary:
-        config["_notification_summary"] = notification_summary
-    if origin_session_id:
-        config["_origin_session_id"] = origin_session_id
-    if origin_user_id:
-        config["_origin_user_id"] = origin_user_id
-    if origin_source_channel:
-        config["_origin_source_channel"] = origin_source_channel
-
-    try:
-        from app.models.audit import ChatMessage as _CM
-        from app.models.chat_session import ChatSession as _CS
-        from sqlalchemy import cast as sa_cast, String as SaString
-        async with async_session() as _snap_db:
-            _snap_q = select(_CM.created_at).join(
-                _CS, _CM.conversation_id == sa_cast(_CS.id, SaString)
-            ).where(
-                _CS.agent_id == agent_id,
-                _CM.created_at.isnot(None),
-            ).order_by(_CM.created_at.desc()).limit(1)
-            _snap_r = await _snap_db.execute(_snap_q)
-            _latest_ts = _snap_r.scalar_one_or_none()
-            if _latest_ts:
-                config["_since_ts"] = _latest_ts.isoformat()
-    except Exception:
-        pass
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(AgentTrigger).where(
-                AgentTrigger.agent_id == agent_id,
-                AgentTrigger.name == trigger_name,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
-            if existing.is_enabled:
-                existing.config = {**(existing.config or {}), **config}
-                existing.reason = reason
-                existing.fire_count = 0
-                if focus_ref:
-                    existing.focus_ref = focus_ref
-                await db.commit()
-                return
-            else:
-                existing.type = "on_message"
-                existing.config = config
-                existing.reason = reason
-                existing.focus_ref = focus_ref or None
-                existing.is_enabled = True
-                existing.fire_count = 0
-                await db.commit()
-                return
-
-        trigger = AgentTrigger(
-            agent_id=agent_id,
-            name=trigger_name,
-            type="on_message",
-            config=config,
-            reason=reason,
-            focus_ref=focus_ref or None,
-            max_fires=1,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-        )
-        db.add(trigger)
-        await db.commit()
-
-
-async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
-    """Create or update an in-progress Focus item."""
-    try:
-        await ensure_focus_item(agent_id, focus_ref=identifier, description=description)
-    except Exception as e:
-        logger.warning(f"[A2A] Failed to update Focus for agent {agent_id}: {e}")
-
-
-async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None) -> None:
-    """Wake an agent asynchronously via the trigger invocation path.
-
-    Delegates to the public wake_agent_with_context API in trigger_daemon.
-    """
-    from app.services.trigger_daemon import wake_agent_with_context
-    kwargs = {"from_agent_id": from_agent_id, "skip_dedup": skip_dedup}
-    if a2a_session_id is not None:
-        kwargs["a2a_session_id"] = a2a_session_id
-    await wake_agent_with_context(agent_id, reason_context, **kwargs)
-
-
-from dataclasses import dataclass, field
-
-
-@dataclass
-class A2AContext:
-    source_agent: AgentModel
-    target_agent: AgentModel
-    chat_session_id: str
-    session_agent_id: uuid.UUID
-    owner_id: uuid.UUID
-    src_participant_id: uuid.UUID | None
-    tgt_participant_id: uuid.UUID | None
-    msg_type: str
-    message_text: str
-    origin_source_channel: str
-    origin_session_id: str | None
-    primary_model: Optional["LLMModel"] = None
-    fallback_model: Optional["LLMModel"] = None
-    conversation_history: list[dict] = field(default_factory=list)
-
-
-async def _build_a2a_context(
-    from_agent_id: uuid.UUID,
-    args: dict,
-    user_id: uuid.UUID | None = None,
-    origin_session_id: str | None = None,
-) -> A2AContext | str:
-    agent_name = args.get("agent_name", "").strip()
-    message_text = args.get("message", "").strip()
-    msg_type = args.get("msg_type", "notify").strip().lower()
-    force_async = bool(args.get("force_async"))
-
-    if not agent_name or not message_text:
-        return "❌ Please provide target agent name and message content"
-
-    try:
-        from app.models.participant import Participant
-        from app.models.llm import LLMModel
-        from app.services.llm.utils import get_model_api_key
-
-        origin_source_channel = "web"
-        
-        async with async_session() as db:
-            if origin_session_id:
-                try:
-                    origin_sess_r = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(origin_session_id)))
-                    origin_sess = origin_sess_r.scalar_one_or_none()
-                    if origin_sess:
-                        origin_source_channel = origin_sess.source_channel
-                except Exception:
-                    pass
-
-            # Look up source agent
-            src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
-            source_agent = src_result.scalar_one_or_none()
-            if not source_agent:
-                return "❌ Source agent not found"
-            source_name = source_agent.name
-            source_tenant_id = source_agent.tenant_id
-            owner_id = user_id or source_agent.creator_id
-
-            # Build base filter: same tenant + not self
-            base_filter = [AgentModel.id != from_agent_id]
-            if source_tenant_id:
-                base_filter.append(AgentModel.tenant_id == source_tenant_id)
-
-            # Find target agent by name — exact match first, then fuzzy
-            target = None
-            exact_result = await db.execute(
-                select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
-            )
-            target = exact_result.scalars().first()
-            if not target:
-                safe_name = agent_name.replace("%", "").replace("_", r"\_")
-                fuzzy_result = await db.execute(
-                    select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
-                )
-                target = fuzzy_result.scalars().first()
-            if not target:
-                # Only show agents from relationships, not all agents
-                rel_r = await db.execute(
-                    select(AgentModel.name).join(
-                        AgentAgentRelationship,
-                        (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
-                    )
-                )
-                rel_names = [n for (n,) in rel_r.all()]
-                return f"❌ No agent found matching '{agent_name}'. Your connected colleagues: {', '.join(rel_names) if rel_names else 'none — ask your administrator to set up relationships'}"
-
-            # Check if target agent has expired
-            if target.is_expired or (target.expires_at and datetime.now(timezone.utc) >= target.expires_at):
-                return f"⚠️ {target.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
-
-            # Enforce relationship
-            rel_check = await db.execute(
-                select(AgentAgentRelationship).where(
-                    AgentAgentRelationship.agent_id == from_agent_id,
-                    AgentAgentRelationship.target_agent_id == target.id,
-                ).limit(1)
-            )
-            rel = rel_check.scalar_one_or_none()
-            if not rel:
-                return f"❌ You do not have a relationship with {target.name}. Only agents in your relationship list can be contacted. Ask your administrator to add a relationship if needed."
-            if hasattr(rel, "agent_id"):
-                status_info = await evaluate_agent_relationship_status(db, rel)
-                if status_info["access_status"] != "active":
-                    return f"❌ Relationship to {target.name} is not active ({status_info['access_status_reason'] or 'restricted'}). Ask a manager of both agents to review Relationships."
-
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
-            src_participant = src_part_r.scalar_one_or_none()
-            src_participant_id = src_participant.id if src_participant else None
-            
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
-            tgt_participant = tgt_part_r.scalar_one_or_none()
-            tgt_participant_id = tgt_participant.id if tgt_participant else None
-
-            # Find or create ChatSession for this agent pair (ordered consistently)
-            session_agent_id = min(from_agent_id, target.id, key=str)
-            session_peer_id = max(from_agent_id, target.id, key=str)
-            sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == session_agent_id,
-                    ChatSession.peer_agent_id == session_peer_id,
-                    ChatSession.source_channel == "agent",
-                )
-            )
-            chat_session = sess_r.scalar_one_or_none()
-            if not chat_session:
-                chat_session = ChatSession(
-                    agent_id=session_agent_id,
-                    user_id=owner_id,
-                    title=f"{source_name} ↔ {target.name}",
-                    source_channel="agent",
-                    participant_id=src_participant_id,
-                    peer_agent_id=session_peer_id,
-                )
-                db.add(chat_session)
-                await db.flush()
-
-            session_id = str(chat_session.id)
-
-            # Save source message (common to all paths)
-            db.add(ChatMessage(
-                agent_id=session_agent_id,
-                user_id=owner_id,
-                role="user",
-                content=message_text,
-                conversation_id=session_id,
-                participant_id=src_participant_id,
-            ))
-            chat_session.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
-
-            if getattr(target, "agent_type", "native") == "openclaw":
-                return A2AContext(
-                    source_agent=source_agent,
-                    target_agent=target,
-                    chat_session_id=session_id,
-                    session_agent_id=session_agent_id,
-                    owner_id=owner_id,
-                    src_participant_id=src_participant_id,
-                    tgt_participant_id=tgt_participant_id,
-                    msg_type=msg_type,
-                    message_text=message_text,
-                    origin_source_channel=origin_source_channel,
-                    origin_session_id=origin_session_id,
-                )
-
-            # ── Feature flag: async A2A (tenant-level) ──
-            _a2a_async = False
-            if source_tenant_id:
-                try:
-                    from app.models.tenant import Tenant
-                    _t_r = await db.execute(select(Tenant).where(Tenant.id == source_tenant_id))
-                    _tenant = _t_r.scalar_one_or_none()
-                    if _tenant:
-                        _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
-                except Exception:
-                    pass
-            if not _a2a_async and not force_async:
-                if msg_type in ("notify", "task_delegate"):
-                    msg_type = "consult"
-
-            primary_model = None
-            fallback_model = None
-            conversation_history: list[dict] = []
-
-            if msg_type == "consult":
-                # Load primary model
-                if target.primary_model_id:
-                    model_r = await db.execute(select(LLMModel).where(LLMModel.id == target.primary_model_id))
-                    primary_model = model_r.scalar_one_or_none()
-
-                # Fallback model
-                if target.fallback_model_id:
-                    fb_r = await db.execute(select(LLMModel).where(LLMModel.id == target.fallback_model_id))
-                    fallback_model = fb_r.scalar_one_or_none()
-
-                if not primary_model and not fallback_model:
-                    return f"⚠️ {target.name} has no LLM model configured"
-
-                # Load recent history for context
-                hist_result = await db.execute(
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.conversation_id == session_id,
-                        ChatMessage.agent_id == session_agent_id,
-                    )
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
-                )
-                for m in reversed(hist_result.scalars().all()):
-                    if m.participant_id and src_participant_id and m.participant_id == src_participant_id:
-                        role = "user"
-                    else:
-                        role = "assistant"
-                    conversation_history.append({"role": role, "content": m.content})
-
-            return A2AContext(
-                source_agent=source_agent,
-                target_agent=target,
-                chat_session_id=session_id,
-                session_agent_id=session_agent_id,
-                owner_id=owner_id,
-                src_participant_id=src_participant_id,
-                tgt_participant_id=tgt_participant_id,
-                msg_type=msg_type,
-                message_text=message_text,
-                origin_source_channel=origin_source_channel,
-                origin_session_id=origin_session_id,
-                primary_model=primary_model,
-                fallback_model=fallback_model,
-                conversation_history=conversation_history,
-            )
-    except Exception as e:
-        logger.exception(f"[A2A] _build_a2a_context failed: from={from_agent_id}")
-        return f"❌ A2A context error ({type(e).__name__}): {str(e)[:200]}"
-
-
-async def _a2a_handle_openclaw(ctx: A2AContext) -> str:
-    try:
-        async with async_session() as db:
-            # 2. Queue for Gateway
-            from app.models.gateway_message import GatewayMessage as GMsg
-            gw_msg = GMsg(
-                agent_id=ctx.target_agent.id,
-                sender_agent_id=ctx.source_agent.id,
-                sender_user_id=ctx.owner_id,
-                content=f"[From {ctx.source_agent.name}] {ctx.message_text}",
-                status="pending",
-                conversation_id=ctx.chat_session_id,
-            )
-            db.add(gw_msg)
-            await db.commit()
-            
-            # 3. Log activity
-            from app.services.activity_logger import log_activity
-            await log_activity(
-                ctx.source_agent.id, "agent_msg_sent",
-                f"Sent message to {ctx.target_agent.name} (queued)",
-                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200]},
-            )
-
-            online = ctx.target_agent.openclaw_last_seen and (datetime.now(timezone.utc) - ctx.target_agent.openclaw_last_seen).total_seconds() < 300
-            status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
-            return f"✅ Message sent to {ctx.target_agent.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
-    except Exception as e:
-        logger.exception(f"[A2A] _a2a_handle_openclaw failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
-        return f"❌ OpenClaw send error ({type(e).__name__}): {str(e)[:200]}"
-
-
-async def _a2a_handle_notify(ctx: A2AContext) -> str:
-    try:
-        try:
-            from app.services.activity_logger import log_activity
-            await log_activity(
-                ctx.source_agent.id, "agent_msg_sent",
-                f"Sent notification to {ctx.target_agent.name}",
-                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "msg_type": "notify"},
-            )
-        except Exception:
-            pass
-
-        try:
-            await _wake_agent_async(
-                ctx.target_agent.id,
-                f"[From {ctx.source_agent.name}] {ctx.message_text}",
-                from_agent_id=ctx.source_agent.id,
-                skip_dedup=True,
-                a2a_session_id=ctx.chat_session_id,
-            )
-        except Exception as e:
-            logger.warning(f"[A2A] Failed to wake {ctx.target_agent.name} for notify: {e}")
-
-        return f"✅ Notification sent to {ctx.target_agent.name}. They will process it asynchronously."
-    except Exception as e:
-        logger.exception(f"[A2A] _a2a_handle_notify failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
-        return f"❌ Notification error ({type(e).__name__}): {str(e)[:200]}"
-
-
-async def _a2a_handle_task_delegate(ctx: A2AContext) -> str:
-    try:
-        focus_id = f"wait_{ctx.target_agent.name.lower().replace(' ', '_')}_task"
-        focus_desc = f"Waiting for {ctx.target_agent.name} to complete delegated task: {ctx.message_text[:100]}"
-
-        try:
-            await _append_focus_item(ctx.source_agent.id, focus_id, focus_desc)
-        except Exception as e:
-            logger.warning(f"[A2A] Failed to write focus for delegate: {e}")
-
-        trigger_name = f"a2a_wait_{ctx.target_agent.name.lower().replace(' ', '_')}"
-        trigger_reason = (
-            f"{ctx.target_agent.name} has replied with the result of a delegated task. "
-            f"Original task: {ctx.message_text[:200]}. "
-            f"Steps: 1) Process {ctx.target_agent.name}'s reply. "
-            f"2) Mark focus item '{focus_id}' as completed. "
-            f"3) Cancel this trigger. "
-            f"USER-FACING OUTPUT RULES: Your reply goes directly to the user's chat. "
-            f"Write in natural, conversational language as if talking to a colleague. "
-            f"NEVER use technical terms like: trigger name, focus item, a2a_wait, "
-            f"task_delegate, focus_ref, or any internal identifier. "
-            f"NEVER mention your internal operations (canceling triggers, updating focus, "
-            f"marking items complete, trigger status, etc.). "
-            f"Just summarize the task result in plain language."
-        )
-        try:
-            await _create_on_message_trigger(
-                agent_id=ctx.source_agent.id,
-                trigger_name=trigger_name,
-                from_agent_name=ctx.target_agent.name,
-                reason=trigger_reason,
-                focus_ref=focus_id,
-                notification_summary=f"等待{ctx.target_agent.name}完成任务并回复",
-                origin_session_id=ctx.origin_session_id,
-                origin_user_id=str(ctx.owner_id) if ctx.owner_id else None,
-                origin_source_channel=ctx.origin_source_channel,
-            )
-        except Exception as e:
-            logger.warning(f"[A2A] Failed to create trigger for delegate: {e}")
-
-        try:
-            from app.services.activity_logger import log_activity
-            await log_activity(
-                ctx.source_agent.id, "agent_msg_sent",
-                f"Delegated task to {ctx.target_agent.name}",
-                detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "msg_type": "task_delegate"},
-            )
-        except Exception:
-            pass
-
-        try:
-            await _wake_agent_async(
-                ctx.target_agent.id,
-                f"[From {ctx.source_agent.name}] {ctx.message_text}",
-                from_agent_id=ctx.source_agent.id,
-                skip_dedup=True,
-                a2a_session_id=ctx.chat_session_id,
-            )
-        except Exception as e:
-            logger.warning(f"[A2A] Failed to wake {ctx.target_agent.name} for delegate: {e}")
-
-        return f"✅ Task delegated to {ctx.target_agent.name}. You will be notified when they complete it."
-    except Exception as e:
-        logger.exception(f"[A2A] _a2a_handle_task_delegate failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
-        return f"❌ Task delegation error ({type(e).__name__}): {str(e)[:200]}"
-
-
-async def _a2a_handle_consult(ctx: A2AContext) -> str:
-    try:
-        suffix = (
-            "\n\n--- Agent-to-Agent Message ---\n"
-            "You are receiving a message from another digital employee. "
-            "Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
-            "\n🔴 **RESPONSE PROTOCOL — MANDATORY:**\n"
-            "You MUST call `finish(content=\"...\")` with your complete answer. "
-            "Do NOT output plain text without calling `finish`. "
-            "Plain text responses will be REJECTED and you will be asked to redo.\n"
-            "\n** CRITICAL FILE DELIVERY RULE **\n"
-            f"After you write any file (report, document, analysis, etc.) that the requesting agent needs, "
-            f"you MUST call `send_file_to_agent(agent_name=\"{ctx.source_agent.name}\", file_path=\"<path>\")` "
-            f"to deliver it. The other agent CANNOT access your workspace. "
-            f"Never just tell them the path — always deliver explicitly.\n"
-        )
-
-        conversation_messages = list(ctx.conversation_history)
-        conversation_messages.append({"role": "user", "content": f"[From {ctx.source_agent.name}] {ctx.message_text}"})
-
-        from app.services.llm.caller import call_llm_with_failover
-
-        target_reply = await call_llm_with_failover(
-            primary_model=ctx.primary_model,
-            fallback_model=ctx.fallback_model,
-            messages=conversation_messages,
-            agent_name=ctx.target_agent.name,
-            role_description=ctx.target_agent.role_description or "",
-            agent_id=ctx.target_agent.id,
-            user_id=ctx.owner_id,
-            session_id=ctx.chat_session_id,
-            current_user_name_override=ctx.source_agent.name,
-            system_prompt_suffix=suffix,
-        )
-
-        if not target_reply or target_reply.startswith("⚠️") or target_reply.startswith("[Error]") or target_reply.startswith("[LLM Error]") or target_reply.startswith("[LLM call error]"):
-            return target_reply or f"⚠️ {ctx.target_agent.name} did not respond (LLM returned empty)"
-
-        # Save target reply
-        async with async_session() as db2:
-            from app.models.participant import Participant
-            part_r = await db2.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == ctx.target_agent.id))
-            tgt_part = part_r.scalar_one_or_none()
-            db2.add(ChatMessage(
-                agent_id=ctx.session_agent_id,
-                user_id=ctx.owner_id,
-                role="assistant",
-                content=target_reply,
-                conversation_id=ctx.chat_session_id,
-                participant_id=tgt_part.id if tgt_part else None,
-            ))
-            await db2.commit()
-
-        # Log activity
-        from app.services.activity_logger import log_activity
-        await log_activity(
-            ctx.target_agent.id, "agent_msg_sent",
-            f"Replied to message from {ctx.source_agent.name}",
-            detail={"partner": ctx.source_agent.name, "message": ctx.message_text[:200], "reply": target_reply[:200]},
-        )
-        await log_activity(
-            ctx.source_agent.id, "agent_msg_sent",
-            f"Sent message to {ctx.target_agent.name} and received reply",
-            detail={"partner": ctx.target_agent.name, "message": ctx.message_text[:200], "reply": target_reply[:200]},
-        )
-
-        return f"💬 {ctx.target_agent.name} replied:\n{target_reply}"
-
-    except Exception as e:
-        logger.exception(f"[A2A] _a2a_handle_consult failed: from={ctx.source_agent.id}, to={ctx.target_agent.id}")
-        return f"❌ Consult request error ({type(e).__name__}): {str(e)[:200]}"
-
-
 async def _send_message_to_agent(
     from_agent_id: uuid.UUID,
     args: dict,
     user_id: uuid.UUID | None = None,
     origin_session_id: str | None = None,
 ) -> str:
-    """Send a message to another digital employee.
+    """Fail closed when a caller bypasses the Runtime tool-step service.
 
-    Behaviour depends on ``msg_type``:
-    - notify:   fire-and-forget — message is saved, target is woken asynchronously.
-                Returns immediately.
-    - task_delegate: async with callback — message is saved, source agent sets up
-                a focus item + on_message trigger so it is notified when the
-                target completes the task.  Returns immediately.
-    - consult:  synchronous request-response (original behaviour).
+    The schema remains in ``agent_tools`` because models still call this tool,
+    but execution must be intercepted by ``RuntimeA2AService`` where the source
+    Run, tool receipt, target Run or Gateway message, and callback are durable.
     """
-    ctx_or_err = await _build_a2a_context(from_agent_id, args, user_id, origin_session_id)
-    if isinstance(ctx_or_err, str):
-        return ctx_or_err
-    ctx = ctx_or_err
-
-    if ctx.target_agent.agent_type == "openclaw":
-        return await _a2a_handle_openclaw(ctx)
-    if ctx.msg_type == "notify":
-        return await _a2a_handle_notify(ctx)
-    if ctx.msg_type == "task_delegate":
-        return await _a2a_handle_task_delegate(ctx)
-    return await _a2a_handle_consult(ctx)
+    del from_agent_id, args, user_id, origin_session_id
+    return (
+        "❌ send_message_to_agent requires a durable Agent Runtime Run; "
+        "the message was not sent."
+    )
 
 
 

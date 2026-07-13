@@ -659,3 +659,20 @@ def test_a2a_receipt_rebuilds_wait_and_validates_correlation() -> None:
     with pytest.raises(A2ARuntimeError) as raised:
         a2a_mode_from_correlation("a2a:consult:not-a-uuid")
     assert raised.value.code == "a2a_correlation_invalid"
+
+
+@pytest.mark.asyncio
+async def test_legacy_a2a_executor_fails_closed_without_side_effects() -> None:
+    from app.services.agent_tools import _send_message_to_agent
+
+    result = await _send_message_to_agent(
+        uuid.uuid4(),
+        {
+            "agent_name": "Researcher",
+            "message": "Check the facts",
+            "msg_type": "consult",
+        },
+    )
+
+    assert "requires a durable Agent Runtime Run" in result
+    assert "was not sent" in result

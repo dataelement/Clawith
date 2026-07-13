@@ -16,38 +16,6 @@ from app.models.trigger_execution import TriggerExecution
 settings = get_settings()
 
 
-async def mark_trigger_executions_completed(execution_ids: list[uuid.UUID]) -> None:
-    if not execution_ids:
-        return
-    async with async_session() as db:
-        result = await db.execute(
-            select(TriggerExecution).where(TriggerExecution.id.in_(execution_ids))
-        )
-        for execution in result.scalars().all():
-            execution.status = "completed"
-            execution.finished_at = datetime.now(timezone.utc)
-            execution.lease_owner = None
-            execution.lease_expires_at = None
-            execution.last_error = None
-        await db.commit()
-
-
-async def mark_trigger_executions_failed(execution_ids: list[uuid.UUID], error_text: str) -> None:
-    if not execution_ids:
-        return
-    async with async_session() as db:
-        result = await db.execute(
-            select(TriggerExecution).where(TriggerExecution.id.in_(execution_ids))
-        )
-        for execution in result.scalars().all():
-            execution.status = "failed"
-            execution.finished_at = datetime.now(timezone.utc)
-            execution.lease_owner = None
-            execution.lease_expires_at = None
-            execution.last_error = error_text
-        await db.commit()
-
-
 async def claim_pending_trigger_executions(
     *,
     sources: list[str] | None = None,
