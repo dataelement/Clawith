@@ -327,6 +327,7 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
     ]
     assert lifecycle["run_messages"] == [
         {
+            "id": str(uuid.uuid5(run_id, "resume:command-resume")),
             "role": "user",
             "content": {"confirmed": True},
             "runtime_input": "resume",
@@ -397,6 +398,12 @@ async def test_verification_repairs_are_bounded() -> None:
     assert lifecycle["status"] == "failed"
     assert lifecycle["reason"] == "verification_repair_limit_reached"
     assert lifecycle["verification_attempt_count"] == 2
-    assert lifecycle["run_messages"] == [{"role": "user", "content": "add evidence"}]
+    assert lifecycle["run_messages"] == [
+        {
+            "id": str(uuid.uuid5(run_id, "verification:1:repair")),
+            "role": "user",
+            "content": "add evidence",
+        }
+    ]
     assert verifier.calls == ["first", "second"]
     assert len(terminal.states) == 1

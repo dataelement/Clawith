@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
+import uuid
 
 from app.services.agent_runtime.state import (
     JsonObject,
@@ -51,6 +52,7 @@ class ModelStepResult:
     tool_calls: tuple[JsonObject, ...] = ()
     waiting_request: JsonObject | None = None
     finish_content: str | None = None
+    repair_instruction: str | None = None
     error: JsonObject | None = None
 
 
@@ -245,6 +247,10 @@ def _error(code: str, message: str) -> JsonObject:
     return {"code": code, "message": message}
 
 
+def _runtime_message_id(state: RuntimeGraphState, position: str) -> str:
+    return str(uuid.uuid5(uuid.UUID(state["registry"].run_id), position))
+
+
 def _validate_waiting_request(request: JsonObject | None) -> JsonObject:
     if request is None:
         raise RuntimeNodeTransitionError(
@@ -388,7 +394,16 @@ class DeterministicRuntimeNodeExecutor:
                 }
             )
         elif result.intent == "text":
-            messages.append({"role": "user", "content": FINISH_PROTOCOL_REMINDER})
+            messages.append(
+                {
+                    "id": _runtime_message_id(
+                        state,
+                        f"model-step:{step_count}:repair",
+                    ),
+                    "role": "user",
+                    "content": result.repair_instruction or FINISH_PROTOCOL_REMINDER,
+                }
+            )
             lifecycle.update(
                 {
                     "status": "running",
@@ -527,6 +542,10 @@ class DeterministicRuntimeNodeExecutor:
                 messages = _messages(state["lifecycle"])
                 messages.append(
                     {
+                        "id": _runtime_message_id(
+                            state,
+                            f"verification:{attempts}:repair",
+                        ),
                         "role": "user",
                         "content": verification.reason or "The finish candidate needs repair before completion.",
                     }
@@ -561,6 +580,7 @@ class DeterministicRuntimeNodeExecutor:
     async def _wait(
         self,
         state: RuntimeGraphState,
+        context: RuntimeContext,
         resume_value: JsonValue | None,
     ) -> RuntimeStateUpdate:
         if state["lifecycle"]["status"] not in _WAITING_STATUSES:
@@ -577,6 +597,10 @@ class DeterministicRuntimeNodeExecutor:
         messages = _messages(state["lifecycle"])
         messages.append(
             {
+                "id": _runtime_message_id(
+                    state,
+                    f"resume:{context.command_id}",
+                ),
                 "role": "user",
                 "content": dict(cast(Mapping[str, JsonValue], resume_value)),
                 "runtime_input": "resume",
@@ -610,7 +634,7 @@ class DeterministicRuntimeNodeExecutor:
         if node == "verify":
             return await self._verify(state, context)
         if node == "wait":
-            return await self._wait(state, resume_value)
+            return await self._wait(state, context, resume_value)
         if node == "terminal":
             if state["lifecycle"]["status"] not in _TERMINAL_STATUSES:
                 raise RuntimeNodeTransitionError(
