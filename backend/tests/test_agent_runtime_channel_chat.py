@@ -86,4 +86,3 @@ async def test_channel_intake_resumes_the_latest_waiting_run(monkeypatch) -> Non
     assert enqueue["resume_correlation_id"] == "approval-7"
     assert enqueue["source_channel"] == "wechat"
     assert enqueue["channel_delivery_target"] == {"user_id": "wechat-user-1"}
-

@@ -166,4 +166,3 @@ class ChannelDelivery(Base):
         DateTime(timezone=True),
         nullable=True,
     )
-

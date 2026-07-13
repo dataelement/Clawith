@@ -243,4 +243,3 @@ async def test_worker_marks_only_the_latest_delivery_failed_after_max_attempts()
     events = [item for item in failed.added if isinstance(item, AgentRunEvent)]
     assert len(events) == 1
     assert events[0].event_type == "channel_delivery_failed"
-
