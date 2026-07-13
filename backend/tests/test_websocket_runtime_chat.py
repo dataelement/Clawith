@@ -10,7 +10,9 @@ import uuid
 from fastapi import WebSocketDisconnect
 import pytest
 
-from app.api.websocket import WebSocketChatHandler
+from app.api.websocket import WebChatRuntimeIntake, WebSocketChatHandler
+from app.models.chat_session import ChatSession
+from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_runtime.chat_intake import ChatRuntimeIntake
 from app.services.agent_runtime.chat_stream import ChatRuntimeStreamOutcome
@@ -44,6 +46,9 @@ class _Transaction:
 
 
 class _Session:
+    def __init__(self, records: dict[type, object] | None = None) -> None:
+        self.records = records or {}
+
     async def __aenter__(self):
         return self
 
@@ -52,6 +57,9 @@ class _Session:
 
     def begin(self):
         return _Transaction()
+
+    async def get(self, model, _identity):
+        return self.records.get(model)
 
 
 def _handler(websocket: _WebSocket) -> WebSocketChatHandler:
@@ -111,7 +119,11 @@ async def test_native_message_uses_runtime_without_entering_legacy_tool_loop() -
     with (
         patch.object(handler, "_resolve_effective_model", new=AsyncMock(return_value=model)),
         patch.object(handler, "_check_quotas", new=AsyncMock(return_value=True)),
-        patch.object(handler, "_enqueue_runtime_chat", new=AsyncMock(return_value=intake)) as enqueue,
+        patch.object(
+            handler,
+            "_enqueue_runtime_chat",
+            new=AsyncMock(return_value=WebChatRuntimeIntake(run=intake)),
+        ) as enqueue,
         patch.object(
             handler,
             "_run_runtime_and_stream",
@@ -126,6 +138,7 @@ async def test_native_message_uses_runtime_without_entering_legacy_tool_loop() -
     enqueue.assert_awaited_once()
     assert enqueue.await_args.kwargs["content"] == "Investigate the issue"
     assert enqueue.await_args.kwargs["model_id"] == model.id
+    assert enqueue.await_args.kwargs["is_onboarding_trigger"] is False
     run_runtime.assert_awaited_once_with(
         intake,
         user_content="Investigate the issue",
@@ -154,7 +167,11 @@ async def test_next_message_resumes_the_exact_wait_returned_on_this_socket() -> 
     with (
         patch.object(handler, "_resolve_effective_model", new=AsyncMock(return_value=model)),
         patch.object(handler, "_check_quotas", new=AsyncMock(return_value=True)),
-        patch.object(handler, "_enqueue_runtime_chat", new=AsyncMock(return_value=intake)) as enqueue,
+        patch.object(
+            handler,
+            "_enqueue_runtime_chat",
+            new=AsyncMock(return_value=WebChatRuntimeIntake(run=intake)),
+        ) as enqueue,
         patch.object(
             handler,
             "_run_runtime_and_stream",
@@ -166,6 +183,141 @@ async def test_next_message_resumes_the_exact_wait_returned_on_this_socket() -> 
 
     assert enqueue.await_args.kwargs["resume_run_id"] == handler.waiting_runtime_run_id
     assert enqueue.await_args.kwargs["resume_correlation_id"] == "publish-confirmation"
+
+
+@pytest.mark.asyncio
+async def test_disabled_runtime_fails_closed_without_legacy_execution() -> None:
+    websocket = _WebSocket({"content": "Do not run this through legacy"})
+    handler = _handler(websocket)
+    model = SimpleNamespace(id=uuid.uuid4())
+
+    with (
+        patch.object(handler, "_resolve_effective_model", new=AsyncMock(return_value=model)),
+        patch.object(handler, "_check_quotas", new=AsyncMock(return_value=True)),
+        patch.object(handler, "_enqueue_runtime_chat", new=AsyncMock(return_value=None)),
+        patch.object(handler, "_save_user_message", new=AsyncMock()) as legacy_save,
+        patch.object(handler, "_run_llm_and_stream", new=AsyncMock()) as legacy_llm,
+    ):
+        with pytest.raises(WebSocketDisconnect):
+            await handler.message_loop()
+
+    assert websocket.sent == [
+        {
+            "type": "error",
+            "content": "Durable Runtime is not enabled for native Web Chat.",
+            "code": "runtime_disabled",
+        }
+    ]
+    legacy_save.assert_not_awaited()
+    legacy_llm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_trigger_uses_runtime_and_advances_after_completion() -> None:
+    websocket = _WebSocket({"kind": "onboarding_trigger"})
+    handler = _handler(websocket)
+    model = SimpleNamespace(id=uuid.uuid4())
+    intake = ChatRuntimeIntake(
+        handle=_handle(handler.user.tenant_id),
+        message_id=uuid.uuid4(),
+        resumed=False,
+    )
+    outcome = ChatRuntimeStreamOutcome(
+        status="completed",
+        content="Welcome",
+        cursor=RuntimeEventCursor(
+            datetime(2026, 7, 14, 10, 0, tzinfo=UTC),
+            uuid.uuid4(),
+        ),
+    )
+
+    with (
+        patch.object(handler, "_handle_onboarding_trigger_guard", new=AsyncMock(return_value=False)),
+        patch.object(handler, "_resolve_effective_model", new=AsyncMock(return_value=model)),
+        patch.object(handler, "_check_quotas", new=AsyncMock(return_value=True)),
+        patch.object(
+            handler,
+            "_enqueue_runtime_chat",
+            new=AsyncMock(
+                return_value=WebChatRuntimeIntake(
+                    run=intake,
+                    onboarding_target_phase="greeted",
+                )
+            ),
+        ) as enqueue,
+        patch.object(
+            handler,
+            "_run_runtime_and_stream",
+            new=AsyncMock(return_value=(outcome, [])),
+        ) as run_runtime,
+        patch.object(handler, "_mark_onboarding_runtime_phase", new=AsyncMock()) as mark,
+        patch.object(handler, "_run_llm_and_stream", new=AsyncMock()) as legacy_llm,
+    ):
+        with pytest.raises(WebSocketDisconnect):
+            await handler.message_loop()
+
+    assert enqueue.await_args.kwargs["content"] == "Please begin the onboarding."
+    assert enqueue.await_args.kwargs["is_onboarding_trigger"] is True
+    run_runtime.assert_awaited_once_with(
+        intake,
+        user_content="Please begin the onboarding.",
+    )
+    mark.assert_awaited_once_with("greeted")
+    legacy_llm.assert_not_awaited()
+    assert handler.conversation == [{"role": "assistant", "content": "Welcome"}]
+
+
+@pytest.mark.asyncio
+async def test_web_intake_pins_onboarding_metadata_without_a_visible_user_message() -> None:
+    handler = _handler(_WebSocket())
+    model = SimpleNamespace(id=uuid.uuid4())
+    session = SimpleNamespace(title="Session 1")
+    agent = SimpleNamespace(id=handler.agent_id)
+    intake = ChatRuntimeIntake(
+        handle=_handle(handler.user.tenant_id),
+        message_id=uuid.uuid4(),
+        resumed=False,
+    )
+    db = _Session({User: handler.user, ChatSession: session, LLMModel: model})
+    onboarding = SimpleNamespace(
+        prompt="Trusted greeting prompt",
+        target_phase="greeted",
+        lock_on_first_chunk=True,
+        is_greeting_turn=True,
+    )
+
+    with (
+        patch("app.api.websocket.async_session", return_value=db),
+        patch("app.api.websocket.check_agent_access", new=AsyncMock(return_value=(agent, None))),
+        patch(
+            "app.api.websocket.resolve_onboarding_prompt",
+            new=AsyncMock(return_value=onboarding),
+        ),
+        patch(
+            "app.api.websocket.enqueue_chat_runtime",
+            new=AsyncMock(return_value=intake),
+        ) as enqueue,
+    ):
+        result = await handler._enqueue_runtime_chat(
+            content="Please begin the onboarding.",
+            display_content="",
+            file_name="",
+            model_id=model.id,
+            message_id=None,
+            resume_run_id=None,
+            resume_correlation_id=None,
+            is_onboarding_trigger=True,
+        )
+
+    assert result == WebChatRuntimeIntake(
+        run=intake,
+        onboarding_target_phase="greeted",
+    )
+    assert enqueue.await_args.kwargs["runtime_instruction"] == "Trusted greeting prompt"
+    assert enqueue.await_args.kwargs["onboarding_target_phase"] == "greeted"
+    assert enqueue.await_args.kwargs["persist_user_message"] is False
+    assert enqueue.await_args.kwargs["application_tools_enabled"] is False
+    assert session.title == "Onboarding"
 
 
 @pytest.mark.asyncio

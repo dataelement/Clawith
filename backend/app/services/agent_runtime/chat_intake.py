@@ -259,6 +259,7 @@ async def enqueue_chat_runtime(
     resume_correlation_id: str | None = None,
     source_channel: str = "web",
     runtime_instruction: str = "",
+    onboarding_target_phase: str = "",
     persist_user_message: bool = True,
     application_tools_enabled: bool = True,
     settings_override: Settings | None = None,
@@ -289,6 +290,7 @@ async def enqueue_chat_runtime(
             "Runtime Chat source_channel must not be blank",
         )
     normalized_runtime_instruction = runtime_instruction.strip()
+    normalized_onboarding_target_phase = onboarding_target_phase.strip()
     tenant_id = _validate_scope(
         agent=agent,
         user=user,
@@ -398,6 +400,11 @@ async def enqueue_chat_runtime(
                 **(
                     {"runtime_instruction": normalized_runtime_instruction}
                     if normalized_runtime_instruction
+                    else {}
+                ),
+                **(
+                    {"onboarding_target_phase": normalized_onboarding_target_phase}
+                    if normalized_onboarding_target_phase
                     else {}
                 ),
             },

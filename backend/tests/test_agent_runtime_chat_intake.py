@@ -152,6 +152,7 @@ async def test_chat_message_and_start_command_share_the_caller_session() -> None
             display_content="Visible question",
             file_name="evidence.txt",
             runtime_instruction="  Begin the trusted onboarding flow.  ",
+            onboarding_target_phase="  greeted  ",
             message_id=message_id,
             settings_override=_settings(enabled=True),
         )
@@ -187,6 +188,7 @@ async def test_chat_message_and_start_command_share_the_caller_session() -> None
     assert command.payload["message_id"] == str(message_id)
     assert command.payload["input_content"] == "raw question"
     assert command.payload["runtime_instruction"] == "Begin the trusted onboarding flow."
+    assert command.payload["onboarding_target_phase"] == "greeted"
     assert command.actor_user_id == user.id
 
 

@@ -2,8 +2,8 @@
 
 import asyncio
 from collections import deque
+from dataclasses import dataclass
 import json
-import re
 import uuid
 from datetime import datetime, timezone as tz
 from time import perf_counter
@@ -56,6 +56,14 @@ router = APIRouter(tags=["websocket"])
 
 MAX_LIVE_CODE_STREAM_CHARS = 120_000
 LIVE_CODE_TRUNCATED_NOTICE = "\n\n[... live output truncated; execution continues ...]\n"
+
+
+@dataclass(frozen=True, slots=True)
+class WebChatRuntimeIntake:
+    """Runtime intake plus the Web-only onboarding phase notification."""
+
+    run: ChatRuntimeIntake
+    onboarding_target_phase: str | None = None
 
 
 def extract_partial_content(args_str: str) -> str:
@@ -532,103 +540,91 @@ class WebSocketChatHandler:
             if not await self._check_quotas():
                 continue
 
-            # Runtime v2 owns native Web Chat execution when selected. The
-            # invisible onboarding kickoff and remote OpenClaw gateway retain
-            # their compatibility paths until their channel-specific cutover.
-            if (
-                self.agent_type != "openclaw"
-                and not is_onboarding_trigger
-                and effective_llm_model is not None
-            ):
-                try:
-                    intake = await self._enqueue_runtime_chat(
-                        content=content,
-                        display_content=display_content,
-                        file_name=file_name,
-                        model_id=effective_llm_model.id,
-                        message_id=message_id,
-                        resume_run_id=resume_run_id,
-                        resume_correlation_id=resume_correlation_id,
-                    )
-                except ChatRuntimeIntakeError as exc:
-                    logger.warning(f"[WS] Runtime chat intake rejected ({exc.code}): {exc}")
-                    await self.websocket.send_json(
-                        {"type": "error", "content": str(exc), "code": exc.code}
-                    )
-                    continue
-                except Exception as exc:
-                    error_code = getattr(exc, "code", "runtime_intake_failed")
-                    logger.exception(f"[WS] Runtime chat intake failed ({error_code}): {exc}")
-                    await self.websocket.send_json(
-                        {
-                            "type": "error",
-                            "content": "Message could not be accepted by the durable Runtime.",
-                            "code": error_code,
-                        }
-                    )
-                    continue
-
-                if intake is not None:
-                    outcome, queued_messages = await self._run_runtime_and_stream(
-                        intake,
-                        user_content=content,
-                    )
-                    pending_messages.extend(queued_messages)
-                    if outcome is not None:
-                        self.conversation.extend(
-                            [
-                                {"role": "user", "content": content},
-                                {"role": "assistant", "content": outcome.content},
-                            ]
-                        )
-                    continue
-
-            # Add user message to in-memory context
-            self.conversation.append({"role": "user", "content": content})
-
-            # Save user message to DB
-            await self._save_user_message(content, display_content, file_name, is_onboarding_trigger)
-
-            # OpenClaw routing check
+            # Remote OpenClaw remains a gateway transport; every native Agent
+            # must enter through the durable Runtime and never fall back to the
+            # legacy in-request model/tool loop.
             if self.agent_type == "openclaw":
+                self.conversation.append({"role": "user", "content": content})
+                await self._save_user_message(
+                    content,
+                    display_content,
+                    file_name,
+                    is_onboarding_trigger,
+                )
                 await self._route_openclaw(content)
                 continue
 
-            # Detect task creation intent
-            task_match = re.search(
-                r"(?:创建|新建|添加|建一个|帮我建|create|add)(?:一个|a )?(?:任务|待办|todo|task)[，,：：:\\s]*(.+)",
-                content,
-                re.IGNORECASE,
+            if effective_llm_model is None:
+                await self.websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": (
+                            f"{self.agent_name} has no enabled LLM model configured. "
+                            "Select a model in Agent Settings."
+                        ),
+                        "code": "model_unavailable",
+                    }
+                )
+                continue
+
+            try:
+                web_intake = await self._enqueue_runtime_chat(
+                    content=content,
+                    display_content=display_content,
+                    file_name=file_name,
+                    model_id=effective_llm_model.id,
+                    message_id=message_id,
+                    resume_run_id=resume_run_id,
+                    resume_correlation_id=resume_correlation_id,
+                    is_onboarding_trigger=is_onboarding_trigger,
+                )
+            except ChatRuntimeIntakeError as exc:
+                logger.warning(f"[WS] Runtime chat intake rejected ({exc.code}): {exc}")
+                await self.websocket.send_json(
+                    {"type": "error", "content": str(exc), "code": exc.code}
+                )
+                continue
+            except Exception as exc:
+                error_code = getattr(exc, "code", "runtime_intake_failed")
+                logger.exception(f"[WS] Runtime chat intake failed ({error_code}): {exc}")
+                await self.websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": "Message could not be accepted by the durable Runtime.",
+                        "code": error_code,
+                    }
+                )
+                continue
+
+            if web_intake is None:
+                await self.websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": "Durable Runtime is not enabled for native Web Chat.",
+                        "code": "runtime_disabled",
+                    }
+                )
+                continue
+
+            outcome, queued_messages = await self._run_runtime_and_stream(
+                web_intake.run,
+                user_content=content,
             )
-
-            # Invoke LLM and stream response
-            if effective_llm_model:
-                assistant_response, thinking_content, queued_messages = await self._run_llm_and_stream(
-                    effective_llm_model, is_onboarding_trigger
-                )
-            else:
-                assistant_response = (
-                    f"⚠️ {self.agent_name} has no LLM model configured. "
-                    "Please select a model in the agent's Settings tab."
-                )
-                thinking_content = []
-                queued_messages = []
-
-            # If task creation detected, create a real Task record
-            if task_match:
-                assistant_response = await self._create_task_record(task_match.group(1).strip(), assistant_response)
-
-            # Add assistant response to in-memory conversation
-            self.conversation.append({"role": "assistant", "content": assistant_response})
-
-            # Save assistant reply
-            await self._save_assistant_reply(assistant_response, thinking_content)
-
-            # Final 'done' packet
-            await self.websocket.send_json({"type": "done", "role": "assistant", "content": assistant_response})
-
-            # Re-process any queued messages (if user sent something during generation)
             pending_messages.extend(queued_messages)
+            if outcome is not None:
+                if not is_onboarding_trigger:
+                    self.conversation.append({"role": "user", "content": content})
+                self.conversation.append(
+                    {"role": "assistant", "content": outcome.content}
+                )
+                if (
+                    outcome.status == "completed"
+                    and web_intake.onboarding_target_phase is not None
+                ):
+                    await self._mark_onboarding_runtime_phase(
+                        web_intake.onboarding_target_phase
+                    )
+            continue
 
     @staticmethod
     def _optional_client_uuid(value: object, *, field: str) -> uuid.UUID | None:
@@ -652,7 +648,8 @@ class WebSocketChatHandler:
         message_id: uuid.UUID | None,
         resume_run_id: uuid.UUID | None,
         resume_correlation_id: str | None,
-    ) -> ChatRuntimeIntake | None:
+        is_onboarding_trigger: bool,
+    ) -> WebChatRuntimeIntake | None:
         """Revalidate mutable ingress scope and commit one durable input."""
         if self.user is None or self.conv_id is None:
             raise ChatRuntimeIntakeError(
@@ -688,7 +685,23 @@ class WebSocketChatHandler:
                         "model_unavailable",
                         "Selected Chat model no longer exists",
                     )
-                return await enqueue_chat_runtime(
+                onboarding = (
+                    None
+                    if resume_run_id is not None
+                    else await resolve_onboarding_prompt(
+                        db,
+                        agent,
+                        user.id,
+                        user_name=(user.display_name or "").strip() or "there",
+                        user_locale=self.lang,
+                    )
+                )
+                target_phase = (
+                    onboarding.target_phase
+                    if onboarding is not None and onboarding.lock_on_first_chunk
+                    else None
+                )
+                intake = await enqueue_chat_runtime(
                     db,
                     agent=agent,
                     user=user,
@@ -700,6 +713,20 @@ class WebSocketChatHandler:
                     message_id=message_id,
                     resume_run_id=resume_run_id,
                     resume_correlation_id=resume_correlation_id,
+                    runtime_instruction=(onboarding.prompt if onboarding is not None else ""),
+                    onboarding_target_phase=target_phase or "",
+                    persist_user_message=not is_onboarding_trigger,
+                    application_tools_enabled=not (
+                        onboarding is not None and onboarding.is_greeting_turn
+                    ),
+                )
+                if intake is None:
+                    return None
+                if is_onboarding_trigger and session.title.startswith("Session "):
+                    session.title = "Onboarding"
+                return WebChatRuntimeIntake(
+                    run=intake,
+                    onboarding_target_phase=target_phase,
                 )
 
     async def _cancel_runtime_run(self, handle: RunHandle) -> None:
@@ -827,6 +854,27 @@ class WebSocketChatHandler:
                 )
                 return True
         return False
+
+    async def _mark_onboarding_runtime_phase(self, target_phase: str) -> None:
+        """Advance the visible socket immediately; the worker also reconciles it."""
+        if self.user is None:
+            return
+        try:
+            async with async_session() as db:
+                await mark_onboarding_phase(
+                    db,
+                    self.agent_id,
+                    self.user.id,
+                    target_phase,
+                )
+            await self.websocket.send_json(
+                {
+                    "type": "onboarded",
+                    "agent_id": str(self.agent_id),
+                }
+            )
+        except Exception as exc:
+            logger.warning(f"[WS] Runtime onboarding phase update failed: {exc}")
 
     async def _resolve_effective_model(self, override_model_id: str | None) -> LLMModel | None:
         """Reloads model config and resolves effective model (taking overrides into account)."""
