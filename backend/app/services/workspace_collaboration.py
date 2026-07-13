@@ -201,10 +201,12 @@ async def get_active_lock(
     return result.scalar_one_or_none()
 
 
-async def record_revision(
+async def _record_scoped_revision(
     db: AsyncSession,
     *,
-    agent_id: uuid.UUID,
+    scope_type: str,
+    scope_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
     path: str,
     operation: str,
     actor_type: str,
@@ -214,7 +216,16 @@ async def record_revision(
     session_id: str | None = None,
     merge_user_autosave: bool = False,
 ) -> WorkspaceFileRevision | None:
-    """Record a revision, optionally merging rapid user autosaves."""
+    """Record one revision under the shared Agent/group workspace contract."""
+    if scope_type == "agent":
+        if agent_id is None or scope_id != agent_id:
+            raise ValueError("agent workspace scope must match agent_id")
+    elif scope_type == "group":
+        if agent_id is not None:
+            raise ValueError("group workspace scope cannot set agent_id")
+    else:
+        raise ValueError("scope_type must be 'agent' or 'group'")
+
     normalized = normalize_workspace_path(path)
     # PostgreSQL text columns cannot store NUL bytes. Treat such content as
     # non-text revision data so binary files can still be moved/deleted safely.
@@ -227,12 +238,17 @@ async def record_revision(
 
     group_key = None
     if merge_user_autosave and actor_type == "user" and actor_id:
-        group_key = f"user-autosave:{agent_id}:{normalized}:{actor_id}"
+        group_key = (
+            f"user-autosave:{scope_id}:{normalized}:{actor_id}"
+            if scope_type == "agent"
+            else f"user-autosave:group:{scope_id}:{normalized}:{actor_id}"
+        )
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=USER_AUTOSAVE_MERGE_SECONDS)
         existing_result = await db.execute(
             select(WorkspaceFileRevision)
             .where(
-                WorkspaceFileRevision.agent_id == agent_id,
+                WorkspaceFileRevision.scope_type == scope_type,
+                WorkspaceFileRevision.scope_id == scope_id,
                 WorkspaceFileRevision.path == normalized,
                 WorkspaceFileRevision.actor_type == "user",
                 WorkspaceFileRevision.actor_id == actor_id,
@@ -253,8 +269,8 @@ async def record_revision(
 
     revision = WorkspaceFileRevision(
         agent_id=agent_id,
-        scope_type="agent",
-        scope_id=agent_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
         path=normalized,
         operation=operation,
         actor_type=actor_type,
@@ -268,6 +284,64 @@ async def record_revision(
     db.add(revision)
     await db.flush()
     return revision
+
+
+async def record_revision(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    path: str,
+    operation: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    before_content: str | None,
+    after_content: str | None,
+    session_id: str | None = None,
+    merge_user_autosave: bool = False,
+) -> WorkspaceFileRevision | None:
+    """Record a backward-compatible Agent workspace revision."""
+    return await _record_scoped_revision(
+        db,
+        scope_type="agent",
+        scope_id=agent_id,
+        agent_id=agent_id,
+        path=path,
+        operation=operation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=before_content,
+        after_content=after_content,
+        session_id=session_id,
+        merge_user_autosave=merge_user_autosave,
+    )
+
+
+async def record_group_revision(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    path: str,
+    operation: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    before_content: str | None,
+    after_content: str | None,
+    session_id: str | None = None,
+) -> WorkspaceFileRevision | None:
+    """Record a group-scoped file revision without creating a second history table."""
+    return await _record_scoped_revision(
+        db,
+        scope_type="group",
+        scope_id=group_id,
+        agent_id=None,
+        path=path,
+        operation=operation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=before_content,
+        after_content=after_content,
+        session_id=session_id,
+    )
 
 
 async def write_workspace_file(

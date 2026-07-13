@@ -95,6 +95,16 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/read") in routes
     assert ("GET", "/api/groups/{group_id}/sessions/{session_id}/messages") in routes
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/messages") in routes
+    assert ("GET", "/api/groups/{group_id}/announcement") in routes
+    assert ("PUT", "/api/groups/{group_id}/announcement") in routes
+    assert ("GET", "/api/groups/{group_id}/agents/{agent_id}/memory") in routes
+    assert ("PUT", "/api/groups/{group_id}/agents/{agent_id}/memory") in routes
+    assert ("DELETE", "/api/groups/{group_id}/agents/{agent_id}/memory") in routes
+    assert ("GET", "/api/groups/{group_id}/sessions/{session_id}/summary") in routes
+    assert ("GET", "/api/groups/{group_id}/workspace") in routes
+    assert ("GET", "/api/groups/{group_id}/workspace/file") in routes
+    assert ("PUT", "/api/groups/{group_id}/workspace/file") in routes
+    assert ("DELETE", "/api/groups/{group_id}/workspace/file") in routes
     assert ("PATCH", "/api/groups/{group_id}/members/{member_id}") not in routes
 
 

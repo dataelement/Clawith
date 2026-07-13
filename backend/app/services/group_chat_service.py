@@ -173,6 +173,37 @@ async def _human_actor(
     return membership, participant
 
 
+async def authorize_group_member(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    human_only: bool = False,
+) -> tuple[Group, GroupMember, Participant]:
+    """Resolve one active group member for group-scoped files and Runtime tools."""
+    group = await _active_group(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+    )
+    membership = await _active_membership(
+        db,
+        group_id=group_id,
+        participant_id=participant_id,
+    )
+    participant = await _valid_participant(
+        db,
+        tenant_id=tenant_id,
+        participant_id=participant_id,
+        human_only=human_only,
+        error_code=(
+            "group_human_member_required" if human_only else "group_access_denied"
+        ),
+    )
+    return group, membership, participant
+
+
 async def _group_session(
     db: AsyncSession,
     *,
@@ -195,6 +226,31 @@ async def _group_session(
     if session is None:
         raise GroupChatServiceError("group_session_not_found", "Group session not found")
     return session
+
+
+async def authorize_group_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    session_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    human_only: bool = False,
+) -> ChatSession:
+    """Return an active group session after validating its active viewer."""
+    await authorize_group_member(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        participant_id=participant_id,
+        human_only=human_only,
+    )
+    return await _group_session(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        session_id=session_id,
+    )
 
 
 def _message_position(message: ChatMessage, *, error_code: str) -> tuple[datetime, int]:

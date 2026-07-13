@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,8 +19,14 @@ from app.models.group import GroupMember
 from app.models.participant import Participant
 from app.models.user import User
 from app.services import group_chat_service
+from app.services import group_file_service
 from app.services import group_message_service
+from app.services.agent_runtime.session_context_service import (
+    SessionContextError,
+    SessionContextService,
+)
 from app.services.group_chat_service import GroupChatServiceError
+from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
 from app.services.participant_identity import get_or_create_user_participant
 
@@ -126,6 +132,40 @@ class GroupMessageIntakeOut(BaseModel):
     error_code: str | None = None
 
 
+class GroupTextFileIn(BaseModel):
+    content: str
+    expected_version_token: str | None = None
+
+
+class GroupTextFileOut(BaseModel):
+    path: str
+    content: str
+    exists: bool
+    version_token: str | None = None
+    modified_at: str | None = None
+    revision_id: uuid.UUID | None = None
+
+
+class GroupWorkspaceEntryOut(BaseModel):
+    path: str
+    name: str
+    is_dir: bool
+    size: int
+    modified_at: str
+    version_token: str | None = None
+
+
+class GroupSessionSummaryOut(BaseModel):
+    version: int
+    summary: str
+    requirements: list[Any]
+    decisions: list[Any]
+    open_items: list[Any]
+    evidence_refs: list[Any]
+    workspace_refs: list[Any]
+    covered_through_message_id: uuid.UUID | None = None
+
+
 _NOT_FOUND_CODES = {
     "group_not_found",
     "group_member_not_found",
@@ -137,6 +177,7 @@ _FORBIDDEN_CODES = {
     "group_human_member_required",
     "group_manager_required",
     "group_creator_invalid",
+    "group_memory_write_denied",
 }
 _CONFLICT_CODES = {
     "group_member_already_active",
@@ -195,6 +236,32 @@ def _translate_message_error(exc: GroupMessageServiceError) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail={"code": exc.code, "message": str(exc)},
+    )
+
+
+def _translate_file_error(exc: GroupFileServiceError) -> HTTPException:
+    if exc.code in {"group_agent_not_found", "group_file_not_found"}:
+        status_code = status.HTTP_404_NOT_FOUND
+    elif exc.code in {"group_memory_write_denied"}:
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.code == "group_file_conflict":
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_400_BAD_REQUEST
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc)},
+    )
+
+
+def _text_file_out(value: group_file_service.GroupTextFile) -> GroupTextFileOut:
+    return GroupTextFileOut(
+        path=value.path,
+        content=value.content,
+        exists=value.exists,
+        version_token=value.version_token,
+        modified_at=value.modified_at,
+        revision_id=value.revision_id,
     )
 
 
@@ -787,3 +854,313 @@ async def create_group_message(
         created=intake.created,
         error_code=intake.error_code,
     )
+
+
+@router.get("/{group_id}/announcement", response_model=GroupTextFileOut)
+async def get_group_announcement(
+    group_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.read_announcement(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    return _text_file_out(value)
+
+
+@router.put("/{group_id}/announcement", response_model=GroupTextFileOut)
+async def put_group_announcement(
+    group_id: uuid.UUID,
+    body: GroupTextFileIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.write_announcement(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            content=body.content,
+            expected_version_token=body.expected_version_token,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:announcement_update",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={"revision_id": str(value.revision_id) if value.revision_id else None},
+    )
+    return _text_file_out(value)
+
+
+@router.get("/{group_id}/agents/{agent_id}/memory", response_model=GroupTextFileOut)
+async def get_group_agent_memory(
+    group_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.read_agent_memory(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            agent_id=agent_id,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    return _text_file_out(value)
+
+
+@router.put("/{group_id}/agents/{agent_id}/memory", response_model=GroupTextFileOut)
+async def put_group_agent_memory(
+    group_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    body: GroupTextFileIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.write_agent_memory(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            agent_id=agent_id,
+            content=body.content,
+            expected_version_token=body.expected_version_token,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:memory_update",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={
+            "agent_id": str(agent_id),
+            "revision_id": str(value.revision_id) if value.revision_id else None,
+        },
+    )
+    return _text_file_out(value)
+
+
+@router.delete(
+    "/{group_id}/agents/{agent_id}/memory",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_group_agent_memory(
+    group_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    expected_version_token: Annotated[str | None, Query()] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        await group_file_service.delete_agent_memory(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            agent_id=agent_id,
+            expected_version_token=expected_version_token,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:memory_delete",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={"agent_id": str(agent_id)},
+    )
+    return None
+
+
+@router.get(
+    "/{group_id}/sessions/{session_id}/summary",
+    response_model=GroupSessionSummaryOut,
+)
+async def get_group_session_summary(
+    group_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        await group_chat_service.authorize_group_session(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            session_id=session_id,
+            participant_id=participant.id,
+            human_only=True,
+        )
+        snapshot = await SessionContextService().load_snapshot(
+            db,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except SessionContextError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return GroupSessionSummaryOut.model_validate(snapshot.to_json())
+
+
+@router.get("/{group_id}/workspace", response_model=list[GroupWorkspaceEntryOut])
+async def list_group_workspace(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(max_length=500)] = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        entries = await group_file_service.list_workspace(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    return [GroupWorkspaceEntryOut.model_validate(entry, from_attributes=True) for entry in entries]
+
+
+@router.get("/{group_id}/workspace/file", response_model=GroupTextFileOut)
+async def get_group_workspace_file(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.read_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    return _text_file_out(value)
+
+
+@router.put("/{group_id}/workspace/file", response_model=GroupTextFileOut)
+async def put_group_workspace_file(
+    group_id: uuid.UUID,
+    body: GroupTextFileIn,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.write_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+            content=body.content,
+            expected_version_token=body.expected_version_token,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_write",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={
+            "path": value.path,
+            "revision_id": str(value.revision_id) if value.revision_id else None,
+        },
+    )
+    return _text_file_out(value)
+
+
+@router.delete("/{group_id}/workspace/file", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group_workspace_file(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    expected_version_token: Annotated[str | None, Query()] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        await group_file_service.delete_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+            expected_version_token=expected_version_token,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_delete",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={"path": path},
+    )
+    return None
