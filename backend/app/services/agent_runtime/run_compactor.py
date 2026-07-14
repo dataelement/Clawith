@@ -34,6 +34,7 @@ from app.services.agent_runtime.tool_exchange import (
     build_message_blocks,
 )
 from app.services.llm.client import LLMMessage
+from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
 from app.services.llm.utils import get_max_tokens
 
@@ -525,13 +526,25 @@ class RuntimeRunCompactorService:
                     "run_compact_block_too_large",
                     "one complete Run message block does not fit the compact model",
                 )
-            step = await self._completion(
-                model,
-                _prompt_messages(_payload(state, summary, batch)),
-                tools=[_COMPACT_TOOL],
-                agent_id=agent_id,
-                supports_vision=False,
-            )
+            messages = _prompt_messages(_payload(state, summary, batch))
+            try:
+                step = await self._completion(
+                    model,
+                    messages,
+                    tools=[_COMPACT_TOOL],
+                    agent_id=agent_id,
+                    supports_vision=False,
+                )
+            except Exception as primary_error:
+                if classify_error(primary_error) != FailoverErrorType.RETRYABLE:
+                    raise
+                step = await self._completion(
+                    model,
+                    messages,
+                    tools=[_COMPACT_TOOL],
+                    agent_id=agent_id,
+                    supports_vision=False,
+                )
             summary = _summary_from_step(step)
             summary["goal"] = state["registry"].goal
         if summary is None:

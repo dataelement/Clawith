@@ -209,6 +209,30 @@ async def test_message_threshold_compacts_only_prefix_before_recent_twenty() -> 
 
 
 @pytest.mark.asyncio
+async def test_retryable_compact_model_error_retries_once() -> None:
+    messages = [_normal(f"message-{index}") for index in range(25)]
+    state, context, tenant_id = _state(messages)
+    calls = 0
+
+    async def complete(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("temporary compact provider failure")
+        return _step(calls)
+
+    result = await _service(
+        model=_model(tenant_id),
+        settings=_settings(AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD=21),
+        completion=complete,
+    ).compact_if_needed(state, context, forced=False)
+
+    assert result.compacted is True
+    assert result.covered_through_run_message_id == "message-4"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
 async def test_recent_window_expands_to_keep_complete_tool_exchange() -> None:
     old = _normal("old")
     exchange = [
