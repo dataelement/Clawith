@@ -116,7 +116,12 @@ def test_group_tool_definitions_exist_only_for_validated_group_snapshots() -> No
     session_id = uuid.uuid4()
     agent = _agent(tenant_id)
     participant_id = uuid.uuid4()
-    base = [{"type": "function", "function": {"name": "read_file"}}]
+    base = [
+        {"type": "function", "function": {"name": "list_files"}},
+        {"type": "function", "function": {"name": "read_file"}},
+        {"type": "function", "function": {"name": "write_file"}},
+        {"type": "function", "function": {"name": "jina_search"}},
+    ]
 
     direct_tools = with_group_runtime_tools(
         base,
@@ -141,10 +146,16 @@ def test_group_tool_definitions_exist_only_for_validated_group_snapshots() -> No
         ),
     )
 
-    assert {tool["function"]["name"] for tool in direct_tools} == {"read_file"}
-    assert GROUP_TOOL_NAMES.issubset(
-        {tool["function"]["name"] for tool in group_tools}
-    )
+    assert {tool["function"]["name"] for tool in direct_tools} == {
+        "list_files",
+        "read_file",
+        "write_file",
+        "jina_search",
+    }
+    group_tool_names = {tool["function"]["name"] for tool in group_tools}
+    assert GROUP_TOOL_NAMES.issubset(group_tool_names)
+    assert "jina_search" in group_tool_names
+    assert {"list_files", "read_file", "write_file"}.isdisjoint(group_tool_names)
 
 
 @pytest.mark.asyncio

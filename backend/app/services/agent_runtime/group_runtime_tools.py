@@ -47,6 +47,24 @@ GROUP_WRITE_TOOL_NAMES = frozenset(
 )
 GROUP_TOOL_NAMES = GROUP_READ_TOOL_NAMES | GROUP_WRITE_TOOL_NAMES
 
+# A native group Run may use the Agent's enabled integrations, but it must not
+# silently cross into that Agent's private file workspace.  Besides violating
+# the group scope contract, the similarly named private tools are easy for a
+# model to confuse with the current-group workspace tools.
+_PRIVATE_AGENT_WORKSPACE_TOOL_NAMES = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "write_file",
+        "delete_file",
+        "move_file",
+        "edit_file",
+        "search_files",
+        "find_files",
+        "read_document",
+    }
+)
+
 
 def _function_tool(
     name: str,
@@ -154,10 +172,14 @@ def with_group_runtime_tools(
     state: RuntimeGraphState,
 ) -> list[dict]:
     """Append group tools only when a validated group snapshot exists."""
-    resolved = [dict(tool) for tool in tools]
     group_context = state["snapshots"].initial_input.get("group_context")
     if not isinstance(group_context, Mapping):
-        return resolved
+        return [dict(tool) for tool in tools]
+    resolved = [
+        dict(tool)
+        for tool in tools
+        if _tool_name(tool) not in _PRIVATE_AGENT_WORKSPACE_TOOL_NAMES
+    ]
     names = {_tool_name(tool) for tool in resolved}
     resolved.extend(
         json.loads(json.dumps(tool))
