@@ -58,6 +58,14 @@ class _ProjectionSession:
         return _ProjectionResult(scalar_values=self.active_participant_ids)
 
 
+class _StatusSession(_Session):
+    def __init__(self, active_participant_ids=()) -> None:
+        self.active_participant_ids = active_participant_ids
+
+    async def execute(self, _statement):
+        return _ProjectionResult(scalar_values=self.active_participant_ids)
+
+
 def _records():
     tenant_id = uuid.uuid4()
     group_id = uuid.uuid4()
@@ -199,6 +207,49 @@ async def test_publisher_swallows_projection_and_redis_failures(monkeypatch) -> 
         is None
     )
 
+
+@pytest.mark.asyncio
+async def test_runtime_status_is_ephemeral_and_membership_scoped(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    candidate_id = uuid.uuid4()
+    participant_ids = (uuid.uuid4(), uuid.uuid4())
+    route = AsyncMock()
+    monkeypatch.setattr(
+        group_realtime,
+        "async_session",
+        lambda: _StatusSession(participant_ids),
+    )
+    monkeypatch.setattr(group_realtime.realtime_router, "route_scope_message", route)
+
+    await group_realtime.publish_group_runtime_status(
+        tenant_id=tenant_id,
+        group_id=group_id,
+        session_id=session_id,
+        run_id=run_id,
+        status="planning",
+        agent_id=agent_id,
+        candidate_agent_ids=(candidate_id,),
+    )
+
+    route.assert_awaited_once_with(
+        scope_type="group",
+        scope_id=str(group_id),
+        message={
+            "type": group_realtime.GROUP_RUNTIME_STATUS_EVENT,
+            "group_id": str(group_id),
+            "session_id": str(session_id),
+            "run_id": str(run_id),
+            "status": "planning",
+            "agent_id": str(agent_id),
+            "candidate_agent_ids": [str(candidate_id)],
+        },
+        tenant_id=str(tenant_id),
+        participant_allowlist=[str(value) for value in participant_ids],
+    )
 
 @pytest.mark.asyncio
 async def test_membership_revoke_targets_one_participant(monkeypatch) -> None:

@@ -470,9 +470,9 @@
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | G1/S1 有 A1/A2；独立 `MULTI_AGENT_PLANNING_MODEL_ID` 指向真实可用模型，业务 Agent 使用不同模型；可审计模型请求。 |
-| **测试步骤** | 1. 发送同时 mention A1/A2 的明确协作任务。<br>2. 检查 Planning Root、固定模型快照、请求 tools 和结构化计划。<br>3. 等待 child Runs 与根汇总。 |
-| **预期结果** | 入口只建一个 Planning Root；规划模型被 pin 且无业务工具；只为 mention 集合内 Agent 建 child Runs；最终只交付一套汇总结果。 |
+| **前置条件** | G1/S1 有 A1/A2；租户 `planning_model_id` 指向真实可用模型（或未配置时平台 `MULTI_AGENT_PLANNING_MODEL_ID` 可用），业务 Agent 使用不同模型；可审计模型请求。 |
+| **测试步骤** | 1. 配置页选择规划模型并完成一次连通性测试。<br>2. 发送同时 mention A1/A2 的明确协作任务。<br>3. 检查 Planning Root、固定模型快照、请求 tools 和结构化计划。<br>4. 等待 child Runs 与根汇总。 |
+| **预期结果** | 配置保存不要求首 Token 测速；入口只建一个 Planning Root；租户模型优先并被 pin，未配置时回退平台模型，且无业务工具；只为 mention 集合内 Agent 建 child Runs；最终只交付一套汇总结果。 |
 
 ### TC-M10-002: 用户依赖顺序驱动真实 Scheduler 且失败只阻塞后代
 

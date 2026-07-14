@@ -326,6 +326,7 @@ class PlanningModelService:
     async def _load_model(self, state: RuntimeGraphState) -> LLMModel:
         try:
             model_id = uuid.UUID(state["registry"].model_id)
+            tenant_id = uuid.UUID(state["registry"].tenant_id)
         except ValueError as exc:
             raise PlanningContractError(
                 "planning_model_unavailable",
@@ -334,10 +335,10 @@ class PlanningModelService:
         async with self._session_factory() as db:
             result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
             model = result.scalar_one_or_none()
-        if model is None or not model.enabled or model.tenant_id is not None:
+        if model is None or not model.enabled or model.tenant_id not in {None, tenant_id}:
             raise PlanningContractError(
                 "planning_model_unavailable",
-                "Pinned Planning model is not an enabled platform model",
+                "Pinned Planning model is not enabled for the Run tenant",
             )
         try:
             ModelCapabilityResolver.request_input_limit(

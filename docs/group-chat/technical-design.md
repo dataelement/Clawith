@@ -364,7 +364,7 @@ DELETE /groups/{group_id}/workspace/file?path=...
 
 Planning 模型规则：
 
-1. 使用独立配置 `MULTI_AGENT_PLANNING_MODEL_ID`，不复用任意群成员 Agent 的模型，也不复用 `MULTI_AGENT_COMPACT_MODEL_ID`。该全局配置必须指向启用的平台注册模型（`llm_models.tenant_id IS NULL`），供所有租户按系统能力使用。
+1. 优先使用租户显式配置的 `tenants.planning_model_id`；未配置时使用平台级 `MULTI_AGENT_PLANNING_MODEL_ID`。租户配置必须指向当前租户启用的模型，平台回退必须指向启用的平台注册模型。两者都不复用任意群成员 Agent 的业务模型，也不复用 `MULTI_AGENT_COMPACT_MODEL_ID`。
 2. Planning 模型只接收规划所需上下文并输出结构化计划，不挂载业务工具，不允许产生外部副作用。
 3. 配置缺失、模型不存在、租户不可用或 Model Capability 校验失败时，Planning Run 直接失败，不创建业务子 Run。
 4. 模型调用失败或结构化计划校验失败时可以按无副作用调用策略重试；结构修复最多两次，仍失败则 Planning Graph State 进入 `failed`。
@@ -372,7 +372,7 @@ Planning 模型规则：
 6. 规划失败 ChatMessage、产品 `delivery_failed / delivery_succeeded` 事件与可选 `channel_deliveries` 在同一交付事务写入，使用 `run:{planning_run_id}:terminal:failed` 作为幂等键，重复恢复不得重复提醒；外部 Provider 结果由 Delivery Worker 更新 `delivery_status`，生命周期 `run_failed` 仍由 Projector 从 terminal checkpoint 派生，不在交付事务双写。
 7. 原群或原 Session 已删除时不改写到 replacement primary，只记录 `delivery_status = failed`。
 8. Planning Run 使用 `run_kind = orchestration`、`agent_id = null`、`system_role = group_planning`，不创建或伪造业务 Agent、Participant 或 GroupMember。
-9. 创建 Planning Run 时把 `MULTI_AGENT_PLANNING_MODEL_ID` 解析为真实 `llm_models.id` 并固化到 `agent_runs.model_id`；配置切换只影响新 Run，已有 Run 的恢复和结构修复继续使用固化模型。
+9. 创建 Planning Run 时按“租户显式配置优先、平台配置回退”解析真实 `llm_models.id`，并固化到 `agent_runs.model_id`；配置切换只影响新 Run，已有 Run 的恢复和结构修复继续使用固化模型。
 
 轻量分工计划使用结构化输出：
 
@@ -957,4 +957,4 @@ Group Chat 后端首期明确不做：
 
 ## 13. 开发就绪结论
 
-聊天数据模型、Session Context、Runtime、Planning、同 Agent mention 串行和 Compact 边界已经收敛，没有需要产品讨论才能开始编码的开放架构项。部署前必须为 `MULTI_AGENT_PLANNING_MODEL_ID` 和 `MULTI_AGENT_COMPACT_MODEL_ID` 分别配置具体模型并通过 Model Capability Resolver 与结构化输出校验；任一配置失败都按正文规则显式失败，不静默复用业务 Agent 模型。
+聊天数据模型、Session Context、Runtime、Planning、同 Agent mention 串行和 Compact 边界已经收敛，没有需要产品讨论才能开始编码的开放架构项。部署前必须为租户显式配置或平台级 `MULTI_AGENT_PLANNING_MODEL_ID`、以及 `MULTI_AGENT_COMPACT_MODEL_ID` 分别配置具体模型并通过 Model Capability Resolver 与结构化输出校验；任一配置失败都按正文规则显式失败，不静默复用业务 Agent 模型。

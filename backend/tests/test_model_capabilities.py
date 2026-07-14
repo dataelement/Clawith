@@ -6,6 +6,7 @@ import pytest
 
 from app.config import Settings
 from app.models.llm import LLMModel
+from app.models.tenant import Tenant
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
@@ -29,21 +30,24 @@ def _model(**overrides: object) -> LLMModel:
 
 
 class _Result:
-    def __init__(self, model: LLMModel | None) -> None:
-        self.model = model
+    def __init__(self, value: object | None) -> None:
+        self.value = value
 
-    def scalar_one_or_none(self) -> LLMModel | None:
-        return self.model
+    def scalar_one_or_none(self) -> object | None:
+        return self.value
 
 
 class _Session:
-    def __init__(self, model: LLMModel | None) -> None:
-        self.model = model
+    def __init__(self, *values: object | None) -> None:
+        self.values = list(values)
         self.statements: list[object] = []
 
     async def execute(self, statement: object) -> _Result:
         self.statements.append(statement)
-        return _Result(self.model)
+        if not self.values:
+            raise AssertionError("unexpected query")
+        value = self.values.pop(0) if len(self.values) > 1 else self.values[0]
+        return _Result(value)
 
 
 def test_llm_capability_columns_and_checks_are_declared() -> None:
@@ -231,6 +235,7 @@ async def test_platform_model_resolution_rejects_unusable_models(
 
 @pytest.mark.asyncio
 async def test_global_runtime_model_resolvers_accept_only_enabled_platform_models() -> None:
+    tenant_id = uuid.uuid4()
     compact_id = uuid.uuid4()
     planning_id = uuid.uuid4()
     model = _model(tenant_id=None, enabled=True)
@@ -239,12 +244,68 @@ async def test_global_runtime_model_resolvers_accept_only_enabled_platform_model
         MULTI_AGENT_COMPACT_MODEL_ID=compact_id,
         MULTI_AGENT_PLANNING_MODEL_ID=planning_id,
     )
-    session = _Session(model)
+    tenant = Tenant(id=tenant_id, name="Tenant", slug="tenant", planning_model_id=None)
+    session = _Session(model, tenant, model)
 
     assert await resolve_multi_agent_compact_model(session, settings) is model  # type: ignore[arg-type]
-    assert await resolve_multi_agent_planning_model(session, settings) is model  # type: ignore[arg-type]
-    assert len(session.statements) == 2
+    assert await resolve_multi_agent_planning_model(  # type: ignore[arg-type]
+        session,
+        tenant_id=tenant_id,
+        settings=settings,
+    ) is model
+    assert len(session.statements) == 3
     assert settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO == 0.85
     assert settings.AGENT_RUNTIME_MODEL_CAPABILITY_REFRESH_SECONDS == 86400
     assert settings.MULTI_AGENT_COMPACT_MODEL_ID == compact_id
     assert settings.MULTI_AGENT_PLANNING_MODEL_ID == planning_id
+
+
+@pytest.mark.asyncio
+async def test_tenant_planning_model_overrides_platform_fallback() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(id=uuid.uuid4(), tenant_id=tenant_id, enabled=True)
+    tenant = Tenant(
+        id=tenant_id,
+        name="Tenant",
+        slug="tenant",
+        planning_model_id=model.id,
+    )
+    settings = Settings(
+        _env_file=None,
+        MULTI_AGENT_PLANNING_MODEL_ID=uuid.uuid4(),
+    )
+    session = _Session(tenant, model)
+
+    resolved = await resolve_multi_agent_planning_model(  # type: ignore[arg-type]
+        session,
+        tenant_id=tenant_id,
+        settings=settings,
+    )
+
+    assert resolved is model
+    assert len(session.statements) == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_tenant_planning_model_does_not_fallback() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(id=uuid.uuid4(), tenant_id=uuid.uuid4(), enabled=True)
+    tenant = Tenant(
+        id=tenant_id,
+        name="Tenant",
+        slug="tenant",
+        planning_model_id=model.id,
+    )
+    session = _Session(tenant, model)
+
+    with pytest.raises(PlatformModelConfigurationError, match="another tenant"):
+        await resolve_multi_agent_planning_model(  # type: ignore[arg-type]
+            session,
+            tenant_id=tenant_id,
+            settings=Settings(
+                _env_file=None,
+                MULTI_AGENT_PLANNING_MODEL_ID=uuid.uuid4(),
+            ),
+        )
+
+    assert len(session.statements) == 2

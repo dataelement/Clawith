@@ -275,6 +275,60 @@ async def test_planning_model_uses_the_pinned_platform_model_without_tools() -> 
 
 
 @pytest.mark.asyncio
+async def test_planning_model_accepts_a_pinned_model_from_the_run_tenant() -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    state = _state((first, second))
+    model = LLMModel(
+        id=uuid.UUID(state["registry"].model_id),
+        tenant_id=uuid.UUID(state["registry"].tenant_id),
+        provider="openai",
+        model="tenant-planning-model",
+        api_key_encrypted="encrypted",
+        label="Tenant Planning",
+        enabled=True,
+        max_output_tokens=2048,
+        max_input_tokens=64_000,
+    )
+
+    async def complete(_model, _messages, **_kwargs):
+        return LLMCompletionStep(
+            content=json.dumps(_plan(first, second)),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    result = await PlanningModelService(
+        session_factory=_session_factory(model),  # type: ignore[arg-type]
+        completion=complete,
+    ).complete_once(state)
+
+    assert result.plan is not None
+
+
+@pytest.mark.asyncio
+async def test_planning_model_rejects_a_cross_tenant_pinned_model() -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    state = _state((first, second))
+    model = LLMModel(
+        id=uuid.UUID(state["registry"].model_id),
+        tenant_id=uuid.uuid4(),
+        provider="openai",
+        model="other-tenant-model",
+        api_key_encrypted="encrypted",
+        label="Other Tenant",
+        enabled=True,
+    )
+
+    result = await PlanningModelService(
+        session_factory=_session_factory(model),  # type: ignore[arg-type]
+    ).complete_once(state)
+
+    assert result.error_code == "planning_model_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_invalid_plans_receive_two_repairs_then_fail_the_checkpoint() -> None:
     first, second = uuid.uuid4(), uuid.uuid4()
     state = _state((first, second))

@@ -616,7 +616,8 @@ async def enqueue_group_message(
         try:
             planning_model = await resolve_multi_agent_planning_model(
                 db,
-                runtime_settings,
+                tenant_id=tenant_id,
+                settings=runtime_settings,
             )
             handle = await adapter.start_run(
                 _planning_command(

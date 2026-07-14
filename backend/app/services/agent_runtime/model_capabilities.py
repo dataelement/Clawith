@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.models.llm import LLMModel
+from app.models.tenant import Tenant
 
 
 # Missing provider metadata must not block a request. This value is only an
@@ -231,10 +232,40 @@ async def resolve_multi_agent_compact_model(
 
 async def resolve_multi_agent_planning_model(
     db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
     settings: Settings | None = None,
 ) -> LLMModel:
-    """Resolve ``MULTI_AGENT_PLANNING_MODEL_ID`` as a platform model."""
+    """Resolve a tenant override, then the independent platform fallback."""
     runtime_settings = settings or get_settings()
+    tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = tenant_result.scalar_one_or_none()
+    if tenant is None:
+        raise PlatformModelConfigurationError(
+            "TENANT_PLANNING_MODEL_ID",
+            f"tenant {tenant_id} does not exist",
+        )
+    if tenant.planning_model_id is not None:
+        model_result = await db.execute(
+            select(LLMModel).where(LLMModel.id == tenant.planning_model_id)
+        )
+        model = model_result.scalar_one_or_none()
+        if model is None:
+            raise PlatformModelConfigurationError(
+                "TENANT_PLANNING_MODEL_ID",
+                f"model {tenant.planning_model_id} does not exist",
+            )
+        if not model.enabled:
+            raise PlatformModelConfigurationError(
+                "TENANT_PLANNING_MODEL_ID",
+                f"model {model.id} is disabled",
+            )
+        if model.tenant_id != tenant_id:
+            raise PlatformModelConfigurationError(
+                "TENANT_PLANNING_MODEL_ID",
+                f"model {model.id} belongs to another tenant",
+            )
+        return model
     return await resolve_platform_model(
         db,
         runtime_settings.MULTI_AGENT_PLANNING_MODEL_ID,

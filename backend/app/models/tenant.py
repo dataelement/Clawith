@@ -62,6 +62,17 @@ class Tenant(Base):
     default_model_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True,
     )
+    # Optional tenant-owned model for multi-Agent task planning. When unset,
+    # Runtime may use the separately configured platform planning fallback.
+    planning_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "llm_models.id",
+            name="fk_tenants_planning_model_id_llm_models",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
 
     @property
     def logo_url(self) -> str | None:

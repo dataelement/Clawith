@@ -6,10 +6,14 @@
  * refresh unread state for every session, while message catch-up remains session-scoped.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { groupApi } from '../services/groupApi';
 import { useAuthStore } from '../stores';
-import type { GroupMessage } from '../types/group';
+import type {
+    GroupMessage,
+    GroupRuntimeActivity,
+    GroupRuntimeActivityStatus,
+} from '../types/group';
 
 const POLL_INTERVAL_MS = 4000;
 const BACKFILL_PAGE_SIZE = 50;
@@ -26,7 +30,18 @@ interface GroupSocketEvent {
     type: string;
     session_id?: string;
     message?: GroupMessage;
+    run_id?: string;
+    status?: string;
+    agent_id?: string | null;
+    candidate_agent_ids?: string[];
 }
+
+const ACTIVE_RUNTIME_STATUSES = new Set<GroupRuntimeActivityStatus>([
+    'planning',
+    'working',
+    'waiting',
+]);
+const RUNTIME_ACTIVITY_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Compare two `<created_at ISO>|<uuid>` cursors by the (created_at, id) contract.
@@ -103,9 +118,34 @@ export function useGroupRealtime({
     onMessages,
     onGroupActivity,
     enabled = true,
-}: UseGroupRealtimeOptions): { status: RealtimeStatus } {
+}: UseGroupRealtimeOptions): {
+    status: RealtimeStatus;
+    runtimeActivities: GroupRuntimeActivity[];
+} {
     const [status, setStatus] = useState<RealtimeStatus>('connecting');
+    const [runtimeActivityByRun, setRuntimeActivityByRun] = useState<
+        Record<string, GroupRuntimeActivity>
+    >({});
     const token = useAuthStore((state) => state.token);
+    const activityExpiryByRunRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+    const clearRuntimeActivity = useCallback((runId: string) => {
+        const timer = activityExpiryByRunRef.current.get(runId);
+        if (timer) clearTimeout(timer);
+        activityExpiryByRunRef.current.delete(runId);
+        setRuntimeActivityByRun((current) => {
+            if (!current[runId]) return current;
+            const next = { ...current };
+            delete next[runId];
+            return next;
+        });
+    }, []);
+
+    const clearAllRuntimeActivity = useCallback(() => {
+        for (const timer of activityExpiryByRunRef.current.values()) clearTimeout(timer);
+        activityExpiryByRunRef.current.clear();
+        setRuntimeActivityByRun({});
+    }, []);
 
     // Callbacks live in refs so a re-render never tears down the socket.
     const onMessagesRef = useRef(onMessages);
@@ -233,12 +273,16 @@ export function useGroupRealtime({
     // Authentication and group changes are hard scope boundaries. Session changes retain their
     // cursor for a later return, but cancel any request that could still deliver into the old pane.
     useEffect(() => {
+        clearAllRuntimeActivity();
         cancelAllScopes();
         restCursorByScopeRef.current.clear();
         wsObservedCursorByScopeRef.current.clear();
         generationByScopeRef.current.clear();
-        return cancelAllScopes;
-    }, [groupId, token]);
+        return () => {
+            clearAllRuntimeActivity();
+            cancelAllScopes();
+        };
+    }, [groupId, token, clearAllRuntimeActivity]);
 
     useEffect(() => {
         const activeScope = groupId && sessionId ? `${groupId}:${sessionId}` : null;
@@ -384,6 +428,35 @@ export function useGroupRealtime({
                     void promoteIfSynchronized();
                     return;
                 }
+                if (payload.type === 'runtime.status' && payload.run_id && payload.session_id) {
+                    if (!ACTIVE_RUNTIME_STATUSES.has(payload.status as GroupRuntimeActivityStatus)) {
+                        clearRuntimeActivity(payload.run_id);
+                        return;
+                    }
+                    const activity: GroupRuntimeActivity = {
+                        run_id: payload.run_id,
+                        session_id: payload.session_id,
+                        status: payload.status as GroupRuntimeActivityStatus,
+                        agent_id: payload.agent_id ?? null,
+                        candidate_agent_ids: Array.isArray(payload.candidate_agent_ids)
+                            ? payload.candidate_agent_ids
+                            : [],
+                    };
+                    setRuntimeActivityByRun((current) => ({
+                        ...current,
+                        [activity.run_id]: activity,
+                    }));
+                    const existingTimer = activityExpiryByRunRef.current.get(activity.run_id);
+                    if (existingTimer) clearTimeout(existingTimer);
+                    activityExpiryByRunRef.current.set(
+                        activity.run_id,
+                        setTimeout(
+                            () => clearRuntimeActivity(activity.run_id),
+                            RUNTIME_ACTIVITY_TTL_MS,
+                        ),
+                    );
+                    return;
+                }
                 if (payload.type !== 'message.created' || !payload.message || !payload.session_id) {
                     return;
                 }
@@ -410,6 +483,7 @@ export function useGroupRealtime({
                 connected = false;
 
                 if (NO_RETRY_CLOSE_CODES.has(event.code)) {
+                    clearAllRuntimeActivity();
                     stopPolling();
                     setStatus('offline');
                     return;
@@ -438,7 +512,14 @@ export function useGroupRealtime({
                 socket.close();
             }
         };
-    }, [enabled, groupId, token, catchUpThroughObserved]);
+    }, [
+        enabled,
+        groupId,
+        token,
+        catchUpThroughObserved,
+        clearAllRuntimeActivity,
+        clearRuntimeActivity,
+    ]);
 
     // Switching sessions means the cursor we track changed — catch that session up immediately.
     useEffect(() => {
@@ -453,5 +534,12 @@ export function useGroupRealtime({
         });
     }, [enabled, groupId, sessionId, catchUpThroughObserved]);
 
-    return { status };
+    const runtimeActivities = useMemo(
+        () => Object.values(runtimeActivityByRun).filter(
+            (activity) => activity.session_id === sessionId,
+        ),
+        [runtimeActivityByRun, sessionId],
+    );
+
+    return { status, runtimeActivities };
 }

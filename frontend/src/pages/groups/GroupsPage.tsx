@@ -179,7 +179,7 @@ export default function GroupsPage() {
         void queryClient.invalidateQueries({ queryKey: ['group-sessions', groupId] });
     }, [queryClient, groupId]);
 
-    const { status } = useGroupRealtime({
+    const { status, runtimeActivities } = useGroupRealtime({
         groupId,
         sessionId,
         onMessages: receiveMessages,
@@ -466,6 +466,7 @@ export default function GroupsPage() {
                         <MessageStream
                             sessionId={activeSession.id}
                             messages={messages}
+                            runtimeActivities={runtimeActivities}
                             members={members}
                             myParticipantId={me?.participant_id}
                             hasMore={hasMore}

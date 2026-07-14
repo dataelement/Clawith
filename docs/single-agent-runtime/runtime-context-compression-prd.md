@@ -694,7 +694,7 @@ v1 接入原则：
 
 这里有两个职责严格分离的可靠队列：`agent_run_commands` 只承载 Runtime 输入，解决入口事务与 checkpoint 提交之间的崩溃窗口；`channel_deliveries` 只承载已生成 ChatMessage 的外部 Provider 投递，解决产品事务提交后进程退出导致回复丢失的问题。两者都不保存或推进 Run 生命周期。
 
-Planning 模型必须通过 `MULTI_AGENT_PLANNING_MODEL_ID` 单独配置，并解析到启用且 `tenant_id IS NULL` 的平台注册模型，不使用业务 Agent、租户私有模型或共享 Compact 模型代替。配置缺失、无效或最终调用失败时，Planning Run 进入 `failed`，不创建子 Run，并在原 ChatSession 写入一条脱敏的可见系统消息；原 Session 不可用时只记录交付失败，不改写到其他 primary。
+Planning 模型优先使用租户单独配置的 `tenants.planning_model_id`，未配置时回退到平台级 `MULTI_AGENT_PLANNING_MODEL_ID`。租户配置必须解析到当前租户启用的模型，平台配置必须解析到启用且 `tenant_id IS NULL` 的平台注册模型；两者都不使用业务 Agent 模型或共享 Compact 模型代替。配置缺失、无效或最终调用失败时，Planning Run 进入 `failed`，不创建子 Run，并在原 ChatSession 写入一条脱敏的可见系统消息；原 Session 不可用时只记录交付失败，不改写到其他 primary。
 
 Planning Run 使用 `run_kind = orchestration`、`agent_id = null` 和 `system_role = group_planning`，不伪造业务 Agent 或 Participant。创建时把配置解析得到的真实模型 ID 固化到 `agent_runs.model_id`；后续切换 Planning 模型配置只影响新 Run，已有 Run 恢复时继续使用原 `model_id`。
 

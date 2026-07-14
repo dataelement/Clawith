@@ -18,8 +18,9 @@ from app.services.agent_runtime.channel_delivery import ChannelDeliveryWorkResul
 from app.services.agent_runtime.heartbeat_completion import (
     HeartbeatRuntimeCompletionHandler,
 )
-from app.services.agent_runtime.group_acknowledgement import (
-    RuntimeGroupStartAcknowledgementHandler,
+from app.services.agent_runtime.group_status import (
+    RuntimeGroupCheckpointStatusHandler,
+    RuntimeGroupStartStatusHandler,
 )
 from app.services.agent_runtime.onboarding_completion import (
     OnboardingRuntimeCompletionHandler,
@@ -211,7 +212,7 @@ def test_component_builder_installs_pinned_agent_and_planning_graphs() -> None:
     assert components.channel_delivery_worker._claimant == "worker-test"
     assert isinstance(
         components.worker._pre_command_handler,
-        RuntimeGroupStartAcknowledgementHandler,
+        RuntimeGroupStartStatusHandler,
     )
     terminal_handlers = components.worker._post_checkpoint_handler._terminal_handlers
     assert [type(handler) for handler in terminal_handlers] == [
@@ -226,6 +227,7 @@ def test_component_builder_installs_pinned_agent_and_planning_graphs() -> None:
     ]
     checkpoint_handlers = components.worker._post_checkpoint_handler._checkpoint_handlers
     assert [type(handler) for handler in checkpoint_handlers] == [
+        RuntimeGroupCheckpointStatusHandler,
         PlanningCheckpointScheduler,
     ]
 

@@ -261,6 +261,12 @@
 .group-message.mine .group-message-bubble {
     background: var(--accent-subtle);
     border-color: transparent;
+    color: var(--text-primary);
+}
+
+.group-message.mine .group-mention-chip {
+    background: var(--accent-primary);
+    color: var(--accent-text, #fff);
 }
 
 .group-avatar {
@@ -361,6 +367,95 @@
     background: var(--accent-subtle);
     color: var(--accent-primary);
     font-weight: 500;
+}
+
+.group-runtime-activities {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+}
+
+.group-runtime-activity {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 30px;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+}
+
+.group-runtime-activity.planning {
+    color: var(--text-secondary);
+}
+
+.group-runtime-avatar,
+.group-runtime-avatar-stack {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.group-runtime-avatar {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    background: var(--accent-subtle);
+    color: var(--accent-primary);
+}
+
+.group-runtime-avatar-stack .group-runtime-avatar + .group-runtime-avatar {
+    margin-left: -8px;
+}
+
+.group-runtime-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 9px;
+    height: 9px;
+    border: 2px solid var(--bg-primary);
+    border-radius: var(--radius-full);
+    background: var(--success);
+    animation: group-runtime-pulse 1.4s ease-in-out infinite;
+}
+
+.group-runtime-dot.waiting {
+    background: var(--warning);
+    animation: none;
+}
+
+.group-runtime-dot.planning {
+    background: var(--accent-primary);
+}
+
+.group-runtime-ellipsis {
+    display: inline-flex;
+    gap: 3px;
+}
+
+.group-runtime-ellipsis i {
+    width: 3px;
+    height: 3px;
+    border-radius: var(--radius-full);
+    background: currentColor;
+    animation: group-runtime-bounce 1.2s ease-in-out infinite;
+}
+
+.group-runtime-ellipsis i:nth-child(2) { animation-delay: 0.15s; }
+.group-runtime-ellipsis i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes group-runtime-pulse {
+    0%, 100% { transform: scale(0.85); opacity: 0.65; }
+    50% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes group-runtime-bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+    30% { transform: translateY(-3px); opacity: 1; }
 }
 
 /* ─── Composer ────────────────────────────────────────── */

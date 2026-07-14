@@ -1,4 +1,4 @@
-"""Group acknowledgement and checkpoint-authoritative lane release tests."""
+"""Group transient Runtime status and checkpoint-authoritative lane release tests."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from app.services.agent_runtime.command_worker import (
     RuntimeCommandRecord,
     RuntimeRunRecord,
 )
-from app.services.agent_runtime.delivery import DeliveryReceipt, DeliveryRequest
-from app.services.agent_runtime.group_acknowledgement import (
-    RuntimeGroupStartAcknowledgementHandler,
+from app.services.agent_runtime.group_status import (
+    RuntimeGroupCheckpointStatusHandler,
+    RuntimeGroupStartStatusHandler,
 )
 from app.services.agent_runtime.scheduling_lane import SchedulingLaneCompletionHandler
 from app.services.agent_runtime.state import (
@@ -78,7 +78,12 @@ class _SessionFactory:
         return self.session
 
 
-def _records(*, target_kind: str = "group"):
+def _records(
+    *,
+    target_kind: str = "group",
+    system_role: str | None = None,
+    candidate_agent_ids: tuple[uuid.UUID, ...] = (),
+):
     tenant_id = uuid.uuid4()
     run_id = uuid.uuid4()
     model_id = uuid.uuid4()
@@ -93,6 +98,7 @@ def _records(*, target_kind: str = "group"):
         graph_version="v1",
         agent_id=str(uuid.uuid4()),
         session_id=str(uuid.uuid4()),
+        system_role=system_role,
     )
     run_record = RuntimeRunRecord(
         tenant_id=tenant_id,
@@ -106,7 +112,17 @@ def _records(*, target_kind: str = "group"):
         tenant_id=tenant_id,
         run_id=run_id,
         command_type="start",
-        payload={},
+        payload=(
+            {
+                "group_id": str(uuid.uuid4()),
+                "session_id": registry.session_id,
+                "candidate_agents": [
+                    {"agent_id": str(agent_id)} for agent_id in candidate_agent_ids
+                ],
+            }
+            if target_kind == "group"
+            else {}
+        ),
         actor_user_id=uuid.uuid4(),
         actor_agent_id=None,
     )
@@ -135,7 +151,12 @@ def _records(*, target_kind: str = "group"):
     return run_record, command, run
 
 
-def _checkpoint(run: RuntimeRunRecord, *, status: str) -> CheckpointObservation:
+def _checkpoint(
+    run: RuntimeRunRecord,
+    *,
+    status: str,
+    initial_input: dict | None = None,
+) -> CheckpointObservation:
     state: RuntimeGraphState = {
         "registry": run.registry,
         "snapshots": RunInputSnapshots(
@@ -143,7 +164,7 @@ def _checkpoint(run: RuntimeRunRecord, *, status: str) -> CheckpointObservation:
             session_context_version=1,
             recent_session_messages=(),
             related_run_summaries=(),
-            initial_input={},
+            initial_input=initial_input or {},
         ),
         "lifecycle": {
             "status": status,  # type: ignore[typeddict-item]
@@ -155,68 +176,91 @@ def _checkpoint(run: RuntimeRunRecord, *, status: str) -> CheckpointObservation:
 
 
 @pytest.mark.asyncio
-async def test_group_ack_is_an_idempotent_delivery_before_graph_execution() -> None:
-    run_record, command, run = _records()
-    session = _Session(run.delivery_target)
-    handler = RuntimeGroupStartAcknowledgementHandler(
-        session_factory=_SessionFactory(session),  # type: ignore[arg-type]
-    )
-    message_id = uuid.uuid4()
-    receipt = DeliveryReceipt(
-        tenant_id=run.tenant_id,
-        run_id=run.id,
-        idempotency_key=f"run:{run.id}:ack",
-        status="delivered",
-        delivery_kind="ack",
-        checkpoint_id=None,
-        message_id=message_id,
-        requested_session_id=None,
-        actual_session_id=None,
-        fallback_reason=None,
-        error_code=None,
-    )
+async def test_group_start_is_ephemeral_status_before_graph_execution() -> None:
+    run_record, command, _ = _records()
+    publish = AsyncMock()
 
-    async def publish(**_kwargs):
-        assert session.transaction_exited is True
-
-    with (
-        patch(
-            "app.services.agent_runtime.group_acknowledgement.deliver_runtime_message",
-            new=AsyncMock(return_value=receipt),
-        ) as deliver,
-        patch(
-            "app.services.agent_runtime.group_acknowledgement.publish_committed_group_message",
-            new=AsyncMock(side_effect=publish),
-        ) as broadcast,
+    with patch(
+        "app.services.agent_runtime.group_status.publish_group_runtime_status",
+        new=publish,
     ):
-        await handler.handle(run=run_record, command=command, checkpoint=None)
+        await RuntimeGroupStartStatusHandler().handle(
+            run=run_record,
+            command=command,
+            checkpoint=None,
+        )
 
-    request = deliver.await_args.args[1]
-    assert isinstance(request, DeliveryRequest)
-    assert request.run_id == run.id
-    assert request.kind == "ack"
-    assert request.content == "收到，我开始处理。"
-    assert request.idempotency_key == f"run:{run.id}:ack"
-    broadcast.assert_awaited_once_with(
-        tenant_id=run.tenant_id,
-        message_id=message_id,
+    publish.assert_awaited_once_with(
+        tenant_id=run_record.tenant_id,
+        group_id=uuid.UUID(command.payload["group_id"]),
+        session_id=uuid.UUID(run_record.registry.session_id),
+        run_id=run_record.run_id,
+        status="working",
+        agent_id=uuid.UUID(run_record.registry.agent_id),
+        candidate_agent_ids=(),
     )
 
 
 @pytest.mark.asyncio
-async def test_non_group_start_does_not_emit_group_ack() -> None:
-    run_record, command, run = _records(target_kind="direct")
-    handler = RuntimeGroupStartAcknowledgementHandler(
-        session_factory=_SessionFactory(_Session(run.delivery_target)),  # type: ignore[arg-type]
+async def test_non_group_start_does_not_emit_group_status() -> None:
+    run_record, command, _ = _records(target_kind="direct")
+    with patch(
+        "app.services.agent_runtime.group_status.publish_group_runtime_status",
+        new=AsyncMock(),
+    ) as publish:
+        await RuntimeGroupStartStatusHandler().handle(
+            run=run_record,
+            command=command,
+            checkpoint=None,
+        )
+
+    publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_planning_start_exposes_candidates_without_chat_message() -> None:
+    candidates = (uuid.uuid4(), uuid.uuid4())
+    run_record, command, _ = _records(
+        system_role="group_planning",
+        candidate_agent_ids=candidates,
+    )
+    publish = AsyncMock()
+
+    with patch(
+        "app.services.agent_runtime.group_status.publish_group_runtime_status",
+        new=publish,
+    ):
+        await RuntimeGroupStartStatusHandler().handle(
+            run=run_record,
+            command=command,
+            checkpoint=None,
+        )
+
+    assert publish.await_args.kwargs["status"] == "planning"
+    assert publish.await_args.kwargs["candidate_agent_ids"] == candidates
+
+
+@pytest.mark.asyncio
+async def test_terminal_checkpoint_clears_ephemeral_group_status() -> None:
+    run_record, command, _ = _records()
+    publish = AsyncMock()
+    checkpoint = _checkpoint(
+        run_record,
+        status="completed",
+        initial_input=dict(command.payload),
     )
 
     with patch(
-        "app.services.agent_runtime.group_acknowledgement.deliver_runtime_message",
-        new=AsyncMock(),
-    ) as deliver:
-        await handler.handle(run=run_record, command=command, checkpoint=None)
+        "app.services.agent_runtime.group_status.publish_group_runtime_status",
+        new=publish,
+    ):
+        await RuntimeGroupCheckpointStatusHandler().handle(
+            run=run_record,
+            checkpoint=checkpoint,
+        )
 
-    deliver.assert_not_awaited()
+    assert publish.await_args.kwargs["status"] == "completed"
+    assert publish.await_args.kwargs["run_id"] == run_record.run_id
 
 
 @pytest.mark.asyncio

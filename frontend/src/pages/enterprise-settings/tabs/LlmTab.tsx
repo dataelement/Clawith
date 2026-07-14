@@ -110,7 +110,11 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
     });
     const { data: tenantForDefault, refetch: refetchTenantForDefault } = useQuery({
         queryKey: ['tenant-default-model', selectedTenantId],
-        queryFn: () => fetchJson<{ default_model_id: string | null }>(
+        queryFn: () => fetchJson<{
+            id: string;
+            default_model_id: string | null;
+            planning_model_id: string | null;
+        }>(
             !selectedTenantId || selectedTenantId === currentUser?.tenant_id
                 ? '/tenants/me'
                 : `/tenants/${selectedTenantId}`
@@ -136,6 +140,29 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         onError: (err: any) => {
             toast.error(t('enterprise.llm.defaultSaveFailed', 'Failed to update default model'), {
                 details: String(err?.message || err),
+            });
+        },
+    });
+    const setPlanningModel = useMutation({
+        mutationFn: (modelId: string | null) => {
+            const tenantId = tenantForDefault?.id || selectedTenantId;
+            if (!tenantId) throw new Error('Tenant is unavailable');
+            return fetchJson(`/tenants/${tenantId}/planning-model`, {
+                method: 'PUT',
+                body: JSON.stringify({ model_id: modelId }),
+            });
+        },
+        onSuccess: (_data, modelId) => {
+            qc.setQueryData(['tenant-default-model', selectedTenantId], (old: any) => ({
+                ...(old || {}),
+                planning_model_id: modelId,
+            }));
+            void refetchTenantForDefault();
+            toast.success(t('enterprise.llm.planningSaved', '群聊规划模型已更新'));
+        },
+        onError: (error: any) => {
+            toast.error(t('enterprise.llm.planningSaveFailed', '群聊规划模型更新失败'), {
+                details: String(error?.message || error),
             });
         },
     });
@@ -230,8 +257,89 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         }
     };
 
+    const testStoredModelConnectivity = async (model: LLMModel) => {
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/enterprise/llm-test', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+                provider: model.provider,
+                model: model.model,
+                base_url: model.base_url || undefined,
+                model_id: model.id,
+            }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || result.detail || 'Model connectivity test failed');
+        }
+        return result;
+    };
+
+    const choosePlanningModel = async (modelId: string) => {
+        if (!modelId) {
+            await setPlanningModel.mutateAsync(null);
+            return;
+        }
+        const model = models.find((candidate) => candidate.id === modelId);
+        if (!model) return;
+        try {
+            await testStoredModelConnectivity(model);
+            await setPlanningModel.mutateAsync(model.id);
+        } catch (error: any) {
+            toast.error(t('enterprise.llm.connectivityTestFailed', '模型连通性测试失败'), {
+                details: String(error?.message || error),
+            });
+        }
+    };
+
+    const currentPlanningModel = models.find(
+        (model) => model.id === tenantForDefault?.planning_model_id,
+    );
+
     return (
         <div>
+            <div className="card" style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '20px', alignItems: 'flex-start' }}>
+                    <div>
+                        <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px' }}>
+                            {t('enterprise.llm.planningModel', '群聊规划模型')}
+                        </div>
+                        <div style={{ color: 'var(--text-tertiary)', fontSize: '12px', lineHeight: 1.6 }}>
+                            {t(
+                                'enterprise.llm.planningModelDesc',
+                                '多 Agent @ 时用于拆解任务。选择模型时会先进行连通性测试。',
+                            )}
+                        </div>
+                    </div>
+                    <div style={{ minWidth: '320px' }}>
+                        <select
+                            className="form-input"
+                            value={tenantForDefault?.planning_model_id || ''}
+                            disabled={setPlanningModel.isPending}
+                            onChange={(event) => void choosePlanningModel(event.target.value)}
+                        >
+                            <option value="">
+                                {t('enterprise.llm.usePlatformPlanningModel', '使用平台规划模型')}
+                            </option>
+                            {models.filter((model) => model.enabled).map((model) => (
+                                <option key={model.id} value={model.id}>
+                                    {model.label || model.model}
+                                </option>
+                            ))}
+                        </select>
+                        {currentPlanningModel && (
+                            <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                {t('enterprise.llm.connectivityCheckedOnSave', '选择时自动验证模型连通性')}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
                 <button className="btn btn-primary" onClick={openCreateForm}>+ {t('enterprise.llm.addModel')}</button>
             </div>
@@ -444,6 +552,11 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                             {t('enterprise.llm.setAsDefault', '设为默认')}
                                         </button>
                                     ) : null}
+                                    {tenantForDefault?.planning_model_id === m.id && (
+                                        <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>
+                                            {t('enterprise.llm.planningBadge', '规划模型')}
+                                        </span>
+                                    )}
                                     <button className="btn btn-ghost" onClick={() => {
                                         setEditingModelId(m.id);
                                         setModelForm({

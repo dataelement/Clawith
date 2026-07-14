@@ -17,10 +17,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
 from app.models.agent import Agent
+from app.models.llm import LLMModel
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.storage import ensure_local_path, get_storage_backend, normalize_storage_key
@@ -46,6 +46,7 @@ class TenantOut(BaseModel):
     sso_domain: str | None = None
     a2a_async_enabled: bool = True
     default_model_id: uuid.UUID | None = None
+    planning_model_id: uuid.UUID | None = None
     logo_url: str | None = None
     created_at: datetime | None = None
 
@@ -61,6 +62,10 @@ class TenantUpdate(BaseModel):
     sso_enabled: bool | None = None
     sso_domain: str | None = None
     a2a_async_enabled: bool | None = None
+
+
+class TenantPlanningModelUpdate(BaseModel):
+    model_id: uuid.UUID | None
 
 
 def _tenant_logo_key(tenant_id: uuid.UUID) -> str:
@@ -265,7 +270,7 @@ async def join_company(
     ic_result = await db.execute(
         select(InvitationCode).where(
             InvitationCode.code == data.invitation_code,
-            InvitationCode.is_active == True,
+            InvitationCode.is_active.is_(True),
             InvitationCode.tenant_id.is_not(None),
         )
     )
@@ -574,6 +579,37 @@ async def update_tenant(
 
     for field, value in update_data.items():
         setattr(tenant, field, value)
+    await db.flush()
+    return TenantOut.model_validate(tenant)
+
+
+@router.put("/{tenant_id}/planning-model", response_model=TenantOut)
+async def update_tenant_planning_model(
+    tenant_id: uuid.UUID,
+    data: TenantPlanningModelUpdate,
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Pin a tenant model for new multi-Agent Planning Runs."""
+    tenant = await _get_updateable_tenant(tenant_id, current_user, db)
+    if data.model_id is None:
+        tenant.planning_model_id = None
+        await db.flush()
+        return TenantOut.model_validate(tenant)
+
+    result = await db.execute(select(LLMModel).where(LLMModel.id == data.model_id))
+    model = result.scalar_one_or_none()
+    if model is None:
+        raise HTTPException(status_code=404, detail="Planning model not found")
+    if model.tenant_id != tenant.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Planning model must belong to the selected company",
+        )
+    if not model.enabled:
+        raise HTTPException(status_code=400, detail="Planning model is disabled")
+
+    tenant.planning_model_id = model.id
     await db.flush()
     return TenantOut.model_validate(tenant)
 

@@ -67,6 +67,17 @@ export interface GroupMessageIntake {
     error_code: string | null;
 }
 
+export type GroupRuntimeActivityStatus = 'planning' | 'working' | 'waiting';
+
+/** Ephemeral WebSocket-only activity. It is never part of message history or model context. */
+export interface GroupRuntimeActivity {
+    run_id: string;
+    session_id: string;
+    status: GroupRuntimeActivityStatus;
+    agent_id: string | null;
+    candidate_agent_ids: string[];
+}
+
 export interface GroupTextFile {
     path: string;
     content: string;

@@ -490,14 +490,14 @@
 | **测试步骤** | 1. 发送仅 mention A1 的消息。<br>2. 发送同时 mention A1/A2 的消息。<br>3. 比较 Run kind、父子关系和 Commands。 |
 | **预期结果** | 单目标直接创建 A1 Run，不调用规划模型；多目标只创建一个 Planning Root，后续子 Run 由计划调度，入口没有两个并列根。 |
 
-### TC-M07-002: Planning 固定使用平台规划模型且禁用工具
+### TC-M07-002: Planning 固定使用租户规划模型并支持平台回退
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 配置 `MULTI_AGENT_PLANNING_MODEL_ID`，同时让业务 Agent 使用不同模型；另准备缺失配置场景。 |
-| **测试步骤** | 1. 触发多 Agent Planning 并读取 Run 快照、模型请求和 tool schema。<br>2. 修改全局配置后恢复同一 Run。<br>3. 删除规划模型配置后新建请求。 |
-| **预期结果** | Run 固定使用创建时 pin 的平台规划模型，不能调用工具，也不回退业务 Agent/Compact 模型；缺失配置时公开返回脱敏失败且不创建 child Runs。 |
+| **前置条件** | 租户配置独立 `planning_model_id`，平台配置 `MULTI_AGENT_PLANNING_MODEL_ID`，同时让业务 Agent 使用不同模型；另准备两级配置均缺失场景。 |
+| **测试步骤** | 1. 选择租户规划模型时先执行一次连通性测试，再触发多 Agent Planning 并读取 Run 快照、模型请求和 tool schema。<br>2. 清空租户配置后新建请求，验证平台回退；修改配置后恢复旧 Run。<br>3. 删除两级规划模型配置后新建请求。 |
+| **预期结果** | 选择租户模型只校验连通性，不设置首 Token 速度阈值；新 Run 优先 pin 租户模型，未配置时 pin 平台模型，旧 Run 恢复仍用原模型；规划模型不能调用工具，也不回退业务 Agent/Compact 模型；两级配置均缺失时公开返回脱敏失败且不创建 child Runs。 |
 
 ### TC-M07-003: 规划结果支持 parallel、sequential 与 dependency 三种策略
 

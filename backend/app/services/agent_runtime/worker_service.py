@@ -44,8 +44,9 @@ from app.services.agent_runtime.graph import (
     RuntimeGraphIdentity,
     build_agent_runtime_graph,
 )
-from app.services.agent_runtime.group_acknowledgement import (
-    RuntimeGroupStartAcknowledgementHandler,
+from app.services.agent_runtime.group_status import (
+    RuntimeGroupCheckpointStatusHandler,
+    RuntimeGroupStartStatusHandler,
 )
 from app.services.agent_runtime.heartbeat_completion import (
     HeartbeatRuntimeCompletionHandler,
@@ -271,6 +272,7 @@ def build_runtime_worker_components(
         session_factory=session_factory,
         projector=projector,
         checkpoint_handlers=(
+            RuntimeGroupCheckpointStatusHandler(),
             PlanningCheckpointScheduler(
                 session_factory=session_factory,
                 settings=runtime_settings,
@@ -297,9 +299,7 @@ def build_runtime_worker_components(
         lock_engine=lock_engine,
         checkpoint_reader=driver,
         command_executor=driver,
-        pre_command_handler=RuntimeGroupStartAcknowledgementHandler(
-            session_factory=session_factory,
-        ),
+        pre_command_handler=RuntimeGroupStartStatusHandler(),
         post_checkpoint_handler=post_checkpoint_handler,
         claimant=resolved_claimant,
         settings=runtime_settings,

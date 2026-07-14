@@ -2,11 +2,16 @@ import { Fragment, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconRobot } from '@tabler/icons-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
-import type { GroupMember, GroupMessage } from '../../types/group';
+import type {
+    GroupMember,
+    GroupMessage,
+    GroupRuntimeActivity,
+} from '../../types/group';
 
 interface MessageStreamProps {
     sessionId: string;
     messages: GroupMessage[];
+    runtimeActivities: GroupRuntimeActivity[];
     members: GroupMember[];
     myParticipantId?: string;
     hasMore: boolean;
@@ -44,6 +49,7 @@ function renderContentWithMentions(content: string, mentions: GroupMessage['ment
 export default function MessageStream({
     sessionId,
     messages,
+    runtimeActivities,
     members,
     myParticipantId,
     hasMore,
@@ -58,6 +64,11 @@ export default function MessageStream({
     const previousCountRef = useRef(0);
 
     const memberByParticipant = new Map(members.map((member) => [member.participant_id, member]));
+    const memberByAgent = new Map(
+        members
+            .filter((member) => member.participant_type === 'agent')
+            .map((member) => [member.participant_ref_id, member]),
+    );
 
     const onScroll = () => {
         const node = scrollRef.current;
@@ -83,7 +94,14 @@ export default function MessageStream({
             bottomRef.current?.scrollIntoView({ block: 'end' });
         }
         previousCountRef.current = messages.length;
-    }, [messages]);
+    }, [messages, runtimeActivities]);
+
+    const planningActivities = runtimeActivities.filter(
+        (activity) => activity.status === 'planning',
+    );
+    const agentActivities = runtimeActivities.filter(
+        (activity) => activity.status !== 'planning' && activity.agent_id,
+    );
 
     // A different session starts a different scroll history.
     useEffect(() => {
@@ -156,6 +174,45 @@ export default function MessageStream({
                     </div>
                 );
             })}
+
+            {runtimeActivities.length > 0 && (
+                <div className="group-runtime-activities" aria-live="polite">
+                    {planningActivities.map((activity) => (
+                        <div key={activity.run_id} className="group-runtime-activity planning">
+                            <div className="group-runtime-avatar-stack" aria-hidden="true">
+                                {activity.candidate_agent_ids.slice(0, 3).map((agentId) => (
+                                    <span key={agentId} className="group-runtime-avatar">
+                                        <IconRobot size={14} stroke={1.7} />
+                                        <span className="group-runtime-dot planning" />
+                                    </span>
+                                ))}
+                            </div>
+                            <span>{t('groups.planningActivity', '正在规划任务与分工')}</span>
+                            <span className="group-runtime-ellipsis" aria-hidden="true">
+                                <i /><i /><i />
+                            </span>
+                        </div>
+                    ))}
+
+                    {agentActivities.map((activity) => {
+                        const member = memberByAgent.get(activity.agent_id!);
+                        const name = member?.display_name ?? t('groups.unknownAgent', '智能体');
+                        return (
+                            <div key={activity.run_id} className="group-runtime-activity">
+                                <span className="group-runtime-avatar" aria-hidden="true">
+                                    <IconRobot size={14} stroke={1.7} />
+                                    <span className={`group-runtime-dot ${activity.status}`} />
+                                </span>
+                                <span>
+                                    {activity.status === 'waiting'
+                                        ? t('groups.agentWaiting', '{{name}} 等待补充信息', { name })
+                                        : t('groups.agentWorking', '{{name}} 正在处理', { name })}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
 
             <div ref={bottomRef} />
         </div>
