@@ -816,7 +816,7 @@ async def test_retryable_primary_error_rebuilds_budget_for_fallback_once() -> No
 
     assert result.intent == "finish"
     assert result.finish_content == "Fallback answer"
-    assert called_models == [model.id, fallback.id]
+    assert called_models == [model.id, model.id, fallback.id]
     assert len(builder.calls) == 4
     primary_budget = builder.calls[1]["run_message_token_budget"]
     fallback_budget = builder.calls[3]["run_message_token_budget"]
@@ -824,6 +824,42 @@ async def test_retryable_primary_error_rebuilds_budget_for_fallback_once() -> No
     assert result.assistant_message is not None
     assert result.assistant_message["runtime_model_id"] == str(fallback.id)
     assert result.assistant_message["runtime_failover_from_model_id"] == str(model.id)
+
+
+@pytest.mark.asyncio
+async def test_retryable_primary_error_retries_once_before_fallback() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    calls = 0
+
+    async def complete(*args, **kwargs):
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("temporary provider timeout")
+        return LLMCompletionStep(
+            content="Recovered answer",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=8),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert calls == 2
+    assert result.intent == "finish"
+    assert result.finish_content == "Recovered answer"
+    assert result.assistant_message is not None
+    assert result.assistant_message["runtime_model_id"] == str(model.id)
 
 
 @pytest.mark.asyncio

@@ -701,42 +701,61 @@ class RuntimeModelStepService:
                         "model_call_failed",
                         "Runtime primary model call failed without safe failover",
                     ) from primary_error
-                tenant_id = uuid.UUID(state["registry"].tenant_id)
-                fallback = await self._fallback_model(
-                    tenant_id=tenant_id,
-                    agent=agent,
-                    primary_model=model,
-                )
-                if fallback is None:
-                    raise RuntimeModelCallError(
-                        "model_call_failed",
-                        "Runtime primary model call failed and no usable fallback is configured",
-                    ) from primary_error
-                fallback_prepared = await self._prepare_messages(
-                    state=state,
-                    model=fallback,
-                    agent=agent,
-                    ledger=ledger,
-                    tools=tools,
-                    static_prompt=static_prompt,
-                    dynamic_prompt=dynamic_prompt,
-                )
-                if isinstance(fallback_prepared, ModelStepResult):
-                    return fallback_prepared
+                retry_failure: Exception | None = None
                 try:
                     step = await self._call_prepared(
-                        model=fallback,
+                        model=model,
                         agent=agent,
-                        messages=fallback_prepared,
+                        messages=prepared,
                         tools=tools,
                     )
-                except Exception as fallback_error:
+                except Exception as retry_error:
+                    if classify_error(retry_error) != FailoverErrorType.RETRYABLE:
+                        raise RuntimeModelCallError(
+                            "model_call_failed",
+                            "Runtime primary model retry failed without safe failover",
+                        ) from retry_error
+                    retry_failure = retry_error
+                if retry_failure is None:
+                    fallback = None
+                else:
+                    tenant_id = uuid.UUID(state["registry"].tenant_id)
+                    fallback = await self._fallback_model(
+                        tenant_id=tenant_id,
+                        agent=agent,
+                        primary_model=model,
+                    )
+                if retry_failure is not None and fallback is None:
                     raise RuntimeModelCallError(
-                        "model_failover_failed",
-                        "Runtime fallback model call also failed",
-                    ) from fallback_error
-                actual_model = fallback
-                failed_over_from = model
+                        "model_call_failed",
+                        "Runtime primary model retry failed and no usable fallback is configured",
+                    ) from retry_failure
+                if retry_failure is not None and fallback is not None:
+                    fallback_prepared = await self._prepare_messages(
+                        state=state,
+                        model=fallback,
+                        agent=agent,
+                        ledger=ledger,
+                        tools=tools,
+                        static_prompt=static_prompt,
+                        dynamic_prompt=dynamic_prompt,
+                    )
+                    if isinstance(fallback_prepared, ModelStepResult):
+                        return fallback_prepared
+                    try:
+                        step = await self._call_prepared(
+                            model=fallback,
+                            agent=agent,
+                            messages=fallback_prepared,
+                            tools=tools,
+                        )
+                    except Exception as fallback_error:
+                        raise RuntimeModelCallError(
+                            "model_failover_failed",
+                            "Runtime fallback model call also failed",
+                        ) from fallback_error
+                    actual_model = fallback
+                    failed_over_from = model
 
             allowed_names = frozenset(name for name in (_tool_name(tool) for tool in tools) if name)
             result = _parse_step(

@@ -646,6 +646,38 @@ async def test_planning_failure_uses_system_identity_and_redacted_content() -> N
 
 
 @pytest.mark.asyncio
+async def test_planning_child_failure_is_reported_as_execution_failure() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session = _session(
+        tenant_id=tenant_id,
+        agent_id=None,
+        group_id=group_id,
+    )
+    run = _run(
+        tenant_id=tenant_id,
+        session=session,
+        agent_id=None,
+        run_kind="orchestration",
+        system_role="group_planning",
+    )
+    run.projected_error_code = "planning_child_failed"
+    db = _RecordingDB(run, None, session, _group(tenant_id, group_id))
+
+    receipt = await deliver_runtime_message(
+        db,
+        _terminal_request(run, status="failed", content="sensitive child error"),
+        clock=lambda: NOW,
+    )
+
+    assert receipt.status == "delivered"
+    message = _added(db, ChatMessage)[0]
+    assert message.role == "system"
+    assert message.content == "任务执行未完成：一个或多个 Agent 子任务失败，请重试。"
+    assert "sensitive" not in message.content
+
+
+@pytest.mark.asyncio
 async def test_removed_group_agent_fails_without_writing_a_message() -> None:
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()

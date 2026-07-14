@@ -39,6 +39,7 @@ _BACKGROUND_FALLBACK_KIND = "background"
 _PLANNING_ROLE = "group_planning"
 _SAFE_RUNTIME_FAILURE = "任务执行未完成，请重试；如果问题持续，请联系管理员。"
 _SAFE_PLANNING_FAILURE = "任务规划未完成，请重试或改为单 Agent 处理。"
+_SAFE_PLANNING_EXECUTION_FAILURE = "任务执行未完成：一个或多个 Agent 子任务失败，请重试。"
 _SAFE_CANCELLED = "任务已取消。"
 
 
@@ -550,6 +551,8 @@ async def _validate_actual_target(
 def _safe_message_content(run: AgentRun, request: DeliveryRequest) -> str:
     if request.kind == "terminal" and request.lifecycle_status == "failed":
         if run.run_kind == "orchestration" and run.system_role == _PLANNING_ROLE:
+            if run.projected_error_code == "planning_child_failed":
+                return _SAFE_PLANNING_EXECUTION_FAILURE
             return _SAFE_PLANNING_FAILURE
         return _SAFE_RUNTIME_FAILURE
     if request.kind == "terminal" and request.lifecycle_status == "cancelled":
