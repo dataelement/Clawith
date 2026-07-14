@@ -315,14 +315,19 @@ class LLMSessionContextCompactor:
                     usage_agent_id=None,
                 )
 
-            if session.agent_id is None or session.agent_id != request.source_agent_id:
+            source_agent_id = request.source_agent_id
+            allowed_agent_ids = {session.agent_id}
+            if session.session_type == "a2a":
+                allowed_agent_ids.add(session.peer_agent_id)
+            allowed_agent_ids.discard(None)
+            if source_agent_id is None or source_agent_id not in allowed_agent_ids:
                 raise SessionContextCompactorError(
                     "session_context_agent_mismatch",
-                    "direct Session Compact source Agent does not match the session",
+                    "Session Compact source Agent is not a participant in the session",
                 )
             agent_result = await db.execute(
                 select(Agent).where(
-                    Agent.id == session.agent_id,
+                    Agent.id == source_agent_id,
                     Agent.tenant_id == request.tenant_id,
                 )
             )

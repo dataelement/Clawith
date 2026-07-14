@@ -266,7 +266,7 @@
 
 .group-message.mine .group-mention-chip {
     background: var(--accent-primary);
-    color: var(--accent-text, #fff);
+    color: var(--text-inverse);
 }
 
 .group-avatar {
@@ -389,6 +389,10 @@
     color: var(--text-secondary);
 }
 
+.group-runtime-activity.compacting {
+    color: var(--text-secondary);
+}
+
 .group-runtime-avatar,
 .group-runtime-avatar-stack {
     position: relative;
@@ -429,6 +433,10 @@
 }
 
 .group-runtime-dot.planning {
+    background: var(--accent-primary);
+}
+
+.group-runtime-dot.compacting {
     background: var(--accent-primary);
 }
 
@@ -703,34 +711,74 @@
     min-height: 0;
 }
 
-.group-memory-agents {
+.group-memory-layout {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
 }
 
-.group-memory-agent {
+.group-memory-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+}
+
+.group-memory-tree-folder,
+.group-memory-tree-file {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-full);
+    gap: var(--space-2);
+    width: 100%;
+    min-width: 0;
+    padding: 7px var(--space-2);
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     font-size: var(--text-xs);
-    transition: all var(--transition-fast);
+    text-align: left;
+    transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.group-memory-agent:hover {
-    border-color: var(--accent-primary);
+.group-memory-tree-folder:hover,
+.group-memory-tree-folder.active {
+    background: var(--bg-hover);
     color: var(--text-primary);
 }
 
-.group-memory-agent.active {
-    border-color: transparent;
+.group-memory-tree-folder span,
+.group-memory-tree-file span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.group-memory-tree-chevron {
+    flex: 0 0 auto;
+    transform: rotate(0deg);
+    transition: transform var(--transition-fast);
+}
+
+.group-memory-tree-folder.active .group-memory-tree-chevron {
+    transform: rotate(90deg);
+}
+
+.group-memory-tree-file {
+    width: calc(100% - 22px);
+    margin-left: 22px;
     background: var(--accent-subtle);
     color: var(--accent-primary);
     font-weight: 500;
+}
+
+.group-memory-editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-height: 0;
 }
 
 .group-announcement-input {

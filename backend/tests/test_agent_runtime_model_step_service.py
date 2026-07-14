@@ -691,6 +691,59 @@ async def test_non_chat_plain_text_keeps_the_strict_finish_protocol() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lifecycle_update", "registry_update"),
+    [
+        ({"pending_tool_calls": [{"id": "pending-tool"}]}, {}),
+        (
+            {
+                "waiting_request": {
+                    "waiting_type": "user",
+                    "correlation_id": "confirm-1",
+                }
+            },
+            {},
+        ),
+        (
+            {},
+            {"run_kind": "orchestration"},
+        ),
+    ],
+)
+async def test_plain_text_does_not_bypass_pending_or_planning_control(
+    lifecycle_update: dict,
+    registry_update: dict,
+) -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    state["lifecycle"].update(lifecycle_update)
+    if registry_update:
+        state["registry"] = replace(state["registry"], **registry_update)
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="Candidate result",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "text"
+    assert result.finish_content is None
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_outcome_waits_for_reconciliation_without_calling_model() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

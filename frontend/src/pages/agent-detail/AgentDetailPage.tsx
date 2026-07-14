@@ -73,6 +73,50 @@ const WORKSPACE_TOOLS = new Set([
 
 const AWARE_TOOLS = new Set(['set_trigger', 'update_trigger', 'cancel_trigger', 'list_triggers', 'list_focus_items', 'upsert_focus_item', 'complete_focus_item']);
 const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
+
+interface ChatMsg {
+    id?: string;
+    role: 'user' | 'assistant' | 'tool_call';
+    content: string;
+    fileName?: string;
+    toolName?: string;
+    toolCallId?: string;
+    toolArgs?: any;
+    toolStatus?: 'running' | 'done';
+    toolResult?: string;
+    toolThinking?: string;
+    thinking?: string;
+    imageUrl?: string;
+    timestamp?: string;
+    sender_name?: string;
+    _streaming?: boolean;
+}
+
+/** Runtime/status packets must never become message bubbles. */
+function isRenderableChatMessage(message: ChatMsg | null | undefined): boolean {
+    if (!message) return false;
+    if (message.role === 'tool_call') return Boolean(message.toolName || message.toolCallId);
+    if (message.role !== 'user' && message.role !== 'assistant') return false;
+    return Boolean(
+        message.content?.trim()
+        || message.thinking?.trim()
+        || message.fileName
+        || message.imageUrl
+        || message._streaming,
+    );
+}
+
+function newClientMessageId(): string {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+        const random = Math.random() * 16 | 0;
+        const value = char === 'x' ? random : (random & 0x3 | 0x8);
+        return value.toString(16);
+    });
+}
+
 const trimLeadingPictograph = (value: string) => value.replace(/^\p{Extended_Pictographic}\s*/u, '');
 const formatReflectionTitle = (value: string | undefined, isZh: boolean) => {
     const clean = trimLeadingPictograph(value || 'Trigger execution').trim();
@@ -2141,11 +2185,17 @@ export default function AgentDetailPage() {
         currentUser?.role === 'org_admin' ||
         currentUser?.role === 'agent_admin' ||
         isAgentOwner;
+    type ChatRuntimeStatus = 'compacting';
     type SessionRuntimeKey = string;
+    type SessionUiState = {
+        isWaiting: boolean;
+        isStreaming: boolean;
+        runtimeStatus: ChatRuntimeStatus | null;
+    };
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
-    const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
+    const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
@@ -2170,8 +2220,9 @@ export default function AgentDetailPage() {
         delete sessionUiStateRef.current[key];
     };
 
-    const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
-        const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
+    const setSessionUiState = (key: SessionRuntimeKey, next: Partial<SessionUiState>) => {
+        const prev = sessionUiStateRef.current[key]
+            || { isWaiting: false, isStreaming: false, runtimeStatus: null };
         sessionUiStateRef.current[key] = { ...prev, ...next };
     };
 
@@ -2270,6 +2321,7 @@ export default function AgentDetailPage() {
         setWsConnected(false);
         setIsStreaming(false);
         setIsWaiting(false);
+        setChatRuntimeStatus(null);
     };
 
     const onAdminTabMine = () => {
@@ -2341,7 +2393,8 @@ export default function AgentDetailPage() {
         const targetAgentId = id;
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
-        const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
+        const runtimeState = sessionUiStateRef.current[runtimeKey]
+            || { isWaiting: false, isStreaming: false, runtimeStatus: null };
         const writable = isWritableSession(sess, scopeOverride);
         activeSessionIdRef.current = sess.id;
         isFirstLoad.current = true;
@@ -2359,6 +2412,7 @@ export default function AgentDetailPage() {
         setHistoryLoadingMore(false);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
+        setChatRuntimeStatus(runtimeState.runtimeStatus);
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
@@ -2424,6 +2478,7 @@ export default function AgentDetailPage() {
                 setSessions((prev) => [newSess, ...prev]);
                 setIsStreaming(false);
                 setIsWaiting(false);
+                setChatRuntimeStatus(null);
                 await selectSession(newSess, 'mine');
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
@@ -2458,6 +2513,7 @@ export default function AgentDetailPage() {
                 setWsConnected(false);
                 setIsStreaming(false);
                 setIsWaiting(false);
+                setChatRuntimeStatus(null);
             }
             await fetchMySessions(false, id);
             if (canViewAllAgentChatSessions) await fetchAllSessions();
@@ -2502,7 +2558,6 @@ export default function AgentDetailPage() {
         } catch (e: any) { toast.error(t('common.error.saveFailed', '保存失败'), { details: String(e?.message || e) }); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const getToolTargetKey = (args: any): string => {
         if (!args) return '';
@@ -2574,11 +2629,13 @@ export default function AgentDetailPage() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [chatRuntimeStatus, setChatRuntimeStatus] = useState<ChatRuntimeStatus | null>(null);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
     type AttachedFileRef = { name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' };
     type PendingChatMessage = {
         runtimeKey: SessionRuntimeKey;
+        messageId: string;
         contentForLLM: string;
         userMsg: string;
         fileName: string;
@@ -2820,6 +2877,7 @@ export default function AgentDetailPage() {
         setHistoryMsgs([]);
         setIsStreaming(false);
         setIsWaiting(false);
+        setChatRuntimeStatus(null);
         setWsConnected(false);
         wsRef.current = null;
         setWorkspaceLockedPath(null);
@@ -2851,6 +2909,7 @@ export default function AgentDetailPage() {
         setWsConnected(false);
         setIsStreaming(false);
         setIsWaiting(false);
+        setChatRuntimeStatus(null);
         setSessionsLoading(false);
         setAllSessionsLoading(false);
         Object.keys(reconnectDisabledRef.current).forEach((k) => {
@@ -2912,13 +2971,18 @@ export default function AgentDetailPage() {
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
-            setSessionUiState(key, { isWaiting: false, isStreaming: false });
+            setSessionUiState(key, {
+                isWaiting: false,
+                isStreaming: false,
+                runtimeStatus: null,
+            });
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) {
                 wsRef.current = null;
                 setWsConnected(false);
                 setIsWaiting(false);
                 setIsStreaming(false);
+                setChatRuntimeStatus(null);
             }
             if (e.code === 4003 || e.code === 4002) {
                 reconnectDisabledRef.current[key] = true;
@@ -2945,12 +3009,21 @@ export default function AgentDetailPage() {
                 return;
             }
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            if (d.type === 'runtime_status' || d.type === 'runtime.status') {
+                const runtimeStatus: ChatRuntimeStatus | null = d.status === 'compacting'
+                    ? 'compacting'
+                    : null;
+                setSessionUiState(key, { runtimeStatus });
+                if (isActiveRuntime) setChatRuntimeStatus(runtimeStatus);
+                return;
+            }
             if (['thinking', 'chunk', 'workspace_draft', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 const nextStreaming = ['thinking', 'chunk', 'workspace_draft', 'tool_call'].includes(d.type);
                 const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
                 setSessionUiState(key, {
                     isWaiting: false,
                     isStreaming: endStreaming ? false : nextStreaming,
+                    runtimeStatus: null,
                 });
             }
             if (!isActiveRuntime) {
@@ -2966,6 +3039,7 @@ export default function AgentDetailPage() {
 
             if (['thinking', 'chunk', 'workspace_draft', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 setIsWaiting(false);
+                setChatRuntimeStatus(null);
                 if (['thinking', 'chunk', 'workspace_draft', 'tool_call'].includes(d.type)) setIsStreaming(true);
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
             }
@@ -3216,7 +3290,23 @@ export default function AgentDetailPage() {
                     }
                 }
             } else {
-                setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
+                const candidate = d.role === 'user' || d.role === 'assistant'
+                    ? parseChatMsg({
+                        id: d.id || d.message_id,
+                        role: d.role,
+                        content: typeof d.content === 'string' ? d.content : '',
+                        thinking: typeof d.thinking === 'string' ? d.thinking : undefined,
+                        fileName: typeof d.file_name === 'string' ? d.file_name : undefined,
+                        imageUrl: typeof d.image_url === 'string' ? d.image_url : undefined,
+                    })
+                    : null;
+                if (candidate && isRenderableChatMessage(candidate)) {
+                    setChatMessages(prev => (
+                        candidate.id && prev.some((message) => message.id === candidate.id)
+                            ? prev
+                            : [...prev, candidate]
+                    ));
+                }
             }
         };
     };
@@ -3224,8 +3314,14 @@ export default function AgentDetailPage() {
     const dispatchChatMessage = (socket: WebSocket, runtimeKey: SessionRuntimeKey, payload: PendingChatMessage) => {
         setIsWaiting(true);
         setIsStreaming(false);
-        setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
+        setChatRuntimeStatus(null);
+        setSessionUiState(runtimeKey, {
+            isWaiting: true,
+            isStreaming: false,
+            runtimeStatus: null,
+        });
         setChatMessages(prev => [...prev, parseChatMsg({
+            id: payload.messageId,
             role: 'user',
             content: payload.userMsg,
             fileName: payload.fileName,
@@ -3237,6 +3333,7 @@ export default function AgentDetailPage() {
             display_content: payload.userMsg,
             file_name: payload.fileName,
             model_id: payload.modelId,
+            message_id: payload.messageId,
         }));
     };
 
@@ -3523,6 +3620,7 @@ export default function AgentDetailPage() {
         forceSenderLabel?: boolean;
         hideAvatar?: boolean;
     }) => {
+        if (!isRenderableChatMessage(msg)) return null;
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const isImage = msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fe);
         const resolvedSenderLabel = msg.sender_name || senderLabel;
@@ -3771,6 +3869,7 @@ export default function AgentDetailPage() {
 
         const payload: PendingChatMessage = {
             runtimeKey: activeRuntimeKey,
+            messageId: newClientMessageId(),
             contentForLLM,
             userMsg,
             fileName: attachedFiles.map(f => f.name).join(', '),
@@ -3929,7 +4028,7 @@ export default function AgentDetailPage() {
 
     // ── Drag-and-drop chat file upload ──
     const handleDroppedChatFiles = useCallback(async (files: File[]) => {
-        if (!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10) return;
+        if (!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || chatRuntimeStatus === 'compacting' || attachedFiles.length >= 10) return;
         const availableSlots = Math.max(0, 10 - attachedFiles.length);
         const filesToProcess = files.slice(0, availableSlots);
 
@@ -3958,11 +4057,11 @@ export default function AgentDetailPage() {
                 setChatUploadDrafts(prev => prev.filter(d => d.id !== draftId));
             }
         }
-    }, [id, wsConnected, chatUploadDrafts.length, isWaiting, isStreaming, attachedFiles.length, isWritableSession, t]);
+    }, [id, wsConnected, chatUploadDrafts.length, isWaiting, isStreaming, chatRuntimeStatus, attachedFiles.length, isWritableSession, t]);
 
     const { isDragging: isChatDragging, dropZoneProps: chatDropProps } = useDropZone({
         onDrop: handleDroppedChatFiles,
-        disabled: !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10 || !activeSession || !isWritableSession(activeSession),
+        disabled: !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || chatRuntimeStatus === 'compacting' || attachedFiles.length >= 10 || !activeSession || !isWritableSession(activeSession),
     });
 
     // Expandable activity log
@@ -6167,7 +6266,7 @@ export default function AgentDetailPage() {
                                                         {i18n.language?.startsWith('zh') ? '已加载全部历史消息' : 'All history loaded'}
                                                     </div>
                                                 )}
-                                                {chatMessages.length === 0 && !showNoModelState && (
+                                                {!chatMessages.some(isRenderableChatMessage) && !showNoModelState && (
                                                     <div className="chat-empty-state">
                                                         <div className="chat-empty-state__title">{activeSession?.title || t('agent.chat.startChat')}</div>
                                                         <div className="chat-empty-state__subtitle">{t('agent.chat.startConversation', { name: agent.name })}</div>
@@ -6175,12 +6274,13 @@ export default function AgentDetailPage() {
                                                     </div>
                                                 )}
                                                 {(() => {
+                                                    const renderableChatMessages = chatMessages.filter(isRenderableChatMessage);
                                                     const visibleChatMessages = showNoModelState
-                                                        ? chatMessages.filter((msg: any) => {
+                                                        ? renderableChatMessages.filter((msg: any) => {
                                                             const content = String(msg?.content || msg?.message || '');
                                                             return !(msg?.role === 'assistant' && (content.includes('no LLM model') || content.includes('No model')));
                                                         })
-                                                        : chatMessages;
+                                                        : renderableChatMessages;
                                                     // ── Grouping Algorithm (lookahead-based) ──
                                                     //
                                                     // Goal: merge all "analysis" steps (thinking + tool calls +
@@ -6357,7 +6457,24 @@ export default function AgentDetailPage() {
                                                     });
                                                 })()
                                                 }
-                                                {isWaiting && (
+                                                {chatRuntimeStatus === 'compacting' && (
+                                                    <div
+                                                        className="chat-msg-row chat-runtime-status"
+                                                        role="status"
+                                                        aria-live="polite"
+                                                    >
+                                                        <div className="chat-msg-avatar" aria-hidden="true">
+                                                            <IconBrain size={14} stroke={1.7} />
+                                                        </div>
+                                                        <div className="chat-runtime-status-body">
+                                                            <span>{t('agent.chat.compactingContext', 'Compacting context...')}</span>
+                                                            <span className="thinking-dots" aria-hidden="true">
+                                                                <span /><span /><span />
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                {isWaiting && chatRuntimeStatus !== 'compacting' && (
                                                     <div className="chat-msg-row">
                                                         <div className="chat-msg-avatar">A</div>
                                                         <div className="chat-msg-bubble chat-msg-bubble--thinking">
@@ -6483,7 +6600,7 @@ export default function AgentDetailPage() {
                                                             }}
                                                             onKeyDown={e => {
                                                                 // Enter sends the message; Shift+Enter inserts a newline
-                                                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming && chatRuntimeStatus !== 'compacting') {
                                                                     e.preventDefault();
                                                                     sendChatMsg();
                                                                 }
@@ -6499,7 +6616,7 @@ export default function AgentDetailPage() {
                                                             type="button"
                                                             className="chat-composer-btn"
                                                             onClick={() => fileInputRef.current?.click()}
-                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
+                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || chatRuntimeStatus === 'compacting' || attachedFiles.length >= 10}
                                                             title={t('agent.workspace.uploadFile')}
                                                         >
                                                             <IconPaperclip size={16} stroke={1.75} />
@@ -6511,7 +6628,7 @@ export default function AgentDetailPage() {
                                                             disabled={showNoModelState || !wsConnected}
                                                         />
                                                         <div style={{ flex: 1 }} />
-                                                        {(isStreaming || isWaiting) ? (
+                                                        {(isStreaming || isWaiting || chatRuntimeStatus === 'compacting') ? (
                                                             <button
                                                                 type="button"
                                                                 className="btn btn-stop-generation"
@@ -6523,7 +6640,12 @@ export default function AgentDetailPage() {
                                                                         activeSocket.send(JSON.stringify({ type: 'abort' }));
                                                                         setIsStreaming(false);
                                                                         setIsWaiting(false);
-                                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                                                        setChatRuntimeStatus(null);
+                                                                        setSessionUiState(activeRuntimeKey, {
+                                                                            isWaiting: false,
+                                                                            isStreaming: false,
+                                                                            runtimeStatus: null,
+                                                                        });
                                                                     }
                                                                 }}
                                                                 title={t('chat.stop', 'Stop')}

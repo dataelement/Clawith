@@ -72,6 +72,7 @@ from app.services.agent_runtime.planning_scheduler import (
 )
 from app.services.agent_runtime.projector import RuntimeProjector
 from app.services.agent_runtime.run_compactor import RuntimeRunCompactorService
+from app.services.agent_runtime.runtime_phase import RuntimeCompactPhasePublisher
 from app.services.agent_runtime.scheduling_lane import SchedulingLaneCompletionHandler
 from app.services.agent_runtime.session_context_service import SessionContextService
 from app.services.agent_runtime.session_context_compactor import LLMSessionContextCompactor
@@ -216,6 +217,9 @@ def build_runtime_worker_components(
     run_compactor = RuntimeRunCompactorService(
         session_factory=session_factory,
         settings=runtime_settings,
+        phase_publisher=RuntimeCompactPhasePublisher(
+            session_factory=session_factory,
+        ),
     )
     agent_node_executor = DeterministicRuntimeNodeExecutor(
         cancel_source=cancel_source,

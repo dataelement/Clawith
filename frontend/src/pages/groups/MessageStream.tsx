@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconRobot } from '@tabler/icons-react';
+import { IconBrain, IconRobot } from '@tabler/icons-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import type {
     GroupMember,
@@ -99,8 +99,14 @@ export default function MessageStream({
     const planningActivities = runtimeActivities.filter(
         (activity) => activity.status === 'planning',
     );
+    const compactingActivities = runtimeActivities.filter(
+        (activity) => activity.status === 'compacting',
+    );
     const agentActivities = runtimeActivities.filter(
-        (activity) => activity.status !== 'planning' && activity.agent_id,
+        (activity) => ['working', 'waiting'].includes(activity.status) && activity.agent_id,
+    );
+    const visibleMessages = messages.filter(
+        (message) => message.role === 'system' || Boolean(message.content?.trim()),
     );
 
     // A different session starts a different scroll history.
@@ -122,13 +128,13 @@ export default function MessageStream({
                 </div>
             )}
 
-            {messages.length === 0 && (
+            {visibleMessages.length === 0 && (
                 <div className="group-stream-empty">
                     {t('groups.noMessages', '还没有消息。发一条，或 @ 一个智能体开始协作。')}
                 </div>
             )}
 
-            {messages.map((message) => {
+            {visibleMessages.map((message) => {
                 if (message.role === 'system') {
                     return (
                         <div key={message.id} className="group-message-system">
@@ -142,8 +148,10 @@ export default function MessageStream({
                     : undefined;
                 const isAgent = message.role === 'assistant';
                 const isMine = Boolean(myParticipantId) && message.participant_id === myParticipantId;
-                const name = message.sender_name
-                    ?? member?.display_name
+                // participant_id is the durable author identity. sender_name is only a fallback
+                // for historical messages whose member is no longer present in the group.
+                const name = member?.display_name
+                    ?? message.sender_name
                     ?? t('groups.unknownSender', '未知成员');
 
                 return (
@@ -178,7 +186,11 @@ export default function MessageStream({
             {runtimeActivities.length > 0 && (
                 <div className="group-runtime-activities" aria-live="polite">
                     {planningActivities.map((activity) => (
-                        <div key={activity.run_id} className="group-runtime-activity planning">
+                        <div
+                            key={activity.run_id}
+                            className="group-runtime-activity planning"
+                            role="status"
+                        >
                             <div className="group-runtime-avatar-stack" aria-hidden="true">
                                 {activity.candidate_agent_ids.slice(0, 3).map((agentId) => (
                                     <span key={agentId} className="group-runtime-avatar">
@@ -193,6 +205,34 @@ export default function MessageStream({
                             </span>
                         </div>
                     ))}
+
+                    {compactingActivities.map((activity) => {
+                        const member = activity.agent_id
+                            ? memberByAgent.get(activity.agent_id)
+                            : undefined;
+                        return (
+                            <div
+                                key={activity.run_id}
+                                className="group-runtime-activity compacting"
+                                role="status"
+                            >
+                                <span className="group-runtime-avatar" aria-hidden="true">
+                                    <IconBrain size={14} stroke={1.7} />
+                                    <span className="group-runtime-dot compacting" />
+                                </span>
+                                <span>
+                                    {member
+                                        ? t('groups.agentCompacting', '{{name}} 正在压缩上下文', {
+                                            name: member.display_name,
+                                        })
+                                        : t('groups.compactingActivity', '正在压缩群聊上下文')}
+                                </span>
+                                <span className="group-runtime-ellipsis" aria-hidden="true">
+                                    <i /><i /><i />
+                                </span>
+                            </div>
+                        );
+                    })}
 
                     {agentActivities.map((activity) => {
                         const member = memberByAgent.get(activity.agent_id!);

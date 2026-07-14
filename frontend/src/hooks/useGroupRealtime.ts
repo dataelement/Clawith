@@ -38,6 +38,7 @@ interface GroupSocketEvent {
 
 const ACTIVE_RUNTIME_STATUSES = new Set<GroupRuntimeActivityStatus>([
     'planning',
+    'compacting',
     'working',
     'waiting',
 ]);

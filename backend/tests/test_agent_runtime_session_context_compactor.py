@@ -263,6 +263,43 @@ async def test_direct_compact_selects_current_primary_without_querying_fallback(
 
 
 @pytest.mark.asyncio
+async def test_a2a_compact_accepts_peer_agent_as_the_current_source() -> None:
+    request = _request()
+    primary = _model(request.tenant_id, name="peer-primary")
+    session_owner_id = uuid.uuid4()
+    peer = Agent(
+        id=request.source_agent_id,
+        tenant_id=request.tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Peer Agent",
+        status="idle",
+        is_expired=False,
+        primary_model_id=primary.id,
+    )
+    a2a_session = ChatSession(
+        id=request.session_id,
+        tenant_id=request.tenant_id,
+        session_type="a2a",
+        agent_id=session_owner_id,
+        peer_agent_id=peer.id,
+        title="Owner ↔ Peer",
+        source_channel="agent",
+        is_primary=False,
+    )
+    db = _DB(a2a_session, peer, primary)
+    compactor = LLMSessionContextCompactor(
+        session_factory=_session_factory(db),  # type: ignore[arg-type]
+    )
+
+    selection = await compactor._resolve_models(request)  # type: ignore[attr-defined]
+
+    assert selection.primary is primary
+    assert selection.usage_agent_id == peer.id
+    assert db.calls == 3
+    assert not db.results
+
+
+@pytest.mark.asyncio
 async def test_oversized_session_is_compacted_in_complete_message_batches() -> None:
     message_ids = [uuid.uuid4(), uuid.uuid4()]
     request = _request(

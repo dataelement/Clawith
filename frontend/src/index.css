@@ -7616,6 +7616,30 @@ select:focus {
   word-break: break-word;
 }
 
+.chat-runtime-status {
+  align-items: center;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.chat-runtime-status .chat-msg-avatar {
+  background: var(--accent-subtle);
+  color: var(--accent-primary);
+}
+
+.chat-runtime-status-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+
+.chat-runtime-status .thinking-dots span {
+  width: 4px;
+  height: 4px;
+  background: var(--accent-primary);
+}
+
 .thought-disclosure summary::marker,
 .thought-disclosure summary::-webkit-details-marker {
   display: none;

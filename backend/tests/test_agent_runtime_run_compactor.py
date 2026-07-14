@@ -166,12 +166,14 @@ def _service(
     settings: Settings,
     completion,
     ledger: dict | None = None,
+    phase_publisher=None,
 ) -> RuntimeRunCompactorService:
     return RuntimeRunCompactorService(
         session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
         settings=settings,
         completion=completion,
         input_loader=_loader(model, ledger),
+        phase_publisher=phase_publisher,
     )
 
 
@@ -180,16 +182,21 @@ async def test_message_threshold_compacts_only_prefix_before_recent_twenty() -> 
     messages = [_normal(f"message-{index}") for index in range(25)]
     state, context, tenant_id = _state(messages)
     calls = 0
+    phases: list[str] = []
 
     async def complete(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         return _step(calls)
 
+    async def publish_phase(_state, status: str) -> None:
+        phases.append(status)
+
     result = await _service(
         model=_model(tenant_id),
         settings=_settings(AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD=21),
         completion=complete,
+        phase_publisher=publish_phase,
     ).compact_if_needed(state, context, forced=False)
 
     assert result.compacted is True
@@ -198,6 +205,7 @@ async def test_message_threshold_compacts_only_prefix_before_recent_twenty() -> 
     assert result.run_summary is not None
     assert result.run_summary["progress"] == ["batch-1"]
     assert calls == 1
+    assert phases == ["compacting", "working"]
 
 
 @pytest.mark.asyncio
@@ -344,6 +352,7 @@ async def test_eighty_five_percent_token_threshold_compacts_even_under_twenty_me
 async def test_invalid_compact_output_keeps_previous_checkpoint_history() -> None:
     messages = [_normal(f"message-{index}") for index in range(21)]
     state, context, tenant_id = _state(messages)
+    phases: list[str] = []
 
     async def complete(*_args, **_kwargs):
         return LLMCompletionStep(
@@ -354,12 +363,17 @@ async def test_invalid_compact_output_keeps_previous_checkpoint_history() -> Non
             usage=TokenUsage(total_tokens=1),
         )
 
+    async def publish_phase(_state, status: str) -> None:
+        phases.append(status)
+
     result = await _service(
         model=_model(tenant_id),
         settings=_settings(),
         completion=complete,
+        phase_publisher=publish_phase,
     ).compact_if_needed(state, context, forced=True)
 
     assert result.compacted is False
     assert result.error is not None
     assert result.error["code"] == "invalid_run_compact_output"
+    assert phases == ["compacting", "working"]

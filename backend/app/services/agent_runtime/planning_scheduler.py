@@ -347,6 +347,13 @@ class PlanningCheckpointScheduler:
                                 "planning_root_run_id": str(root.id),
                                 "planning_step_id": step_id,
                                 "planning_instruction": str(step["instruction"]),
+                                "input_content": str(step["instruction"]),
+                                "runtime_instruction": (
+                                    "Execute only the assigned Planning step in this Run. "
+                                    "Do not repeat the original group request or complete sibling "
+                                    "steps. Use dependency summaries as evidence, then report only "
+                                    "this step's result."
+                                ),
                                 "related_run_summaries": _dependency_summaries(plan, step),
                                 "source_channel": session.source_channel,
                             },

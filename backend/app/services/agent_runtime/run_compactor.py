@@ -9,6 +9,7 @@ import math
 from typing import Protocol, cast
 import uuid
 
+from loguru import logger
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
@@ -110,6 +111,7 @@ RunCompactInputLoader = Callable[
     [RuntimeGraphState],
     Awaitable[RunCompactInputs],
 ]
+RunCompactPhasePublisher = Callable[[RuntimeGraphState, str], Awaitable[None]]
 
 
 def _estimate_tokens(value: object) -> int:
@@ -417,11 +419,25 @@ class RuntimeRunCompactorService:
         settings: Settings | None = None,
         completion: RunCompactCompletionPort = complete_llm_once,
         input_loader: RunCompactInputLoader | None = None,
+        phase_publisher: RunCompactPhasePublisher | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings or get_settings()
         self._completion = completion
         self._input_loader = input_loader or self._load_inputs
+        self._phase_publisher = phase_publisher
+
+    async def _publish_phase(self, state: RuntimeGraphState, status: str) -> None:
+        if self._phase_publisher is None:
+            return
+        try:
+            await self._phase_publisher(state, status)
+        except Exception:
+            logger.exception(
+                "Run Compact phase publish failed for run={} status={}",
+                state["registry"].run_id,
+                status,
+            )
 
     async def _load_inputs(self, state: RuntimeGraphState) -> RunCompactInputs:
         try:
@@ -562,12 +578,16 @@ class RuntimeRunCompactorService:
                     "run_compact_boundary_unavailable",
                     "No complete safe prefix exists before the recent Run window",
                 )
-            summary = await self._compact_batches(
-                state,
-                model=inputs.model,
-                blocks=compactable,
-                batch_budget=budget.compact_threshold,
-            )
+            await self._publish_phase(state, "compacting")
+            try:
+                summary = await self._compact_batches(
+                    state,
+                    model=inputs.model,
+                    blocks=compactable,
+                    batch_budget=budget.compact_threshold,
+                )
+            finally:
+                await self._publish_phase(state, "working")
             return RunCompactResult(
                 compacted=True,
                 run_summary=summary,

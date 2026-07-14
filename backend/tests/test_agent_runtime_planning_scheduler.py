@@ -325,6 +325,9 @@ async def test_waiting_checkpoint_creates_only_ready_child_run() -> None:
     assert command.scheduling_position_created_at == NOW
     assert command.scheduling_position_id == message.id
     assert command.payload["planning_step_id"] == "research"
+    assert command.payload["planning_instruction"] == "Research the facts"
+    assert command.payload["input_content"] == "Research the facts"
+    assert "only the assigned Planning step" in command.payload["runtime_instruction"]
     assert command.payload["related_run_summaries"] == []
 
 

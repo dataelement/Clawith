@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -60,6 +61,9 @@ class _Session:
 
     async def get(self, model, _identity):
         return self.records.get(model)
+
+    async def commit(self) -> None:
+        return None
 
 
 def _handler(websocket: _WebSocket) -> WebSocketChatHandler:
@@ -336,3 +340,61 @@ async def test_abort_enqueues_a_durable_cancel_command() -> None:
     assert command.run_id == handle.run_id
     assert command.idempotency_key == f"cancel:web:{handle.run_id}"
     assert command.actor_user_id == handler.user.id
+
+
+@pytest.mark.asyncio
+async def test_runtime_stream_acknowledges_the_durable_command_before_waiting() -> None:
+    websocket = _WebSocket()
+    blocked = asyncio.Event()
+
+    async def receive_while_runtime_runs():
+        await blocked.wait()
+        return {}
+
+    websocket.receive_json = receive_while_runtime_runs
+    handler = _handler(websocket)
+    handle = _handle(handler.user.tenant_id)
+    intake = ChatRuntimeIntake(
+        handle=handle,
+        message_id=uuid.uuid4(),
+        resumed=False,
+    )
+    outcome = ChatRuntimeStreamOutcome(
+        status="completed",
+        content="pong",
+        cursor=RuntimeEventCursor(
+            datetime(2026, 7, 14, 10, 0, tzinfo=UTC),
+            uuid.uuid4(),
+        ),
+    )
+
+    async def stream(**kwargs):
+        assert kwargs["handle"] == handle
+        return outcome
+
+    with (
+        patch("app.api.websocket.stream_web_chat_run", new=stream),
+        patch("app.api.websocket.async_session", return_value=_Session()),
+        patch(
+            "app.api.websocket.maybe_mark_session_read_for_active_viewer",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            handler,
+            "_update_activity_and_quota",
+            new=AsyncMock(),
+        ),
+    ):
+        resolved, queued = await handler._run_runtime_and_stream(
+            intake,
+            user_content="ping",
+        )
+
+    assert resolved == outcome
+    assert queued == []
+    assert websocket.sent[0] == {
+        "type": "runtime_status",
+        "run_id": str(handle.run_id),
+        "event": "accepted",
+        "status": "queued",
+    }

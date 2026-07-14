@@ -347,6 +347,24 @@ def _repair(
     )
 
 
+def _plain_text_completes_foreground_chat(
+    state: RuntimeGraphState,
+    content: str,
+) -> bool:
+    """Treat a settled foreground-chat answer as terminal without weakening tasks."""
+    registry = state["registry"]
+    lifecycle = state["lifecycle"]
+    return (
+        registry.source_type == "chat"
+        and registry.run_kind == "foreground"
+        and lifecycle.get("status") == "running"
+        and lifecycle.get("next_route") == "model"
+        and not lifecycle.get("pending_tool_calls")
+        and lifecycle.get("waiting_request") is None
+        and bool(content)
+    )
+
+
 def _parse_step(
     state: RuntimeGraphState,
     step: LLMCompletionStep,
@@ -357,12 +375,7 @@ def _parse_step(
         return _repair(state, step, step.retry_instruction)
     if not step.tool_calls:
         content = step.content.strip() if isinstance(step.content, str) else ""
-        registry = state["registry"]
-        if (
-            registry.source_type == "chat"
-            and registry.run_kind == "foreground"
-            and content
-        ):
+        if _plain_text_completes_foreground_chat(state, content):
             return ModelStepResult(
                 intent="finish",
                 assistant_message=_assistant_message(

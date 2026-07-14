@@ -67,7 +67,7 @@ export interface GroupMessageIntake {
     error_code: string | null;
 }
 
-export type GroupRuntimeActivityStatus = 'planning' | 'working' | 'waiting';
+export type GroupRuntimeActivityStatus = 'planning' | 'compacting' | 'working' | 'waiting';
 
 /** Ephemeral WebSocket-only activity. It is never part of message history or model context. */
 export interface GroupRuntimeActivity {
