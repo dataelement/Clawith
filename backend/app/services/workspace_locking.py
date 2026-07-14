@@ -37,6 +37,11 @@ def _lock_key(agent_id: uuid.UUID, path: str) -> str:
     return f"{LOCK_PREFIX}:{agent_id}:{normalized}"
 
 
+def _group_workspace_lock_key(group_id: uuid.UUID, path: str) -> str:
+    normalized = _normalize_workspace_path(path) or "."
+    return f"{LOCK_PREFIX}:group:{group_id}:{normalized}"
+
+
 async def acquire_workspace_lock(
     agent_id: uuid.UUID,
     path: str,
@@ -51,6 +56,41 @@ async def acquire_workspace_lock(
 async def release_workspace_lock(agent_id: uuid.UUID, path: str, *, owner_token: str) -> None:
     redis = await get_redis()
     await redis.eval(_RELEASE_IF_OWNER_SCRIPT, 1, _lock_key(agent_id, path), owner_token)
+
+
+async def acquire_group_workspace_mutation_lock(
+    group_id: uuid.UUID,
+    path: str,
+    *,
+    owner_token: str,
+    ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
+) -> bool:
+    """Acquire one cross-instance lock for a normalized group workspace path."""
+    redis = await get_redis()
+    return bool(
+        await redis.set(
+            _group_workspace_lock_key(group_id, path),
+            owner_token,
+            ex=ttl_seconds,
+            nx=True,
+        )
+    )
+
+
+async def release_group_workspace_mutation_lock(
+    group_id: uuid.UUID,
+    path: str,
+    *,
+    owner_token: str,
+) -> None:
+    """Release a group workspace lock only when the caller still owns it."""
+    redis = await get_redis()
+    await redis.eval(
+        _RELEASE_IF_OWNER_SCRIPT,
+        1,
+        _group_workspace_lock_key(group_id, path),
+        owner_token,
+    )
 
 
 @asynccontextmanager

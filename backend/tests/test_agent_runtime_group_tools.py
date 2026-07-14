@@ -8,11 +8,13 @@ import uuid
 
 import pytest
 
+from app.database import add_after_commit_callback, add_after_rollback_callback
 from app.models.agent import Agent
 from app.services import group_file_service
 from app.services.agent_runtime.group_runtime_tools import (
     GROUP_TOOL_NAMES,
     GROUP_WRITE_MEMORY,
+    GROUP_WRITE_WORKSPACE_FILE,
     GroupRuntimeToolService,
     with_group_runtime_tools,
 )
@@ -32,14 +34,26 @@ class _Begin:
 
 
 class _DB:
+    def __init__(self) -> None:
+        self.info = {}
+        self.events: list[str] = []
+
     def begin(self):
         return _Begin()
 
+    async def commit(self) -> None:
+        self.events.append("commit")
 
-def _factory():
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+
+
+def _factory(db: _DB | None = None):
+    session = db or _DB()
+
     @asynccontextmanager
     async def factory():
-        yield _DB()
+        yield session
 
     return factory
 
@@ -188,3 +202,98 @@ async def test_group_memory_tool_uses_checkpoint_group_and_current_agent_only(
         }
     ]
     assert json.loads(result)["path"] == "memory.md"
+
+
+@pytest.mark.asyncio
+async def test_group_workspace_tool_runs_commit_callbacks(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    db = _DB()
+
+    async def committed() -> None:
+        db.events.append("after_commit")
+
+    async def rolled_back() -> None:
+        db.events.append("after_rollback")
+
+    async def write_workspace(db_arg, **kwargs):
+        assert db_arg is db
+        add_after_commit_callback(db_arg, committed)
+        add_after_rollback_callback(db_arg, rolled_back)
+        return group_file_service.GroupTextFile(
+            path=kwargs["path"],
+            content=kwargs["content"],
+            exists=True,
+            version_token="v2",
+            modified_at="now",
+        )
+
+    monkeypatch.setattr(
+        group_file_service,
+        "write_workspace_file",
+        write_workspace,
+    )
+    await GroupRuntimeToolService(session_factory=_factory(db)).execute(
+        _state(
+            tenant_id,
+            group_id,
+            session_id,
+            agent,
+            participant_id,
+            group_context=True,
+        ),
+        agent,
+        GROUP_WRITE_WORKSPACE_FILE,
+        {"path": "report.md", "content": "done"},
+    )
+
+    assert db.events == ["commit", "after_commit"]
+    assert db.info == {}
+
+
+@pytest.mark.asyncio
+async def test_group_workspace_tool_runs_rollback_callbacks(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    db = _DB()
+
+    async def committed() -> None:
+        db.events.append("after_commit")
+
+    async def rolled_back() -> None:
+        db.events.append("after_rollback")
+
+    async def fail_workspace(db_arg, **_kwargs):
+        assert db_arg is db
+        add_after_commit_callback(db_arg, committed)
+        add_after_rollback_callback(db_arg, rolled_back)
+        raise RuntimeError("workspace write failed")
+
+    monkeypatch.setattr(
+        group_file_service,
+        "write_workspace_file",
+        fail_workspace,
+    )
+    with pytest.raises(RuntimeError, match="workspace write failed"):
+        await GroupRuntimeToolService(session_factory=_factory(db)).execute(
+            _state(
+                tenant_id,
+                group_id,
+                session_id,
+                agent,
+                participant_id,
+                group_context=True,
+            ),
+            agent,
+            GROUP_WRITE_WORKSPACE_FILE,
+            {"path": "report.md", "content": "done"},
+        )
+
+    assert db.events == ["rollback", "after_rollback"]
+    assert db.info == {}

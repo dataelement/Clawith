@@ -13,6 +13,7 @@ from app.services.agent_runtime.checkpoint_side_effects import (
     RuntimeCheckpointSideEffects,
     delivery_from_checkpoint,
 )
+from app.services.agent_runtime.delivery import DeliveryReceipt
 from app.services.agent_runtime.command_worker import (
     CheckpointObservation,
     RuntimeCommandRecord,
@@ -194,20 +195,51 @@ async def test_projects_then_delivers_completed_checkpoint() -> None:
         projector=projector,  # type: ignore[arg-type]
     )
 
+    message_id = uuid.uuid4()
+
     async def delivered(_db, request):
         timeline.append("deliver")
         assert request.content == "verified answer"
         assert request.checkpoint_id == checkpoint.checkpoint_id
         assert request.lifecycle_status == "completed"
+        return DeliveryReceipt(
+            tenant_id=run.tenant_id,
+            run_id=run.run_id,
+            idempotency_key=request.idempotency_key,
+            status="delivered",
+            delivery_kind="terminal",
+            checkpoint_id=checkpoint.checkpoint_id,
+            message_id=message_id,
+            requested_session_id=None,
+            actual_session_id=None,
+            fallback_reason=None,
+            error_code=None,
+        )
 
-    with patch(
-        "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
-        new=AsyncMock(side_effect=delivered),
-    ) as deliver:
+    async def published(**_kwargs):
+        timeline.append("publish")
+
+    with (
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
+            new=AsyncMock(side_effect=delivered),
+        ) as deliver,
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.publish_committed_group_message",
+            new=AsyncMock(side_effect=published),
+        ) as broadcast,
+    ):
         await handler.handle(run=run, command=command, checkpoint=checkpoint)
 
     assert timeline.index("project") < timeline.index("deliver")
+    assert max(
+        index for index, item in enumerate(timeline) if item == "transaction_exit"
+    ) < timeline.index("publish")
     deliver.assert_awaited_once()
+    broadcast.assert_awaited_once_with(
+        tenant_id=run.tenant_id,
+        message_id=message_id,
+    )
 
 
 @pytest.mark.asyncio

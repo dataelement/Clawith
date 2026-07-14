@@ -1,269 +1,163 @@
-# 群聊前端实时链路：接口补充需求
+# 群聊前端实时与接口契约
 
-状态：待后端确认
-关联：`technical-design.md` 第 11 章 API 草案、`backend/app/api/groups.py`
+状态：接口与前端集成已实现，待部署环境 E2E 验证
+关联：`technical-design.md` 第 11 章、`backend/app/api/groups.py`、`backend/app/api/group_websocket.py`、`frontend/src/hooks/useGroupRealtime.ts`
 
-## 背景
+> 本文描述当前集成基线，不代表浏览器 E2E 已通过。所有实时恢复、双身份邀请和二进制文件场景仍须在部署环境留存实际执行证据。
 
-群聊前端的数据链路确定为：
+## 1. 消息传输主链路
 
-- **REST 发消息、拉历史** —— 复用已实现的 `/api/groups/...`。
-- **WebSocket 实时推送** —— 群内新消息即时到达。
-- **Cursor 断线补拉** —— 重连后按最后已知位置补齐断线期间的消息。
-- **轮询只作临时兜底** —— WS 不可用时降级，不作为长期方案。
+群聊统一采用以下数据链路：
 
-后端当前实现已经覆盖了 REST 发消息和历史分页，契约干净可用。但**实时推送和断线补拉这两环还接不上**，需要两处补充。
+- **REST 写入**：所有人类消息继续通过 `POST /api/groups/{group_id}/sessions/{session_id}/messages` 提交，WebSocket 不承担上行写入。
+- **REST 历史**：通过同一 session 的 messages GET 接口读取最近一页或使用 `before` 向旧消息翻页。
+- **Group WebSocket 推送**：通过一条 group-scoped WebSocket 接收整个群的 `message.created` 事件。
+- **`after` 正向补拉**：首次连接、重连和轮询恢复时，从当前 session 最后确认的 cursor 继续补齐新消息。
+- **4 秒轮询临时兜底**：仅在 WebSocket 未就绪或断开期间运行，不作为常态传输方案。
 
----
+页面继续按 `message.id` 合并消息。WebSocket 的 best-effort 提示、REST 返回和重连补拉可以重复到达，但不能产生重复气泡；消息完整性由 REST 补拉保证，而不是由 WebSocket 投递保证。
 
-## 缺口 1：消息列表缺少 `after` 游标（正向补拉）
+## 2. 消息历史与 `after` cursor
 
-### 现状
+接口：
 
-`GET /api/groups/{group_id}/sessions/{session_id}/messages` 只支持 `before`（`backend/app/api/groups.py:788`）：
-
-```python
-statement = (
-    select(ChatMessage)
-    .where(ChatMessage.conversation_id == str(session_id))
-    .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
-    .limit(limit)
-)
-if before is not None:
-    statement = statement.where(
-        tuple_(ChatMessage.created_at, ChatMessage.id) < tuple_(before[0], before[1])
-    )
-return list(reversed(result.scalars().all()))
-```
-
-这是**向后翻页**：取比游标更旧的 `limit` 条，返回时按时间升序。适合「往上滚动加载历史」。
-
-### 问题
-
-断线补拉需要的是**反方向**：拿断线前最后一条消息的 cursor，取**比它更新**的消息。当前 API 做不到。
-
-前端可以退而求其次——从头部反向翻页，一直翻到撞见已知 cursor 为止。但断线时间稍长就要连翻多页，且无法直接判断「是否已经追平」，逻辑绕且请求数不可控。
-
-### 需求
-
-给该接口增加互斥的 `after` 参数，语义与 `before` 对称：
-
-```
+```text
+GET /api/groups/{group_id}/sessions/{session_id}/messages
+GET /api/groups/{group_id}/sessions/{session_id}/messages?before=<cursor>&limit=<n>
 GET /api/groups/{group_id}/sessions/{session_id}/messages?after=<cursor>&limit=<n>
 ```
 
-- `after`：游标格式与现有 cursor 一致，`<created_at ISO 8601>|<message UUID>`，表示**第一个被排除的位置**（不含该条本身）。
-- 返回**比该位置更新**的消息，按 `(created_at, id)` 升序，最多 `limit` 条。
-- `before` 和 `after` 同时传时返回 400。
-- 都不传时维持现有行为（返回最近 `limit` 条）。
+契约如下：
 
-实现上是把比较符和排序方向翻一下：
+- cursor 使用统一 Message Position：`<created_at ISO 8601>|<message UUID>`。
+- `before` 返回比 cursor 更旧的消息，响应仍按 `(created_at, id)` 升序展示。
+- `after` 返回比 cursor 更新的消息，按 `(created_at, id)` 升序。
+- `before` 与 `after` 互斥，同时传入返回 400。
+- 都不传时返回最近一页。
+- `after` 补拉采用“返回条数等于 `limit` 时继续请求下一页”的约定，直到短页或空页；不设置客户端总页数上限。
 
-```python
-if after is not None:
-    statement = (
-        select(ChatMessage)
-        .where(ChatMessage.conversation_id == str(session_id))
-        .where(tuple_(ChatMessage.created_at, ChatMessage.id) > tuple_(after[0], after[1]))
-        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
-        .limit(limit)
-    )
-    return list(result.scalars().all())   # 已是升序，不再 reversed
-```
+前端为每个 session 分开维护 **REST-confirmed cursor** 与 **WS-observed cursor**。只有从 REST-confirmed cursor 开始的完整补拉成功结束后，才能推进下一次 `after` 的起点；WebSocket 事件只能合并到界面、更新 observed 水位并触发从 REST-confirmed cursor 开始的补拉，绝不能直接成为 `after` 起点，否则乱序或漏投事件会跳过尚未取回的消息。
 
-排序严格沿用技术设计里强制的 Message Position `(created_at, id)`，与 `before`、未读水位、Compact watermark 保持同一套顺序。
+REST-confirmed cursor、WS-observed cursor、in-flight request、AbortController 和 generation 均按 `group_id + session_id` 隔离。切换 session 或 group 时必须取消失效请求，旧响应不得写入新会话。
 
-### 补充：前端如何判断是否追平
+## 3. Group WebSocket
 
-`after` 一次最多返回 `limit` 条。前端需要知道「还有没有更多」，否则无法安全地停止补拉。两种方案任选：
+端点：
 
-- **A（推荐，零成本）**：约定「返回条数 == limit 即可能还有更多」，前端拿最后一条的 cursor 继续拉，直到返回条数 < limit。无需改响应结构。
-- **B**：响应改为带 envelope 的 `{ messages: [...], has_more: bool }`。更明确，但会改动现有响应结构，也影响 `before` 那条路径。
-
-前端按 **A** 实现，除非后端倾向 B。
-
----
-
-## 缺口 2：群 WebSocket 端点不存在
-
-### 现状
-
-WebSocket 目前只有 `/ws/chat/{agent_id}`（`backend/app/api/websocket.py:168`），死绑单个 Agent，且在 session 查询里明确排除了群 session（`websocket.py:365`：`not ChatSession.is_group`）。
-
-也就是说：**群消息目前没有任何推送通道**。别人发的消息、Agent 被 @ 后的唤醒确认、Agent 的最终回复、任务规划失败的系统消息，前端全都收不到。
-
-### 需求：新增群推送端点
-
-```
+```text
 WS /ws/group/{group_id}?token=<JWT>
 ```
 
-- 认证沿用现有 WS 风格：JWT 走 `token` query param。
-- 鉴权：连接时校验该用户是当前群内 `removed_at IS NULL` 的成员；不是则拒绝。
-- 群被删除、成员被移出时，服务端应主动关闭连接（可沿用现有 `4002`/`4003` 这类「不再重连」的 close code 约定，具体码值由后端定，前端按码值决定是否重连）。
+### 3.1 鉴权与订阅范围
 
-### 订阅范围：一个群一条连接，不是一个 session 一条
+- JWT 使用 `token` query parameter。
+- 服务端校验 active user、tenant 与当前群的 active membership。
+- 一条连接订阅整个群，而不是单个 session；事件携带 `session_id`。
+- 群内任一 session 出现消息时，前端都刷新 session 列表，使所有 session 的 `unread_count` 保持最新；只有当前 active session 的消息进入当前消息列表。
 
-推送范围是**整个群**，事件里带 `session_id` 区分。
+### 3.2 Ready 与消息事件
 
-理由：群内多个 session 的未读红点需要实时更新。如果按 session 订阅，用户只能收到当前打开那个 session 的消息，其余 session 的未读还得靠轮询，等于实时链路没做完整。一个群一条连接，前端在群内切 session 不需要重连。
+服务端完成鉴权和 presence 注册后发送：
 
-### 事件契约
+```json
+{
+  "type": "connected",
+  "group_id": "<uuid>"
+}
+```
 
-v1 只需要一种事件：
+`connected` 是连接可用边界。前端收到它以后，先对 active session 执行一次 `after` catch-up，再进入纯实时状态；建连后 10 秒内没有收到该事件时，前端进入 REST 轮询、关闭当前连接并继续后台重连。
+
+v1 消息事件：
 
 ```json
 {
   "type": "message.created",
   "session_id": "<uuid>",
-  "message": { /* 与 REST 的 GroupMessageOut 完全一致 */ }
+  "message": { "cursor": "<created_at>|<message_id>" }
 }
 ```
 
-`message` 直接复用 `GroupMessageOut`（`groups.py:113`）的 shape，**包括其中的 `cursor` 字段**。这一点很关键：前端收到推送即可用同一个 cursor 更新水位，与 `after` 补拉天然对齐，不需要两套位置语义。
+`message` 与 REST 的 `GroupMessageOut` shape 一致，并包含 cursor。所有公开群消息使用同一种事件，包括人类消息、ACK、Agent 最终回复、callback 和安全的 system message；Agent 中间思考和工具过程不作为群消息推送。
 
-**所有**写入群 session 的公开消息都走这一种事件，前端不需要分支处理：
+### 3.3 断线恢复
 
-- 人类成员发的消息
-- Agent 被 @ 后的唤醒确认（ACK）
-- Agent 的最终回复
-- 任务触发 / 回调产生的群消息
-- 任务规划失败的系统消息（`role = system`、`participant_id = null`）
+非终止性断线后，前端立即执行以下动作：
 
-这与 PRD「唤醒确认只使用普通群消息，不提供动画或独立状态」「Agent 中间过程不作为群消息」是一致的——群聊不需要 chunk / thinking / tool_call 这类流式事件。
+1. 启动 4 秒轮询，不等待第一次间隔到期。
+2. 每次轮询刷新整个群的 sessions，更新所有 session 的未读数。
+3. 对 active session 使用 `after` cursor 补拉消息。
+4. 同时在后台按指数退避恢复 WebSocket，退避上限为 30 秒且不会因固定失败次数永久停止。
+5. 新连接收到 `connected` 后再次 catch-up；同步成功后停止轮询，恢复 WebSocket 常态链路。
 
-### 投递语义
+以下 close code 表示认证、群状态或成员权限已经失效，不再自动重连：
 
-**至少一次（at-least-once）即可，不需要精确一次。**
+- `1008`：policy violation
+- `4001`：认证失败
+- `4002`：服务端已确认群不存在
+- `4003`：active membership 不成立
 
-前端按 `message.id` 去重，重复推送无害。这样后端不必为投递可靠性做额外保证——WS 推送尽力而为，真正的一致性由「重连后用 `after` 补拉」兜住。
+非业务性的数据库异常、Redis presence 注册异常和其他瞬时服务端故障使用 `1011`。前端必须把它当作可恢复断线：启动 REST 轮询并持续退避重连。`4002` 只用于真实的 `group_not_found`，不能用于临时初始化失败。
 
-### 可选事件（v1 可砍）
+## 4. 双身份邀请契约
 
-有了更好，没有也能跑（前端在对应操作后手动 refetch）：
+接口：
 
-- `session.created` / `session.deleted` / `session.updated`（标题、primary 变更）
-- `member.joined` / `member.removed`
-- `announcement.updated`
-
-优先级远低于 `message.created`。
-
----
-
-## 缺口 3：邀请成员拿不到 `participant_id`（阻塞，优先级最高）
-
-### 现状
-
-`POST /api/groups/{group_id}/members` 只接受 `participant_id`（`groups.py:59`）：
-
-```python
-class InviteGroupMemberIn(BaseModel):
-    participant_id: uuid.UUID
+```text
+POST /api/groups/{group_id}/members
 ```
 
-但**没有任何接口对外暴露 participant_id**。前端手上只有 `agent_id`（来自 `GET /agents/`）和 `user_id`（来自 `GET /users/`），无法转换成 `participant_id`。
+请求支持两种互斥身份输入：
 
-更麻烦的是，Agent 的 participant 记录是**懒创建**的（`services/participant_identity.py:121` `get_or_create_agent_participant`）——一个从未参与过会话的 Agent，数据库里根本还没有对应的 participants 行。即使前端能查，也查不到。
-
-**结论：邀请成员这条链路目前是断的，前端无法实现。** 这是唯一一个真正阻塞前端的缺口，优先级高于前两项。
-
-### 需求（推荐方案：邀请接口改收业务 ID）
-
-让 `POST /api/groups/{group_id}/members` 额外接受 `(participant_type, ref_id)`，服务端内部调 `get_or_create_participant` 解析（懒创建正好在这里发生）：
-
-```python
-class InviteGroupMemberIn(BaseModel):
-    # 二选一
-    participant_id: uuid.UUID | None = None
-    participant_type: Literal["user", "agent"] | None = None
-    ref_id: uuid.UUID | None = None
+```json
+{ "participant_id": "<participant uuid>" }
 ```
 
-两者都不传或都传时返回 400。保留 `participant_id` 路径，兼容已有测试。
+或：
 
-这样前端的选人 UI 直接用现成的 `GET /agents/` 和 `GET /users/` 构建候选列表，按 `(type, ref_id)` 发起邀请，**不需要后端新增任何查询接口**，改动面最小。
-
-### 备选方案
-
-新增 `GET /api/groups/{group_id}/member-candidates?q=`，返回可邀请对象及其 `participant_id`（内部按需创建 participants 行）。语义更贴 PRD 的「候选范围是邀请人可见的人和 Agent」，但后端要多写一个带可见性过滤的查询接口，且为了返回 ID 而提前创建 participant 行，副作用不干净。
-
-**倾向推荐方案。** 若后端选备选方案，前端照样能接，告知即可。
-
-### 附带确认
-
-PRD 规定「Private Agent 不允许被邀请进群」「未绑定平台账号的第三方同步成员暂时不允许入群」。这两条过滤是在邀请接口内部校验（前端把不合法的候选也传上来，由后端拒绝），还是需要前端在候选列表里就过滤掉？前端倾向：**后端校验为准**，前端在列表里做友好提示即可，避免两边各写一套规则。
-
----
-
-## 缺口 4：群 workspace 只支持文本，不能上传文件
-
-### 现状
-
-群 workspace 的四个接口全是文本读写：
-
-```python
-class GroupTextFileIn(BaseModel):
-    content: str
-    expected_version_token: str | None = None
+```json
+{
+  "participant_type": "user | agent",
+  "ref_id": "<user_id or agent_id>"
+}
 ```
 
-`PUT /groups/{group_id}/workspace/file?path=...` 只接受 JSON body 里的字符串正文，**没有 multipart 上传接口**，也没有二进制文件下载接口。
+规则如下：
 
-### 问题
+- 必须且只能提供一种身份；业务身份必须同时提供 `participant_type` 与 `ref_id`。
+- `participant_id` 路径用于兼容既有调用；服务端仍回查其业务身份并执行同一权限策略。
+- `(participant_type, ref_id)` 路径由服务端解析或懒创建 Participant，前端不需要提前取得 `participant_id`。
+- 前端候选来自现有 user/agent 列表，并隐藏 Private、过期及非可运行状态的 Agent；这是 UX 预过滤，最终同租户、可见性、active/expiry 状态和 Private Agent 规则以后端为准。
+- 服务端必须先校验调用者是 active human member，再解析目标身份，避免非成员利用 403/404 差异枚举同租户用户或 Agent。
+- manager 移出成员提交后发布定向 `membership.revoked`，所有实例先冻结旧连接快照、再复核当前 membership generation，只关闭确属旧一代的 socket 并以 `4003` 结束；重新邀请后建立的新连接不会被迟到 revoke 误关。每个实际承载 socket 的实例还会在发送 `message.created` 前，以 `groups` 行共享锁批量复核本机候选 participant；邀请/移出使用同一行排他锁，因此迟到 Redis envelope 也不能把消息送给已提交移出的成员。Redis 撤员通知失败时仍由 heartbeat 复核兜底。
 
-PRD 2.10 明确要求群 workspace 沉淀「用户在群中上传或明确分享到群里的文件和资料」。目前用户只能创建纯文本文件，无法上传 PDF、图片、表格等任何二进制资料。
+## 5. Group Workspace 二进制文件
 
-前端已经接入了现有的 `FileBrowser` 组件（它原生支持 upload 和 download），但**上传能力只能关掉**，因为后端没有对应的口子。
+现有 list/read/write/delete 文本能力继续保留，并增加二进制上传和下载：
 
-### 需求
+```text
+POST /api/groups/{group_id}/workspace/upload?path=<directory>
+Content-Type: multipart/form-data
 
-对齐 Agent workspace 已有的文件上传/下载能力，为 group scope 补上：
-
+GET /api/groups/{group_id}/workspace/download?path=<file>&inline=<bool>
+Authorization: Bearer <JWT>
 ```
-POST   /groups/{group_id}/workspace/upload?path=...   (multipart/form-data)
-GET    /groups/{group_id}/workspace/download?path=...  (binary)
-```
 
-底层复用现有 storage / revision / lock 能力即可（技术设计 3.2 已经说明群 workspace 作为新增 group scope 复用这套机制）。接口一旦就绪，前端把 `FileBrowser` 的 `upload` / `downloadUrl` 两个能力打开即可，无需改动其他代码。
+为支持浏览器文件 URL，download 也可使用 `token` query parameter。服务端仍执行 active membership、路径规范化和 group scope 校验。
 
-优先级低于缺口 3（邀请），但高于 WS——没有它，群 workspace 在产品上是残缺的。
+前端 `FileBrowser` 已接入 upload adapter 与 download URL，并启用上传。上传后必须能够在同一群的其他 session 中列出并下载原始二进制内容；文本文件的 optimistic version 行为不因新增二进制接口而改变。
 
-### 附带：`modified_at` 的格式
+单文件上传上限为 50 MiB，服务端在读取 multipart 内容前完成 active human membership 校验，并按 1 MiB 分块读取。所有 group workspace 写、上传和删除都先取得 `group_id + normalized path` 的 Redis mutation lock，并持有到数据库 commit/rollback 完成；rollback 按 LIFO 执行，先做带 version condition 的 upload compensation、再释放锁。revision、audit 或最终 commit 失败时，只恢复本次上传仍是当前版本的对象，不覆盖随后成功写入的新版本；Agent Runtime 工具也必须使用同一 callback-aware transaction 边界。进程在 storage 写成功且补偿尚未完成时硬退出仍是 v1 已知边界，正式消除需 durable storage outbox/staging finalize。
 
-workspace 列表和文本文件接口返回的 `modified_at` 是**浮点秒字符串**（如 `"1784010582.9989727"`），而群消息的 `created_at` 是 ISO 8601。前端已按浮点秒处理，但建议后端统一成 ISO 8601，避免每个消费方各自猜格式。
+`modified_at` 当前不是统一格式：本地存储返回浮点秒字符串，S3 返回 provider datetime 的字符串表示。前端在后端统一为 ISO 8601 之前必须把它当作不透明展示值或兼容解析，不得假定所有环境都返回同一种时间格式。
 
----
+## 6. 待执行的验证
 
-## 前端这边的兜底
+当前代码已通过前端 TypeScript 与 Vite 生产构建，但以下项目仍为 **待验证**，不能登记为 E2E 通过：
 
-在上述两项到位之前，前端把实时层封装成单一 hook，内部走**轮询**降级（拉 session 列表的 `unread_count` + 拉当前 session 的新消息）。上层组件对传输方式无感知。
-
-`after` 和 `/ws/group/{group_id}` 就绪后，只需替换该 hook 的内部实现，不影响任何页面代码。
-
-因此这两项**不阻塞前端开工**，但会直接影响群聊的实际体感（@ 完 Agent 后回复要等一个轮询周期才出现），建议尽早补上。
-
-## 需要后端确认的点
-
-按优先级：
-
-1. **（阻塞）** 邀请成员接口能否接受 `(participant_type, ref_id)`？不解决的话，前端的邀请流程无法实现，群里除建群人外加不进任何人和 Agent，@ 唤醒和群 memory 都无从验证。
-2. **（PRD 未满足）** 群 workspace 的文件上传 / 下载接口。没有它，群 workspace 只能存纯文本。
-3. `/ws/group/{group_id}` 的路径、认证方式、close code 约定是否照上述执行？权限失效（群解散、成员被移出）时用哪个 close code——前端需要据此区分「可重连」与「不再重连」。
-4. `after` 参数是否按上述语义实现？「是否还有更多」用方案 A（条数 == limit）还是 B（`has_more`）？
-5. Private Agent / 未绑定第三方成员的入群过滤，由后端在邀请接口内校验，还是要前端在候选列表里预先过滤？
-6. `modified_at` 是否统一成 ISO 8601？
-
-3、4 不阻塞前端开工（前端先用轮询兜底），但直接影响群聊体感。1 是硬阻塞，2 是产品残缺。
-
-## 附：以上结论均已在真实后端上实测
-
-在本地用该分支的后端（postgres + redis + backend，`alembic upgrade head` + `python -m app.scripts.setup_langgraph_checkpoints`）起了完整环境，逐条验证：
-
-- 建群、建 session、发消息、拉历史、`before` 翻页、标记已读、群公告读写、群 workspace 目录与文本文件读写 —— **全部正常**。
-- 消息列表返回**升序**，cursor 形如 `2026-07-14T06:16:04.577660+00:00|<uuid>`（**微秒精度**，客户端按毫秒比较会在同毫秒内错序）。
-- `after=<cursor>` —— **被忽略**，返回最新一页。
-- `POST /groups/{id}/members` 传 `(participant_type, ref_id)` —— **422 participant_id field required**。
-- `WS /ws/group/{id}` —— **403**（端点不存在）。
-- `GET /groups/{id}/agents/{agent_id}/memory` —— **404 `Agent is not an active member of this group`**（因为加不进 Agent，见缺口 3）。
-
-另外发现一个与群聊无关、但会影响整个分支的问题：`GET /api/notifications/unread-count` **500**，报 `relation "notifications" does not exist` —— 分支上缺 notifications 表的迁移，全站通知栏都会报错。
+1. 用 user 与 agent 业务身份完成邀请，并验证 legacy `participant_id` 与业务身份不会制造重复 Participant/membership。
+2. 两个成员通过 REST 发消息，验证整个群的 WebSocket 推送及非 active session 未读刷新。
+3. 断开 WebSocket，在 active session 制造超过一页的新消息，验证 4 秒轮询、无上限 `after` 补拉、按 ID 去重和恢复后的追平。
+4. 验证 `1008/4001/4002/4003` 不重连；瞬时 DB/Redis 初始化故障返回 `1011`，并持续后台恢复。
+5. 移出一个已连接成员，验证跨实例 socket 立即收到 revoke 并以 `4003` 关闭，关闭后不再收到任何群消息。
+6. 上传 PDF、图片或表格，跨 session 下载并逐字节比对；验证非成员、路径穿越、超 50 MiB 和失效 token 均被拒绝，并注入 DB rollback 验证旧对象按版本安全恢复。

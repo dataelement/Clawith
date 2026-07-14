@@ -8,20 +8,42 @@ physical ``groups/{group_id}/...`` namespace directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import uuid
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import add_after_commit_callback, add_after_rollback_callback
 from app.models.group import GroupMember
 from app.models.participant import Participant
 from app.services import group_chat_service
-from app.services.storage import get_storage_backend, normalize_storage_key
-from app.services.storage_runtime.base import StorageEntry, WriteCondition
+from app.services.storage import (
+    get_storage_backend,
+    guess_content_type,
+    normalize_storage_key,
+    sanitize_filename,
+)
+from app.services.storage_runtime.base import (
+    StorageBackend,
+    StorageEntry,
+    StorageVersion,
+    WriteCondition,
+    content_hash_bytes,
+)
 from app.services.workspace_collaboration import (
+    BINARY_REVISION_EXTENSIONS,
+    MAX_REVISION_TEXT_BYTES,
     normalize_workspace_path,
     record_group_revision,
 )
+from app.services.workspace_locking import (
+    acquire_group_workspace_mutation_lock,
+    release_group_workspace_mutation_lock,
+)
+
+_GROUP_WORKSPACE_MUTATION_LOCKS_KEY = "group_workspace_mutation_locks"
 
 
 class GroupFileServiceError(RuntimeError):
@@ -54,6 +76,19 @@ class GroupWorkspaceEntry:
     size: int
     modified_at: str
     version_token: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GroupWorkspaceBinaryFile:
+    """Authorized storage projection for a binary workspace file."""
+
+    path: str
+    storage_key: str
+    filename: str
+    size: int
+    content_type: str
+    version_token: str | None
+    revision_id: uuid.UUID | None = None
 
 
 def _group_root(group_id: uuid.UUID) -> str:
@@ -116,6 +151,106 @@ def _validate_text(content: str) -> str:
             "Group text files cannot contain NUL bytes",
         )
     return content
+
+
+async def _hold_workspace_mutation_lock(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    path: str,
+) -> None:
+    """Hold one group path lock until this database transaction is finalized."""
+    info = getattr(db, "info", None)
+    if info is None:
+        info = {}
+        setattr(db, "info", info)
+    lock_identity = (str(group_id), path)
+    held_locks: dict[tuple[str, str], str] = info.setdefault(
+        _GROUP_WORKSPACE_MUTATION_LOCKS_KEY,
+        {},
+    )
+    if lock_identity in held_locks:
+        return
+
+    owner_token = uuid.uuid4().hex
+    acquired = await acquire_group_workspace_mutation_lock(
+        group_id,
+        path,
+        owner_token=owner_token,
+    )
+    if not acquired:
+        if not held_locks:
+            info.pop(_GROUP_WORKSPACE_MUTATION_LOCKS_KEY, None)
+        raise GroupFileServiceError(
+            "group_file_conflict",
+            "Another group workspace mutation is already in progress",
+        )
+
+    held_locks[lock_identity] = owner_token
+    released = False
+
+    async def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            await release_group_workspace_mutation_lock(
+                group_id,
+                path,
+                owner_token=owner_token,
+            )
+        except Exception as exc:
+            # The Redis TTL is the final safety net when an explicit release
+            # cannot reach Redis. Do not make a durable DB commit look failed.
+            logger.warning(
+                "[GroupWorkspace] lock release failed; waiting for TTL: "
+                f"group={group_id} path={path} error={exc}"
+            )
+        finally:
+            current_locks = info.get(_GROUP_WORKSPACE_MUTATION_LOCKS_KEY)
+            if current_locks is not None:
+                if current_locks.get(lock_identity) == owner_token:
+                    current_locks.pop(lock_identity, None)
+                if not current_locks:
+                    info.pop(_GROUP_WORKSPACE_MUTATION_LOCKS_KEY, None)
+
+    # Rollback callbacks are LIFO. Register release first so any later storage
+    # compensation completes while the cross-instance mutation lock is held.
+    add_after_rollback_callback(db, release)
+    add_after_commit_callback(db, release)
+
+
+def _stage_upload_rollback(
+    db: AsyncSession,
+    *,
+    storage: StorageBackend,
+    key: str,
+    previous_version: StorageVersion,
+    previous_content: bytes | None,
+    uploaded_version_token: str,
+    previous_content_type: str,
+) -> None:
+    """Restore an upload only while storage still contains that exact version."""
+
+    async def compensate() -> None:
+        condition = WriteCondition(version_token=uploaded_version_token)
+        if previous_version.exists:
+            result = await storage.write_bytes_if_match(
+                key,
+                previous_content or b"",
+                condition=condition,
+                content_type=previous_content_type,
+            )
+        else:
+            result = await storage.delete_if_match(key, condition=condition)
+        if not result.ok:
+            logger.warning(
+                "[GroupWorkspace] skipped upload rollback because storage "
+                f"version changed: {key}"
+            )
+
+    add_after_rollback_callback(db, compensate)
 
 
 async def _authorize_actor(
@@ -293,6 +428,19 @@ async def _delete_text(
         after_content=None,
         session_id=str(session_id) if session_id is not None else None,
     )
+
+
+def _safe_revision_text(path: str, content: bytes) -> str | None:
+    if (
+        Path(path).suffix.lower() in BINARY_REVISION_EXTENSIONS
+        or len(content) > MAX_REVISION_TEXT_BYTES
+        or b"\x00" in content
+    ):
+        return None
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 async def read_announcement(
@@ -580,6 +728,11 @@ async def write_workspace_file(
         actor_participant_id=actor_participant_id,
     )
     normalized, key = _workspace_key(group_id, path, allow_empty=False)
+    await _hold_workspace_mutation_lock(
+        db,
+        group_id=group_id,
+        path=normalized,
+    )
     return await _write_text(
         db,
         group_id=group_id,
@@ -590,6 +743,131 @@ async def write_workspace_file(
         actor=actor,
         expected_version_token=expected_version_token,
         session_id=session_id,
+    )
+
+
+async def upload_workspace_file(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    directory: str,
+    filename: str,
+    content: bytes,
+    content_type: str | None = None,
+    session_id: uuid.UUID | None = None,
+) -> GroupWorkspaceBinaryFile:
+    """Create or replace one binary file in the shared group workspace."""
+    actor = await _authorize_actor(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        actor_participant_id=actor_participant_id,
+    )
+    normalized_directory = _normalize_workspace_relative(directory, allow_empty=True)
+    safe_name = sanitize_filename(filename)
+    if safe_name in {".", ".."}:
+        raise GroupFileServiceError(
+            "group_workspace_path_invalid",
+            "A valid upload filename is required",
+        )
+    business_path = (
+        f"{normalized_directory}/{safe_name}" if normalized_directory else safe_name
+    )
+    normalized, key = _workspace_key(group_id, business_path, allow_empty=False)
+    await _hold_workspace_mutation_lock(
+        db,
+        group_id=group_id,
+        path=normalized,
+    )
+    storage = get_storage_backend()
+    media_type = content_type or guess_content_type(safe_name)
+    previous_version = await storage.get_version(key)
+    if previous_version.exists and previous_version.is_dir:
+        raise GroupFileServiceError(
+            "group_file_conflict",
+            "A directory already exists at the requested upload path",
+        )
+    previous_content = (
+        await storage.read_bytes(key) if previous_version.exists else None
+    )
+    result = await storage.write_bytes_if_match(
+        key,
+        content,
+        condition=(
+            WriteCondition(version_token=previous_version.token)
+            if previous_version.exists
+            else WriteCondition(require_absent=True)
+        ),
+        content_type=media_type,
+    )
+    if not result.ok:
+        raise GroupFileServiceError(
+            "group_file_conflict",
+            "Group file changed before this upload completed",
+        )
+    updated = result.current_version or await storage.get_version(key)
+    _stage_upload_rollback(
+        db,
+        storage=storage,
+        key=key,
+        previous_version=previous_version,
+        previous_content=previous_content,
+        uploaded_version_token=updated.token,
+        previous_content_type=guess_content_type(safe_name),
+    )
+    revision = await record_group_revision(
+        db,
+        group_id=group_id,
+        path=_revision_path("workspace", normalized),
+        operation="upload",
+        actor_type=actor.type,
+        actor_id=actor.ref_id,
+        before_content=None,
+        after_content=None,
+        content_hash_override=content_hash_bytes(content),
+        session_id=str(session_id) if session_id is not None else None,
+    )
+    return GroupWorkspaceBinaryFile(
+        path=normalized,
+        storage_key=key,
+        filename=Path(normalized).name,
+        size=len(content),
+        content_type=media_type,
+        version_token=updated.token,
+        revision_id=revision.id if revision is not None else None,
+    )
+
+
+async def prepare_workspace_download(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    path: str,
+) -> GroupWorkspaceBinaryFile:
+    """Authorize and resolve one group file before serving its raw bytes."""
+    await _authorize_actor(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        actor_participant_id=actor_participant_id,
+    )
+    normalized, key = _workspace_key(group_id, path, allow_empty=False)
+    storage = get_storage_backend()
+    version = await storage.get_version(key)
+    if not version.exists or version.is_dir:
+        raise GroupFileServiceError("group_file_not_found", "Group file not found")
+    filename = Path(normalized).name
+    return GroupWorkspaceBinaryFile(
+        path=normalized,
+        storage_key=key,
+        filename=filename,
+        size=version.size,
+        content_type=guess_content_type(filename),
+        version_token=version.token,
     )
 
 
@@ -611,29 +889,61 @@ async def delete_workspace_file(
         actor_participant_id=actor_participant_id,
     )
     normalized, key = _workspace_key(group_id, path, allow_empty=False)
-    await _delete_text(
+    await _hold_workspace_mutation_lock(
         db,
         group_id=group_id,
-        key=key,
-        revision_path=_revision_path("workspace", normalized),
-        actor=actor,
-        expected_version_token=expected_version_token,
-        session_id=session_id,
+        path=normalized,
+    )
+    storage = get_storage_backend()
+    current = await storage.get_version(key)
+    if not current.exists or current.is_dir:
+        raise GroupFileServiceError("group_file_not_found", "Group file not found")
+    content = await storage.read_bytes(key)
+    result = await storage.delete_if_match(
+        key,
+        condition=(
+            WriteCondition(version_token=expected_version_token)
+            if expected_version_token is not None
+            else None
+        ),
+    )
+    if not result.ok:
+        raise GroupFileServiceError(
+            "group_file_conflict",
+            "Group file changed before this delete completed",
+        )
+    before_text = _safe_revision_text(normalized, content)
+    await record_group_revision(
+        db,
+        group_id=group_id,
+        path=_revision_path("workspace", normalized),
+        operation="delete",
+        actor_type=actor.type,
+        actor_id=actor.ref_id,
+        before_content=before_text,
+        after_content=None,
+        content_hash_override=(
+            content_hash_bytes(content) if before_text is None else None
+        ),
+        session_id=str(session_id) if session_id is not None else None,
     )
 
 
 __all__ = [
     "GroupFileServiceError",
     "GroupTextFile",
+    "GroupWorkspaceBinaryFile",
     "GroupWorkspaceEntry",
     "delete_agent_memory",
     "delete_workspace_file",
     "index_workspace",
     "list_workspace",
+    "prepare_workspace_download",
     "read_agent_memory",
     "read_announcement",
     "read_workspace_file",
     "write_agent_memory",
     "write_announcement",
     "write_workspace_file",
+    "upload_workspace_file",
 ]

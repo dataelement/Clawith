@@ -14,7 +14,7 @@ from app.services.agent_runtime.command_worker import (
     RuntimeCommandRecord,
     RuntimeRunRecord,
 )
-from app.services.agent_runtime.delivery import DeliveryRequest
+from app.services.agent_runtime.delivery import DeliveryReceipt, DeliveryRequest
 from app.services.agent_runtime.group_acknowledgement import (
     RuntimeGroupStartAcknowledgementHandler,
 )
@@ -35,10 +35,14 @@ class _Result:
 
 
 class _Transaction:
+    def __init__(self, session: "_Session") -> None:
+        self.session = session
+
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, traceback):
+        self.session.transaction_exited = True
         return False
 
 
@@ -46,6 +50,7 @@ class _Session:
     def __init__(self, *values) -> None:
         self.values = list(values)
         self.flushes = 0
+        self.transaction_exited = False
 
     async def __aenter__(self):
         return self
@@ -54,7 +59,7 @@ class _Session:
         return False
 
     def begin(self):
-        return _Transaction()
+        return _Transaction(self)
 
     async def execute(self, _statement):
         if not self.values:
@@ -156,11 +161,34 @@ async def test_group_ack_is_an_idempotent_delivery_before_graph_execution() -> N
     handler = RuntimeGroupStartAcknowledgementHandler(
         session_factory=_SessionFactory(session),  # type: ignore[arg-type]
     )
+    message_id = uuid.uuid4()
+    receipt = DeliveryReceipt(
+        tenant_id=run.tenant_id,
+        run_id=run.id,
+        idempotency_key=f"run:{run.id}:ack",
+        status="delivered",
+        delivery_kind="ack",
+        checkpoint_id=None,
+        message_id=message_id,
+        requested_session_id=None,
+        actual_session_id=None,
+        fallback_reason=None,
+        error_code=None,
+    )
 
-    with patch(
-        "app.services.agent_runtime.group_acknowledgement.deliver_runtime_message",
-        new=AsyncMock(),
-    ) as deliver:
+    async def publish(**_kwargs):
+        assert session.transaction_exited is True
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_acknowledgement.deliver_runtime_message",
+            new=AsyncMock(return_value=receipt),
+        ) as deliver,
+        patch(
+            "app.services.agent_runtime.group_acknowledgement.publish_committed_group_message",
+            new=AsyncMock(side_effect=publish),
+        ) as broadcast,
+    ):
         await handler.handle(run=run_record, command=command, checkpoint=None)
 
     request = deliver.await_args.args[1]
@@ -169,6 +197,10 @@ async def test_group_ack_is_an_idempotent_delivery_before_graph_execution() -> N
     assert request.kind == "ack"
     assert request.content == "收到，我开始处理。"
     assert request.idempotency_key == f"run:{run.id}:ack"
+    broadcast.assert_awaited_once_with(
+        tenant_id=run.tenant_id,
+        message_id=message_id,
+    )
 
 
 @pytest.mark.asyncio

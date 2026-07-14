@@ -281,7 +281,10 @@ async def lifespan(app: FastAPI):
     if _role_enabled("all", "api"):
         try:
             from app.api.websocket import manager as ws_manager
-            await realtime_router.start(ws_manager.deliver_pubsub_message)
+            await realtime_router.start(
+                ws_manager.deliver_pubsub_scope_message,
+                supports_scopes=True,
+            )
             logger.info("[startup] realtime router subscriber started")
         except Exception as e:
             logger.error(f"[startup] realtime router start failed: {e}")
@@ -370,6 +373,7 @@ from app.api.agents import router as agents_router
 from app.api.tasks import router as tasks_router
 from app.api.files import router as files_router
 from app.api.websocket import router as ws_router
+from app.api.group_websocket import router as group_ws_router
 from app.api.feishu import router as feishu_router
 from app.api.sso import router as sso_router
 from app.api.organization import router as org_router
@@ -448,6 +452,7 @@ app.include_router(plaza_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
+app.include_router(group_ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)

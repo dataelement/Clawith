@@ -1,6 +1,8 @@
 # Clawith 群聊 v1 测试用例文档
 
-> 更新依据：飞书测试用例模板 `KMoTdTIYyoIQMPxLTTKcPI4XnTd` revision 11、当前 checkout 的 `docs/group-chat/prd.md` 与 `docs/group-chat/technical-design.md`，以及实现基线 `feature/unified-chat-single-agent-runtime-group-chat`（tip `0ef0f8d4`）。
+> 更新依据：飞书测试用例模板 `KMoTdTIYyoIQMPxLTTKcPI4XnTd` revision 11、当前 checkout 的 `docs/group-chat/prd.md` 与 `docs/group-chat/technical-design.md`，以及 `feature/unified-chat-runtime-group-chat-frontend-integration` 前后端集成基线（包含 PR #761、Group WebSocket、`after` 补拉和 workspace 二进制接口）。
+
+> 当前执行状态：接口和前端代码已集成；Manual-Browser、断网恢复和二进制文件 E2E 尚未执行，相关用例统一保持 `待验证`。
 
 ## 目录
 
@@ -180,9 +182,9 @@
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | U-MGR 是 G1 manager；A1 是同租户、可见、可用 Company Agent。当前 ref 仅支持提交 `participant_id`，邀请候选查询接口尚未实现。 |
-| **测试步骤** | 1. 通过当前已实现接口提交 A1 的 `participant_id`。<br>2. 查询成员并在验证后移出 A1。<br>3. 候选列表能力完成后再执行候选搜索，并在此之前将该步骤登记 `BLOCKED/待实现`。 |
-| **预期结果** | 已实现链路把 A1 作为 agent Participant 入群，角色默认为 member，成员表不复制 Agent 配置且邀请有审计；候选列表步骤在对应接口落地前不得报告通过。 |
+| **前置条件** | U-MGR 是 G1 manager；A1 是同租户、可见、可用 Company Agent；邀请 API 同时支持 legacy `participant_id` 与业务身份 `(participant_type, ref_id)`，两者互斥。 |
+| **测试步骤** | 1. 从前端候选列表选择 A1，以 `participant_type=agent`、`ref_id=A1.id` 邀请。<br>2. 查询成员并记录 Participant/membership id，再移出 A1。<br>3. 使用同一 A1 的 legacy `participant_id` 重新邀请，并提交“两种身份同时传”和“不完整业务身份”的负向请求。 |
+| **预期结果** | 两条合法身份路径解析到同一 agent Participant 并复用唯一 membership，角色默认为 member，成员表不复制 Agent 配置且邀请有审计；混合或不完整身份返回 400 且无成员副作用。 |
 
 ### TC-M03-002: 普通人类成员可邀请但不能移出成员
 
@@ -190,17 +192,17 @@
 |-|-|
 | **优先级** | P0 |
 | **前置条件** | U-A 是 G1 普通成员；U-B 是可见且已绑定平台账号的候选。 |
-| **测试步骤** | 1. U-A 邀请 U-B。<br>2. U-A 尝试移出 U-B。<br>3. U-MGR 移出 U-B。 |
-| **预期结果** | 普通成员邀请成功；普通成员移出返回 403 且 membership 不变；manager 移出成功并写 `removed_at`。 |
+| **测试步骤** | 1. U-A 以 `participant_type=user`、`ref_id=U-B.id` 邀请 U-B。<br>2. U-B 建立 Group WebSocket，U-A 尝试移出 U-B。<br>3. U-MGR 移出 U-B，并在响应返回后立即从另一成员发送消息；另制造一条移出前生成、移出提交后才到达远端实例的 stale allowlist envelope。<br>4. 重新邀请 U-B 并建立新 socket，再投递上一代迟到 revoke。 |
+| **预期结果** | 服务端解析或懒创建 U-B 的 human Participant，普通成员邀请成功；普通成员移出返回 403 且 membership 不变；manager 移出成功并写 `removed_at`，提交后跨实例定向 revoke，U-B 旧 socket 立即以 4003 关闭。各实例在群行共享锁下复核 current-active membership，stale envelope 不会泄露消息；上一代迟到 revoke 不会误关重新入群后的新 socket。 |
 
 ### TC-M03-003: Private Agent 不可被邀请
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | A-PRIVATE 与邀请人在 T-A，且邀请人是其创建者；当前 ref 没有邀请候选接口。 |
-| **测试步骤** | 1. 直接提交 A-PRIVATE 的 `participant_id`。<br>2. 检查成员与审计。<br>3. 候选接口实现后搜索 A-PRIVATE；此前将候选步骤登记 `BLOCKED/待实现`。 |
-| **预期结果** | 当前直接邀请链路 fail closed，创建者身份也不能绕过，且无 membership 或成功审计；未来候选接口不得返回 Private Agent，但不能把当前缺失接口记为已验证。 |
+| **前置条件** | A-PRIVATE 与邀请人在 T-A，且邀请人是其创建者；前端从现有 Agent 列表构建候选并执行 UX 预过滤，最终权限以后端为准。 |
+| **测试步骤** | 1. 打开邀请弹窗并搜索 A-PRIVATE。<br>2. 绕过前端，以 `(participant_type=agent, ref_id)` 直接提交 A-PRIVATE。<br>3. 再用其 legacy `participant_id` 提交，并检查成员与审计。 |
+| **预期结果** | 前端候选不展示 Private Agent；两条直调 API 路径均 fail closed，创建者身份也不能绕过，且无 membership 或成功审计。浏览器步骤在实际执行前保持待验证。 |
 
 ### TC-M03-004: 第三方成员只有绑定平台账号后可入群
 
@@ -244,8 +246,8 @@
 |-|-|
 | **优先级** | P0 |
 | **前置条件** | U-X/A-X 属 T-B；U-OUT 非 G1 成员；P-REMOVED 已移出。 |
-| **测试步骤** | 1. 三类主体访问详情、Session、消息、workspace、memory API。<br>2. 在结构化 mention 中引用三者并混入合法 A1。 |
-| **预期结果** | 数据 API 全部 fail closed；非法 mention 不触发 Run；合法 A1 仍可处理；响应不泄露跨租户或历史成员信息。 |
+| **测试步骤** | 1. 三类主体访问详情、Session、消息、workspace、memory API。<br>2. U-OUT 分别尝试邀请真实可用、Private 和不存在的 Agent。<br>3. 在结构化 mention 中引用三者并混入合法 A1。 |
+| **预期结果** | 数据 API 全部 fail closed；邀请在解析目标身份前即以相同成员权限错误拒绝，不可通过状态码/错误码枚举 Agent；非法 mention 不触发 Run；合法 A1 仍可处理；响应不泄露跨租户或历史成员信息。 |
 
 ---
 
@@ -734,14 +736,14 @@
 | **测试步骤** | 1. A1 读 A1/A2 memory。<br>2. A1 写自己的 memory 并尝试写 A2。<br>3. U-A 读写两者。<br>4. 移出 A1 后重试。 |
 | **预期结果** | A1 可读群内两者但只可写 A1；active human 可按产品权限管理群 memory；A1 被移出后全部拒绝；路径和审计始终绑定 G1。 |
 
-### TC-M10-004: Group Workspace 跨 Session 共享并通过 Revision 防止静默覆盖
+### TC-M10-004: Group Workspace 跨 Session 共享文本与二进制文件
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | G1 有 S1/S2；U-A、A1 分别从不同 Session 访问同一 workspace 文件；当前群 API 仅提供 list/read/write/delete 与 optimistic version。 |
-| **测试步骤** | 1. S1 创建文件并记录 revision/version。<br>2. S2 读取并用当前 version 更新。<br>3. 两方用同一旧 version 并发写入。<br>4. 在其他群查找该文件。 |
-| **预期结果** | workspace 以 group 为作用域，S1/S2 看到同一文件；并发写只有一方成功，另一方收到 stale-version 冲突而不覆盖赢家；其他群不可见；Session 删除不删除共享文件。 |
+| **前置条件** | G1 有 S1/S2；U-A、A1 分别从不同 Session 访问同一 workspace；已启用 list/read/write/delete、optimistic version、multipart upload 与 binary download。 |
+| **测试步骤** | 1. 在 S1 创建文本文件并记录 revision/version。<br>2. 在 S1 上传 PDF/图片等二进制文件，在 S2 列出并下载后逐字节比对。<br>3. 分别在新建与覆盖上传后注入 revision/commit rollback；补偿暂停期间，从另一实例和 Agent Runtime 工具并发写同一路径，补偿完成后重试。<br>4. S2 用当前 version 更新文本；两方再用同一旧 version 并发写入。<br>5. 在其他群查找或下载两类文件，并删除一个 Session 后复查。 |
+| **预期结果** | workspace 以 group 为作用域，S1/S2 看到相同文本和二进制文件，下载内容与上传原文一致；同一路径 Redis mutation lock 持有到 commit/rollback，补偿按“恢复版本、释放锁”执行，暂停期间的跨实例/API/Agent 工具写返回 conflict，释放后可成功；DB 失败时仅在本次上传仍为当前版本时删除新对象或恢复旧字节，绝不覆盖更晚版本；并发文本写只有一方成功；其他群不可见且不可下载；Session 删除不删除共享文件。进程硬退出导致 callback 无法执行的 durable outbox 场景保持已知风险，二进制浏览器链路在实际执行前保持待验证。 |
 
 ### TC-M10-005: Workspace 已实现操作拒绝路径穿越与过期写入
 
@@ -935,14 +937,14 @@
 
 ## M13 - API、安全、并发、性能与发布
 
-### TC-M13-001: 群聊 REST 路由覆盖核心资源并返回稳定领域错误
+### TC-M13-001: 群聊 REST、Group WebSocket 与文件路由覆盖核心资源
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 启动实现基线 API；准备合法与非法请求，涵盖 `/groups`、members、sessions、messages、announcement、memory、summary、workspace。 |
-| **测试步骤** | 1. 枚举设计中的 GET/POST/PATCH/PUT/DELETE 路由。<br>2. 对每类资源执行成功、未认证、未授权、不存在、冲突和校验失败请求。<br>3. 比较错误载荷。 |
-| **预期结果** | 已实现路由与方法符合设计且核心消息入口能保存消息并解析 mention；领域错误使用稳定 code/status/schema，不向客户端暴露 ORM、堆栈或内部路径。 |
+| **前置条件** | 启动实现基线 API；准备合法与非法请求，涵盖 `/groups`、members、sessions、messages、announcement、memory、summary、workspace upload/download 与 `/ws/group/{group_id}`。 |
+| **测试步骤** | 1. 枚举设计中的 GET/POST/PATCH/PUT/DELETE 与 WS 路由。<br>2. 对消息 messages GET 分别执行无 cursor、`before`、`after` 及同时传入两个 cursor。<br>3. 对双身份邀请、二进制文件和 Group WebSocket 执行成功、未认证、未授权、不存在、冲突和校验失败请求。<br>4. 比较错误载荷。 |
+| **预期结果** | REST 写消息/历史、互斥 cursor、group-scoped WS push、双身份邀请及 workspace multipart upload/binary download 路由符合契约；核心消息入口能保存消息并解析 mention；领域错误使用稳定 code/status/schema，不暴露 ORM、堆栈或内部路径。 |
 
 ### TC-M13-002: Tenant、Group、Session 与 Participant 组合校验全部 fail closed
 
@@ -971,23 +973,23 @@
 | **测试步骤** | 1. 对每个场景启动至少两个同步竞争事务。<br>2. 重复多轮并随机化提交顺序。<br>3. 检查最终约束与失败事务范围。 |
 | **预期结果** | 最多一个 active primary、一个 lane owner 和一个 Participant；watermark 不回退，stale context 不覆盖赢家；冲突局部回滚且无死锁后遗留或半成品。 |
 
-### TC-M13-005: 消息分页与高基数关键查询使用稳定位置和目标索引
+### TC-M13-005: 消息分页、WebSocket 推送与断线补拉使用同一稳定位置
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P1 |
-| **前置条件** | 生成高基数消息、Run、read state 与 mention lane 数据；数据库统计信息已更新。群/Session 列表当前没有已定义的分页参数或数值 SLO。 |
-| **测试步骤** | 1. 用消息 cursor 分页，并在页间插入同时间戳消息。<br>2. 检查消息、未读、lane claim 与最近 20 条查询的执行计划。<br>3. 记录可复现的吞吐/延迟基线。 |
-| **预期结果** | 消息 cursor 使用稳定 `(created_at,id)`，页间无重复或漏项；关键查询命中设计索引且无无界扫描；性能数据作为基线记录，不虚构未定义的群/Session 分页契约或发布 SLO。 |
+| **前置条件** | 生成高基数消息、Run、read state 与 mention lane 数据；G1 有 S1/S2 和两个浏览器成员；可中断 Group WebSocket；数据库统计信息已更新。群/Session 列表没有数值 SLO。 |
+| **测试步骤** | 1. 通过 REST 使用 `before` 翻历史，并在页间插入同时间戳消息。<br>2. 建立一条 G1 WebSocket，收到 `connected` 后在 S1/S2 写消息并检查 `message.created`。<br>3. 断开 WS，在 S1 写入超过一页的新消息并在 S2 写消息；观察立即启动的 4 秒轮询、sessions 全量未读刷新和 active S1 的 `after` 补拉。<br>4. 恢复 WS，验证 `connected` 后 catch-up、按 message id 去重与异常重连。<br>5. 用 EXPLAIN 验证 `ix_chat_messages_conversation_created_id` 覆盖 conversation + Message Position 访问路径。 |
+| **预期结果** | REST、WS 和补拉共同使用稳定 `(created_at,id)`；HTTP 分页 cursor 不受并发 WS 事件影响，无重复或漏项；轮询只在 WS 不可用期间运行但刷新全群 sessions 未读和 active session 消息；恢复后追平再停止轮询，`1008/4001/4002/4003` 不重连，其他异常持续退避恢复；高基数查询使用 `(conversation_id,created_at,id)` 复合索引且无无界扫描。浏览器/断网场景未实际执行前保持待验证。 |
 
 ### TC-M13-006: 文件输入、Prompt 内容和失败输出不突破安全边界
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 准备路径穿越、超大输入、恶意 prompt injection、伪造 mention、HTML/Markdown 注入以及包含 token/密钥/堆栈的工具错误；当前实现 ref 没有群聊前端变更。 |
-| **测试步骤** | 1. 从消息、announcement、memory、workspace 和模型工具入口提交载荷。<br>2. 触发 planning/runtime/delivery 失败并检查 API、日志和审计。<br>3. 前端实现后用 Manual-Browser 检查 HTML/Markdown 渲染；在此之前登记 `BLOCKED/待实现`。 |
-| **预期结果** | 后端权限与路径校验不被 prompt 绕过，结构化 mention 不接受文本伪造，密钥、内部 prompt、绝对路径和堆栈不出现在 API/日志公开面；前端安全渲染必须单独通过浏览器验收，当前 ref 不得以 API 测试代替或报告通过。 |
+| **前置条件** | 准备路径穿越、超大/二进制输入、恶意 prompt injection、伪造 mention、HTML/Markdown 注入以及包含 token/密钥/堆栈的工具错误；群聊前端代码已接入但尚未完成本项浏览器验收。 |
+| **测试步骤** | 1. 从消息、announcement、memory、workspace upload/download 和模型工具入口提交载荷。<br>2. 触发 planning/runtime/delivery 失败并检查 API、日志和审计。<br>3. 用 Manual-Browser 检查 HTML/Markdown 渲染、下载文件名/content type 及错误提示。 |
+| **预期结果** | 后端权限与路径校验不被 prompt 绕过，结构化 mention 不接受文本伪造，密钥、内部 prompt、绝对路径和堆栈不出现在 API/日志公开面；前端安全渲染必须单独通过浏览器验收，在实际执行前结果保持待验证，不能以 API 测试代替。 |
 
 ### TC-M13-007: Unified Chat 迁移按维护窗口整批切换且禁止双写混跑
 
@@ -1003,9 +1005,9 @@
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 对应群聊前端已实现并部署到测试环境；实现 ref 本身无前端变更，因此在仅部署该 ref 时本用例必须登记 `BLOCKED/待实现`，不得声称自动化覆盖。 |
-| **测试步骤** | 1. 以 Manual-Browser 创建群、邀请成员、创建/切换 Session。<br>2. 发送单/多 mention 并观察 ACK、等待与终态。<br>3. 验证未读、公告、workspace、删除和权限错误。<br>4. 刷新重进并核对历史。 |
-| **预期结果** | 在前端能力就绪后，主链路与 API 状态一致、刷新可恢复、无专用 ACK 动画依赖，权限和错误可理解；当前 ref 缺前端时结果只能是明确阻塞而非通过。 |
+| **前置条件** | 群聊前端、双身份邀请、Group WebSocket、`after` 补拉与 workspace 二进制接口代码已集成；需部署到使用真实 API/认证/数据库的测试环境。本轮尚未执行浏览器 E2E。 |
+| **测试步骤** | 1. 以 Manual-Browser 创建群，并分别邀请 user 与 Agent，创建/切换 Session。<br>2. 发送单/多 mention 并观察 WS 到达的 ACK、等待与终态。<br>3. 中断 WS，验证 4 秒轮询刷新所有 session 未读和 active session 消息，再恢复连接并核对 catch-up。<br>4. 上传/下载二进制 workspace 文件，验证公告、删除和权限错误。<br>5. 刷新重进并核对历史与消息去重。 |
+| **预期结果** | 执行通过后，主链路与 API 状态一致、刷新和断线可恢复、无专用 ACK 动画依赖，权限和错误可理解，二进制文件可跨 session 使用；在实际执行并留存证据前，本用例状态为 `待验证`，不得报告通过。 |
 
 ---
 
@@ -1019,4 +1021,4 @@
 | M05-M07 | `b5a7080d..cc2a871d`（消息、Mention、Planning） | `test_group_message_service.py`、`test_agent_runtime_group_scheduling.py`、`test_agent_runtime_planning.py`、`test_agent_runtime_planning_scheduler.py` |
 | M08-M09 | `e4e69c3e..3c3f58a4`（Durable Runtime）、`b5a7080d..cc2a871d`（群调度与上下文） | `test_agent_runtime_persistence.py`、`test_agent_runtime_cycle_guard.py`、`test_agent_runtime_group_context_builder.py`、`test_agent_runtime_group_tools.py` |
 | M10-M12 | `4b5b8bd3..63bfb760`（Context / Compact）、`1ef6dbf7..0ef0f8d4`（Delivery / Outbox） | `test_group_file_service.py`、`test_session_context_service.py`、`test_agent_runtime_session_context_compactor.py`、`test_agent_runtime_delivery.py` |
-| M13 | `5f67c169..6bd635bb`（入口硬切换）及上述完整实现范围 | 上述后端 pytest；前端主链路为 `Manual-Browser`，当前 ref 无前端变更 |
+| M13 | `5f67c169..6bd635bb`（入口硬切换）及当前 group-chat 前后端集成范围 | 上述后端 pytest；前端主链路、WS 恢复与二进制文件为 `Manual-Browser / 待验证` |

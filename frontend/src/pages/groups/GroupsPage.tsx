@@ -25,6 +25,23 @@ import './groups.css';
 
 const HISTORY_PAGE_SIZE = 30;
 
+const newMessageId = (): string => {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID();
+    }
+    // Older or insecure browser contexts do not expose randomUUID.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+        const random = Math.random() * 16 | 0;
+        const value = char === 'x' ? random : (random & 0x3 | 0x8);
+        return value.toString(16);
+    });
+};
+
+interface MessageScopeToken {
+    key?: string;
+    generation: number;
+}
+
 const readFlag = (key: string, fallback: boolean) => {
     const stored = localStorage.getItem(key);
     return stored === null ? fallback : stored === '1';
@@ -61,6 +78,27 @@ export default function GroupsPage() {
     const [creatingGroup, setCreatingGroup] = useState(false);
     const [creatingSession, setCreatingSession] = useState(false);
     const [deletingSession, setDeletingSession] = useState<GroupSession | null>(null);
+
+    // Route params change during render, before effect cleanup runs. Advancing a generation here
+    // closes that gap and also distinguishes leaving a session and later returning to it.
+    const messageScopeKey = groupId && sessionId ? `${groupId}:${sessionId}` : undefined;
+    const messageScopeRef = useRef<MessageScopeToken>({
+        key: messageScopeKey,
+        generation: 0,
+    });
+    if (messageScopeRef.current.key !== messageScopeKey) {
+        messageScopeRef.current = {
+            key: messageScopeKey,
+            generation: messageScopeRef.current.generation + 1,
+        };
+    }
+
+    const captureMessageScope = (): MessageScopeToken => ({ ...messageScopeRef.current });
+    const isCurrentMessageScope = (scope: MessageScopeToken): boolean => (
+        Boolean(scope.key)
+        && messageScopeRef.current.key === scope.key
+        && messageScopeRef.current.generation === scope.generation
+    );
 
     const { data: groups = [], refetch: refetchGroups } = useQuery({
         queryKey: ['groups'],
@@ -109,11 +147,13 @@ export default function GroupsPage() {
         if (!groupId || !sessionId) {
             setMessages([]);
             setHasMore(false);
+            setLoadingMore(false);
             return;
         }
         let cancelled = false;
         setMessages([]);
         setHasMore(false);
+        setLoadingMore(false);
         void groupApi
             .messages(groupId, sessionId, { limit: HISTORY_PAGE_SIZE })
             .then((page) => {
@@ -130,14 +170,6 @@ export default function GroupsPage() {
         };
     }, [groupId, sessionId, toast, t]);
 
-    const messagesRef = useRef(messages);
-    messagesRef.current = messages;
-
-    const getLastCursor = useCallback(() => {
-        const list = messagesRef.current;
-        return list.length > 0 ? list[list.length - 1].cursor : undefined;
-    }, []);
-
     const receiveMessages = useCallback((incomingSessionId: string, incoming: GroupMessage[]) => {
         if (incomingSessionId !== sessionId) return;
         setMessages((previous) => mergeMessages(previous, incoming));
@@ -150,7 +182,6 @@ export default function GroupsPage() {
     const { status } = useGroupRealtime({
         groupId,
         sessionId,
-        getLastCursor,
         onMessages: receiveMessages,
         onGroupActivity,
     });
@@ -182,29 +213,35 @@ export default function GroupsPage() {
 
     const loadMore = async () => {
         if (!groupId || !sessionId || loadingMore || messages.length === 0) return;
+        const scope = captureMessageScope();
         setLoadingMore(true);
         try {
             const older = await groupApi.messages(groupId, sessionId, {
                 limit: HISTORY_PAGE_SIZE,
                 before: messages[0].cursor,
             });
+            if (!isCurrentMessageScope(scope)) return;
             setMessages((previous) => mergeMessages(previous, older));
             setHasMore(older.length === HISTORY_PAGE_SIZE);
         } catch {
-            toast.error(t('groups.loadFailed', '加载消息失败'));
+            if (isCurrentMessageScope(scope)) {
+                toast.error(t('groups.loadFailed', '加载消息失败'));
+            }
         } finally {
-            setLoadingMore(false);
+            if (isCurrentMessageScope(scope)) setLoadingMore(false);
         }
     };
 
     const sendMessage = async (content: string, mentionParticipantIds: string[]) => {
         if (!groupId || !sessionId) return;
+        const scope = captureMessageScope();
         try {
             const intake = await groupApi.sendMessage(groupId, sessionId, {
                 content,
                 mentions: mentionParticipantIds.map((participant_id) => ({ participant_id })),
-                message_id: crypto.randomUUID(),
+                message_id: newMessageId(),
             });
+            if (!isCurrentMessageScope(scope)) return;
             setMessages((previous) => mergeMessages(previous, [intake.message]));
 
             // Planning can fail before any agent starts — say so instead of leaving a silent gap.
@@ -214,7 +251,9 @@ export default function GroupsPage() {
                 }));
             }
         } catch (error: any) {
-            toast.error(error?.message ?? t('groups.sendFailed', '发送失败'));
+            if (isCurrentMessageScope(scope)) {
+                toast.error(error?.message ?? t('groups.sendFailed', '发送失败'));
+            }
             throw error;
         }
     };

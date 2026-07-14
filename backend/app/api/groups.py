@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user
-from app.database import get_db
+from app.core.permissions import get_agent_access_level_for_user_id, is_agent_expired
+from app.core.security import decode_access_token, get_current_user
+from app.database import add_after_commit_callback, get_db
 from app.models.agent import Agent
 from app.models.audit import AuditLog, ChatMessage
 from app.models.group import GroupMember
@@ -28,10 +32,22 @@ from app.services.agent_runtime.session_context_service import (
 from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
-from app.services.participant_identity import get_or_create_user_participant
+from app.services.group_message_projection import build_group_message_payload
+from app.services.group_realtime import (
+    publish_committed_group_message,
+    publish_group_membership_revoked,
+)
+from app.services.participant_identity import (
+    get_or_create_agent_participant,
+    get_or_create_user_participant,
+)
+from app.services.storage import get_storage_backend
 
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
+
+GROUP_WORKSPACE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+GROUP_WORKSPACE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class CreateGroupIn(BaseModel):
@@ -57,7 +73,9 @@ class GroupOut(BaseModel):
 
 
 class InviteGroupMemberIn(BaseModel):
-    participant_id: uuid.UUID
+    participant_id: uuid.UUID | None = None
+    participant_type: Literal["user", "agent"] | None = None
+    ref_id: uuid.UUID | None = None
 
 
 class GroupMemberOut(BaseModel):
@@ -155,6 +173,17 @@ class GroupWorkspaceEntryOut(BaseModel):
     version_token: str | None = None
 
 
+class GroupWorkspaceUploadOut(BaseModel):
+    status: Literal["ok"] = "ok"
+    path: str
+    url: str
+    filename: str
+    size: int
+    content_type: str
+    version_token: str | None = None
+    revision_id: uuid.UUID | None = None
+
+
 class GroupSessionSummaryOut(BaseModel):
     version: int
     summary: str
@@ -164,6 +193,29 @@ class GroupSessionSummaryOut(BaseModel):
     evidence_refs: list[Any]
     workspace_refs: list[Any]
     covered_through_message_id: uuid.UUID | None = None
+
+
+async def _read_group_workspace_upload(file: UploadFile) -> bytes:
+    """Read one upload in bounded chunks and probe one byte past the limit."""
+    content = bytearray()
+    while True:
+        remaining_with_sentinel = GROUP_WORKSPACE_UPLOAD_MAX_BYTES + 1 - len(content)
+        read_size = min(GROUP_WORKSPACE_UPLOAD_CHUNK_BYTES, remaining_with_sentinel)
+        chunk = await file.read(read_size)
+        if not chunk:
+            return bytes(content)
+        if len(content) + len(chunk) > GROUP_WORKSPACE_UPLOAD_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail={
+                    "code": "group_workspace_upload_too_large",
+                    "message": (
+                        "Group workspace uploads must be "
+                        f"{GROUP_WORKSPACE_UPLOAD_MAX_BYTES} bytes or smaller"
+                    ),
+                },
+            )
+        content.extend(chunk)
 
 
 _NOT_FOUND_CODES = {
@@ -201,6 +253,165 @@ async def _current_participant(db: AsyncSession, current_user: User) -> Particip
         current_user.display_name,
         current_user.avatar_url,
     )
+
+
+async def _resolve_invited_participant(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    tenant_id: uuid.UUID,
+    body: InviteGroupMemberIn,
+) -> Participant:
+    """Resolve a legacy participant ID or a business identity under one policy."""
+    has_legacy = body.participant_id is not None
+    has_business_field = body.participant_type is not None or body.ref_id is not None
+    has_complete_business = body.participant_type is not None and body.ref_id is not None
+    if has_legacy == has_business_field or (
+        has_business_field and not has_complete_business
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "group_invitee_identity_invalid",
+                "message": (
+                    "Provide either participant_id or both participant_type and ref_id"
+                ),
+            },
+        )
+
+    participant_type = body.participant_type
+    ref_id = body.ref_id
+    if has_legacy:
+        result = await db.execute(
+            select(Participant).where(Participant.id == body.participant_id)
+        )
+        legacy = result.scalar_one_or_none()
+        if legacy is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "group_invitee_not_found",
+                    "message": "Participant identity not found",
+                },
+            )
+        if legacy.type not in {"user", "agent"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "group_invitee_identity_invalid",
+                    "message": "Participant type is not supported",
+                },
+            )
+        participant_type = legacy.type
+        ref_id = legacy.ref_id
+
+    if participant_type == "user" and ref_id is not None:
+        result = await db.execute(
+            select(User).where(
+                User.id == ref_id,
+                User.tenant_id == tenant_id,
+                User.is_active.is_(True),
+            )
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "group_invitee_not_found",
+                    "message": "Active tenant user not found",
+                },
+            )
+        return await get_or_create_user_participant(
+            db,
+            user.id,
+            user.display_name,
+            user.avatar_url,
+        )
+
+    if participant_type == "agent" and ref_id is not None:
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == ref_id,
+                Agent.tenant_id == tenant_id,
+            )
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "group_invitee_not_found",
+                    "message": "Tenant Agent not found",
+                },
+            )
+        access_level = await get_agent_access_level_for_user_id(
+            db,
+            current_user.id,
+            agent,
+        )
+        if (
+            agent.access_mode == "private"
+            or agent.status not in {"creating", "running", "idle"}
+            or is_agent_expired(agent)
+            or access_level is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "group_invitee_unavailable",
+                    "message": "Agent is not available to join this group",
+                },
+            )
+        return await get_or_create_agent_participant(
+            db,
+            agent.id,
+            agent.name,
+            agent.avatar_url,
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "group_invitee_identity_invalid",
+            "message": "Participant identity is incomplete",
+        },
+    )
+
+
+def _stage_group_message_broadcasts(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    message_ids: tuple[uuid.UUID, ...],
+) -> None:
+    for message_id in message_ids:
+        async def publish(
+            committed_message_id: uuid.UUID = message_id,
+        ) -> None:
+            await publish_committed_group_message(
+                tenant_id=tenant_id,
+                message_id=committed_message_id,
+            )
+
+        add_after_commit_callback(db, publish)
+
+
+def _stage_group_membership_revoked(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    participant_id: uuid.UUID,
+) -> None:
+    async def publish() -> None:
+        await publish_group_membership_revoked(
+            tenant_id=tenant_id,
+            group_id=group_id,
+            participant_id=participant_id,
+        )
+
+    add_after_commit_callback(db, publish)
 
 
 def _translate_domain_error(exc: GroupChatServiceError) -> HTTPException:
@@ -352,14 +563,18 @@ async def _member_outputs(
     return output
 
 
-def _parse_message_cursor(value: str | None) -> tuple[datetime, uuid.UUID] | None:
+def _parse_message_cursor(
+    value: str | None,
+    *,
+    name: str,
+) -> tuple[datetime, uuid.UUID] | None:
     if value is None:
         return None
     timestamp_text, separator, message_id_text = value.rpartition("|")
     if not separator:
         raise HTTPException(
             status_code=400,
-            detail="Invalid `before` cursor. Use '<ISO 8601>|<message UUID>'.",
+            detail=f"Invalid `{name}` cursor. Use '<ISO 8601>|<message UUID>'.",
         )
     try:
         created_at = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
@@ -369,7 +584,7 @@ def _parse_message_cursor(value: str | None) -> tuple[datetime, uuid.UUID] | Non
     except (TypeError, ValueError):
         raise HTTPException(
             status_code=400,
-            detail="Invalid `before` cursor. Use '<ISO 8601>|<message UUID>'.",
+            detail=f"Invalid `{name}` cursor. Use '<ISO 8601>|<message UUID>'.",
         ) from None
     return created_at, message_id
 
@@ -391,20 +606,14 @@ async def _message_outputs(
     for message in messages:
         if message.created_at is None:
             continue
+        sender_name = (
+            sender_names.get(message.participant_id)
+            if message.participant_id is not None
+            else None
+        )
         output.append(
-            GroupMessageOut(
-                id=message.id,
-                role=message.role,
-                content=message.content,
-                participant_id=message.participant_id,
-                sender_name=(
-                    sender_names.get(message.participant_id)
-                    if message.participant_id is not None
-                    else None
-                ),
-                mentions=list(message.mentions or []),
-                created_at=message.created_at,
-                cursor=f"{message.created_at.isoformat()}|{message.id}",
+            GroupMessageOut.model_validate(
+                build_group_message_payload(message, sender_name)
             )
         )
     return output
@@ -566,12 +775,30 @@ async def invite_group_member(
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
     try:
+        # Authorize the actor before resolving any supplied target identity so
+        # non-members cannot use invite errors to enumerate tenant users/Agents.
+        await group_chat_service.authorize_group_member(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            participant_id=participant.id,
+            human_only=True,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    invited_participant = await _resolve_invited_participant(
+        db,
+        current_user=current_user,
+        tenant_id=tenant_id,
+        body=body,
+    )
+    try:
         membership = await group_chat_service.invite_group_member(
             db,
             tenant_id=tenant_id,
             group_id=group_id,
             actor_participant_id=participant.id,
-            participant_id=body.participant_id,
+            participant_id=invited_participant.id,
         )
         outputs = await _member_outputs(db, [membership])
     except GroupChatServiceError as exc:
@@ -584,7 +811,11 @@ async def invite_group_member(
         action="group:member_invite",
         tenant_id=tenant_id,
         group_id=group_id,
-        details={"participant_id": str(body.participant_id)},
+        details={
+            "participant_id": str(invited_participant.id),
+            "participant_type": invited_participant.type,
+            "participant_ref_id": str(invited_participant.ref_id),
+        },
     )
     return outputs[0]
 
@@ -615,6 +846,12 @@ async def remove_group_member(
         tenant_id=tenant_id,
         group_id=group_id,
         details={"member_id": str(member_id), "participant_id": str(removed.participant_id)},
+    )
+    _stage_group_membership_revoked(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        participant_id=removed.participant_id,
     )
     return None
 
@@ -797,9 +1034,18 @@ async def list_group_messages(
         str | None,
         Query(description="Cursor '<created_at>|<id>' for the first excluded position"),
     ] = None,
+    after: Annotated[
+        str | None,
+        Query(description="Cursor '<created_at>|<id>' for the last excluded position"),
+    ] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if before is not None and after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message cursors 'before' and 'after' are mutually exclusive",
+        )
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
     try:
@@ -810,7 +1056,8 @@ async def list_group_messages(
             session_id=session_id,
             viewer_participant_id=participant.id,
             limit=limit,
-            before=_parse_message_cursor(before),
+            before=_parse_message_cursor(before, name="before"),
+            after=_parse_message_cursor(after, name="after"),
         )
     except GroupMessageServiceError as exc:
         raise _translate_message_error(exc) from exc
@@ -847,6 +1094,11 @@ async def create_group_message(
     messages = await _message_outputs(db, [intake.message])
     if not messages:
         raise HTTPException(status_code=500, detail="Stored group message has no position")
+    _stage_group_message_broadcasts(
+        db,
+        tenant_id=tenant_id,
+        message_ids=intake.public_message_ids,
+    )
     return GroupMessageIntakeOut(
         message=messages[0],
         dispatch_kind=intake.dispatch_kind,
@@ -1164,3 +1416,142 @@ async def delete_group_workspace_file(
         details={"path": path},
     )
     return None
+
+
+@router.post(
+    "/{group_id}/workspace/upload",
+    response_model=GroupWorkspaceUploadOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_group_workspace_file(
+    group_id: uuid.UUID,
+    file: UploadFile = File(...),
+    path: Annotated[str, Query(max_length=500)] = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        await group_chat_service.authorize_group_member(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            participant_id=participant.id,
+            human_only=True,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    content = await _read_group_workspace_upload(file)
+    try:
+        value = await group_file_service.upload_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            directory=path,
+            filename=file.filename or "file.bin",
+            content=content,
+            content_type=file.content_type,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_upload",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={
+            "path": value.path,
+            "size": value.size,
+            "revision_id": str(value.revision_id) if value.revision_id else None,
+        },
+    )
+    return GroupWorkspaceUploadOut(
+        path=value.path,
+        url=f"/api/groups/{group_id}/workspace/download?path={value.path}",
+        filename=value.filename,
+        size=value.size,
+        content_type=value.content_type,
+        version_token=value.version_token,
+        revision_id=value.revision_id,
+    )
+
+
+@router.get("/{group_id}/workspace/download")
+async def download_group_workspace_file(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    token: str = "",
+    inline: bool = False,
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        HTTPBearer(auto_error=False)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    jwt_token = credentials.credentials if credentials is not None else token
+    if not jwt_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+    payload = decode_access_token(jwt_token)
+    try:
+        user_id = uuid.UUID(str(payload.get("sub")))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token subject",
+        ) from None
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.is_active.is_(True))
+    )
+    current_user = result.scalar_one_or_none()
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.prepare_workspace_download(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+
+    storage = get_storage_backend()
+    presigned = await storage.presign_download_url(
+        value.storage_key,
+        filename=value.filename,
+        inline=inline,
+    )
+    if presigned:
+        return Response(status_code=302, headers={"Location": presigned})
+    local_path = await storage.local_path_for(value.storage_key)
+    if local_path is not None:
+        return FileResponse(
+            path=str(local_path),
+            filename=value.filename,
+            media_type=value.content_type,
+            content_disposition_type="inline" if inline else "attachment",
+        )
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=await storage.read_bytes(value.storage_key),
+        media_type=value.content_type,
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{Path(value.filename).name}"'
+        },
+    )

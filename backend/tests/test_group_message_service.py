@@ -22,11 +22,14 @@ from app.services.agent_runtime.model_capabilities import (
     PlatformModelConfigurationError,
 )
 from app.services.group_message_service import (
+    GroupMessageIntake,
+    GroupMessageServiceError,
     ResolvedGroupMention,
     _SenderScope,
     _dedupe_mentions,
     _resolve_mentions,
     enqueue_group_message,
+    list_group_messages,
 )
 
 
@@ -460,6 +463,10 @@ async def test_missing_planning_model_persists_one_visible_idempotent_failure() 
     assert intake.dispatch_kind == "planning"
     assert intake.run_handles == ()
     assert intake.error_code == "planning_model_unavailable"
+    assert intake.public_message_ids == (
+        intake.message.id,
+        uuid.uuid5(intake.message.id, "planning-configuration-failure"),
+    )
     start_run.assert_not_awaited()
     assert len(db.added) == 2
     public_message, failure_message = db.added
@@ -527,3 +534,108 @@ async def test_invalid_or_human_mentions_remain_public_without_starting_runtime(
     assert intake.run_handles == ()
     start_run.assert_not_awaited()
     assert db.added[0].mentions == [human.payload(), invalid.payload()]
+
+
+@pytest.mark.asyncio
+async def test_after_cursor_returns_newer_messages_in_ascending_order() -> None:
+    tenant_id, _, scope, _, _ = _records()
+    cursor_message = ChatMessage(
+        id=uuid.uuid4(),
+        role="user",
+        content="cursor",
+        conversation_id=str(scope.session.id),
+        created_at=NOW,
+    )
+    first = ChatMessage(
+        id=uuid.uuid4(),
+        role="assistant",
+        content="first newer message",
+        conversation_id=str(scope.session.id),
+        created_at=NOW.replace(microsecond=1),
+    )
+    second = ChatMessage(
+        id=uuid.uuid4(),
+        role="assistant",
+        content="second newer message",
+        conversation_id=str(scope.session.id),
+        created_at=NOW.replace(microsecond=2),
+    )
+    db = _Session(
+        existing_message=cursor_message,
+        results=(_ScalarCollection([first, second]),),
+    )
+
+    with patch(
+        "app.services.group_message_service._load_sender_scope",
+        new=AsyncMock(return_value=scope),
+    ):
+        messages = await list_group_messages(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            group_id=scope.group.id,
+            session_id=scope.session.id,
+            viewer_participant_id=scope.participant.id,
+            limit=20,
+            after=(cursor_message.created_at, cursor_message.id),
+        )
+
+    assert messages == [first, second]
+    assert len(db.statements) == 1
+    sql = str(db.statements[0])
+    assert "(chat_messages.created_at, chat_messages.id) >" in sql
+    assert "ORDER BY chat_messages.created_at ASC, chat_messages.id ASC" in sql
+
+
+@pytest.mark.asyncio
+async def test_message_service_rejects_before_and_after_together() -> None:
+    tenant_id, _, scope, _, _ = _records()
+    db = _Session()
+    before = (NOW, uuid.uuid4())
+    after = (NOW, uuid.uuid4())
+
+    with (
+        patch(
+            "app.services.group_message_service._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        pytest.raises(GroupMessageServiceError) as exc_info,
+    ):
+        await list_group_messages(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            group_id=scope.group.id,
+            session_id=scope.session.id,
+            viewer_participant_id=scope.participant.id,
+            limit=20,
+            before=before,
+            after=after,
+        )
+
+    assert exc_info.value.code == "group_message_cursor_invalid"
+    assert str(exc_info.value) == (
+        "Message cursors 'before' and 'after' are mutually exclusive"
+    )
+    assert db.statements == []
+
+
+def test_planning_failure_public_ids_include_deterministic_failure_message() -> None:
+    message = ChatMessage(
+        id=uuid.uuid4(),
+        role="user",
+        content="plan this",
+        conversation_id=str(uuid.uuid4()),
+        created_at=NOW,
+    )
+    intake = GroupMessageIntake(
+        message=message,
+        mentions=(),
+        dispatch_kind="planning",
+        run_handles=(),
+        created=True,
+        error_code="planning_model_unavailable",
+    )
+
+    assert intake.public_message_ids == (
+        message.id,
+        uuid.uuid5(message.id, "planning-configuration-failure"),
+    )

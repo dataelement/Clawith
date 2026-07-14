@@ -2,31 +2,20 @@
  * Group chat transport. The page never learns how messages arrive.
  *
  * Target design: REST for sending and history, WebSocket for push, cursor backfill on reconnect,
- * polling only as a stopgap. Two pieces are not on the backend yet (see
- * docs/group-chat/frontend-realtime-contract.md):
- *
- *   - `WS /ws/group/{group_id}` does not exist. The socket fails to open, and after a few attempts
- *     this hook settles into polling for the rest of the mount.
- *   - `GET .../messages` has no `after` cursor, so backfill pages *backward* from the newest message
- *     until it reaches the last cursor we hold. Flip USE_AFTER_CURSOR once the backend ships it.
- *
- * Both fallbacks are contained here. When the backend lands, no page code changes.
+ * polling only while the socket is unavailable. The socket is group-scoped so one connection can
+ * refresh unread state for every session, while message catch-up remains session-scoped.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { groupApi } from '../services/groupApi';
+import { useAuthStore } from '../stores';
 import type { GroupMessage } from '../types/group';
-
-/** Flip to true once `GET .../messages?after=<cursor>` exists. */
-const USE_AFTER_CURSOR = false;
 
 const POLL_INTERVAL_MS = 4000;
 const BACKFILL_PAGE_SIZE = 50;
-/** Bounds the backward walk when we have no forward pager. 10 × 50 = 500 messages of catch-up. */
-const MAX_BACKFILL_PAGES = 10;
-/** Consecutive socket failures before we stop trying and just poll. */
-const WS_FAILURE_THRESHOLD = 3;
 const WS_RETRY_BASE_MS = 2000;
+const WS_RETRY_MAX_MS = 30000;
+const WS_READY_TIMEOUT_MS = 10000;
 
 /** Socket closed for a reason retrying cannot fix: not a member, group gone, token rejected. */
 const NO_RETRY_CLOSE_CODES = new Set([1008, 4001, 4002, 4003]);
@@ -65,54 +54,35 @@ export function compareCursor(a: string, b: string): number {
 }
 
 /**
- * Every message newer than `cursor`, ascending. With no cursor, the newest page.
- *
- * Without a forward pager we walk backward from the head and keep what is newer than the cursor.
- * We can stop as soon as a page contains anything at or older than the cursor — that page closed
- * the gap. A page that is entirely newer means the gap is wider than one page, so keep walking.
+ * Every message newer than `cursor`, ascending. With no cursor, begin with the newest page. The
+ * walk has no page-count cap: a reconnect is not complete until a short page proves it caught up.
  */
 export async function fetchMessagesSince(
     groupId: string,
     sessionId: string,
     cursor?: string,
+    signal?: AbortSignal,
 ): Promise<GroupMessage[]> {
-    if (!cursor) {
-        return groupApi.messages(groupId, sessionId, { limit: BACKFILL_PAGE_SIZE });
-    }
-
-    if (USE_AFTER_CURSOR) {
-        const collected: GroupMessage[] = [];
-        let after = cursor;
-        for (let page = 0; page < MAX_BACKFILL_PAGES; page += 1) {
-            const batch = await groupApi.messages(groupId, sessionId, {
-                limit: BACKFILL_PAGE_SIZE,
-                after,
-            });
-            collected.push(...batch);
-            if (batch.length < BACKFILL_PAGE_SIZE) break;
-            after = batch[batch.length - 1].cursor;
-        }
-        return collected;
-    }
-
     const collected: GroupMessage[] = [];
-    let before: string | undefined;
-    for (let page = 0; page < MAX_BACKFILL_PAGES; page += 1) {
+    // This cursor is deliberately local to the HTTP walk. A newer WebSocket event may update the
+    // visible high-water mark while a page is in flight, but it must never make this walk skip the
+    // messages between the frozen starting point and that event.
+    let after = cursor;
+    while (true) {
         const batch = await groupApi.messages(groupId, sessionId, {
             limit: BACKFILL_PAGE_SIZE,
-            before,
+            after,
+            signal,
         });
         if (batch.length === 0) break;
 
-        // Pages arrive newest-first, each ascending internally, so older pages prepend.
-        const newer = batch.filter((message) => compareCursor(message.cursor, cursor) > 0);
-        collected.unshift(...newer);
-
-        // This page reached back to the cursor, so nothing newer is left behind it.
-        if (newer.length < batch.length) break;
-        // A short page is the start of the session — there is nothing older to walk to.
+        const next = batch[batch.length - 1].cursor;
+        if (after && compareCursor(next, after) <= 0) {
+            throw new Error('Group message `after` cursor did not advance.');
+        }
+        collected.push(...batch);
         if (batch.length < BACKFILL_PAGE_SIZE) break;
-        before = batch[0].cursor;
+        after = next;
     }
     return collected;
 }
@@ -120,8 +90,6 @@ export async function fetchMessagesSince(
 interface UseGroupRealtimeOptions {
     groupId?: string;
     sessionId?: string;
-    /** Newest cursor the page already holds. Read lazily so new messages don't re-subscribe. */
-    getLastCursor: () => string | undefined;
     /** Ascending, may contain messages the page already has — dedupe by id on the receiving end. */
     onMessages: (sessionId: string, messages: GroupMessage[]) => void;
     /** Something happened somewhere in the group — refresh session list unread badges. */
@@ -132,145 +100,358 @@ interface UseGroupRealtimeOptions {
 export function useGroupRealtime({
     groupId,
     sessionId,
-    getLastCursor,
     onMessages,
     onGroupActivity,
     enabled = true,
 }: UseGroupRealtimeOptions): { status: RealtimeStatus } {
     const [status, setStatus] = useState<RealtimeStatus>('connecting');
+    const token = useAuthStore((state) => state.token);
 
     // Callbacks live in refs so a re-render never tears down the socket.
-    const getLastCursorRef = useRef(getLastCursor);
     const onMessagesRef = useRef(onMessages);
     const onGroupActivityRef = useRef(onGroupActivity);
-    getLastCursorRef.current = getLastCursor;
     onMessagesRef.current = onMessages;
     onGroupActivityRef.current = onGroupActivity;
 
     const sessionIdRef = useRef(sessionId);
     sessionIdRef.current = sessionId;
 
-    const wsFailuresRef = useRef(0);
-    const inFlightRef = useRef(false);
+    // Only a completed REST walk may advance the safe backfill cursor. WebSocket events are
+    // best-effort and can arrive out of Message Position order, so their high-water mark is kept
+    // separately and is never used as an `after` starting point.
+    const restCursorByScopeRef = useRef(new Map<string, string>());
+    const wsObservedCursorByScopeRef = useRef(new Map<string, string>());
+    const inFlightByScopeRef = useRef(new Map<string, Promise<boolean>>());
+    const abortByScopeRef = useRef(new Map<string, AbortController>());
+    const generationByScopeRef = useRef(new Map<string, number>());
+    const ensurePollingRef = useRef<(() => void) | null>(null);
 
-    const catchUp = useCallback(async () => {
-        const activeSession = sessionIdRef.current;
-        if (!groupId || !activeSession || inFlightRef.current) return;
-        inFlightRef.current = true;
-        try {
-            const fresh = await fetchMessagesSince(groupId, activeSession, getLastCursorRef.current());
-            if (fresh.length > 0 && sessionIdRef.current === activeSession) {
-                onMessagesRef.current(activeSession, fresh);
-                onGroupActivityRef.current?.();
-            }
-        } catch {
-            // A failed catch-up is not fatal: the next tick or reconnect tries again.
-        } finally {
-            inFlightRef.current = false;
+    const advanceCursor = (target: Map<string, string>, scope: string, cursor: string) => {
+        const current = target.get(scope);
+        if (!current || compareCursor(cursor, current) > 0) {
+            target.set(scope, cursor);
         }
+    };
+
+    const cancelScope = (scope: string) => {
+        abortByScopeRef.current.get(scope)?.abort();
+        abortByScopeRef.current.delete(scope);
+        inFlightByScopeRef.current.delete(scope);
+        generationByScopeRef.current.set(
+            scope,
+            (generationByScopeRef.current.get(scope) ?? 0) + 1,
+        );
+    };
+
+    const cancelAllScopes = () => {
+        for (const scope of abortByScopeRef.current.keys()) cancelScope(scope);
+    };
+
+    const catchUp = useCallback((targetSession = sessionIdRef.current): Promise<boolean> => {
+        if (!groupId || !targetSession) return Promise.resolve(true);
+        const scope = `${groupId}:${targetSession}`;
+        const existing = inFlightByScopeRef.current.get(scope);
+        if (existing) return existing;
+
+        const generation = (generationByScopeRef.current.get(scope) ?? 0) + 1;
+        generationByScopeRef.current.set(scope, generation);
+        const controller = new AbortController();
+        abortByScopeRef.current.set(scope, controller);
+
+        const knownCursor = restCursorByScopeRef.current.get(scope);
+
+        const run = (async () => {
+            try {
+                const fresh = await fetchMessagesSince(
+                    groupId,
+                    targetSession,
+                    knownCursor,
+                    controller.signal,
+                );
+                if (
+                    controller.signal.aborted
+                    || generationByScopeRef.current.get(scope) !== generation
+                    || sessionIdRef.current !== targetSession
+                ) {
+                    return false;
+                }
+                if (fresh.length > 0) {
+                    onMessagesRef.current(targetSession, fresh);
+                    advanceCursor(
+                        restCursorByScopeRef.current,
+                        scope,
+                        fresh[fresh.length - 1].cursor,
+                    );
+                }
+                return true;
+            } catch (error: any) {
+                if (error?.name !== 'AbortError') {
+                    console.warn(`[groups] Message catch-up failed for session ${targetSession}:`, error);
+                }
+                return false;
+            } finally {
+                if (generationByScopeRef.current.get(scope) === generation) {
+                    abortByScopeRef.current.delete(scope);
+                    inFlightByScopeRef.current.delete(scope);
+                }
+            }
+        })();
+        inFlightByScopeRef.current.set(scope, run);
+        return run;
     }, [groupId]);
 
+    const catchUpThroughObserved = useCallback(async (
+        targetSession = sessionIdRef.current,
+    ): Promise<boolean> => {
+        const synchronized = await catchUp(targetSession);
+        if (!synchronized || !groupId || !targetSession || sessionIdRef.current !== targetSession) {
+            return synchronized;
+        }
+
+        const scope = `${groupId}:${targetSession}`;
+        const observed = wsObservedCursorByScopeRef.current.get(scope);
+        const confirmed = restCursorByScopeRef.current.get(scope);
+        if (observed && (!confirmed || compareCursor(confirmed, observed) < 0)) {
+            // An event arrived after the REST walk's last query. Repeat from the REST-confirmed
+            // cursor; concurrent callers coalesce through inFlightByScopeRef.
+            const followedUp = await catchUp(targetSession);
+            if (!followedUp || sessionIdRef.current !== targetSession) return false;
+
+            // A WS event can race the follow-up too. Do not declare the transport synchronized
+            // until REST has actually confirmed the latest observed position; polling will retry.
+            const latestObserved = wsObservedCursorByScopeRef.current.get(scope);
+            const latestConfirmed = restCursorByScopeRef.current.get(scope);
+            return !latestObserved
+                || Boolean(
+                    latestConfirmed
+                    && compareCursor(latestConfirmed, latestObserved) >= 0,
+                );
+        }
+        return true;
+    }, [groupId, catchUp]);
+
+    // Authentication and group changes are hard scope boundaries. Session changes retain their
+    // cursor for a later return, but cancel any request that could still deliver into the old pane.
     useEffect(() => {
-        if (!enabled || !groupId) return;
+        cancelAllScopes();
+        restCursorByScopeRef.current.clear();
+        wsObservedCursorByScopeRef.current.clear();
+        generationByScopeRef.current.clear();
+        return cancelAllScopes;
+    }, [groupId, token]);
+
+    useEffect(() => {
+        const activeScope = groupId && sessionId ? `${groupId}:${sessionId}` : null;
+        for (const scope of abortByScopeRef.current.keys()) {
+            if (scope !== activeScope) cancelScope(scope);
+        }
+    }, [groupId, sessionId]);
+
+    useEffect(() => {
+        if (!enabled || !groupId || !token) {
+            ensurePollingRef.current = null;
+            setStatus('offline');
+            return;
+        }
+        const authToken = token;
 
         let disposed = false;
         let socket: WebSocket | null = null;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         let pollTimer: ReturnType<typeof setInterval> | null = null;
+        let readyTimer: ReturnType<typeof setTimeout> | null = null;
+        let retryAttempt = 0;
+        let connected = false;
 
-        const startPolling = () => {
-            if (disposed || pollTimer) return;
-            setStatus('polling');
-            void catchUp();
-            pollTimer = setInterval(() => void catchUp(), POLL_INTERVAL_MS);
+        const stopPolling = () => {
+            if (!pollTimer) return;
+            clearInterval(pollTimer);
+            pollTimer = null;
         };
 
-        const connect = () => {
+        const clearReadyTimer = () => {
+            if (!readyTimer) return;
+            clearTimeout(readyTimer);
+            readyTimer = null;
+        };
+
+        const promoteIfSynchronized = async () => {
+            onGroupActivityRef.current?.();
+            const synchronized = await catchUpThroughObserved();
             if (disposed) return;
-            const token = localStorage.getItem('token');
-            if (!token) {
-                setStatus('offline');
+            if (synchronized && connected && socket?.readyState === WebSocket.OPEN) {
+                retryAttempt = 0;
+                stopPolling();
+                setStatus('live');
+            } else if (!synchronized) {
+                startPolling();
+            }
+        };
+
+        const poll = () => {
+            if (disposed) return;
+            // Session badges are part of the fallback contract even if the active session has no
+            // new messages. React Query coalesces overlapping invalidations for this query.
+            onGroupActivityRef.current?.();
+            void catchUpThroughObserved().then((synchronized) => {
+                if (
+                    !disposed
+                    && synchronized
+                    && connected
+                    && socket?.readyState === WebSocket.OPEN
+                ) {
+                    retryAttempt = 0;
+                    stopPolling();
+                    setStatus('live');
+                }
+            });
+        };
+
+        function startPolling() {
+            if (disposed || pollTimer) return;
+            setStatus('polling');
+            poll();
+            pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+        }
+        ensurePollingRef.current = startPolling;
+
+        const scheduleReconnect = () => {
+            if (disposed || retryTimer) return;
+            const delay = Math.min(
+                WS_RETRY_MAX_MS,
+                WS_RETRY_BASE_MS * (2 ** Math.min(retryAttempt, 4)),
+            );
+            retryAttempt += 1;
+            retryTimer = setTimeout(() => {
+                retryTimer = null;
+                connect();
+            }, delay);
+        };
+
+        function connect() {
+            if (disposed) return;
+            if (
+                socket
+                && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+            ) {
                 return;
             }
 
             setStatus((current) => (current === 'polling' ? current : 'connecting'));
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${window.location.host}/ws/group/${groupId}?token=${token}`;
+            const url = `${protocol}//${window.location.host}/ws/group/${groupId}?token=${encodeURIComponent(authToken)}`;
 
+            let candidate: WebSocket;
             try {
-                socket = new WebSocket(url);
+                candidate = new WebSocket(url);
+                socket = candidate;
             } catch {
                 startPolling();
+                scheduleReconnect();
                 return;
             }
 
-            socket.onopen = () => {
-                if (disposed) return;
-                wsFailuresRef.current = 0;
-                if (pollTimer) {
-                    clearInterval(pollTimer);
-                    pollTimer = null;
+            clearReadyTimer();
+            readyTimer = setTimeout(() => {
+                if (disposed || socket !== candidate || connected) return;
+                // A TCP/WebSocket open without the application-level `connected` event is not
+                // ready. Keep data moving over REST and force a fresh socket attempt.
+                startPolling();
+                try {
+                    candidate.close();
+                } catch {
+                    if (socket === candidate) socket = null;
                 }
-                setStatus('live');
-                // Close whatever gap opened while the socket was down.
-                void catchUp();
+                scheduleReconnect();
+            }, WS_READY_TIMEOUT_MS);
+
+            candidate.onopen = () => {
+                // The server's `connected` event is the readiness boundary. Keep polling until it
+                // arrives and its cursor catch-up completes.
             };
 
-            socket.onmessage = (event) => {
-                if (disposed) return;
+            candidate.onmessage = (event) => {
+                if (disposed || socket !== candidate) return;
                 let payload: GroupSocketEvent;
                 try {
                     payload = JSON.parse(event.data);
                 } catch {
                     return;
                 }
+                if (payload.type === 'connected') {
+                    connected = true;
+                    clearReadyTimer();
+                    void promoteIfSynchronized();
+                    return;
+                }
                 if (payload.type !== 'message.created' || !payload.message || !payload.session_id) {
                     return;
                 }
                 onGroupActivityRef.current?.();
+                const scope = `${groupId}:${payload.session_id}`;
+                advanceCursor(
+                    wsObservedCursorByScopeRef.current,
+                    scope,
+                    payload.message.cursor,
+                );
                 if (payload.session_id === sessionIdRef.current) {
                     onMessagesRef.current(payload.session_id, [payload.message]);
+                    void catchUpThroughObserved(payload.session_id).then((synchronized) => {
+                        if (!disposed && !synchronized) startPolling();
+                    });
                 }
             };
 
-            socket.onclose = (event) => {
+            candidate.onclose = (event) => {
                 if (disposed) return;
+                clearReadyTimer();
+                if (socket !== candidate) return;
                 socket = null;
+                connected = false;
 
                 if (NO_RETRY_CLOSE_CODES.has(event.code)) {
+                    stopPolling();
                     setStatus('offline');
                     return;
                 }
 
-                wsFailuresRef.current += 1;
-                if (wsFailuresRef.current >= WS_FAILURE_THRESHOLD) {
-                    // The endpoint is very likely not there. Stop knocking; poll instead.
-                    startPolling();
-                    return;
-                }
-
-                startPolling(); // Keep messages flowing while we retry the socket.
-                retryTimer = setTimeout(connect, WS_RETRY_BASE_MS * wsFailuresRef.current);
+                // REST keeps the page current while the socket retries in the background.
+                startPolling();
+                scheduleReconnect();
             };
-        };
+
+            candidate.onerror = () => {
+                // Browsers follow WebSocket errors with `close`; that path owns fallback/retry.
+            };
+        }
 
         connect();
 
         return () => {
             disposed = true;
+            if (ensurePollingRef.current === startPolling) ensurePollingRef.current = null;
             if (retryTimer) clearTimeout(retryTimer);
-            if (pollTimer) clearInterval(pollTimer);
+            clearReadyTimer();
+            stopPolling();
             if (socket) {
                 socket.onclose = null;
                 socket.close();
             }
         };
-    }, [enabled, groupId, catchUp]);
+    }, [enabled, groupId, token, catchUpThroughObserved]);
 
     // Switching sessions means the cursor we track changed — catch that session up immediately.
     useEffect(() => {
-        if (enabled && groupId && sessionId) void catchUp();
-    }, [enabled, groupId, sessionId, catchUp]);
+        if (!enabled || !groupId || !sessionId) return;
+        const targetSession = sessionId;
+        void catchUpThroughObserved(targetSession).then((synchronized) => {
+            if (!synchronized && sessionIdRef.current === targetSession) {
+                // Keep the existing group socket alive. REST polling retries the failed session
+                // catch-up and will promote the transport back to live once it succeeds.
+                ensurePollingRef.current?.();
+            }
+        });
+    }, [enabled, groupId, sessionId, catchUpThroughObserved]);
 
     return { status };
 }

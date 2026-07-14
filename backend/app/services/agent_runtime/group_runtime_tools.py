@@ -8,6 +8,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.database import transaction
 from app.models.agent import Agent
 from app.models.group import GroupMember
 from app.models.org import OrgMember
@@ -396,7 +397,7 @@ class GroupRuntimeToolService:
             )
         tenant_id, group_id, participant_id, session_id = _scope(state, agent)
         async with self._session_factory() as db:
-            async with db.begin():
+            async with transaction(db):
                 if tool_name == GROUP_QUERY_MEMBERS:
                     participant_type = arguments.get("participant_type")
                     if participant_type not in {None, "user", "agent"}:

@@ -37,6 +37,10 @@ export default function GroupWorkspaceTab({ groupId }: { groupId: string }) {
             return groupApi.saveWorkspaceFile(groupId, path, content, expected);
         },
         delete: (path: string) => groupApi.deleteWorkspaceFile(groupId, path),
+        upload: (file: File, path: string, onProgress?: (percent: number) => void) =>
+            groupApi.uploadWorkspaceFile(groupId, file, path, onProgress),
+        downloadUrl: (path: string) =>
+            groupApi.workspaceDownloadUrl(groupId, path, { inline: true }),
     }), [groupId]);
 
     return (
@@ -47,7 +51,7 @@ export default function GroupWorkspaceTab({ groupId }: { groupId: string }) {
             <FileBrowser
                 api={api}
                 features={{
-                    upload: false,
+                    upload: true,
                     newFile: true,
                     newFolder: true,
                     edit: true,

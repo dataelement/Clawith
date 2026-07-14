@@ -22,6 +22,13 @@ interface Candidate {
     hint?: string;
 }
 
+const isAgentExpired = (agent: Agent): boolean => {
+    if (agent.is_expired) return true;
+    if (!agent.expires_at) return false;
+    const expiresAt = Date.parse(agent.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+};
+
 export default function InviteMemberModal({
     groupId,
     members,
@@ -52,12 +59,18 @@ export default function InviteMemberModal({
 
     const candidates = useMemo<Candidate[]>(() => {
         const source: Candidate[] = tab === 'agent'
-            ? agents.map((agent: Agent) => ({
-                type: 'agent' as const,
-                refId: agent.id,
-                name: agent.name,
-                hint: agent.role_description ?? undefined,
-            }))
+            ? agents
+                .filter((agent: Agent) => (
+                    agent.access_mode !== 'private'
+                    && !isAgentExpired(agent)
+                    && ['creating', 'running', 'idle'].includes(agent.status)
+                ))
+                .map((agent: Agent) => ({
+                    type: 'agent' as const,
+                    refId: agent.id,
+                    name: agent.name,
+                    hint: agent.role_description ?? undefined,
+                }))
             : users.map((user: User) => ({
                 type: 'user' as const,
                 refId: user.id,
@@ -81,12 +94,7 @@ export default function InviteMemberModal({
             toast.success(t('groups.inviteOk', '{{name}} 已入群', { name: candidate.name }));
             onInvited();
         } catch (error: any) {
-            // The backend still requires `participant_id`, which nothing exposes to us. Until it
-            // accepts (type, ref_id), every invite lands here. See the contract doc, gap 3.
-            const message = error?.status === 422
-                ? t('groups.inviteUnsupported', '后端邀请接口尚未支持按用户/智能体 ID 邀请，暂时无法加人')
-                : error?.message ?? t('groups.inviteFailed', '邀请失败');
-            toast.error(message);
+            toast.error(error?.message ?? t('groups.inviteFailed', '邀请失败'));
         } finally {
             setInviting(null);
         }

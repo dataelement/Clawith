@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import deque
+from collections.abc import Collection
 from dataclasses import dataclass
 import uuid
 from datetime import datetime, timezone as tz
@@ -19,6 +20,7 @@ from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.group import Group, GroupMember
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.activity_logger import log_activity
@@ -34,6 +36,10 @@ from app.services.agent_runtime.chat_stream import (
 )
 from app.services.agent_runtime.contracts import CancelRunCommand, RunHandle
 from app.services.chat_session_service import ensure_primary_platform_session
+from app.services.group_realtime import (
+    GROUP_MEMBERSHIP_REVOKED_CLOSE_CODE,
+    GROUP_MEMBERSHIP_REVOKED_EVENT,
+)
 from app.services.llm.utils import convert_chat_messages_to_llm_format
 from app.services.onboarding import is_onboarded, mark_onboarding_phase, resolve_onboarding_prompt
 from app.services.quota_guard import (
@@ -47,6 +53,7 @@ from app.services.quota_guard import (
 from app.services.realtime import realtime_router
 
 router = APIRouter(tags=["websocket"])
+GROUP_DELIVERY_SEND_TIMEOUT_SECONDS = 5.0
 
 @dataclass(frozen=True, slots=True)
 class WebChatRuntimeIntake:
@@ -57,32 +64,500 @@ class WebChatRuntimeIntake:
 
 
 class ConnectionManager:
-    """Manage WebSocket connections per agent."""
+    """Manage local WebSockets and their Redis presence leases by scope."""
 
     def __init__(self):
         # agent_id_str -> list of (WebSocket, session_id_str | None, user_id_str | None)
         self.active_connections: dict[str, list[tuple]] = {}
+        # (scope_type, scope_id) -> (WebSocket, session_id, user_id, participant_id, tenant_id)
+        self._scoped_connections: dict[tuple[str, str], list[tuple]] = {}
+        self._presence_refresh_tasks: dict[int, asyncio.Task] = {}
+
+    def _add_local_connection(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+        session_id: str | None,
+        user_id: str | None,
+        participant_id: str | None,
+        tenant_id: str | None,
+    ) -> None:
+        if scope_type == "agent":
+            self.active_connections.setdefault(scope_id, []).append(
+                (websocket, session_id, user_id)
+            )
+            return
+        key = (scope_type, scope_id)
+        self._scoped_connections.setdefault(key, []).append(
+            (websocket, session_id, user_id, participant_id, tenant_id)
+        )
+
+    def _remove_local_connection(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        if scope_type == "agent":
+            connections = self.active_connections.get(scope_id, [])
+            remaining = [(ws, sid, uid) for ws, sid, uid in connections if ws != websocket]
+            if remaining:
+                self.active_connections[scope_id] = remaining
+            else:
+                self.active_connections.pop(scope_id, None)
+            return
+        key = (scope_type, scope_id)
+        remaining = [connection for connection in self._scoped_connections.get(key, []) if connection[0] != websocket]
+        if remaining:
+            self._scoped_connections[key] = remaining
+        else:
+            self._scoped_connections.pop(key, None)
+
+    async def connect_scope(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        participant_id: str | None = None,
+        tenant_id: str | None = None,
+        auto_refresh: bool = True,
+    ) -> None:
+        self._add_local_connection(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            websocket=websocket,
+            session_id=session_id,
+            user_id=user_id,
+            participant_id=participant_id,
+            tenant_id=tenant_id,
+        )
+        try:
+            await realtime_router.register_scope_connection(
+                scope_type=scope_type,
+                scope_id=scope_id,
+                websocket=websocket,
+                session_id=session_id,
+                user_id=user_id,
+                participant_id=participant_id,
+                tenant_id=tenant_id,
+            )
+        except Exception:
+            self._remove_local_connection(
+                scope_type=scope_type,
+                scope_id=scope_id,
+                websocket=websocket,
+            )
+            raise
+        if auto_refresh:
+            self._presence_refresh_tasks[id(websocket)] = asyncio.create_task(
+                self._refresh_presence_loop(
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    websocket=websocket,
+                ),
+                name=f"realtime-presence-{scope_type}-{scope_id}",
+            )
+
+    async def _refresh_presence_loop(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(realtime_router.refresh_interval_seconds)
+                try:
+                    refreshed = await self.refresh_scope(
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                        websocket=websocket,
+                    )
+                    if not refreshed:
+                        logger.warning(
+                            "[Realtime] Presence refresh lost socket metadata scope={}:{}",
+                            scope_type,
+                            scope_id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[Realtime] Presence refresh failed scope={}:{}: {}",
+                        scope_type,
+                        scope_id,
+                        exc,
+                    )
+        except asyncio.CancelledError:
+            raise
+
+    async def refresh_scope(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+    ) -> bool:
+        return await realtime_router.refresh_scope_connection(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            websocket=websocket,
+        )
+
+    async def disconnect_scope(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        refresh_task = self._presence_refresh_tasks.pop(id(websocket), None)
+        if refresh_task is not None:
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
+        self._remove_local_connection(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            websocket=websocket,
+        )
+        await realtime_router.unregister_scope_connection(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            websocket=websocket,
+        )
 
     async def connect(self, agent_id: str, websocket: WebSocket, session_id: str = None, user_id: str | None = None):
-        if agent_id not in self.active_connections:
-            self.active_connections[agent_id] = []
-        self.active_connections[agent_id].append((websocket, session_id, user_id))
-        await realtime_router.register_connection(
-            agent_id=agent_id,
+        await self.connect_scope(
+            scope_type="agent",
+            scope_id=agent_id,
             websocket=websocket,
             session_id=session_id,
             user_id=user_id,
         )
 
     async def disconnect(self, agent_id: str, websocket: WebSocket):
-        if agent_id in self.active_connections:
-            self.active_connections[agent_id] = [
-                (ws, sid, uid) for ws, sid, uid in self.active_connections[agent_id] if ws != websocket
-            ]
-        await realtime_router.unregister_connection(agent_id=agent_id, websocket=websocket)
+        await self.disconnect_scope(
+            scope_type="agent",
+            scope_id=agent_id,
+            websocket=websocket,
+        )
 
     def _local_connections(self, agent_id: str) -> list[tuple[WebSocket, str | None, str | None]]:
         return self.active_connections.get(agent_id, [])
+
+    def _local_scope_connections(self, scope_type: str, scope_id: str) -> list[tuple]:
+        if scope_type == "agent":
+            return self._local_connections(scope_id)
+        return self._scoped_connections.get((scope_type, scope_id), [])
+
+    def _snapshot_group_participant_connections(
+        self,
+        *,
+        scope_id: str,
+        participant_id: str,
+        tenant_id: str,
+    ) -> list[WebSocket]:
+        """Synchronously freeze revoke targets before any membership DB await."""
+        return [
+            websocket
+            for websocket, _, _, local_participant_id, local_tenant_id in list(
+                self._local_scope_connections("group", scope_id)
+            )
+            if local_participant_id == participant_id
+            and local_tenant_id == tenant_id
+        ]
+
+    async def _group_membership_is_active(
+        self,
+        *,
+        scope_id: str,
+        participant_id: str,
+        tenant_id: str,
+    ) -> bool:
+        group_id = uuid.UUID(scope_id)
+        participant_uuid = uuid.UUID(participant_id)
+        tenant_uuid = uuid.UUID(tenant_id)
+        async with async_session() as db:
+            result = await db.execute(
+                select(GroupMember.id)
+                .join(Group, Group.id == GroupMember.group_id)
+                .where(
+                    GroupMember.group_id == group_id,
+                    GroupMember.participant_id == participant_uuid,
+                    GroupMember.removed_at.is_(None),
+                    Group.tenant_id == tenant_uuid,
+                    Group.deleted_at.is_(None),
+                )
+            )
+        return result.scalar_one_or_none() is not None
+
+    async def _deliver_current_group_connections(
+        self,
+        *,
+        scope_id: str,
+        tenant_id: str | None,
+        payload: dict,
+        connections: list[tuple],
+    ) -> None:
+        """Deliver under a group membership read lock with one bounded query.
+
+        Invite/remove takes the same ``groups`` row ``FOR UPDATE``. Holding a
+        shared lock through the socket writes gives membership mutation and
+        delivery a database-backed linearization point, including for delayed
+        Redis envelopes on another API instance.
+        """
+        if tenant_id is None or not connections:
+            return
+        try:
+            group_id = uuid.UUID(scope_id)
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            logger.warning(
+                "[Realtime] Ignored group delivery with invalid scope identity "
+                "scope=group:{} tenant={}",
+                scope_id,
+                tenant_id,
+            )
+            return
+
+        participant_ids: set[uuid.UUID] = set()
+        for _, _, _, local_participant_id, _ in connections:
+            if local_participant_id is None:
+                continue
+            try:
+                participant_ids.add(uuid.UUID(local_participant_id))
+            except ValueError:
+                continue
+        if not participant_ids:
+            return
+
+        async with async_session() as db:
+            async with db.begin():
+                group_result = await db.execute(
+                    select(Group.id)
+                    .where(
+                        Group.id == group_id,
+                        Group.tenant_id == tenant_uuid,
+                        Group.deleted_at.is_(None),
+                    )
+                    .with_for_update(read=True)
+                )
+                if group_result.scalar_one_or_none() is None:
+                    return
+                membership_result = await db.execute(
+                    select(GroupMember.participant_id).where(
+                        GroupMember.group_id == group_id,
+                        GroupMember.participant_id.in_(participant_ids),
+                        GroupMember.removed_at.is_(None),
+                    )
+                )
+                active_participants = {
+                    str(participant_id)
+                    for participant_id in membership_result.scalars().all()
+                }
+
+                async def send_if_active(connection: tuple) -> None:
+                    websocket, _, _, local_participant_id, _ = connection
+                    if local_participant_id not in active_participants:
+                        return
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_json(payload),
+                            timeout=GROUP_DELIVERY_SEND_TIMEOUT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "[Realtime] Group socket delivery timed out "
+                            "scope=group:{} participant={}",
+                            scope_id,
+                            local_participant_id,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[Realtime] Group socket delivery failed scope=group:{}",
+                            scope_id,
+                        )
+
+                await asyncio.gather(
+                    *(send_if_active(connection) for connection in connections)
+                )
+
+    async def _close_revoked_group_connections(
+        self,
+        *,
+        scope_id: str,
+        payload: dict,
+        participant_id: str,
+        targets: list[WebSocket],
+    ) -> None:
+        """Remove matching sockets before closing them so later events cannot leak."""
+        close_targets: list[tuple[WebSocket, asyncio.Task | None]] = []
+        for websocket in targets:
+            self._remove_local_connection(
+                scope_type="group",
+                scope_id=scope_id,
+                websocket=websocket,
+            )
+            refresh_task = self._presence_refresh_tasks.pop(id(websocket), None)
+            if refresh_task is not None:
+                refresh_task.cancel()
+            close_targets.append((websocket, refresh_task))
+
+        for websocket, refresh_task in close_targets:
+            if refresh_task is not None:
+                try:
+                    await refresh_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "[Realtime] Revoked socket refresh cleanup failed "
+                        "scope=group:{}: {}",
+                        scope_id,
+                        exc,
+                    )
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=GROUP_MEMBERSHIP_REVOKED_CLOSE_CODE)
+            except Exception:
+                pass
+            try:
+                await realtime_router.unregister_scope_connection(
+                    scope_type="group",
+                    scope_id=scope_id,
+                    websocket=websocket,
+                )
+            except Exception as exc:
+                # The socket has already been removed and closed. Redis presence
+                # expiry plus the heartbeat are the eventual cleanup fallback.
+                logger.warning(
+                    "[Realtime] Revoked socket presence cleanup failed "
+                    "scope=group:{} participant={}: {}",
+                    scope_id,
+                    participant_id,
+                    exc,
+                )
+
+    async def deliver_pubsub_scope_message(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        payload: dict,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        participant_id: str | None = None,
+        tenant_id: str | None = None,
+        participant_allowlist: Collection[str] | None = None,
+    ) -> None:
+        if scope_type == "agent":
+            await self.deliver_pubsub_message(
+                agent_id=scope_id,
+                payload=payload,
+                session_id=session_id,
+                user_id=user_id,
+            )
+            return
+        if payload.get("type") == GROUP_MEMBERSHIP_REVOKED_EVENT:
+            if (
+                participant_id is None
+                or tenant_id is None
+                or payload.get("group_id") != scope_id
+                or payload.get("participant_id") != participant_id
+            ):
+                logger.warning(
+                    "[Realtime] Ignored malformed membership revoke scope={}:{}",
+                    scope_type,
+                    scope_id,
+                )
+                return
+            targets = self._snapshot_group_participant_connections(
+                scope_id=scope_id,
+                participant_id=participant_id,
+                tenant_id=tenant_id,
+            )
+            if not targets:
+                return
+            try:
+                membership_is_active = await self._group_membership_is_active(
+                    scope_id=scope_id,
+                    participant_id=participant_id,
+                    tenant_id=tenant_id,
+                )
+            except Exception as exc:
+                # The revoke is already committed. On lookup failure, closing the
+                # frozen sockets is the conservative, recoverable outcome.
+                logger.warning(
+                    "[Realtime] Membership recheck failed scope=group:{} "
+                    "participant={}: {}",
+                    scope_id,
+                    participant_id,
+                    exc,
+                )
+                membership_is_active = False
+            if membership_is_active:
+                logger.debug(
+                    "[Realtime] Ignored stale membership revoke scope=group:{} "
+                    "participant={}",
+                    scope_id,
+                    participant_id,
+                )
+                return
+            await self._close_revoked_group_connections(
+                scope_id=scope_id,
+                payload=payload,
+                participant_id=participant_id,
+                targets=targets,
+            )
+            return
+        active_allowlist = (
+            frozenset(participant_allowlist)
+            if participant_allowlist is not None
+            else None
+        )
+        eligible_connections: list[tuple] = []
+        for websocket, local_session_id, local_user_id, local_participant_id, local_tenant_id in list(
+            self._local_scope_connections(scope_type, scope_id)
+        ):
+            if session_id is not None and local_session_id != session_id:
+                continue
+            if user_id is not None and local_user_id != user_id:
+                continue
+            if participant_id is not None and local_participant_id != participant_id:
+                continue
+            if tenant_id is not None and local_tenant_id != tenant_id:
+                continue
+            if (
+                active_allowlist is not None
+                and local_participant_id not in active_allowlist
+            ):
+                continue
+            eligible_connections.append(
+                (
+                    websocket,
+                    local_session_id,
+                    local_user_id,
+                    local_participant_id,
+                    local_tenant_id,
+                )
+            )
+        await self._deliver_current_group_connections(
+            scope_id=scope_id,
+            tenant_id=tenant_id,
+            payload=payload,
+            connections=eligible_connections,
+        )
 
     async def deliver_pubsub_message(
         self,

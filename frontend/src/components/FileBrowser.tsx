@@ -182,9 +182,22 @@ export default function FileBrowser({
 
     useEffect(() => {
         if (!viewing || singleFile) return;
+        if (!isTextFile(viewing)) {
+            // Binary files are rendered from downloadUrl (images) or offered for download. Never
+            // send them through the text endpoint: replacement decoding plus JSON can multiply a
+            // large file's memory and network cost.
+            setContent('');
+            return;
+        }
+        let cancelled = false;
         api.read(viewing).then(data => {
-            setContent(data.content || '');
-        }).catch(() => setContent(''));
+            if (!cancelled) setContent(data.content || '');
+        }).catch(() => {
+            if (!cancelled) setContent('');
+        });
+        return () => {
+            cancelled = true;
+        };
     }, [viewing, api, singleFile]);
 
     // ─── Actions ──────────────────────────────────────

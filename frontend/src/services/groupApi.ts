@@ -1,6 +1,6 @@
 /** Group chat API client — /api/groups. */
 
-import { fetchJson } from './api';
+import { fetchJson, uploadFileWithProgress } from './api';
 import type {
     Group,
     GroupMember,
@@ -13,12 +13,7 @@ import type {
     ParticipantType,
 } from '../types/group';
 
-/**
- * The backend invite endpoint currently only accepts `participant_id`, which nothing exposes to
- * the frontend (agent participants are created lazily, so they may not exist yet). We send the
- * business identity instead — see docs/group-chat/frontend-realtime-contract.md, gap 3. Until the
- * backend accepts this shape, invites fail with 422 and the modal surfaces the error.
- */
+/** Business identity; the backend resolves or lazily creates the Participant row. */
 export interface InviteMemberPayload {
     participant_type: ParticipantType;
     ref_id: string;
@@ -30,6 +25,20 @@ export interface SendMessagePayload {
     /** Client-generated so a retried send is deduplicated server-side rather than duplicated. */
     message_id: string;
 }
+
+export type GroupMessagePageOptions =
+    | {
+        limit?: number;
+        before?: string;
+        after?: never;
+        signal?: AbortSignal;
+    }
+    | {
+        limit?: number;
+        after?: string;
+        before?: never;
+        signal?: AbortSignal;
+    };
 
 const qs = (params: Record<string, string | number | undefined>) => {
     const search = new URLSearchParams();
@@ -91,21 +100,26 @@ export const groupApi = {
      * Backward pager: returns the `limit` messages immediately older than `before`, ascending.
      * Omit `before` for the newest page.
      *
-     * `after` is the forward pager backfill wants, and the backend does not implement it yet — it
-     * is ignored server-side today. useGroupRealtime only sends it behind USE_AFTER_CURSOR.
+     * `after` is the forward pager used for reconnect and polling catch-up. It is mutually
+     * exclusive with `before` so a request has one unambiguous direction.
      */
     messages: (
         groupId: string,
         sessionId: string,
-        opts: { limit?: number; before?: string; after?: string } = {},
-    ) =>
-        fetchJson<GroupMessage[]>(
+        opts: GroupMessagePageOptions = {},
+    ) => {
+        if (opts.before && opts.after) {
+            throw new Error('Group message pagination cannot use both `before` and `after`.');
+        }
+        return fetchJson<GroupMessage[]>(
             `/groups/${groupId}/sessions/${sessionId}/messages${qs({
                 limit: opts.limit ?? 30,
                 before: opts.before,
                 after: opts.after,
             })}`,
-        ),
+            { signal: opts.signal },
+        );
+    },
 
     sendMessage: (groupId: string, sessionId: string, data: SendMessagePayload) =>
         fetchJson<GroupMessageIntake>(`/groups/${groupId}/sessions/${sessionId}/messages`, {
@@ -170,4 +184,27 @@ export const groupApi = {
 
     deleteWorkspaceFile: (groupId: string, path: string) =>
         fetchJson<void>(`/groups/${groupId}/workspace/file${qs({ path })}`, { method: 'DELETE' }),
+
+    uploadWorkspaceFile: (
+        groupId: string,
+        file: File,
+        path = '',
+        onProgress?: (percent: number) => void,
+    ) =>
+        uploadFileWithProgress(
+            `/groups/${groupId}/workspace/upload${qs({ path })}`,
+            file,
+            onProgress,
+        ).promise,
+
+    workspaceDownloadUrl: (
+        groupId: string,
+        path: string,
+        options?: { inline?: boolean },
+    ) => {
+        const token = localStorage.getItem('token') || '';
+        const params = new URLSearchParams({ path, token });
+        if (options?.inline) params.set('inline', '1');
+        return `/api/groups/${groupId}/workspace/download?${params.toString()}`;
+    },
 };

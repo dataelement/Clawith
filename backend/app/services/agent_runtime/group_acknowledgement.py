@@ -14,6 +14,7 @@ from app.services.agent_runtime.command_worker import (
     RuntimeSessionFactory,
 )
 from app.services.agent_runtime.delivery import DeliveryRequest, deliver_runtime_message
+from app.services.group_realtime import publish_committed_group_message
 
 
 _ACK_CONTENT = "收到，我开始处理。"
@@ -36,6 +37,7 @@ class RuntimeGroupStartAcknowledgementHandler:
         if command.command_type != "start" or run.registry.run_kind == "orchestration":
             return
 
+        receipt = None
         async with self._session_factory() as db:
             async with db.begin():
                 result = await db.execute(
@@ -47,7 +49,7 @@ class RuntimeGroupStartAcknowledgementHandler:
                 target = result.scalar_one_or_none()
                 if not isinstance(target, Mapping) or target.get("kind") != "group":
                     return
-                await deliver_runtime_message(
+                receipt = await deliver_runtime_message(
                     db,
                     DeliveryRequest(
                         tenant_id=run.tenant_id,
@@ -56,6 +58,11 @@ class RuntimeGroupStartAcknowledgementHandler:
                         content=_ACK_CONTENT,
                     ),
                 )
+        if receipt is not None and receipt.message_id is not None:
+            await publish_committed_group_message(
+                tenant_id=receipt.tenant_id,
+                message_id=receipt.message_id,
+            )
 
 
 __all__ = ["RuntimeGroupStartAcknowledgementHandler"]

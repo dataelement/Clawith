@@ -20,6 +20,7 @@ from app.services.agent_runtime.delivery import (
     deliver_runtime_message,
 )
 from app.services.agent_runtime.projector import RuntimeProjector
+from app.services.group_realtime import publish_committed_group_message
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -212,6 +213,7 @@ class RuntimeCheckpointSideEffects:
         delivery = delivery_from_checkpoint(run, checkpoint)
         if delivery is not None:
             try:
+                receipt = None
                 async with self._session_factory() as db:
                     async with db.begin():
                         status_result = await db.execute(
@@ -227,7 +229,12 @@ class RuntimeCheckpointSideEffects:
                                 "post-checkpoint delivery Run does not exist",
                             )
                         if delivery_status != "not_required":
-                            await deliver_runtime_message(db, delivery)
+                            receipt = await deliver_runtime_message(db, delivery)
+                if receipt is not None and receipt.message_id is not None:
+                    await publish_committed_group_message(
+                        tenant_id=receipt.tenant_id,
+                        message_id=receipt.message_id,
+                    )
             except Exception as exc:
                 errors.append(exc)
 

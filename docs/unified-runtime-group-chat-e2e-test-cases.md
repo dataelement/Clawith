@@ -1,6 +1,8 @@
 # Clawith Unified Runtime + Group Chat E2E 测试用例册
 
-> 更新依据：飞书测试用例模板 `KMoTdTIYyoIQMPxLTTKcPI4XnTd` revision 11、当前 `docs/single-agent-runtime/technical-design.md`、`docs/single-agent-runtime/runtime-context-compression-prd.md`、`docs/group-chat/prd.md`、`docs/group-chat/technical-design.md`，以及生产目标 `0ef0f8d4 + c959dffe`；全部用例使用真实 PostgreSQL、真实 API/Runtime/Worker/浏览器或渠道 sandbox，排除 `2571b892` Toolathlon benchmark，未实现能力只能登记 `BLOCKED/待实现`。
+> 更新依据：飞书测试用例模板 `KMoTdTIYyoIQMPxLTTKcPI4XnTd` revision 11、当前 `docs/single-agent-runtime/technical-design.md`、`docs/single-agent-runtime/runtime-context-compression-prd.md`、`docs/group-chat/prd.md`、`docs/group-chat/technical-design.md`，以及包含 PR #761 前端、Group WebSocket、`after` 补拉和 workspace 二进制接口的当前 group-chat 集成基线；全部用例使用真实 PostgreSQL、真实 API/Runtime/Worker/浏览器或渠道 sandbox，排除 `2571b892` Toolathlon benchmark，未实现能力只能登记 `BLOCKED/待实现`。
+
+> 当前执行状态：上述群聊前后端能力已进入集成代码，但本用例册中的浏览器 E2E 尚未执行；对应结果统一保持 `待验证`，不得从构建通过或接口存在推断为 E2E 通过。
 
 ## 目录
 
@@ -22,14 +24,14 @@
 
 ## M01 - 真实环境、部署、迁移与 Checkpoint
 
-### TC-M01-001: 发布制品精确包含生产目标并排除 Toolathlon
+### TC-M01-001: 发布制品精确包含集成候选并排除 Toolathlon
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | CI 可从 `0ef0f8d4` 加直接后续 `c959dffe` 构建全新后端镜像；使用独立真实 PostgreSQL 和制品仓库。 |
-| **测试步骤** | 1. 记录源码、镜像 digest 和 SBOM。<br>2. 部署镜像并查询版本/健康信息。<br>3. 检查容器文件、命令和路由是否包含 `2571b892` 的 Toolathlon benchmark 入口。 |
-| **预期结果** | 运行制品可追溯到 `0ef0f8d4+c959dffe`；digest 固定；不包含或暴露 Toolathlon CLI、数据集和 benchmark 路由；后续证据均绑定该制品。 |
+| **前置条件** | Group Chat 前后端集成变更已落到一个可追溯、无未提交改动的候选 commit；CI 可构建全新后端镜像和前端制品；使用独立真实 PostgreSQL 和制品仓库。 |
+| **测试步骤** | 1. 记录候选 commit、前后端制品 digest 和 SBOM。<br>2. 部署制品并查询版本/健康信息。<br>3. 检查容器文件、命令和路由是否包含 `2571b892` 的 Toolathlon benchmark 入口。<br>4. 确认制品包含双身份邀请、Group WebSocket、`after` 补拉和 workspace upload/download。 |
+| **预期结果** | 前后端运行制品可追溯到同一集成候选 commit，digest 固定；包含本轮群聊能力且不包含或暴露 Toolathlon CLI、数据集和 benchmark 路由；后续 E2E 证据均绑定该制品。候选 commit 未固定前不得开始正式 E2E 记证。 |
 
 ### TC-M01-002: 真实 PostgreSQL 在停写窗口完成 Unified Schema 迁移
 
@@ -370,7 +372,7 @@
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 部署 `0ef0f8d4+c959dffe` 后端；真实 PostgreSQL 有测试租户、human Participant 和认证 token。 |
+| **前置条件** | 部署当前 Group Chat 前后端集成候选；真实 PostgreSQL 有测试租户、human Participant 和认证 token。 |
 | **测试步骤** | 1. POST 创建两个同名群。<br>2. GET 列表/详情并 PATCH 其中一个。<br>3. 查询 groups、members 和 chat_sessions。<br>4. 以非成员查询。 |
 | **预期结果** | 两群以 ID 区分，创建者自动成为 manager；修改只影响目标群；新群没有隐式 Session/primary；非成员不可见且不泄露存在性。 |
 
@@ -379,9 +381,9 @@
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | G1 有 manager、普通 human、可见 Company Agent、Private Agent 和另一租户 Participant。 |
-| **测试步骤** | 1. manager/普通 human 分别邀请可见 Agent。<br>2. 尝试邀请 Private/跨租户目标。<br>3. 普通成员与 Agent 尝试移出成员。<br>4. manager 移出并重新邀请同一 Participant。 |
-| **预期结果** | 合法邀请创建/恢复唯一 membership；Private 与跨租户拒绝；只有 manager 可移出；Agent 无管理权；重邀复用原 membership 且移出期间无访问权。 |
+| **前置条件** | G1 有 manager、普通 human、可见 Company Agent、Private Agent 和另一租户 Participant；邀请接口支持互斥的 legacy `participant_id` 与 `(participant_type, ref_id)` 业务身份。 |
+| **测试步骤** | 1. manager 在浏览器中分别以 user/agent 业务身份邀请可见成员，普通 human 再邀请一个合法 Agent。<br>2. 绕过前端分别用业务身份和 legacy `participant_id` 尝试邀请 Private/跨租户目标，并提交两类身份同时存在或业务身份不完整的请求；非成员用真实/随机目标各邀请一次。<br>3. 被邀请成员建立 WS，普通成员与 Agent 尝试移出成员。<br>4. manager 移出成员，制造移出前生成、提交后迟到的跨实例 message envelope，确认旧 socket 关闭且不收消息；再重新邀请并建立新 socket，投递上一代迟到 revoke。 |
+| **预期结果** | 两种合法身份输入解析到同一 Participant，创建/恢复唯一 membership；混合/不完整身份返回 400；非成员在解析目标前以一致权限错误拒绝；前端隐藏 Private/不可用 Agent，后端仍拒绝直调；只有 manager 可移出。消息发送和成员变更以群行共享/排他锁线性化，stale envelope 不泄露；旧 socket 以 4003 关闭，迟到 revoke 不误关重新入群的新 socket；Agent 无管理权。浏览器步骤执行前保持待验证。 |
 
 ### TC-M08-003: 第三方同步成员绑定闭环按实现状态执行
 
@@ -401,14 +403,14 @@
 | **测试步骤** | 1. 并发创建 S1/S2。<br>2. Agent 尝试创建/改名。<br>3. 写消息形成可控活跃排序。<br>4. manager 删除 primary，再删除最后 Session。 |
 | **预期结果** | 始终最多一个 active primary；Agent 请求拒绝；删除 primary 按固定排序选唯一 replacement；删除最后 Session 后允许无 primary且不自动补建。 |
 
-### TC-M08-005: 群管理浏览器主链路在前端就绪后验收
+### TC-M08-005: 群管理浏览器主链路在集成环境验收
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 对应群聊前端已实现并部署，浏览器使用真实 API/认证/数据库；目标 ref 本身无前端变更，因此仅部署该 ref 时登记 `BLOCKED/待实现`，不得声称已通过。 |
-| **测试步骤** | 1. 以 Manual-Browser 创建群、搜索/邀请成员。<br>2. 创建、切换、重命名和删除 Session。<br>3. 刷新并用第二成员登录。<br>4. 核对 API 与数据库。 |
-| **预期结果** | 能力就绪后 UI 与后端权限/primary 状态一致，刷新可恢复且无伪造默认 Session；当前 ref 缺前端时只能记录明确阻塞。 |
+| **前置条件** | 群聊前端代码已集成；需部署到使用真实 API/认证/数据库的测试环境。本轮尚未执行 Manual-Browser。 |
+| **测试步骤** | 1. 以 Manual-Browser 创建群、搜索并用业务身份邀请 user/Agent。<br>2. 创建、切换、重命名和删除 Session。<br>3. 刷新并用第二成员登录。<br>4. 核对 API 与数据库。 |
+| **预期结果** | 实际执行通过后 UI 与后端权限/primary 状态一致，刷新可恢复且无伪造默认 Session；留存执行证据前状态为 `待验证`，不得声称已通过。 |
 
 ---
 
@@ -441,23 +443,23 @@
 | **测试步骤** | 1. 在入口事务提交前观察消息流。<br>2. 提交后保持 Graph 暂停并等待 ACK。<br>3. 重启 ACK worker、重放 Command。<br>4. 放行 Graph 到 completed/failed/cancelled。 |
 | **预期结果** | 提交前无 ACK；Run/start Command durable 后、Graph 未执行也有一条普通公开 ACK；稳定 delivery key 防重复；终态再形成唯一安全可见闭环。 |
 
-### TC-M09-004: 消息历史按 Message Position 稳定且读取不重触发 Mention
+### TC-M09-004: REST 历史、Group WebSocket 与 `after` 补拉形成无缝消息链路
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | 在真实 PostgreSQL 中准备 `created_at` 相同、`id` 不同的多条公开消息，其中一条曾 mention A1 并已完成。 |
-| **测试步骤** | 1. 通过 API 分页读取并在页间插入新消息。<br>2. 刷新订阅并执行上下文重建。<br>3. 重复读取历史。<br>4. 对比 Run/Command 数量。 |
-| **预期结果** | 分页和事件均按 `(created_at,id)` 全序，无重复/漏项；历史 token 原样展示；读取、重连和上下文重建不再次触发 mention。 |
+| **前置条件** | G1 有 S1/S2 和两个浏览器成员；真实 PostgreSQL 中可产生 `created_at` 相同、`id` 不同的公开消息；可中断 Group WebSocket，其中一条历史消息曾 mention A1 并已完成。 |
+| **测试步骤** | 1. 通过 REST 发消息并使用无 cursor/`before` 读取历史。<br>2. 建立 `WS /ws/group/{group_id}`，收到 `connected` 后在 S1/S2 写消息并观察 `message.created`。<br>3. 中断 WS，在 active S1 写入超过一页的新消息，并在 S2 写入一条消息。<br>4. 观察立即启动的 4 秒轮询：刷新全群 sessions/unread，并仅对 active S1 用 `after` 连续补拉到短页。<br>5. 恢复 WS，验证新 `connected` 后 catch-up、重复事件按 message id 合并，再执行上下文重建并对比 Run/Command 数量。 |
+| **预期结果** | REST send/history、group-scoped WS push 与 `after` backfill 共同使用 `(created_at,id)` 全序；HTTP 补拉 cursor 在分页期间不被并发 WS 消息推进，无重复/漏项且没有客户端总页数上限；轮询只在 WS 不可用期间运行但刷新所有 session 未读，恢复并追平后停止；历史读取、重连和上下文重建不再次触发 mention。该断网浏览器场景未执行前保持待验证。 |
 
 ### TC-M09-005: 未读在并发与延迟 Read Update 下保持单调
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P0 |
-| **前置条件** | G1 有 U1/U2、S1/S2；已生成 human 消息、Agent ACK/终态、background callback、内部 event 和 workspace 变更。 |
-| **测试步骤** | 1. U1/U2 从不同设备读取到不同位置。<br>2. 先提交新位置 P2，再延迟提交旧 P1。<br>3. 查询 membership JSON read state 与各 Session 未读。<br>4. 对照消息类别和发送者。 |
-| **预期结果** | Watermark 以 Message Position 单调前进且每 Session 独立；公开 Agent/callback 计入其他成员未读，发送者自身及内部/workspace 事件不计入；延迟 P1 不回退。 |
+| **前置条件** | G1 有 U1/U2、S1/S2；已生成 human 消息、Agent ACK/终态、background callback、内部 event 和 workspace 变更；前端可在 WS 正常和 4 秒兜底轮询两种状态下刷新 sessions。 |
+| **测试步骤** | 1. U1/U2 从不同设备读取到不同位置。<br>2. 先提交新位置 P2，再延迟提交旧 P1。<br>3. 分别在 WS 正常和断线轮询期间向非 active session 写公开消息。<br>4. 查询 membership JSON read state、sessions API 与所有 Session 未读，并对照消息类别和发送者。 |
+| **预期结果** | Watermark 以 Message Position 单调前进且每 Session 独立；公开 Agent/callback 计入其他成员未读，发送者自身及内部/workspace 事件不计入；延迟 P1 不回退；WS 事件和临时轮询都会刷新全群 sessions，使非 active session 的 unread badge 收敛。浏览器验证前保持待验证。 |
 
 ---
 
@@ -539,14 +541,14 @@
 | **测试步骤** | 1. 触发 A1 Run 并检查模型输入。<br>2. A1 用工具读 A2、写 A1、写 A2。<br>3. U1 读写两者。<br>4. 移出 A1 后重试。 |
 | **预期结果** | 只自动注入 A1 memory；A1 可读 peer 但只能写自己，U1 按权限管理；写 A2 和移出后的访问拒绝且无文件副作用。 |
 
-### TC-M11-004: Group Workspace 跨 Session 共享且跨空间复制按状态验收
+### TC-M11-004: Group Workspace 跨 Session 共享二进制文件且跨空间复制按状态验收
 
 | 项目 | 内容 |
 |-|-|
 | **优先级** | P1 |
-| **前置条件** | G1 有 S1/S2 和真实 workspace；跨空间复制的后端/前端、权限、preview/confirm 尚未完整实现时，该子场景登记 `BLOCKED/待实现`，不得用直接复制文件冒充通过。 |
-| **测试步骤** | 1. 从 S1 创建文件并由 S2 读取/更新。<br>2. 并发提交 stale revision 与路径穿越。<br>3. 能力就绪后以 Manual-Browser preview、confirm 复制明确文件到 G2。<br>4. 修改源文件并检查目标。 |
-| **预期结果** | 基础 workspace 以 group 共享，revision 冲突和路径逃逸拒绝；跨空间能力就绪后只复制经确认且有权内容并记录来源/审计，不自动同步；未就绪时明确阻塞。 |
+| **前置条件** | G1 有 S1/S2 和真实 workspace；group multipart upload/binary download 已接入前端。跨空间复制的后端/前端、权限、preview/confirm 尚未完整实现时，该子场景登记 `BLOCKED/待实现`。 |
+| **测试步骤** | 1. 从 S1 创建文本文件并上传 PDF/图片等二进制文件，由 S2 列出、下载并逐字节比对。<br>2. 对文本并发提交 stale revision，对 upload/download 提交路径穿越、超 50 MiB、非成员和失效 token。<br>3. 在新建/覆盖 upload 后分别注入 revision 与最终 commit 失败；补偿暂停时从另一实例及 Agent Runtime 工具并发写同一路径，完成后重试。<br>4. 能力就绪后以 Manual-Browser preview、confirm 复制明确文件到 G2。<br>5. 修改源文件并检查目标。 |
+| **预期结果** | 基础 workspace 以 group 共享，二进制下载与上传原文一致，revision 冲突、路径逃逸和未授权访问拒绝；DB rollback 按上传 version 安全删除/恢复且不覆盖更晚版本；跨空间能力就绪后只复制经确认且有权内容并记录来源/审计，不自动同步。进程硬退出窗口仍需 durable outbox 方案，跨空间未就绪时明确阻塞，基础二进制场景在实际执行前为待验证。 |
 
 ### TC-M11-005: Group Session Compact 共享状态、预算与 CAS 端到端收敛
 

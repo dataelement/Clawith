@@ -82,6 +82,16 @@ class GroupMessageIntake:
     created: bool
     error_code: str | None = None
 
+    @property
+    def public_message_ids(self) -> tuple[uuid.UUID, ...]:
+        """Messages made public by this intake, in authoritative position order."""
+        if self.error_code is None:
+            return (self.message.id,)
+        return (
+            self.message.id,
+            uuid.uuid5(self.message.id, "planning-configuration-failure"),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class _SenderScope:
@@ -675,6 +685,7 @@ async def list_group_messages(
     viewer_participant_id: uuid.UUID,
     limit: int,
     before: tuple[datetime, uuid.UUID] | None = None,
+    after: tuple[datetime, uuid.UUID] | None = None,
 ) -> list[ChatMessage]:
     """Read public messages by the shared `(created_at, id)` position contract."""
     await _load_sender_scope(
@@ -689,18 +700,50 @@ async def list_group_messages(
             "group_message_limit_invalid",
             "Message limit must be between 1 and 500",
         )
-    statement = (
-        select(ChatMessage)
-        .where(ChatMessage.conversation_id == str(session_id))
-        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
-        .limit(limit)
+    if before is not None and after is not None:
+        raise GroupMessageServiceError(
+            "group_message_cursor_invalid",
+            "Message cursors 'before' and 'after' are mutually exclusive",
+        )
+    cursor = before or after
+    if cursor is not None:
+        cursor_message = await db.get(ChatMessage, cursor[1])
+        if (
+            cursor_message is None
+            or cursor_message.conversation_id != str(session_id)
+            or cursor_message.created_at != cursor[0]
+        ):
+            raise GroupMessageServiceError(
+                "group_message_cursor_invalid",
+                "Message cursor does not belong to this group session",
+            )
+
+    statement = select(ChatMessage).where(
+        ChatMessage.conversation_id == str(session_id)
     )
+    ascending = after is not None
     if before is not None:
         statement = statement.where(
             tuple_(ChatMessage.created_at, ChatMessage.id) < tuple_(before[0], before[1])
         )
+    elif after is not None:
+        statement = statement.where(
+            tuple_(ChatMessage.created_at, ChatMessage.id) > tuple_(after[0], after[1])
+        )
+    if ascending:
+        statement = statement.order_by(
+            ChatMessage.created_at.asc(),
+            ChatMessage.id.asc(),
+        )
+    else:
+        statement = statement.order_by(
+            ChatMessage.created_at.desc(),
+            ChatMessage.id.desc(),
+        )
+    statement = statement.limit(limit)
     result = await db.execute(statement)
-    return list(reversed(result.scalars().all()))
+    messages = list(result.scalars().all())
+    return messages if ascending else list(reversed(messages))
 
 
 __all__ = [
