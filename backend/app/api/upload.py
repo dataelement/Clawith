@@ -6,7 +6,6 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
-from loguru import logger
 from app.core.security import get_current_user
 from app.models.user import User
 from app.services.storage import ensure_local_path, get_storage_backend, guess_content_type, normalize_storage_key

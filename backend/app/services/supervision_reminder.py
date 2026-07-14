@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.task import Task, TaskLog
 from app.models.agent import Agent
 
@@ -108,6 +108,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
     from app.services.llm import (
         get_provider_base_url,
         create_llm_client,
+        LLMError,
         LLMMessage,
         get_model_api_key,
     )
@@ -117,7 +118,7 @@ async def _get_agent_reply(target_agent, message: str, db) -> str | None:
         return None
 
     from sqlalchemy import select as _select
-    model_result = await db.execute(_select(LLMModel).where(LLMModel.id == model_id))
+    model_result = await query_dao.execute(db, _select(LLMModel).where(LLMModel.id == model_id))
     model = model_result.scalar_one_or_none()
     if not model:
         return None
@@ -187,12 +188,12 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
             reminder_msg += f"截止日期：{task.due_date.strftime('%Y-%m-%d')}\n"
         reminder_msg += f"\n请及时处理，谢谢！"
 
-        async with async_session() as db:
+        async with query_dao.session() as db:
             sent = False
             send_method = ""
 
             # 1. Try to find target as an Agent
-            agent_result = await db.execute(
+            agent_result = await query_dao.execute(db, 
                 select(Agent).where(Agent.name == target_name)
             )
             target_agent = agent_result.scalar_one_or_none()
@@ -204,11 +205,11 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 from app.models.participant import Participant
 
                 # Get participant for sender agent
-                src_part_r = await db.execute(
+                src_part_r = await query_dao.execute(db, 
                     select(Participant).where(Participant.type == "agent", Participant.ref_id == task.agent_id)
                 )
                 src_part = src_part_r.scalar_one_or_none()
-                tgt_part_r = await db.execute(
+                tgt_part_r = await query_dao.execute(db, 
                     select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent.id)
                 )
                 tgt_part = tgt_part_r.scalar_one_or_none()
@@ -216,7 +217,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 # Find or create ChatSession
                 session_agent_id = min(task.agent_id, target_agent.id, key=str)
                 session_peer_id = max(task.agent_id, target_agent.id, key=str)
-                sess_r = await db.execute(
+                sess_r = await query_dao.execute(db, 
                     select(ChatSession).where(
                         ChatSession.agent_id == session_agent_id,
                         ChatSession.peer_agent_id == session_peer_id,
@@ -226,7 +227,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 chat_session = sess_r.scalar_one_or_none()
                 if not chat_session:
                     # Get creator for user_id
-                    src_agent_r = await db.execute(select(Agent).where(Agent.id == task.agent_id))
+                    src_agent_r = await query_dao.execute(db, select(Agent).where(Agent.id == task.agent_id))
                     src_agent = src_agent_r.scalar_one_or_none()
                     owner_id = src_agent.creator_id if src_agent else task.agent_id
                     chat_session = ChatSession(
@@ -237,22 +238,22 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                         participant_id=src_part.id if src_part else None,
                         peer_agent_id=session_peer_id,
                     )
-                    db.add(chat_session)
-                    await db.flush()
+                    query_dao.add(db, chat_session)
+                    await query_dao.flush(db)
 
                 session_id = str(chat_session.id)
-                src_agent_r2 = await db.execute(select(Agent).where(Agent.id == task.agent_id))
+                src_agent_r2 = await query_dao.execute(db, select(Agent).where(Agent.id == task.agent_id))
                 src_agent2 = src_agent_r2.scalar_one_or_none()
                 owner_id = src_agent2.creator_id if src_agent2 else task.agent_id
 
                 # Save reminder message
-                db.add(ChatMessage(
+                query_dao.add(db, ChatMessage(
                     agent_id=session_agent_id, user_id=owner_id,
                     role="user", content=reminder_msg,
                     conversation_id=session_id,
                     participant_id=src_part.id if src_part else None,
                 ))
-                await db.flush()
+                await query_dao.flush(db)
                 chat_session.last_message_at = datetime.now(timezone.utc)
                 sent = True
                 send_method = "agent消息"
@@ -261,7 +262,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 try:
                     reply = await _get_agent_reply(target_agent, reminder_msg, db)
                     if reply:
-                        db.add(ChatMessage(
+                        query_dao.add(db, ChatMessage(
                             agent_id=session_agent_id, user_id=owner_id,
                             role="assistant", content=reply,
                             conversation_id=session_id,
@@ -273,7 +274,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                     logger.warning(f"Target agent reply failed: {e}")
             else:
                 # 2. Fallback: find target as a Member in relationships
-                rel_result = await db.execute(
+                rel_result = await query_dao.execute(db, 
                     select(AgentRelationship)
                     .where(AgentRelationship.agent_id == task.agent_id)
                     .options(selectinload(AgentRelationship.member))
@@ -287,7 +288,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
 
                 if target_member:
                     # Try Feishu
-                    config_r = await db.execute(
+                    config_r = await query_dao.execute(db, 
                         select(ChannelConfig).where(
                             ChannelConfig.agent_id == task.agent_id,
                             ChannelConfig.channel_type == "feishu",
@@ -320,7 +321,7 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 log = TaskLog(task_id=task.id, content=f"📋 督办提醒已触发，目标：{target_name}")
             else:
                 log = TaskLog(task_id=task.id, content=f"⚠️ 提醒失败：未找到联系人 '{target_name}'")
-            db.add(log)
+            query_dao.add(db, log)
 
             # Log to AgentActivityLog for Activity tab visibility
             activity = AgentActivityLog(
@@ -330,8 +331,8 @@ async def _send_supervision_reminder(task: Task, agent_name: str):
                 detail_json={"task_id": str(task.id), "target": target_name, "sent": sent},
                 related_id=task.id,
             )
-            db.add(activity)
-            await db.commit()
+            query_dao.add(db, activity)
+            await query_dao.commit(db)
 
             logger.info(f"📋 Supervision reminder for '{task.title}' -> {target_name}, sent={sent}")
 
@@ -347,9 +348,9 @@ async def _supervision_tick():
     try:
         now = datetime.now(timezone.utc)
 
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Find active supervision tasks
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Task, Agent.name).join(Agent, Agent.id == Task.agent_id).where(
                     Task.type == "supervision",
                     Task.status.in_(["pending", "doing"]),
@@ -364,7 +365,7 @@ async def _supervision_tick():
             for task, agent_name in rows:
                 try:
                     # Get last reminder log for this task
-                    log_result = await db.execute(
+                    log_result = await query_dao.execute(db, 
                         select(TaskLog)
                         .where(TaskLog.task_id == task.id)
                         .order_by(TaskLog.created_at.desc())

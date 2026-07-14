@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 
 from loguru import logger
 
+from app.dao import query_dao
 from app.core.logging_config import new_trace_id
 from sqlalchemy import select, update, or_
 from app.services.storage import agent_storage_key, get_storage_backend
@@ -144,7 +145,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
     new_trace_id()
     await _HEARTBEAT_SEMAPHORE.acquire()
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from app.models.llm import LLMModel
         from app.services.llm import get_model_api_key
@@ -162,8 +162,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         model_max_output_tokens = None
         heartbeat_instruction = DEFAULT_HEARTBEAT_INSTRUCTION
 
-        async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
                 return
@@ -172,7 +172,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             if not model_id:
                 return
 
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+            model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == model_id))
             model = model_result.scalar_one_or_none()
             if not model:
                 return
@@ -226,7 +226,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             from app.models.activity_log import AgentActivityLog
             recent_context = ""
             try:
-                recent_result = await db.execute(
+                recent_result = await query_dao.execute(db, 
                     select(AgentActivityLog)
                     .where(AgentActivityLog.agent_id == agent_id)
                     .where(AgentActivityLog.action_type.in_(["chat_reply", "tool_call", "task_created", "task_updated"]))
@@ -248,7 +248,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             notif_lines = []
             try:
                 from app.models.notification import Notification
-                notif_result = await db.execute(
+                notif_result = await query_dao.execute(db, 
                     select(Notification).where(
                         Notification.agent_id == agent_id,
                         Notification.is_read == False,
@@ -267,7 +267,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             inbox_context = "\\n".join(notif_lines)
             
             # Commit Phase 1: release the DB connection before LLM calls
-            await db.commit()
+            await query_dao.commit(db)
         # DB session is now closed — connection returned to pool
 
         # ── Phase 2: LLM calls (no DB connection held) ──
@@ -317,9 +317,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             # Check token usage limit mid-loop (every 3 rounds)
             if round_i > 0 and round_i % 3 == 0:
                 if agent_id and _hb_unsaved_usage.total_tokens > 0:
-                    async with async_session() as db:
+                    async with query_dao.session() as db:
                         await record_token_usage(agent_id, _hb_unsaved_usage)
-                        await db.commit()
+                        await query_dao.commit(db)
                     _hb_unsaved_usage = TokenUsage()
                     from app.services.llm.caller import _get_agent_config
                     _, _token_limit_msg = await _get_agent_config(agent_id)
@@ -438,11 +438,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         await client.close()
 
         # ── Phase 3: Write results back to DB (short transaction) ──
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Record accumulated heartbeat token usage
             if _hb_unsaved_usage and _hb_unsaved_usage.total_tokens > 0:
                 await record_token_usage(agent_id, _hb_unsaved_usage)
-            await db.commit()
+            await query_dao.commit(db)
 
         # Log activity if not empty
         is_ok = "HEARTBEAT_OK" in reply.upper().replace(" ", "_") if reply else False
@@ -464,7 +464,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
 async def _heartbeat_tick():
     """One heartbeat tick: find agents due for heartbeat."""
-    from app.database import async_session
     from app.models.agent import Agent
     from app.services.audit_logger import write_audit_log
     from app.services.timezone_utils import get_agent_timezone_sync
@@ -474,8 +473,8 @@ async def _heartbeat_tick():
     now = datetime.now(timezone.utc)
 
     try:
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(Agent).where(
                     Agent.heartbeat_enabled == True,
                     Agent.status.in_(["running", "idle"]),
@@ -487,7 +486,7 @@ async def _heartbeat_tick():
             tenant_ids = {a.tenant_id for a in agents if a.tenant_id}
             tenants_by_id = {}
             if tenant_ids:
-                t_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+                t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id.in_(tenant_ids)))
                 tenants_by_id = {t.id: t for t in t_result.scalars().all()}
 
             triggered = 0
@@ -515,7 +514,7 @@ async def _heartbeat_tick():
                     continue
 
                 # Atomically claim this heartbeat slot before scheduling work.
-                claim_result = await db.execute(
+                claim_result = await query_dao.execute(db, 
                     update(Agent)
                     .where(
                         Agent.id == agent.id,
@@ -531,7 +530,7 @@ async def _heartbeat_tick():
                 if (claim_result.rowcount or 0) != 1:
                     continue
 
-                await db.commit()
+                await query_dao.commit(db)
 
                 # Fire heartbeat only after the DB claim has been committed.
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
@@ -542,7 +541,7 @@ async def _heartbeat_tick():
                 asyncio.create_task(_execute_heartbeat(agent.id))
                 triggered += 1
 
-            await db.commit()
+            await query_dao.commit(db)
 
             if triggered:
                 try:
@@ -573,10 +572,9 @@ async def _notify_oneshot_error(
     if not triggered_by_user_id:
         return
     try:
-        from app.database import async_session
         from app.models.notification import Notification
-        async with async_session() as db:
-            db.add(Notification(
+        async with query_dao.session() as db:
+            query_dao.add(db, Notification(
                 user_id=triggered_by_user_id,
                 type="system",
                 title=f"{agent_name} task failed",
@@ -585,7 +583,7 @@ async def _notify_oneshot_error(
                 ref_id=agent_id,
                 sender_name=agent_name,
             ))
-            await db.commit()
+            await query_dao.commit(db)
         logger.info(f"[Oneshot] Notified user {triggered_by_user_id} about {agent_name} failure")
     except Exception as e:
         logger.warning(f"[Oneshot] Failed to create error notification: {e}")
@@ -610,7 +608,6 @@ async def run_agent_oneshot(
     """
     new_trace_id()
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from app.models.llm import LLMModel
         from app.services.llm import get_model_api_key
@@ -627,8 +624,8 @@ async def run_agent_oneshot(
         model_max_output_tokens = None
         model_request_timeout = None
 
-        async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning(f"[Oneshot] Agent {agent_id} not found — aborting")
@@ -641,7 +638,7 @@ async def run_agent_oneshot(
                 await _notify_oneshot_error(triggered_by_user_id, agent_id, agent_name or str(agent_id), msg)
                 return ""
 
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+            model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == model_id))
             model = model_result.scalar_one_or_none()
             if not model:
                 msg = f"The configured LLM model ({model_id}) was not found. Please check Agent Settings."
@@ -664,7 +661,7 @@ async def run_agent_oneshot(
             from app.services.agent_context import build_agent_context
             static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent_role)
 
-            await db.commit()
+            await query_dao.commit(db)
         # DB session is now closed — connection returned to pool
 
         # ── Phase 2: LLM tool-call loop (no DB connection held) ────────────────
@@ -826,8 +823,8 @@ async def run_agent_oneshot(
             try:
                 from sqlalchemy import delete
                 from app.models.notification import Notification
-                async with async_session() as db:
-                    await db.execute(
+                async with query_dao.session() as db:
+                    await query_dao.execute(db, 
                         delete(Notification).where(
                             Notification.user_id == triggered_by_user_id,
                             Notification.ref_id == agent_id,
@@ -835,7 +832,7 @@ async def run_agent_oneshot(
                             Notification.title.contains("task failed")
                         )
                     )
-                    await db.commit()
+                    await query_dao.commit(db)
             except Exception as e:
                 logger.warning(f"[Oneshot] Failed to clear error notifications: {e}")
 

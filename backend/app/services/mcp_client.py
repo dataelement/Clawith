@@ -10,7 +10,6 @@ Reference: https://modelcontextprotocol.io/docs
 
 import httpx
 import json
-import asyncio
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from loguru import logger

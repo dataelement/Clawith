@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -115,7 +116,7 @@ async def configure_whatsapp_channel(
         raise HTTPException(status_code=422, detail="access_token, phone_number_id, and verify_token are required")
 
     extra_config = {"api_version": api_version}
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -129,7 +130,7 @@ async def configure_whatsapp_channel(
         existing.encrypt_key = app_secret or None
         existing.extra_config = extra_config
         existing.is_configured = True
-        await db.flush()
+        await query_dao.flush(db)
         return ChannelConfigOut.model_validate(existing)
 
     config = ChannelConfig(
@@ -142,8 +143,8 @@ async def configure_whatsapp_channel(
         extra_config=extra_config,
         is_configured=True,
     )
-    db.add(config)
-    await db.flush()
+    query_dao.add(db, config)
+    await query_dao.flush(db)
     return ChannelConfigOut.model_validate(config)
 
 
@@ -154,7 +155,7 @@ async def get_whatsapp_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -184,7 +185,7 @@ async def delete_whatsapp_channel(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -193,7 +194,7 @@ async def delete_whatsapp_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WhatsApp not configured")
-    await db.delete(config)
+    await query_dao.delete(db, config)
 
 
 @router.get("/channel/whatsapp/{agent_id}/webhook")
@@ -204,7 +205,7 @@ async def whatsapp_verify_webhook(
     hub_challenge: str = Query("", alias="hub.challenge"),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -226,7 +227,7 @@ async def whatsapp_event_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -270,9 +271,8 @@ async def whatsapp_event_webhook(
                 from app.models.audit import ChatMessage
                 from app.services.channel_session import find_or_create_channel_session
                 from app.services.channel_user_service import channel_user_service
-                from app.database import async_session as _async_session
 
-                agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 if not agent_obj:
                     continue
@@ -296,7 +296,7 @@ async def whatsapp_event_webhook(
                 )
                 session_conv_id = str(sess.id)
                 ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
-                history_r = await db.execute(
+                history_r = await query_dao.execute(db, 
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
                     .order_by(ChatMessage.created_at.desc())
@@ -304,13 +304,13 @@ async def whatsapp_event_webhook(
                 )
                 history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
-                db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+                query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
                 sess.last_message_at = datetime.now(timezone.utc)
 
                 # Pre-load agent/model before releasing connection
                 _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
 
-                await db.commit()
+                await query_dao.commit(db)
                 await db.close()
                 # ── Phase 1 complete: release connection before slow LLM call ──
 
@@ -329,16 +329,16 @@ async def whatsapp_event_webhook(
 
                 try:
                     await _send_whatsapp_messages(config, sender_phone, reply_text)
-                    async with _async_session() as _save_db:
-                        _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+                    async with query_dao.session() as _save_db:
+                        query_dao.add(_save_db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
                         from app.models.chat_session import ChatSession
-                        _sess_r = await _save_db.execute(
+                        _sess_r = await query_dao.execute(_save_db, 
                             select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
                         )
                         _sess_fresh = _sess_r.scalar_one_or_none()
                         if _sess_fresh:
                             _sess_fresh.last_message_at = datetime.now(timezone.utc)
-                        await _save_db.commit()
+                        await query_dao.commit(_save_db)
                 except Exception as exc:
                     logger.exception(f"[WhatsApp] Send failed for agent {agent_id}: {exc}")
 

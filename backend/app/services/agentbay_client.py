@@ -18,6 +18,7 @@ class GenericExtractSchema(RootModel[Any]):
 
 
 from agentbay import AgentBay, CreateSessionParams
+from app.dao import query_dao
 from app.core.logging_config import _disable_agentbay_logger_override, configure_logging
 
 _disable_agentbay_logger_override()
@@ -692,13 +693,12 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
     from app.models.channel_config import ChannelConfig
     from app.models.tool import Tool
     from sqlalchemy import select
-    from app.database import async_session
     from app.core.security import decrypt_data
     from app.config import get_settings
 
     async def _fetch(session):
         # 1) Check per-agent ChannelConfig first (highest priority)
-        result = await session.execute(
+        result = await query_dao.execute(session, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "agentbay",
@@ -725,7 +725,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
         # tool with an empty config (e.g. agentbay_computer_screenshot), which
         # would silently return None even when a key IS configured.
         candidate_tools: list[Tool] = []
-        tool_result = await session.execute(
+        tool_result = await query_dao.execute(session, 
             select(Tool).where(
                 Tool.name == "agentbay_browser_navigate",
                 Tool.enabled == True,
@@ -737,7 +737,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
 
         # Also scan all agentbay tools in case the key was stored on a
         # different category representative by an older UI.
-        all_result = await session.execute(
+        all_result = await query_dao.execute(session, 
             select(Tool).where(
                 Tool.category == "agentbay",
                 Tool.enabled == True,
@@ -764,7 +764,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
 
     if db:
         return await _fetch(db)
-    async with async_session() as session:
+    async with query_dao.session() as session:
         return await _fetch(session)
 
 
@@ -885,7 +885,6 @@ async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
     exist or injection fails, it logs a warning but does not block the session.
     """
     import json
-    from app.database import async_session as async_session_factory
     from app.models.agent_credential import AgentCredential
     from sqlalchemy import select
     from app.core.security import decrypt_data
@@ -895,8 +894,8 @@ async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
 
     # Fetch active credentials with stored cookies
     try:
-        async with async_session_factory() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(AgentCredential).where(
                     AgentCredential.agent_id == agent_id,
                     AgentCredential.status == "active",
@@ -1016,11 +1015,11 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
             try:
                 from datetime import timezone as tz
                 now = datetime.now(tz.utc)
-                async with async_session_factory() as db:
+                async with query_dao.session() as db:
                     for cred in credentials:
                         cred.last_injected_at = now
-                        db.add(cred)
-                    await db.commit()
+                        query_dao.add(db, cred)
+                    await query_dao.commit(db)
             except Exception as e:
                 logger.warning(f"[AgentBay] Failed to update last_injected_at: {e}")
         else:

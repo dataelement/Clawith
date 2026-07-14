@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.trigger import AgentTrigger
 from app.models.trigger_execution import TriggerExecution
 
@@ -32,12 +33,12 @@ async def enqueue_trigger_execution(
         payload_text=payload_text[:8000],
         scheduled_at=datetime.now(timezone.utc),
     )
-    db.add(execution)
+    query_dao.add(db, execution)
     try:
-        await db.commit()
+        await query_dao.commit(db)
         return execution, True
     except IntegrityError:
-        await db.rollback()
+        await query_dao.rollback(db)
         return None, False
 
 

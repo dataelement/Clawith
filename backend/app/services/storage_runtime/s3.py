@@ -8,7 +8,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from loguru import logger
 
 from app.services.storage_runtime.base import (
     ConditionalWriteResult,

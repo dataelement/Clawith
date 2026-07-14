@@ -12,7 +12,7 @@ from datetime import date
 
 from sqlalchemy import or_, select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.okr import OKRSettings
@@ -46,10 +46,10 @@ def _agent_request_message(target_name: str, report_day: date) -> str:
 
 async def _cleanup_legacy_daily_reply_triggers(okr_agent_id: uuid.UUID) -> None:
     """Disable legacy daily reply triggers from previous implementations."""
-    async with async_session() as db:
+    async with query_dao.session() as db:
         from app.models.trigger import AgentTrigger
 
-        trigger_rows = await db.execute(
+        trigger_rows = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.agent_id == okr_agent_id,
                 (
@@ -60,13 +60,13 @@ async def _cleanup_legacy_daily_reply_triggers(okr_agent_id: uuid.UUID) -> None:
         )
         for trigger in trigger_rows.scalars().all():
             trigger.is_enabled = False
-        await db.commit()
+        await query_dao.commit(db)
 
 
 async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
     """Send daily collection requests to tracked relationships."""
-    async with async_session() as db:
-        settings_result = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
+    async with query_dao.session() as db:
+        settings_result = await query_dao.execute(db, select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
         settings = settings_result.scalar_one_or_none()
         if not settings or not settings.enabled:
             raise ValueError("OKR is not enabled for this tenant")
@@ -75,17 +75,17 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         if not settings.okr_agent_id:
             raise ValueError("OKR Agent not found for this tenant")
 
-        okr_agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        okr_agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == settings.okr_agent_id))
         okr_agent = okr_agent_result.scalar_one_or_none()
         if not okr_agent:
             raise ValueError("OKR Agent not found for this tenant")
 
-        await db.commit()
+        await query_dao.commit(db)
 
     await _cleanup_legacy_daily_reply_triggers(okr_agent.id)
 
-    async with async_session() as db:
-        rel_result = await db.execute(
+    async with query_dao.session() as db:
+        rel_result = await query_dao.execute(db, 
             select(AgentRelationship, OrgMember)
             .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
             .where(
@@ -95,7 +95,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         )
         rel_rows = rel_result.all()
 
-        agent_rel_result = await db.execute(
+        agent_rel_result = await query_dao.execute(db, 
             select(Agent)
             .join(
                 AgentAgentRelationship,
@@ -114,7 +114,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         for _, org_member in rel_rows:
             member_user_ids[org_member.id] = org_member.user_id
             if org_member.user_id:
-                user_result = await db.execute(
+                user_result = await query_dao.execute(db, 
                     select(User.display_name).where(User.id == org_member.user_id)
                 )
                 user_display_name = user_result.scalar_one_or_none()
@@ -129,7 +129,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
                     patterns.append(f"feishu_p2p_{org_member.external_id}")
                     patterns.append(f"dingtalk_p2p_{org_member.external_id}")
                 if patterns:
-                    sess_result = await db.execute(
+                    sess_result = await query_dao.execute(db, 
                         select(ChatSession.user_id).where(
                             ChatSession.agent_id == okr_agent.id,
                             or_(*[ChatSession.external_conv_id == p for p in patterns]),
@@ -138,7 +138,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
                     found = sess_result.scalar_one_or_none()
                     if found:
                         member_user_ids[org_member.id] = found
-                        user_result = await db.execute(
+                        user_result = await query_dao.execute(db, 
                             select(User.display_name).where(User.id == found)
                         )
                         user_display_name = user_result.scalar_one_or_none()

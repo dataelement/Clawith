@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
 from app.services.trigger_runtime import (
@@ -27,8 +27,8 @@ async def resolve_trigger_delivery_target(agent: Agent, triggers: list[AgentTrig
         a2a_sid = cfg.get("_a2a_session_id")
         if a2a_sid:
             try:
-                async with async_session() as db:
-                    session = await db.get(ChatSession, uuid.UUID(a2a_sid))
+                async with query_dao.session() as db:
+                    session = await query_dao.get(db, ChatSession, uuid.UUID(a2a_sid))
                     if not session:
                         return None
                     return {
@@ -55,8 +55,8 @@ async def resolve_trigger_delivery_target(agent: Agent, triggers: list[AgentTrig
 
     if origin_source_channel == "agent" and origin_session_id:
         try:
-            async with async_session() as db:
-                session = await db.get(ChatSession, uuid.UUID(origin_session_id))
+            async with query_dao.session() as db:
+                session = await query_dao.get(db, ChatSession, uuid.UUID(origin_session_id))
                 if not session:
                     return None
                 return {
@@ -70,9 +70,9 @@ async def resolve_trigger_delivery_target(agent: Agent, triggers: list[AgentTrig
 
     if origin_source_channel != "trigger" and origin_user_id:
         try:
-            async with async_session() as db:
+            async with query_dao.session() as db:
                 primary = await ensure_primary_platform_session(db, agent.id, uuid.UUID(origin_user_id))
-                await db.commit()
+                await query_dao.commit(db)
                 return {
                     "kind": "primary_user_session",
                     "session_id": str(primary.id),
@@ -99,8 +99,8 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
             for t in triggers
             if (t.config or {}).get("_execution_id")
         ]
-        async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent or agent.is_expired:
                 if execution_ids:
@@ -112,7 +112,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                 if execution_ids:
                     await mark_trigger_executions_failed(execution_ids, "Agent has no LLM model configured")
                 return
-            result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+            result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.primary_model_id))
             model = result.scalar_one_or_none()
             if not model or not model.enabled:
                 logger.warning(f"Agent {agent.name}'s model is unavailable, skipping trigger invocation")
@@ -173,7 +173,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
             )
 
             title = f"🤖 内心独白：{', '.join(trigger_names)}"
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
             agent_participant = result.scalar_one_or_none()
@@ -185,11 +185,11 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                 source_channel="trigger",
                 title=title[:200],
             )
-            db.add(session)
-            await db.flush()
+            query_dao.add(db, session)
+            await query_dao.flush(db)
             session_id = session.id
             messages = [{"role": "user", "content": trigger_context}]
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 conversation_id=str(session_id),
                 role="user",
@@ -197,7 +197,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
             ))
-            await db.commit()
+            await query_dao.commit(db)
             agent_participant_id = agent_participant.id if agent_participant else None
 
         collected_content: list[str] = []
@@ -216,9 +216,9 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                     if result_text.startswith("✅"):
                         delivered_platform_message_via_tool = True
 
-                async with async_session() as _tc_db:
+                async with query_dao.session() as _tc_db:
                     if data["status"] == "running":
-                        _tc_db.add(ChatMessage(
+                        query_dao.add(_tc_db, ChatMessage(
                             agent_id=agent_id,
                             conversation_id=str(session_id),
                             role="tool_call",
@@ -228,7 +228,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                         ))
                     elif data["status"] == "done":
                         result_str = str(data.get("result", ""))[:2000]
-                        _tc_db.add(ChatMessage(
+                        query_dao.add(_tc_db, ChatMessage(
                             agent_id=agent_id,
                             conversation_id=str(session_id),
                             role="tool_call",
@@ -236,7 +236,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                             user_id=agent.creator_id,
                             participant_id=agent_participant_id,
                         ))
-                    await _tc_db.commit()
+                    await query_dao.commit(_tc_db)
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
 
@@ -260,12 +260,12 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
             current_user_name_override=from_agent_name,
         )
 
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
             )
             agent_participant = result.scalar_one_or_none()
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 conversation_id=str(session_id),
                 role="assistant",
@@ -273,18 +273,18 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
             ))
-            await db.commit()
+            await query_dao.commit(db)
 
         final_reply = reply or "".join(collected_content)
         for t in triggers:
             a2a_sid = (t.config or {}).get("_a2a_session_id")
             if a2a_sid and final_reply:
                 try:
-                    async with async_session() as db:
+                    async with query_dao.session() as db:
                         from app.models.participant import Participant as _P
-                        _p_r = await db.execute(select(_P).where(_P.type == "agent", _P.ref_id == agent_id))
+                        _p_r = await query_dao.execute(db, select(_P).where(_P.type == "agent", _P.ref_id == agent_id))
                         _p = _p_r.scalar_one_or_none()
-                        db.add(ChatMessage(
+                        query_dao.add(db, ChatMessage(
                             agent_id=agent_id,
                             conversation_id=a2a_sid,
                             role="assistant",
@@ -293,11 +293,11 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                             participant_id=_p.id if _p else None,
                         ))
                         from app.models.chat_session import ChatSession as _CS
-                        _cs_r = await db.execute(select(_CS).where(_CS.id == uuid.UUID(a2a_sid)))
+                        _cs_r = await query_dao.execute(db, select(_CS).where(_CS.id == uuid.UUID(a2a_sid)))
                         _cs = _cs_r.scalar_one_or_none()
                         if _cs:
                             _cs.last_message_at = datetime.now(timezone.utc)
-                        await db.commit()
+                        await query_dao.commit(db)
                 except Exception as e:
                     logger.warning(f"[A2A] Failed to save reply to A2A session {a2a_sid}: {e}")
                 break
@@ -325,17 +325,17 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                 target_session_id = delivery_target["session_id"]
                 owner_user_id = delivery_target.get("owner_user_id")
 
-                async with async_session() as db:
+                async with query_dao.session() as db:
                     from app.api.websocket import maybe_mark_session_read_for_active_viewer
                     from app.models.chat_session import ChatSession
-                    db.add(ChatMessage(
+                    query_dao.add(db, ChatMessage(
                         agent_id=agent_id,
                         conversation_id=target_session_id,
                         role="assistant",
                         content=notification,
                         user_id=agent.creator_id,
                     ))
-                    session_row = await db.get(ChatSession, uuid.UUID(target_session_id))
+                    session_row = await query_dao.get(db, ChatSession, uuid.UUID(target_session_id))
                     if session_row:
                         session_row.last_message_at = datetime.now(timezone.utc)
                     if owner_user_id:
@@ -345,7 +345,7 @@ async def invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTri
                             session_id=target_session_id,
                             user_id=uuid.UUID(owner_user_id),
                         )
-                    await db.commit()
+                    await query_dao.commit(db)
 
                 if owner_user_id:
                     await ws_manager.send_to_user(

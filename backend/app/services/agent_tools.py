@@ -12,7 +12,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import fnmatch
 import json
 import multiprocessing as mp
@@ -31,15 +31,16 @@ from loguru import logger
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 
-from app.database import async_session
+from app.dao import query_dao
+async_session = query_dao.session
 from app.models.task import Task
 from app.models.agent import Agent as AgentModel
+from app.models.llm import LLMModel
 from app.models.org import AgentRelationship, OrgMember, AgentAgentRelationship
-from app.models.audit import ChatMessage, AuditLog
+from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
 from app.models.user import User as UserModel
-from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.services.document_conversion import (
@@ -57,7 +58,6 @@ from app.services.workspace_collaboration import (
     delete_workspace_file,
     move_workspace_path,
     normalize_workspace_path,
-    read_text_if_exists,
     write_workspace_file,
 )
 from app.services.storage import get_storage_backend, normalize_storage_key
@@ -67,11 +67,8 @@ from app.core.permissions import evaluate_agent_relationship_status, evaluate_hu
 from app.services.access_relationships import ensure_access_granted_platform_relationships
 from app.config import get_settings
 from app.services.llm.finish import (
-    FINISH_PROTOCOL_REMINDER,
     FINISH_TOOL_DEFINITION,
     FINISH_TOOL_NAME,
-    find_finish_call,
-    parse_tool_arguments,
 )
 
 
@@ -172,12 +169,12 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
     async with async_session() as db:
         agent_tenant_id = None
         if agent_id:
-            tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            tenant_r = await query_dao.execute(db, select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
             agent_tenant_id = tenant_r.scalar_one_or_none()
 
         # 1. Try per-agent + global config together
         if agent_id:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTool.config, Tool.config, Tool.config_schema, Tool.source, Tool.name)
                 .join(Tool, AgentTool.tool_id == Tool.id)
                 .where(AgentTool.agent_id == agent_id, Tool.name == tool_name)
@@ -199,7 +196,7 @@ async def _get_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Opt
                     return merged
 
         # 2. Fallback to global config only
-        result = await db.execute(select(Tool).where(Tool.name == tool_name))
+        result = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
         tool = result.scalar_one_or_none()
         if tool:
             tenant_config = {}
@@ -2081,7 +2078,7 @@ async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
     try:
         from app.models.channel_config import ChannelConfig
         async with async_session() as db:
-            r = await db.execute(
+            r = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "feishu",
@@ -2098,7 +2095,7 @@ async def _agent_has_any_channel(agent_id: uuid.UUID) -> bool:
     try:
         from app.models.channel_config import ChannelConfig
         async with async_session() as db:
-            r = await db.execute(
+            r = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.is_configured == True,
@@ -2170,13 +2167,13 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
         from app.models.tenant import Tenant
         from app.models.agent import Agent as AgentModel
         async with async_session() as _flag_db:
-            _ag_r = await _flag_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            _ag_r = await query_dao.execute(_flag_db, select(AgentModel).where(AgentModel.id == agent_id))
             _agent = _ag_r.scalar_one_or_none()
             _tid = _agent.tenant_id if _agent else None
             agent_tenant_id = _tid
             is_system_agent = bool(_agent and _agent.is_system)
             if _tid:
-                _t_r = await _flag_db.execute(select(Tenant).where(Tenant.id == _tid))
+                _t_r = await query_dao.execute(_flag_db, select(Tenant).where(Tenant.id == _tid))
                 _tenant = _t_r.scalar_one_or_none()
                 if _tenant:
                     _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
@@ -2191,7 +2188,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
         async with async_session() as db:
             # Get agent-specific assignments
-            agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
+            agent_tools_r = await query_dao.execute(db, select(AgentTool).where(AgentTool.agent_id == agent_id))
             assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
             assigned_tool_ids = [uuid.UUID(tool_id) for tool_id in assignments]
 
@@ -2206,7 +2203,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 visible_clauses.append(Tool.id.in_(assigned_tool_ids))
 
             # Get all tools visible within this agent's tenant boundary.
-            all_tools_r = await db.execute(
+            all_tools_r = await query_dao.execute(db, 
                 select(Tool).where(Tool.enabled == True, or_(*visible_clauses))
             )
             all_tools = all_tools_r.scalars().all()
@@ -2339,7 +2336,7 @@ async def initialize_agent_workspace(agent_id: uuid.UUID) -> None:
         soul_content = "# Personality\n\n_Describe your role and responsibilities._\n"
         try:
             async with async_session() as db:
-                result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                result = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                 agent = result.scalar_one_or_none()
                 if agent and agent.role_description:
                     soul_content = f"# Personality\n\n{agent.role_description}\n"
@@ -2465,7 +2462,7 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
 
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.desc())
             )
             tasks = result.scalars().all()
@@ -2597,7 +2594,7 @@ async def _get_agent_tenant_id(agent_id: uuid.UUID) -> str | None:
     try:
         async with async_session() as db:
 
-            r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+            r = await query_dao.execute(db, select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
 
             tenant_id = r.scalar_one_or_none()
             if tenant_id:
@@ -2672,7 +2669,7 @@ async def _execute_workspace_mutation(
                 session_id=session_id,
                 enforce_human_lock=True,
             )
-            await _wdb.commit()
+            await query_dao.commit(_wdb)
         return (
             f"✅ Written to {write_result.path} ({len(content)} chars)"
             if write_result.ok
@@ -2705,7 +2702,7 @@ async def _execute_workspace_mutation(
                 enforce_human_lock=True,
                 overwrite=bool(arguments.get("overwrite", False)),
             )
-            await _wdb.commit()
+            await query_dao.commit(_wdb)
         return f"✅ {move_result.message}" if move_result.ok else f"❌ {move_result.message}"
 
     if tool_name == "delete_file":
@@ -2725,7 +2722,7 @@ async def _execute_workspace_mutation(
                 session_id=session_id,
                 enforce_human_lock=True,
             )
-            await _wdb.commit()
+            await query_dao.commit(_wdb)
         return f"✅ Deleted {delete_result.path}" if delete_result.ok else f"❌ {delete_result.message}"
 
     if tool_name == "edit_file":
@@ -2770,7 +2767,7 @@ async def _execute_workspace_mutation(
                 session_id=session_id,
                 enforce_human_lock=True,
             )
-            await _wdb.commit()
+            await query_dao.commit(_wdb)
         replaced = count if replace_all else 1
         return (
             f"✅ Replaced {replaced} occurrence(s) in {write_result.path}"
@@ -2884,13 +2881,13 @@ async def execute_tool(
             from app.services.autonomy_service import autonomy_service
             from app.models.agent import Agent as AgentModel
             async with async_session() as _adb:
-                _ar = await _adb.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                _ar = await query_dao.execute(_adb, select(AgentModel).where(AgentModel.id == agent_id))
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
                     result_check = await autonomy_service.check_and_enforce(
                         _adb, _agent, action_type, {"tool": tool_name, "args": str(arguments)[:200], "requested_by": str(user_id)}
                     )
-                    await _adb.commit()
+                    await query_dao.commit(_adb)
                     if not result_check.get("allowed"):
                         level = result_check.get("level", "L3")
                         logger.info(f"[Autonomy] Tool {tool_name} denied, level: {level}")
@@ -3345,14 +3342,14 @@ async def execute_tool(
             try:
                 async with async_session() as _err_db:
                     from app.models.audit import ChatMessage as _CM
-                    _err_db.add(_CM(
+                    query_dao.add(_err_db, _CM(
                         agent_id=agent_id,
                         user_id=user_id,
                         role="assistant",
                         content=f"⚠️ [系统提示] 数字员工工具调用失败！\n工具名: `{tool_name}`\n参数: `{json.dumps(arguments, ensure_ascii=False)}`\n错误信息: {result}",
                         conversation_id=session_id,
                     ))
-                    await _err_db.commit()
+                    await query_dao.commit(_err_db)
             except Exception as _e:
                 logger.warning(f"Failed to save tool error message to session: {_e}")
 
@@ -3367,8 +3364,6 @@ async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str
 
     Config resolution priority: Agent config > Company config > Defaults.
     """
-    import httpx
-    import re
 
     query = arguments.get("query", "")
     if not query:
@@ -3431,11 +3426,10 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
 async def _get_jina_api_key() -> str:
     """Read Jina API key from DB system_settings first, then fall back to env."""
     try:
-        from app.database import async_session
         from app.models.system_settings import SystemSetting
         from sqlalchemy import select
         async with async_session() as db:
-            result = await db.execute(select(SystemSetting).where(SystemSetting.key == "jina_api_key"))
+            result = await query_dao.execute(db, select(SystemSetting).where(SystemSetting.key == "jina_api_key"))
             setting = result.scalar_one_or_none()
             if setting and setting.value.get("api_key"):
                 return setting.value["api_key"]
@@ -3496,7 +3490,6 @@ async def _jina_search(arguments: dict) -> str:
 async def _jina_read(arguments: dict) -> str:
     """Read web page via Jina AI Reader API (r.jina.ai). Returns clean structured markdown."""
     import httpx
-    from app.config import get_settings
 
     url = arguments.get("url", "").strip()
     if not url:
@@ -4071,7 +4064,7 @@ async def _send_file_to_recipient(
 
     async with async_session() as db:
         # Load all channel configs for this agent
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ChannelConfig).where(ChannelConfig.agent_id == agent_id)
         )
         configs = {c.channel_type: c for c in result.scalars().all()}
@@ -4111,7 +4104,7 @@ async def _resolve_feishu_recipient(agent_id: uuid.UUID, config, member_name: st
     from app.models.org import AgentRelationship
     from sqlalchemy.orm import selectinload
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(AgentRelationship)
             .where(AgentRelationship.agent_id == agent_id)
             .options(selectinload(AgentRelationship.member))
@@ -4244,14 +4237,14 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
         async with async_session() as db:
             # Primary lookup: clawith-prefixed name (e.g.
             # mcp_shibui_finance_unlock_financial_analysis).
-            result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
+            result = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             tool = result.scalar_one_or_none()
 
             # Fallback: LLM sometimes drops the mcp_<server>_ prefix and calls
             # the bare MCP-side tool name (e.g. unlock_financial_analysis).
             # Resolve by mcp_tool_name when the prefixed name doesn't match.
             if not tool:
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(Tool).where(Tool.mcp_tool_name == tool_name, Tool.type == "mcp")
                 )
                 tool = result.scalar_one_or_none()
@@ -4263,7 +4256,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> s
             # Load per-agent config override
             agent_config = {}
             if tool and agent_id:
-                at_r = await db.execute(
+                at_r = await query_dao.execute(db, 
                     select(AgentTool).where(
                         AgentTool.agent_id == agent_id,
                         AgentTool.tool_id == tool.id,
@@ -4337,7 +4330,7 @@ async def _execute_via_smithery_connect(mcp_url: str, tool_name: str, arguments:
         try:
             from app.models.tool import Tool
             async with async_session() as db:
-                r = await db.execute(select(Tool).where(Tool.name == "discover_resources"))
+                r = await query_dao.execute(db, select(Tool).where(Tool.name == "discover_resources"))
                 disc_tool = r.scalar_one_or_none()
                 if disc_tool and disc_tool.config:
                     namespace = namespace or disc_tool.config.get("smithery_namespace")
@@ -4485,11 +4478,11 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
                 from app.models.tool import Tool, AgentTool
                 async with async_session() as db:
                     # Update all MCP tools for this server URL
-                    r = await db.execute(
+                    r = await query_dao.execute(db, 
                         select(Tool).where(Tool.mcp_server_url == mcp_url, Tool.type == "mcp")
                     )
                     for tool in r.scalars().all():
-                        at_r = await db.execute(
+                        at_r = await query_dao.execute(db, 
                             select(AgentTool).where(
                                 AgentTool.agent_id == agent_id,
                                 AgentTool.tool_id == tool.id,
@@ -4498,7 +4491,7 @@ async def _smithery_auto_recover(api_key: str, mcp_url: str, namespace: str, con
                         at = at_r.scalar_one_or_none()
                         if at:
                             at.config = {**(at.config or {}), **new_config}
-                    await db.commit()
+                    await query_dao.commit(db)
             except Exception:
                 pass  # Non-critical — connection may still work
 
@@ -5747,9 +5740,9 @@ async def _manage_tasks(
                 supervision_channel=args.get("supervision_channel", "feishu"),
                 remind_schedule=args.get("remind_schedule"),
             )
-            db.add(task)
-            await db.commit()
-            await db.refresh(task)
+            query_dao.add(db, task)
+            await query_dao.commit(db)
+            await query_dao.refresh(db, task)
 
             if task_type == "todo":
                 # Trigger auto-execution for todo tasks
@@ -5766,7 +5759,7 @@ async def _manage_tasks(
                 return f"✅ Supervision task created: '{title}' — will remind {target} on schedule ({schedule})"
 
         elif action == "update_status":
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%"))
             )
             task = result.scalars().first()
@@ -5776,22 +5769,22 @@ async def _manage_tasks(
             task.status = args["status"]
             if args["status"] == "done":
                 task.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await query_dao.commit(db)
             await _sync_tasks_to_file(agent_id, ws)
             return f"✅ Updated '{task.title}' from {old} to {args['status']}"
 
         elif action == "delete":
             from sqlalchemy import delete as sa_delete
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Task).where(Task.agent_id == agent_id, Task.title.ilike(f"%{title}%"))
             )
             task = result.scalars().first()
             if not task:
                 return f"No task found matching '{title}'"
             task_title = task.title
-            await db.execute(sa_delete(TaskLog).where(TaskLog.task_id == task.id))
-            await db.delete(task)
-            await db.commit()
+            await query_dao.execute(db, sa_delete(TaskLog).where(TaskLog.task_id == task.id))
+            await query_dao.delete(db, task)
+            await query_dao.commit(db)
             await _sync_tasks_to_file(agent_id, ws)
             return f"✅ Task deleted: {task_title}"
 
@@ -5815,14 +5808,57 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 
         async with async_session() as db:
             # ── Shortcut: if caller provided user_id directly ──
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
             )
             config = config_result.scalar_one_or_none()
             if not config:
                 return "❌ This agent has no Feishu channel configured"
+
+            target_member = None
+
+            async def _save_outgoing_to_feishu_session(feishu_user_id: str):
+                """Save the outgoing message to the Feishu P2P chat session."""
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+
+                    if target_member is None:
+                        return
+
+                    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
+                    agent_obj = agent_r.scalar_one_or_none()
+
+                    platform_user = await get_platform_user_by_org_member(
+                        db=db,
+                        org_member=target_member,
+                        agent_tenant_id=agent_obj.tenant_id if agent_obj else None,
+                    )
+                    user_id = platform_user.id
+
+                    ext_conv_id = f"feishu_p2p_{feishu_user_id}"
+                    sess = await find_or_create_channel_session(
+                        db=db,
+                        agent_id=agent_id,
+                        user_id=user_id,
+                        external_conv_id=ext_conv_id,
+                        source_channel="feishu",
+                        first_message_title=f"[Agent → {member_name or feishu_user_id}]",
+                    )
+                    query_dao.add(db, ChatMessage(
+                        agent_id=agent_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=message_text,
+                        conversation_id=str(sess.id),
+                    ))
+                    sess.last_message_at = _dt.now(_tz.utc)
+                    await query_dao.commit(db)
+                    logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (user_id: {feishu_user_id})")
+                except Exception as e:
+                    logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
+
             if direct_user_id and not member_name:
-                rel_result = await db.execute(
+                rel_result = await query_dao.execute(db, 
                     select(AgentRelationship)
                     .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
                     .where(
@@ -5838,6 +5874,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 status_info = await evaluate_human_relationship_status(db, direct_rel)
                 if status_info["access_status"] != "active":
                     return f"❌ Relationship to recipient is not active ({status_info['access_status_reason'] or 'restricted'})"
+                target_member = direct_rel.member
                 try:
                     resp = await feishu_service.send_message(
                         config.app_id, config.app_secret,
@@ -5855,14 +5892,13 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     return f"❌ 飞书发送失败：{user_id_err.user_message}"
 
             # Find the relationship member by name
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentRelationship)
                 .where(AgentRelationship.agent_id == agent_id)
                 .options(selectinload(AgentRelationship.member))
             )
             rels = result.scalars().all()
 
-            target_member = None
             for r in rels:
                 status_info = await evaluate_human_relationship_status(db, r)
                 if r.member and status_info["access_status"] == "active" and r.member.name == member_name:
@@ -5886,46 +5922,6 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     receive_id=receive_id, msg_type="text",
                     content=content, receive_id_type=id_type,
                 )
-
-            async def _save_outgoing_to_feishu_session(feishu_user_id: str):
-                """Save the outgoing message to the Feishu P2P chat session."""
-                try:
-                    from datetime import datetime as _dt, timezone as _tz
-
-
-                    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                    agent_obj = agent_r.scalar_one_or_none()
-                    creator_id = agent_obj.creator_id if agent_obj else agent_id
-
-                    # Get or create platform user from OrgMember (unified logic)
-                    platform_user = await get_platform_user_by_org_member(
-                        db=db,
-                        org_member=target_member,
-                        agent_tenant_id=agent_obj.tenant_id if agent_obj else None,
-                    )
-                    user_id = platform_user.id
-
-                    ext_conv_id = f"feishu_p2p_{feishu_user_id}"
-                    sess = await find_or_create_channel_session(
-                        db=db,
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        external_conv_id=ext_conv_id,
-                        source_channel="feishu",
-                        first_message_title=f"[Agent → {member_name or feishu_user_id}]",
-                    )
-                    db.add(ChatMessage(
-                        agent_id=agent_id,
-                        user_id=user_id,
-                        role="assistant",
-                        content=message_text,
-                        conversation_id=str(sess.id),
-                    ))
-                    sess.last_message_at = _dt.now(_tz.utc)
-                    await db.commit()
-                    logger.info(f"[Feishu] Saved outgoing message to session {sess.id} (user_id: {feishu_user_id})")
-                except Exception as e:
-                    logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
 
             try:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.external_id, "user_id")
@@ -5967,7 +5963,7 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
     try:
         async with async_session() as db:
             # 1. Find target member from relationships with provider info (only active members)
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentRelationship, OrgMember, IdentityProvider)
                 .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
                 .outerjoin(IdentityProvider, OrgMember.provider_id == IdentityProvider.id)
@@ -6019,7 +6015,7 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
                 # still point at a platform User. In that case, transparently route to the
                 # platform message tool so model tool-choice mistakes do not break delivery.
                 if target_member.user_id:
-                    user_result = await db.execute(
+                    user_result = await query_dao.execute(db, 
                         select(UserModel).where(UserModel.id == target_member.user_id)
                     )
                     platform_user = user_result.scalar_one_or_none()
@@ -6087,7 +6083,7 @@ async def _send_dingtalk_message(
     try:
         async with async_session() as db:
             # 1. Get DingTalk channel config
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "dingtalk",
@@ -6123,7 +6119,7 @@ async def _send_dingtalk_message(
             if result.get("errcode") == 0:
                 try:
                     # Get agent tenant context
-                    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                     agent_obj = agent_r.scalar_one_or_none()
 
 
@@ -6146,7 +6142,7 @@ async def _send_dingtalk_message(
                         first_message_title=message_text[:30],
                     )
                     # 3. Save assistant message
-                    db.add(ChatMessage(
+                    query_dao.add(db, ChatMessage(
                         agent_id=agent_id,
                         user_id=platform_user.id,
                         role="assistant",
@@ -6154,7 +6150,7 @@ async def _send_dingtalk_message(
                         conversation_id=str(sess.id),
                     ))
                     sess.last_message_at = datetime.now(timezone.utc)
-                    await db.commit()
+                    await query_dao.commit(db)
                     logger.info(f"[DingTalk] Proactive message saved to session {sess.id}")
                 except Exception as ex:
                     logger.error(f"[DingTalk] Failed to save proactive message to session: {ex}")
@@ -6183,7 +6179,7 @@ async def _send_wecom_message(
     try:
         async with async_session() as db:
             # 1. Get WeCom channel config
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "wecom",
@@ -6216,7 +6212,7 @@ async def _send_wecom_message(
                 try:
 
                     # Get agent tenant context
-                    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                     agent = agent_r.scalar_one_or_none()
 
 
@@ -6236,7 +6232,7 @@ async def _send_wecom_message(
                         source_channel="wecom",
                         first_message_title=message_text[:30],
                     )
-                    db.add(ChatMessage(
+                    query_dao.add(db, ChatMessage(
                         agent_id=agent_id,
                         user_id=platform_user.id,
                         role="assistant",
@@ -6244,7 +6240,7 @@ async def _send_wecom_message(
                         conversation_id=str(sess.id),
                     ))
                     sess.last_message_at = datetime.now(timezone.utc)
-                    await db.commit()
+                    await query_dao.commit(db)
                     logger.info(f"[WeCom] Proactive message saved to session {sess.id}")
                 except Exception as ex:
                     logger.error(f"[WeCom] Failed to save proactive message to session: {ex}")
@@ -6272,7 +6268,7 @@ async def _send_slack_message(
 
     try:
         async with async_session() as db:
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "slack",
@@ -6309,7 +6305,7 @@ async def _send_slack_message(
             await _send_slack_messages(bot_token, channel_id, message_text)
 
             try:
-                agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 platform_user = await get_platform_user_by_org_member(
                     db=db,
@@ -6325,7 +6321,7 @@ async def _send_slack_message(
                     source_channel="slack",
                     first_message_title=message_text[:30],
                 )
-                db.add(ChatMessage(
+                query_dao.add(db, ChatMessage(
                     agent_id=agent_id,
                     user_id=platform_user.id,
                     role="assistant",
@@ -6333,7 +6329,7 @@ async def _send_slack_message(
                     conversation_id=str(sess.id),
                 ))
                 sess.last_message_at = datetime.now(timezone.utc)
-                await db.commit()
+                await query_dao.commit(db)
                 logger.info(f"[Slack] Proactive message saved to session {sess.id}")
             except Exception as ex:
                 logger.error(f"[Slack] Failed to save proactive message to session: {ex}")
@@ -6355,7 +6351,7 @@ async def _send_teams_channel_message(
 
     try:
         async with async_session() as db:
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "microsoft_teams",
@@ -6370,7 +6366,7 @@ async def _send_teams_channel_message(
             if not service_url:
                 return "❌ Teams proactive send requires an existing inbound conversation to capture service_url"
 
-            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
             platform_user = await get_platform_user_by_org_member(
                 db=db,
@@ -6378,7 +6374,7 @@ async def _send_teams_channel_message(
                 agent_tenant_id=agent_obj.tenant_id if agent_obj else None,
             )
 
-            session_result = await db.execute(
+            session_result = await query_dao.execute(db, 
                 select(ChatSession)
                 .where(
                     ChatSession.agent_id == agent_id,
@@ -6404,7 +6400,7 @@ async def _send_teams_channel_message(
                 },
             )
 
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 user_id=platform_user.id,
                 role="assistant",
@@ -6412,7 +6408,7 @@ async def _send_teams_channel_message(
                 conversation_id=str(session.id),
             ))
             session.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
+            await query_dao.commit(db)
             logger.info(f"[Teams] Proactive message saved to session {session.id}")
             return f"✅ Message sent to {member_name} via Teams"
     except Exception as e:
@@ -6435,7 +6431,7 @@ async def _send_wechat_channel_message(
 
     try:
         async with async_session() as db:
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "wechat",
@@ -6471,7 +6467,7 @@ async def _send_wechat_channel_message(
                 route_tag=route_tag,
             )
 
-            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
             platform_user = await get_platform_user_by_org_member(
                 db=db,
@@ -6486,7 +6482,7 @@ async def _send_wechat_channel_message(
                 source_channel="wechat",
                 first_message_title=message_text[:30],
             )
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 user_id=platform_user.id,
                 role="assistant",
@@ -6494,7 +6490,7 @@ async def _send_wechat_channel_message(
                 conversation_id=str(sess.id),
             ))
             sess.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
+            await query_dao.commit(db)
             logger.info(f"[WeChat] Proactive message saved to session {sess.id}")
             return f"✅ Message sent to {member_name} via WeChat"
     except Exception as e:
@@ -6514,12 +6510,12 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
 
         async with async_session() as db:
             # 0. Get agent's tenant_id for scoping
-            agent_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_res = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent = agent_res.scalar_one_or_none()
             if not agent:
                 return "❌ Agent not found"
             if await ensure_access_granted_platform_relationships(db, agent, created_by_user_id=agent.creator_id):
-                await db.flush()
+                await query_dao.flush(db)
 
             # 1. Look up target user by username or display_name within tenant
 
@@ -6532,7 +6528,7 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
             if agent.tenant_id:
                 query = query.where(UserModel.tenant_id == agent.tenant_id)
 
-            u_result = await db.execute(query)
+            u_result = await query_dao.execute(db, query)
             target_user = u_result.scalar_one_or_none()
             if not target_user:
                 # List available users for the agent to pick from (within the same tenant)
@@ -6540,11 +6536,11 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
                 if agent.tenant_id:
                     list_query = list_query.where(UserModel.tenant_id == agent.tenant_id)
                 
-                all_r = await db.execute(list_query)
+                all_r = await query_dao.execute(db, list_query)
                 names = [f"{r.display_name or r.username}" for r in all_r.all()]
                 return f"❌ No user named '{username}' found in your organization. Available users: {', '.join(names) if names else 'none'}"
 
-            rel_result = await db.execute(
+            rel_result = await query_dao.execute(db, 
                 select(AgentRelationship)
                 .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
                 .where(
@@ -6569,7 +6565,7 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
             session = await ensure_primary_platform_session(db, agent_id, target_user.id)
 
             # Save the message
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 user_id=target_user.id,
                 role="assistant",
@@ -6588,7 +6584,7 @@ async def _send_platform_message(agent_id: uuid.UUID, args: dict) -> str:
                 )
             except Exception:
                 pass
-            await db.commit()
+            await query_dao.commit(db)
 
             # Push via WebSocket if user has an active connection
             try:
@@ -6642,7 +6638,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
         from app.services.activity_logger import log_activity
 
         async with async_session() as db:
-            src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
+            src_result = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == from_agent_id))
             source_agent = src_result.scalar_one_or_none()
             source_agent_name = source_agent.name if source_agent else "Unknown agent"
             source_tenant_id = source_agent.tenant_id if source_agent else None
@@ -6655,14 +6651,14 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # Try exact name match first, then fuzzy
             target_agent = None
-            exact_result = await db.execute(
+            exact_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
             )
             target_agent = exact_result.scalars().first()
             if not target_agent:
                 # Sanitize SQL wildcards in user input
                 safe_name = agent_name.replace("%", "").replace("_", r"\_")
-                fuzzy_result = await db.execute(
+                fuzzy_result = await query_dao.execute(db, 
                     select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
                 )
                 target_agent = fuzzy_result.scalars().first()
@@ -6670,7 +6666,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if not target_agent:
                 # Only show agents from relationships, not all agents
                 # (AgentAgentRelationship is imported at module level — no local import needed)
-                rel_r = await db.execute(
+                rel_r = await query_dao.execute(db, 
                     select(AgentModel.name).join(
                         AgentAgentRelationship,
                         (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
@@ -6683,7 +6679,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 return f"⚠️ {target_agent.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
 
             # Enforce relationship: only allow file transfer with agents in relationships
-            rel_check = await db.execute(
+            rel_check = await query_dao.execute(db, 
                 select(AgentAgentRelationship).where(
                     AgentAgentRelationship.agent_id == from_agent_id,
                     AgentAgentRelationship.target_agent_id == target_agent.id,
@@ -6734,7 +6730,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
         from app.models.audit import AuditLog
         async with async_session() as db:
-            db.add(AuditLog(
+            query_dao.add(db, AuditLog(
                 agent_id=from_agent_id,
                 action="collaboration:file_send",
                 details={
@@ -6744,7 +6740,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     "delivered_file": target_rel_path,
                 },
             ))
-            db.add(AuditLog(
+            query_dao.add(db, AuditLog(
                 agent_id=target_id,
                 action="collaboration:file_receive",
                 details={
@@ -6754,7 +6750,7 @@ async def _send_file_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     "delivered_file": target_rel_path,
                 },
             ))
-            await db.commit()
+            await query_dao.commit(db)
 
         await log_activity(
             from_agent_id,
@@ -6860,7 +6856,7 @@ async def _resolve_a2a_target(
     Returns (target_agent, error_message). If target is None, error_message
     explains why.  Caller is responsible for relationship / expiry checks.
     """
-    src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
+    src_result = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == from_agent_id))
     source_agent = src_result.scalar_one_or_none()
     source_tenant_id = source_agent.tenant_id if source_agent else None
 
@@ -6868,18 +6864,18 @@ async def _resolve_a2a_target(
     if source_tenant_id:
         base_filter.append(AgentModel.tenant_id == source_tenant_id)
 
-    exact_result = await db.execute(
+    exact_result = await query_dao.execute(db, 
         select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
     )
     target = exact_result.scalars().first()
     if not target:
         safe_name = agent_name.replace("%", "").replace("_", r"\_")
-        fuzzy_result = await db.execute(
+        fuzzy_result = await query_dao.execute(db, 
             select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
         )
         target = fuzzy_result.scalars().first()
     if not target:
-        rel_r = await db.execute(
+        rel_r = await query_dao.execute(db, 
             select(AgentModel.name).join(
                 AgentAgentRelationship,
                 (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
@@ -6902,7 +6898,7 @@ async def _ensure_a2a_session(
 
     session_agent_id = min(from_agent_id, target_id, key=str)
     session_peer_id = max(from_agent_id, target_id, key=str)
-    sess_r = await db.execute(
+    sess_r = await query_dao.execute(db, 
         select(ChatSession).where(
             ChatSession.agent_id == session_agent_id,
             ChatSession.peer_agent_id == session_peer_id,
@@ -6911,19 +6907,19 @@ async def _ensure_a2a_session(
     )
     chat_session = sess_r.scalar_one_or_none()
     if not chat_session:
-        src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
+        src_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
         src_participant = src_part_r.scalar_one_or_none()
         src_part_id = src_participant.id if src_participant else None
         chat_session = ChatSession(
             agent_id=session_agent_id,
             user_id=owner_id,
-            title=f"{source_name} ↔ {(await db.execute(select(AgentModel.name).where(AgentModel.id == target_id))).scalar() or 'Unknown'}",
+            title=f"{source_name} ↔ {(await query_dao.execute(db, select(AgentModel.name).where(AgentModel.id == target_id))).scalar() or 'Unknown'}",
             source_channel="agent",
             participant_id=src_part_id,
             peer_agent_id=session_peer_id,
         )
-        db.add(chat_session)
-        await db.flush()
+        query_dao.add(db, chat_session)
+        await query_dao.flush(db)
     return chat_session, str(chat_session.id)
 
 
@@ -6968,7 +6964,7 @@ async def _create_on_message_trigger(
                 _CS.agent_id == agent_id,
                 _CM.created_at.isnot(None),
             ).order_by(_CM.created_at.desc()).limit(1)
-            _snap_r = await _snap_db.execute(_snap_q)
+            _snap_r = await query_dao.execute(_snap_db, _snap_q)
             _latest_ts = _snap_r.scalar_one_or_none()
             if _latest_ts:
                 config["_since_ts"] = _latest_ts.isoformat()
@@ -6976,7 +6972,7 @@ async def _create_on_message_trigger(
         pass
 
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.agent_id == agent_id,
                 AgentTrigger.name == trigger_name,
@@ -6990,7 +6986,7 @@ async def _create_on_message_trigger(
                 existing.fire_count = 0
                 if focus_ref:
                     existing.focus_ref = focus_ref
-                await db.commit()
+                await query_dao.commit(db)
                 return
             else:
                 existing.type = "on_message"
@@ -6999,7 +6995,7 @@ async def _create_on_message_trigger(
                 existing.focus_ref = focus_ref or None
                 existing.is_enabled = True
                 existing.fire_count = 0
-                await db.commit()
+                await query_dao.commit(db)
                 return
 
         trigger = AgentTrigger(
@@ -7012,8 +7008,8 @@ async def _create_on_message_trigger(
             max_fires=1,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
         )
-        db.add(trigger)
-        await db.commit()
+        query_dao.add(db, trigger)
+        await query_dao.commit(db)
 
 
 async def _append_focus_item(agent_id: uuid.UUID, identifier: str, description: str) -> None:
@@ -7034,9 +7030,6 @@ async def _wake_agent_async(agent_id: uuid.UUID, reason_context: str, *, from_ag
     if a2a_session_id is not None:
         kwargs["a2a_session_id"] = a2a_session_id
     await wake_agent_with_context(agent_id, reason_context, **kwargs)
-
-
-from dataclasses import dataclass, field
 
 
 @dataclass
@@ -7074,14 +7067,13 @@ async def _build_a2a_context(
     try:
         from app.models.participant import Participant
         from app.models.llm import LLMModel
-        from app.services.llm.utils import get_model_api_key
 
         origin_source_channel = "web"
         
         async with async_session() as db:
             if origin_session_id:
                 try:
-                    origin_sess_r = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(origin_session_id)))
+                    origin_sess_r = await query_dao.execute(db, select(ChatSession).where(ChatSession.id == uuid.UUID(origin_session_id)))
                     origin_sess = origin_sess_r.scalar_one_or_none()
                     if origin_sess:
                         origin_source_channel = origin_sess.source_channel
@@ -7089,7 +7081,7 @@ async def _build_a2a_context(
                     pass
 
             # Look up source agent
-            src_result = await db.execute(select(AgentModel).where(AgentModel.id == from_agent_id))
+            src_result = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == from_agent_id))
             source_agent = src_result.scalar_one_or_none()
             if not source_agent:
                 return "❌ Source agent not found"
@@ -7104,19 +7096,19 @@ async def _build_a2a_context(
 
             # Find target agent by name — exact match first, then fuzzy
             target = None
-            exact_result = await db.execute(
+            exact_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.name == agent_name, *base_filter)
             )
             target = exact_result.scalars().first()
             if not target:
                 safe_name = agent_name.replace("%", "").replace("_", r"\_")
-                fuzzy_result = await db.execute(
+                fuzzy_result = await query_dao.execute(db, 
                     select(AgentModel).where(AgentModel.name.ilike(f"%{safe_name}%"), *base_filter)
                 )
                 target = fuzzy_result.scalars().first()
             if not target:
                 # Only show agents from relationships, not all agents
-                rel_r = await db.execute(
+                rel_r = await query_dao.execute(db, 
                     select(AgentModel.name).join(
                         AgentAgentRelationship,
                         (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
@@ -7130,7 +7122,7 @@ async def _build_a2a_context(
                 return f"⚠️ {target.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
 
             # Enforce relationship
-            rel_check = await db.execute(
+            rel_check = await query_dao.execute(db, 
                 select(AgentAgentRelationship).where(
                     AgentAgentRelationship.agent_id == from_agent_id,
                     AgentAgentRelationship.target_agent_id == target.id,
@@ -7144,18 +7136,18 @@ async def _build_a2a_context(
                 if status_info["access_status"] != "active":
                     return f"❌ Relationship to {target.name} is not active ({status_info['access_status_reason'] or 'restricted'}). Ask a manager of both agents to review Relationships."
 
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
+            src_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
             src_participant = src_part_r.scalar_one_or_none()
             src_participant_id = src_participant.id if src_participant else None
             
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
+            tgt_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == target.id))
             tgt_participant = tgt_part_r.scalar_one_or_none()
             tgt_participant_id = tgt_participant.id if tgt_participant else None
 
             # Find or create ChatSession for this agent pair (ordered consistently)
             session_agent_id = min(from_agent_id, target.id, key=str)
             session_peer_id = max(from_agent_id, target.id, key=str)
-            sess_r = await db.execute(
+            sess_r = await query_dao.execute(db, 
                 select(ChatSession).where(
                     ChatSession.agent_id == session_agent_id,
                     ChatSession.peer_agent_id == session_peer_id,
@@ -7172,13 +7164,13 @@ async def _build_a2a_context(
                     participant_id=src_participant_id,
                     peer_agent_id=session_peer_id,
                 )
-                db.add(chat_session)
-                await db.flush()
+                query_dao.add(db, chat_session)
+                await query_dao.flush(db)
 
             session_id = str(chat_session.id)
 
             # Save source message (common to all paths)
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=session_agent_id,
                 user_id=owner_id,
                 role="user",
@@ -7187,7 +7179,7 @@ async def _build_a2a_context(
                 participant_id=src_participant_id,
             ))
             chat_session.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
+            await query_dao.commit(db)
 
             if getattr(target, "agent_type", "native") == "openclaw":
                 return A2AContext(
@@ -7209,7 +7201,7 @@ async def _build_a2a_context(
             if source_tenant_id:
                 try:
                     from app.models.tenant import Tenant
-                    _t_r = await db.execute(select(Tenant).where(Tenant.id == source_tenant_id))
+                    _t_r = await query_dao.execute(db, select(Tenant).where(Tenant.id == source_tenant_id))
                     _tenant = _t_r.scalar_one_or_none()
                     if _tenant:
                         _a2a_async = getattr(_tenant, "a2a_async_enabled", False)
@@ -7226,19 +7218,19 @@ async def _build_a2a_context(
             if msg_type == "consult":
                 # Load primary model
                 if target.primary_model_id:
-                    model_r = await db.execute(select(LLMModel).where(LLMModel.id == target.primary_model_id))
+                    model_r = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == target.primary_model_id))
                     primary_model = model_r.scalar_one_or_none()
 
                 # Fallback model
                 if target.fallback_model_id:
-                    fb_r = await db.execute(select(LLMModel).where(LLMModel.id == target.fallback_model_id))
+                    fb_r = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == target.fallback_model_id))
                     fallback_model = fb_r.scalar_one_or_none()
 
                 if not primary_model and not fallback_model:
                     return f"⚠️ {target.name} has no LLM model configured"
 
                 # Load recent history for context
-                hist_result = await db.execute(
+                hist_result = await query_dao.execute(db, 
                     select(ChatMessage)
                     .where(
                         ChatMessage.conversation_id == session_id,
@@ -7288,8 +7280,8 @@ async def _a2a_handle_openclaw(ctx: A2AContext) -> str:
                 status="pending",
                 conversation_id=ctx.chat_session_id,
             )
-            db.add(gw_msg)
-            await db.commit()
+            query_dao.add(db, gw_msg)
+            await query_dao.commit(db)
             
             # 3. Log activity
             from app.services.activity_logger import log_activity
@@ -7522,7 +7514,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     try:
         async with async_session() as db:
             # Resolve agent's tenant_id
-            ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            ar = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
                 return "Error: Agent not found."
@@ -7537,7 +7529,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             q = select(PlazaPost).order_by(desc(PlazaPost.created_at)).limit(limit)
             if tenant_id:
                 q = q.where(PlazaPost.tenant_id == tenant_id)
-            result = await db.execute(q)
+            result = await query_dao.execute(db, q)
             posts = result.scalars().all()
 
             if not posts:
@@ -7546,7 +7538,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             output = []
             for p in posts:
                 # Load comments
-                cr = await db.execute(
+                cr = await query_dao.execute(db, 
                     select(PlazaComment).where(PlazaComment.post_id == p.id).order_by(PlazaComment.created_at).limit(5)
                 )
                 comments = cr.scalars().all()
@@ -7584,7 +7576,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     try:
         async with async_session() as db:
             # Get agent and check is_system
-            ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            ar = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
                 return "Error: Agent not found."
@@ -7605,8 +7597,8 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
                 content=content,
                 tenant_id=agent.tenant_id,
             )
-            db.add(post)
-            await db.flush()  # get post.id
+            query_dao.add(db, post)
+            await query_dao.flush(db)  # get post.id
 
             # Extract @mentions
             try:
@@ -7617,7 +7609,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
                     a_q = select(AgentModel).where(AgentModel.id != agent_id)
                     if agent.tenant_id:
                         a_q = a_q.where(AgentModel.tenant_id == agent.tenant_id)
-                    a_map = {a.name.lower(): a for a in (await db.execute(a_q)).scalars().all()}
+                    a_map = {a.name.lower(): a for a in (await query_dao.execute(db, a_q)).scalars().all()}
                     notified = set()
                     for m in mentions:
                         ma = a_map.get(m.lower())
@@ -7635,8 +7627,8 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
             except Exception:
                 pass
 
-            await db.commit()
-            await db.refresh(post)
+            await query_dao.commit(db)
+            await query_dao.refresh(db, post)
             return f"Post published! (ID: {post.id})"
 
     except Exception as e:
@@ -7663,13 +7655,13 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     try:
         async with async_session() as db:
             # Verify post exists
-            pr = await db.execute(select(PlazaPost).where(PlazaPost.id == pid))
+            pr = await query_dao.execute(db, select(PlazaPost).where(PlazaPost.id == pid))
             post = pr.scalar_one_or_none()
             if not post:
                 return "Error: Post not found."
 
             # Get agent name
-            ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            ar = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
                 return "Error: Agent not found."
@@ -7686,7 +7678,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
                 author_name=agent.name,
                 content=content,
             )
-            db.add(comment)
+            query_dao.add(db, comment)
             post.comments_count = (post.comments_count or 0) + 1
 
             # Notify post author (if not self)
@@ -7704,7 +7696,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
                             sender_name=agent.name,
                         )
                         # Also notify human creator
-                        pa = (await db.execute(select(AgentModel).where(AgentModel.id == post.author_id))).scalar_one_or_none()
+                        pa = (await query_dao.execute(db, select(AgentModel).where(AgentModel.id == post.author_id))).scalar_one_or_none()
                         if pa and pa.creator_id:
                             await send_notification(
                                 db, user_id=pa.creator_id,
@@ -7731,7 +7723,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             # Notify other agents who commented on this post
             try:
                 from app.services.notification_service import send_notification
-                other_crs = await db.execute(
+                other_crs = await query_dao.execute(db, 
                     select(PlazaComment.author_id, PlazaComment.author_type)
                     .where(PlazaComment.post_id == pid)
                     .distinct()
@@ -7761,12 +7753,11 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
                 mentions = re.findall(r'@(\S+)', content)
                 if mentions:
                     from app.services.notification_service import send_notification
-                    from app.models.user import User
                     # Load agents in tenant
                     a_q = select(AgentModel).where(AgentModel.id != agent_id)
                     if agent.tenant_id:
                         a_q = a_q.where(AgentModel.tenant_id == agent.tenant_id)
-                    a_map = {a.name.lower(): a for a in (await db.execute(a_q)).scalars().all()}
+                    a_map = {a.name.lower(): a for a in (await query_dao.execute(db, a_q)).scalars().all()}
                     notified_m = set()
                     for m in mentions:
                         ma = a_map.get(m.lower())
@@ -7784,7 +7775,7 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             except Exception:
                 pass
 
-            await db.commit()
+            await query_dao.commit(db)
             return f"Comment added to post by {post.author_name}."
 
     except Exception as e:
@@ -8181,7 +8172,7 @@ async def _handle_set_trigger(
                     ChatSession.agent_id == agent_id,
                     ChatMessage.created_at.isnot(None),
                 ).order_by(ChatMessage.created_at.desc()).limit(1)
-                _snap_r = await _snap_db.execute(_snap_q)
+                _snap_r = await query_dao.execute(_snap_db, _snap_q)
                 _latest_ts = _snap_r.scalar_one_or_none()
                 if _latest_ts:
                     config["_since_ts"] = _latest_ts.isoformat()
@@ -8198,7 +8189,7 @@ async def _handle_set_trigger(
     if session_id:
         try:
             async with async_session() as _ctx_db:
-                _session_result = await _ctx_db.execute(
+                _session_result = await query_dao.execute(_ctx_db, 
                     select(ChatSession).where(ChatSession.id == uuid.UUID(session_id))
                 )
                 origin_session = _session_result.scalar_one_or_none()
@@ -8219,13 +8210,13 @@ async def _handle_set_trigger(
         async with async_session() as db:
             # Load agent to get per-agent trigger limit
             from app.models.agent import Agent as _AgentModel
-            _a_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
+            _a_result = await query_dao.execute(db, select(_AgentModel).where(_AgentModel.id == agent_id))
             _agent_obj = _a_result.scalar_one_or_none()
             agent_max_triggers = (_agent_obj.max_triggers if _agent_obj else None) or MAX_TRIGGERS_PER_AGENT
 
             # Check max triggers
             from sqlalchemy import func as sa_func
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(sa_func.count()).select_from(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.is_enabled == True,
@@ -8236,7 +8227,7 @@ async def _handle_set_trigger(
                 return f"❌ Maximum trigger limit reached ({agent_max_triggers}). Cancel some triggers first."
 
             # Check for duplicate name
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.name == name,
@@ -8262,7 +8253,7 @@ async def _handle_set_trigger(
                     # but reset fire_count if it reached max_fires to allow it to run again.
                     if existing.max_fires and existing.fire_count >= existing.max_fires:
                         existing.fire_count = 0
-                    await db.commit()
+                    await query_dao.commit(db)
                     return f"✅ Trigger '{name}' re-enabled with new configuration ({ttype}, fired {existing.fire_count} times so far)"
 
             trigger = AgentTrigger(
@@ -8279,8 +8270,8 @@ async def _handle_set_trigger(
                 trigger.max_fires = trigger.max_fires or 100
                 if not trigger.expires_at:
                     trigger.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-            db.add(trigger)
-            await db.commit()
+            query_dao.add(db, trigger)
+            await query_dao.commit(db)
 
         # Activity log
         try:
@@ -8321,7 +8312,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.name == name,
@@ -8340,7 +8331,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 trigger.reason = new_reason
                 changes.append(f"reason updated")
 
-            await db.commit()
+            await query_dao.commit(db)
 
         try:
             from app.services.audit_logger import write_audit_log
@@ -8366,7 +8357,7 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.name == name,
@@ -8379,7 +8370,7 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 return f"ℹ️ Trigger '{name}' is already disabled"
 
             trigger.is_enabled = False
-            await db.commit()
+            await query_dao.commit(db)
 
         try:
             from app.services.audit_logger import write_audit_log
@@ -8399,7 +8390,7 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
 
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                 ).order_by(AgentTrigger.created_at.desc())
@@ -9091,7 +9082,7 @@ async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
     from app.models.channel_config import ChannelConfig
 
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "feishu",
@@ -9195,7 +9186,7 @@ async def _get_feishu_credentials(agent_id: uuid.UUID) -> tuple[str, str]:
     
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "feishu")
             )
             config = result.scalar_one_or_none()
@@ -11019,7 +11010,6 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     2. Fall back to Contact v3 GET /users/{open_id} if we find a match by email.
     The cache is populated by feishu.py each time a message sender is resolved.
     """
-    import json as _json
 
     name = (arguments.get("name") or "").strip()
     if not name:
@@ -11029,11 +11019,12 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     if not app_id or not app_secret:
         return "❌ Agent has no Feishu channel configured."
 
+    _cached_users = []
+
     # ── Cache miss: try OrgMember table first (has user_id from org sync) ──────
     try:
-        from app.database import async_session as _async_session
-        async with _async_session() as _db:
-            _agent_tenant_id = await _db.execute(
+        async with async_session() as _db:
+            _agent_tenant_id = await query_dao.execute(_db, 
                 select(AgentModel.tenant_id).where(AgentModel.id == agent_id)
             )
             _tid = _agent_tenant_id.scalar_one_or_none()
@@ -11042,7 +11033,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
                 OrgMember.name.ilike(f"%{name}%"),
                 OrgMember.tenant_id == _tid
             )
-            _r = await _db.execute(_query)
+            _r = await query_dao.execute(_db, _query)
             _org_members = _r.scalars().all()
         if _org_members:
             lines = [f"🔍 从通讯录找到 {len(_org_members)} 位匹配「{name}」的用户：\n"]
@@ -11062,19 +11053,18 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
     # ── Fallback: try User table ──────────────────────────────────────
     try:
-        from app.database import async_session as _async_session
         from sqlalchemy import select as _sa_select
         from app.models.user import User as _User
         from app.models.agent import Agent as _AgentModel2
-        async with _async_session() as _db:
-            _agent_tenant_id2 = await _db.execute(
+        async with async_session() as _db:
+            _agent_tenant_id2 = await query_dao.execute(_db, 
                 _sa_select(_AgentModel2.tenant_id).where(_AgentModel2.id == agent_id)
             )
             _tid2 = _agent_tenant_id2.scalar_one_or_none()
             _query2 = _sa_select(_User).where(_User.display_name.ilike(f"%{name}%"))
             if _tid2:
                 _query2 = _query2.where(_User.tenant_id == _tid2)
-            _r = await _db.execute(_query2)
+            _r = await query_dao.execute(_db, _query2)
             _platform_users = _r.scalars().all()
         for _pu in _platform_users:
             _uid = getattr(_pu, "feishu_user_id", None)
@@ -11124,13 +11114,13 @@ async def _get_email_config(agent_id: uuid.UUID) -> dict:
 
     async with async_session() as db:
         # Find the send_email tool
-        r = await db.execute(select(Tool).where(Tool.name == "send_email"))
+        r = await query_dao.execute(db, select(Tool).where(Tool.name == "send_email"))
         tool = r.scalar_one_or_none()
         if not tool:
             return {}
 
         # Get per-agent config
-        at_r = await db.execute(
+        at_r = await query_dao.execute(db, 
             select(AgentTool).where(
                 AgentTool.agent_id == agent_id,
                 AgentTool.tool_id == tool.id,
@@ -11179,7 +11169,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     try:
         from app.models.agent import Agent as _AgModel
         async with async_session() as _db:
-            _r = await _db.execute(select(_AgModel.tenant_id).where(_AgModel.id == agent_id))
+            _r = await query_dao.execute(_db, select(_AgModel.tenant_id).where(_AgModel.id == agent_id))
             tenant_id = _r.scalar_one_or_none()
     except Exception:
         pass
@@ -11196,8 +11186,8 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
                 source_path=path,
                 title=title,
             )
-            db.add(page)
-            await db.commit()
+            query_dao.add(db, page)
+            await query_dao.commit(db)
     except Exception as e:
         return f"Failed to publish: {e}"
 
@@ -11242,7 +11232,7 @@ async def _list_published_pages(agent_id: uuid.UUID) -> str:
 
     try:
         async with async_session() as db:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(PublishedPage)
                 .where(PublishedPage.agent_id == agent_id)
                 .order_by(PublishedPage.created_at.desc())
@@ -12110,8 +12100,8 @@ def _agentbay_find_installed_app_match(query: str, apps: list) -> tuple[dict | N
             _agentbay_app_field(app, "start_cmd", "startCmd"),
             _agentbay_app_field(app, "work_directory", "workDirectory"),
         ]
-        for field in fields:
-            field_norm = _agentbay_normalize_text(field)
+        for candidate_field in fields:
+            field_norm = _agentbay_normalize_text(candidate_field)
             if not field_norm:
                 continue
             if query_norm == field_norm:
@@ -13075,12 +13065,11 @@ async def _get_agent_owner_info(agent_id: uuid.UUID) -> tuple[str, str]:
     Used by get_my_okr and update_kr_progress to scope queries to the
     correct owner without requiring the caller to pass their own ID.
     """
-    from app.database import async_session
     from app.models.agent import Agent
     from sqlalchemy import select as _select
 
     async with async_session() as db:
-        result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+        result = await query_dao.execute(db, _select(Agent).where(Agent.id == agent_id))
         agent = result.scalar_one_or_none()
     if not agent:
         return "agent", str(agent_id)
@@ -13120,25 +13109,22 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
     Includes company-level O+KR and every member's individual O+KR.
     This is a read-only tool available to all agents.
     """
-    import json
-    import httpx
 
     # Resolve tenant_id from the calling agent
     if not agent_id:
         return "OKR tools require agent context."
 
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
         from app.models.org import OrgMember
         from app.models.user import User
         from sqlalchemy import select as _select
-        from datetime import date, timedelta
+        from datetime import date
 
         async with async_session() as db:
             # Look up the agent's tenant
-            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent_result = await query_dao.execute(db, _select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 return "Agent not found."
@@ -13146,7 +13132,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
             tenant_id = agent.tenant_id
 
             # Get OKR settings to determine period
-            settings_result = await db.execute(
+            settings_result = await query_dao.execute(db, 
                 _select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
             )
             settings = settings_result.scalar_one_or_none()
@@ -13167,7 +13153,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
                 )
 
             # Fetch all active objectives
-            obj_result = await db.execute(
+            obj_result = await query_dao.execute(db, 
                 _select(OKRObjective).where(
                     OKRObjective.tenant_id == tenant_id,
                     OKRObjective.period_start >= ps,
@@ -13182,7 +13168,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 
             # Fetch all KRs
             obj_ids = [o.id for o in objectives]
-            kr_result = await db.execute(
+            kr_result = await query_dao.execute(db, 
                 _select(OKRKeyResult)
                 .where(OKRKeyResult.objective_id.in_(obj_ids))
                 .order_by(OKRKeyResult.created_at)
@@ -13206,7 +13192,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 
             user_names: dict[uuid.UUID, str] = {}
             if user_owner_ids:
-                u_result = await db.execute(
+                u_result = await query_dao.execute(db, 
                     _select(User.id, User.display_name).where(User.id.in_(user_owner_ids))
                 )
                 user_names = {
@@ -13216,7 +13202,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 
                 unresolved_ids = [oid for oid in user_owner_ids if oid not in user_names]
                 if unresolved_ids:
-                    m_result = await db.execute(
+                    m_result = await query_dao.execute(db, 
                         _select(OrgMember.id, OrgMember.name).where(
                             OrgMember.id.in_(unresolved_ids)
                         )
@@ -13226,7 +13212,7 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 
             agent_names: dict[uuid.UUID, str] = {}
             if agent_owner_ids:
-                a_result = await db.execute(
+                a_result = await query_dao.execute(db, 
                     _select(Agent.id, Agent.name).where(Agent.id.in_(agent_owner_ids))
                 )
                 agent_names = {
@@ -13296,19 +13282,17 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         return "OKR tools require agent context."
 
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from app.models.okr import OKRObjective, OKRKeyResult, OKRSettings
         from sqlalchemy import select as _select
-        from datetime import date, timedelta
 
         async with async_session() as db:
-            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent_result = await query_dao.execute(db, _select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 return "Agent not found."
 
-            settings_result = await db.execute(
+            settings_result = await query_dao.execute(db, 
                 _select(OKRSettings).where(OKRSettings.tenant_id == agent.tenant_id)
             )
             settings = settings_result.scalar_one_or_none()
@@ -13320,7 +13304,7 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
                 settings.period_length_days,
             )
 
-            obj_result = await db.execute(
+            obj_result = await query_dao.execute(db, 
                 _select(OKRObjective).where(
                     OKRObjective.tenant_id == agent.tenant_id,
                     OKRObjective.owner_type == "agent",
@@ -13339,7 +13323,7 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
                 )
 
             obj_ids = [o.id for o in objectives]
-            kr_result = await db.execute(
+            kr_result = await query_dao.execute(db, 
                 _select(OKRKeyResult)
                 .where(OKRKeyResult.objective_id.in_(obj_ids))
                 .order_by(OKRKeyResult.created_at)
@@ -13384,11 +13368,11 @@ async def _load_okr_request_context(
     from app.models.agent import Agent as AgentModel
     from app.models.user import User as UserModel
 
-    ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    ag_res = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
     agent = ag_res.scalar_one_or_none()
     requester = None
     if user_id:
-        user_res = await db.execute(select(UserModel).where(UserModel.id == user_id))
+        user_res = await query_dao.execute(db, select(UserModel).where(UserModel.id == user_id))
         requester = user_res.scalar_one_or_none()
 
     return {
@@ -13473,7 +13457,7 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | N
             if not ctx["agent"]:
                 return "Agent not found."
 
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 _select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
@@ -13512,8 +13496,8 @@ async def _update_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID | N
                 source="self_report",
                 note=note,
             )
-            db.add(log)
-            await db.commit()
+            query_dao.add(db, log)
+            await query_dao.commit(db)
 
         return (
             f"KR updated: {kr.title}\n"
@@ -13559,7 +13543,7 @@ async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | No
             if not ctx["agent"]:
                 return "Agent not found."
 
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 _select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
@@ -13593,7 +13577,7 @@ async def _update_kr_content(agent_id: uuid.UUID | None, user_id: uuid.UUID | No
                 kr.status = str(provided_updates["status"]).strip()
                 changed_fields.append("status")
 
-            await db.commit()
+            await query_dao.commit(db)
 
         return (
             f"KR content updated: {kr.title}\n"
@@ -13619,7 +13603,7 @@ async def _collect_okr_progress(agent_id: uuid.UUID | None) -> str:
         from app.services.okr_scheduler import collect_all_focus_updates
 
         async with async_session() as db:
-            agent_result = await db.execute(
+            agent_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.id == agent_id)
             )
             agent = agent_result.scalar_one_or_none()
@@ -13653,7 +13637,7 @@ async def _generate_okr_report(agent_id: uuid.UUID | None, arguments: dict) -> s
         from app.services.okr_scheduler import generate_daily_report, generate_weekly_report
 
         async with async_session() as db:
-            agent_result = await db.execute(
+            agent_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.id == agent_id)
             )
             agent = agent_result.scalar_one_or_none()
@@ -13691,7 +13675,7 @@ async def _generate_monthly_okr_report(agent_id: uuid.UUID | None) -> str:
         from app.services.okr_scheduler import generate_monthly_report
 
         async with async_session() as db:
-            agent_result = await db.execute(
+            agent_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.id == agent_id)
             )
             agent = agent_result.scalar_one_or_none()
@@ -13723,7 +13707,7 @@ async def _get_okr_settings_tool(agent_id: uuid.UUID | None) -> str:
         import json as _json
 
         async with async_session() as db:
-            agent_result = await db.execute(
+            agent_result = await query_dao.execute(db, 
                 select(AgentModel).where(AgentModel.id == agent_id)
             )
             agent = agent_result.scalar_one_or_none()
@@ -13776,16 +13760,16 @@ async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | Non
                 if owner_id:
                     owner_exists = False
                     if owner_type == "agent":
-                        res = await db.execute(select(AgentModel.id).where(AgentModel.id == owner_id))
+                        res = await query_dao.execute(db, select(AgentModel.id).where(AgentModel.id == owner_id))
                         owner_exists = res.scalar_one_or_none() is not None
                     elif owner_type == "user":
                         from app.models.user import User as UserModel
                         from app.models.org import OrgMember
-                        res = await db.execute(select(UserModel.id).where(UserModel.id == owner_id))
+                        res = await query_dao.execute(db, select(UserModel.id).where(UserModel.id == owner_id))
                         owner_exists = res.scalar_one_or_none() is not None
                         if not owner_exists:
                             # Maybe agent passed OrgMember.id — resolve to linked User.id when available
-                            res = await db.execute(
+                            res = await query_dao.execute(db, 
                                 select(OrgMember.id, OrgMember.user_id).where(OrgMember.id == owner_id)
                             )
                             member_row = res.first()
@@ -13808,17 +13792,17 @@ async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | Non
             if owner_type != "company" and not owner_id and owner_name_hint:
                 # If we don't have a valid UUID but we have a name, look it up
                 if owner_type == "agent":
-                    res = await db.execute(select(AgentModel.id).where(AgentModel.tenant_id == ag.tenant_id, AgentModel.name == owner_name_hint))
+                    res = await query_dao.execute(db, select(AgentModel.id).where(AgentModel.tenant_id == ag.tenant_id, AgentModel.name == owner_name_hint))
                     owner_id = res.scalar_one_or_none()
                 elif owner_type == "user":
                     from app.models.org import OrgMember
                     from app.models.user import User as UserModel
                     # Try platform User.display_name first
-                    res = await db.execute(select(UserModel.id).where(UserModel.display_name == owner_name_hint, UserModel.tenant_id == ag.tenant_id))
+                    res = await query_dao.execute(db, select(UserModel.id).where(UserModel.display_name == owner_name_hint, UserModel.tenant_id == ag.tenant_id))
                     owner_id = res.scalar_one_or_none()
                     if not owner_id:
                         # Fall back to OrgMember.name (Feishu/channel-only users)
-                        res = await db.execute(select(OrgMember.id).where(OrgMember.name == owner_name_hint, OrgMember.tenant_id == ag.tenant_id))
+                        res = await query_dao.execute(db, select(OrgMember.id).where(OrgMember.name == owner_name_hint, OrgMember.tenant_id == ag.tenant_id))
                         owner_id = res.scalar_one_or_none()
 
                 if not owner_id:
@@ -13844,8 +13828,8 @@ async def _create_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | Non
                 period_end=p_end,
                 status="active"
             )
-            db.add(obj)
-            await db.commit()
+            query_dao.add(db, obj)
+            await query_dao.commit(db)
             owner_info = f"owner={owner_name_hint or owner_id_str or 'unattributed'}"
             return f"Successfully created Objective '{obj.title}' (ID: {obj.id}, {owner_info})"
     except Exception as e:
@@ -13872,7 +13856,7 @@ async def _create_key_result(agent_id: uuid.UUID | None, user_id: uuid.UUID | No
                 return "Invalid formatted objective_id (must be UUID)"
 
             # Verify objective exists
-            obj_res = await db.execute(
+            obj_res = await query_dao.execute(db, 
                 select(OKRObjective).where(
                     OKRObjective.id == obj_id,
                     OKRObjective.tenant_id == ctx["tenant_id"],
@@ -13894,8 +13878,8 @@ async def _create_key_result(agent_id: uuid.UUID | None, user_id: uuid.UUID | No
                 unit=arguments.get("unit"),
                 focus_ref=arguments.get("focus_ref")
             )
-            db.add(kr)
-            await db.commit()
+            query_dao.add(db, kr)
+            await query_dao.commit(db)
             return f"Successfully created Key Result '{kr.title}' (ID: {kr.id})"
     except Exception as e:
         logger.exception(f"[OKR] create_key_result failed")
@@ -13927,7 +13911,7 @@ async def _update_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | Non
             except ValueError:
                 return "Invalid formatted objective_id (must be UUID)"
 
-            obj_res = await db.execute(
+            obj_res = await query_dao.execute(db, 
                 select(OKRObjective).where(
                     OKRObjective.id == obj_id,
                     OKRObjective.tenant_id == ctx["tenant_id"],
@@ -13963,7 +13947,7 @@ async def _update_objective(agent_id: uuid.UUID | None, user_id: uuid.UUID | Non
             if not updates:
                 return "No supported fields provided to update."
 
-            await db.commit()
+            await query_dao.commit(db)
             return f"Successfully updated Objective {obj.id}. Changed fields: {', '.join(updates)}"
     except Exception as e:
         logger.exception(f"[OKR] update_objective failed")
@@ -13990,7 +13974,7 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID
             except ValueError:
                 return "Invalid formatted kr_id (must be UUID)"
 
-            kr_res = await db.execute(
+            kr_res = await query_dao.execute(db, 
                 select(OKRKeyResult, OKRObjective)
                 .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                 .where(
@@ -14036,8 +14020,8 @@ async def _update_any_kr_progress(agent_id: uuid.UUID | None, user_id: uuid.UUID
                 source="okr_agent" if ctx["agent_is_system"] else "agent",
                 note=note
             )
-            db.add(log_entry)
-            await db.commit()
+            query_dao.add(db, log_entry)
+            await query_dao.commit(db)
 
             return f"Successfully updated KR '{kr.title}'. Progress: {old_val} -> {kr.current_value} {kr.unit or ''}. Status: {kr.status}"
     except Exception as e:
@@ -14075,7 +14059,7 @@ async def _upsert_member_daily_report(agent_id: uuid.UUID | None, arguments: dic
             return "Invalid report_date format. Use YYYY-MM-DD."
 
         async with async_session() as db:
-            ag_res = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            ag_res = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             ag = ag_res.scalar_one_or_none()
             if not ag:
                 return "Agent not found."
@@ -14117,7 +14101,7 @@ async def _upsert_member_daily_report(agent_id: uuid.UUID | None, arguments: dic
                     else:
                         return f"No {member_type} member matched '{member_name}'."
 
-            existing_res = await db.execute(
+            existing_res = await query_dao.execute(db, 
                 select(MemberDailyReport).where(
                     MemberDailyReport.tenant_id == ag.tenant_id,
                     MemberDailyReport.member_type == member_type,

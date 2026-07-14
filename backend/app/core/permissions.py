@@ -8,8 +8,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import agent_access_dao
+from app.database import bind_session_context
 from app.models.agent import Agent, AgentPermission
-from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
+from app.models.org import AgentAgentRelationship, AgentRelationship
 from app.models.user import User
 
 
@@ -81,8 +83,8 @@ async def get_agent_access_level_for_user_id(
     if not user_id:
         return None
 
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
+    async with bind_session_context(db):
+        user = await agent_access_dao.get_user(user_id)
     if not user or not user.is_active:
         return None
     if agent.tenant_id != user.tenant_id:
@@ -94,8 +96,8 @@ async def get_agent_access_level_for_user_id(
     if _is_admin(user) and access_mode != "private":
         return "manage"
 
-    perms_result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent.id))
-    permissions = perms_result.scalars().all()
+    async with bind_session_context(db):
+        permissions = await agent_access_dao.list_permissions(agent.id)
 
     if access_mode == "company":
         company_level = getattr(agent, "company_access_level", None) or next(
@@ -128,32 +130,14 @@ async def get_agent_accessible_user_ids(db: AsyncSession, agent: Agent) -> set[u
         ids.add(agent.creator_id)
 
     if access_mode == "company":
-        result = await db.execute(
-            select(User.id).where(
-                User.tenant_id == agent.tenant_id,
-                User.is_active == True,  # noqa: E712
-            )
-        )
-        ids.update(row[0] for row in result.fetchall())
+        async with bind_session_context(db):
+            ids.update(await agent_access_dao.list_active_user_ids_by_tenant(agent.tenant_id))
         return ids
 
     if access_mode == "custom":
-        result = await db.execute(
-            select(AgentPermission.scope_id).where(
-                AgentPermission.agent_id == agent.id,
-                AgentPermission.scope_type == "user",
-                AgentPermission.scope_id.isnot(None),
-            )
-        )
-        ids.update(row[0] for row in result.fetchall() if row[0])
-        admin_result = await db.execute(
-            select(User.id).where(
-                User.tenant_id == agent.tenant_id,
-                User.is_active == True,  # noqa: E712
-                User.role.in_(["platform_admin", "org_admin"]),
-            )
-        )
-        ids.update(row[0] for row in admin_result.fetchall())
+        async with bind_session_context(db):
+            ids.update(await agent_access_dao.list_custom_permission_user_ids(agent.id))
+            ids.update(await agent_access_dao.list_active_admin_user_ids_by_tenant(agent.tenant_id))
 
     return ids
 
@@ -175,12 +159,12 @@ async def evaluate_agent_relationship_status(
     current_user_id: uuid.UUID | None = None,
 ) -> dict:
     """Compute the effective status for an Agent -> Agent relationship."""
-    source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
-    source = source_result.scalar_one_or_none()
+    async with bind_session_context(db):
+        source = await agent_access_dao.get_agent(rel.agent_id)
     target = rel.__dict__.get("target_agent")
     if target is None:
-        target_result = await db.execute(select(Agent).where(Agent.id == rel.target_agent_id))
-        target = target_result.scalar_one_or_none()
+        async with bind_session_context(db):
+            target = await agent_access_dao.get_agent(rel.target_agent_id)
 
     if not source or not target:
         return {
@@ -256,12 +240,12 @@ async def evaluate_human_relationship_status(
 ) -> dict:
     """Compute the effective status for an Agent -> Human relationship."""
     if source_agent is None:
-        source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
-        source_agent = source_result.scalar_one_or_none()
+        async with bind_session_context(db):
+            source_agent = await agent_access_dao.get_agent(rel.agent_id)
     member = rel.__dict__.get("member")
     if member is None:
-        member_result = await db.execute(select(OrgMember).where(OrgMember.id == rel.member_id))
-        member = member_result.scalar_one_or_none()
+        async with bind_session_context(db):
+            member = await agent_access_dao.get_org_member(rel.member_id)
 
     if not source_agent or not member:
         return {
@@ -307,8 +291,8 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     2. Company admin + non-private agent -> manage
     3. User has explicit permission (company/user scope) -> from permission record
     """
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = result.scalar_one_or_none()
+    async with bind_session_context(db):
+        agent = await agent_access_dao.get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
@@ -322,8 +306,8 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
 
     access_mode = getattr(agent, "access_mode", None) or "company"
 
-    perms = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
-    permissions = perms.scalars().all()
+    async with bind_session_context(db):
+        permissions = await agent_access_dao.list_permissions(agent_id)
 
     is_admin = user.role in ("platform_admin", "org_admin")
     if is_admin and access_mode != "private":

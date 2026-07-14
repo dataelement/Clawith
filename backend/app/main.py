@@ -134,7 +134,6 @@ async def lifespan(app: FastAPI):
         )
 
     import asyncio
-    import sys
     import os
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
@@ -188,7 +187,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.models.tenant import Tenant
             from app.database import async_session as _session
-            from sqlalchemy import select as _select, update as _update
+            from sqlalchemy import select as _select
             async with _session() as _db:
                 _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
                 if not _existing.scalar_one_or_none():
@@ -449,7 +448,7 @@ async def health_check():
 # ── Version endpoint (public, no auth required) ──
 def _load_version_info() -> dict[str, str]:
     """Read version + commit hash once at startup."""
-    import os, subprocess
+    import subprocess
     version = "unknown"
     for candidate in ["../frontend/VERSION", "frontend/VERSION", "VERSION"]:
         try:

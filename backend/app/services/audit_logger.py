@@ -4,13 +4,12 @@ import json
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
 
 from loguru import logger
 
 from sqlalchemy import text
 
-from app.database import async_session
+from app.dao import query_dao
 
 
 class AuditAction(str, Enum):
@@ -185,7 +184,7 @@ async def _write_log(
 ) -> None:
     """Internal method to write audit log."""
     try:
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Build details with additional context
             full_details = details or {}
             if tenant_id:
@@ -194,7 +193,7 @@ async def _write_log(
                 full_details["organization_id"] = str(organization_id)
 
             # Use simpler insert that works with existing schema
-            await db.execute(
+            await query_dao.execute(db, 
                 text(
                     "INSERT INTO audit_logs (id, action, details, agent_id, user_id, created_at) "
                     "VALUES (:id, :action, :details, :agent_id, :user_id, :created_at)"
@@ -208,7 +207,7 @@ async def _write_log(
                     "created_at": datetime.now(timezone.utc),
                 },
             )
-            await db.commit()
+            await query_dao.commit(db)
     except Exception as e:
         # Never let audit logging break the caller
         logger.error(f"[audit_logger] WARNING: failed to write audit log: {e}")

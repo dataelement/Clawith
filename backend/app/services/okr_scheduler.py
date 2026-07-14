@@ -22,7 +22,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.okr import (
     OKRKeyResult,
@@ -116,10 +116,10 @@ async def collect_all_focus_updates(
 
     Only writes a new log if the value actually changed (idempotent).
     """
-    async with async_session() as db:
+    async with query_dao.session() as db:
 
         # Enumerate all agents in this tenant (except the OKR Agent itself)
-        agents_result = await db.execute(
+        agents_result = await query_dao.execute(db, 
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
                 Agent.id != okr_agent_id,
@@ -158,7 +158,7 @@ async def collect_all_focus_updates(
                         continue
 
                     # Fetch the KR and verify it belongs to this tenant
-                    kr_result = await db.execute(
+                    kr_result = await query_dao.execute(db, 
                         select(OKRKeyResult, OKRObjective)
                         .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
                         .where(
@@ -201,7 +201,7 @@ async def collect_all_focus_updates(
                         source="okr_agent",
                         note=f"[focus.md] {note}" if note else "[focus.md] Auto-collected",
                     )
-                    db.add(log)
+                    query_dao.add(db, log)
                     updated_count += 1
 
                     lines.append(
@@ -212,7 +212,7 @@ async def collect_all_focus_updates(
                 logger.exception(f"[OKRScheduler] Failed to process focus.md for agent {agent.id}")
                 error_count += 1
 
-        await db.commit()
+        await query_dao.commit(db)
 
     summary = (
         f"Focus file collection complete.\n"
@@ -268,7 +268,7 @@ async def _build_okr_snapshot(
     """
     ps, pe = _compute_period(frequency, length_days, target_date)
 
-    obj_result = await db.execute(
+    obj_result = await query_dao.execute(db, 
         select(OKRObjective).where(
             OKRObjective.tenant_id == tenant_id,
             OKRObjective.period_start >= ps,
@@ -281,7 +281,7 @@ async def _build_okr_snapshot(
     krs_by_obj: dict = {}
     if objectives:
         obj_ids = [o.id for o in objectives]
-        kr_result = await db.execute(
+        kr_result = await query_dao.execute(db, 
             select(OKRKeyResult)
             .where(OKRKeyResult.objective_id.in_(obj_ids))
             .order_by(OKRKeyResult.created_at)
@@ -394,8 +394,8 @@ async def _store_report(
         content=content,
         source="okr_agent_collected",
     )
-    db.add(report)
-    await db.commit()
+    query_dao.add(db, report)
+    await query_dao.commit(db)
 
 
 async def _safe_write_report(okr_agent_id: uuid.UUID, filename: str, content: str) -> None:
@@ -423,9 +423,9 @@ async def generate_daily_report(
 
     Returns the report content as a string so the OKR Agent can post it.
     """
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Load settings for period frequency
-        settings_result = await db.execute(
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         okr_settings = settings_result.scalar_one_or_none()
@@ -457,8 +457,8 @@ async def generate_weekly_report(
 
     The 'week' reference date is the most recent Monday.
     """
-    async with async_session() as db:
-        settings_result = await db.execute(
+    async with query_dao.session() as db:
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         okr_settings = settings_result.scalar_one_or_none()
@@ -498,8 +498,8 @@ async def get_okr_settings_for_agent(tenant_id: uuid.UUID) -> dict:
     Called by the get_okr_settings agent tool. Returns a dict the Agent can
     read to determine report schedule, period length, etc.
     """
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         s = result.scalar_one_or_none()
@@ -542,8 +542,8 @@ async def generate_monthly_report(
     Returns the Markdown content so the calling OKR Agent tool can send it
     to admins via send_platform_message.
     """
-    async with async_session() as db:
-        settings_result = await db.execute(
+    async with query_dao.session() as db:
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         okr_settings = settings_result.scalar_one_or_none()

@@ -4,7 +4,6 @@ import base64
 import csv
 import io
 import mimetypes
-import os
 import uuid
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
@@ -27,7 +27,6 @@ from app.services.workspace_collaboration import (
     delete_workspace_file,
     list_revisions,
     read_text_if_exists,
-    record_revision,
     release_edit_lock,
     write_workspace_file,
 )
@@ -560,7 +559,7 @@ async def download_file(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await query_dao.execute(db, select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
@@ -634,7 +633,7 @@ async def write_file(
     )
     if not result.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": result.path, "revision_id": result.revision_id}
 
 
@@ -656,7 +655,7 @@ async def lock_file(
         user_id=current_user.id,
         session_id=data.session_id,
     )
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": lock.path, "expires_at": lock.expires_at.isoformat()}
 
 
@@ -670,7 +669,7 @@ async def unlock_file(
     """Release the current user's edit lock for a file."""
     await check_agent_access(db, current_user, agent_id)
     await release_edit_lock(db, agent_id=agent_id, path=path, user_id=current_user.id)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -714,7 +713,7 @@ async def restore_file_revision(
 ):
     """Restore a file to a previous revision's after-content."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceFileRevision).where(
             WorkspaceFileRevision.id == data.revision_id,
             WorkspaceFileRevision.agent_id == agent_id,
@@ -740,7 +739,7 @@ async def restore_file_revision(
     )
     if not restored.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=restored.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": revision.path, "revision_id": restored.revision_id}
 
 
@@ -778,7 +777,7 @@ async def delete_file(
         if "not found" in result.message.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.message)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -801,10 +800,10 @@ async def import_skill_to_agent(
     await check_agent_access(db, current_user, agent_id)
 
     from sqlalchemy.orm import selectinload
-    from app.models.skill import Skill, SkillFile
+    from app.models.skill import Skill
 
     # Load the global skill with its files
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
     )
     skill = result.scalar_one_or_none()
@@ -943,7 +942,6 @@ async def upload_enterprise_kb_file(
     current_user: User = Depends(get_current_user),
 ):
     """Upload a file to enterprise knowledge base (tenant-scoped)."""
-    from app.core.security import require_role
     # Only admin can upload to enterprise KB
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Only admins can upload to enterprise knowledge base")

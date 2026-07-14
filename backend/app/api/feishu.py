@@ -12,9 +12,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator, is_agent_expired
 from app.core.security import get_current_user
-from app.database import async_session as _async_session, get_db
+from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
@@ -238,7 +239,6 @@ def _build_llm_history_from_chat_messages(history_messages: list) -> list[dict]:
 
 async def _save_feishu_tool_call(
     *,
-    db_session_factory,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     conversation_id: str,
@@ -280,7 +280,7 @@ async def feishu_oauth_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 tenant_id = session.tenant_id
@@ -303,7 +303,7 @@ async def feishu_oauth_callback(
         # Get or create provider via auth provider
         provider = None
         if tenant_id:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(IdentityProvider).where(
                     IdentityProvider.provider_type == "feishu",
                     IdentityProvider.tenant_id == tenant_id
@@ -336,7 +336,7 @@ async def feishu_oauth_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 session.status = "authorized"
@@ -344,7 +344,7 @@ async def feishu_oauth_callback(
                 session.user_id = user.id
                 session.access_token = token
                 session.error_msg = None
-                await db.commit()
+                await query_dao.commit(db)
                 return HTMLResponse(
                     f"""<html><head><meta charset="utf-8" /></head>
                     <body style="font-family: sans-serif; padding: 24px;">
@@ -373,7 +373,7 @@ async def configure_channel(
         raise HTTPException(status_code=403, detail="Only creator can configure channel")
 
     # Check existing
-    result = await db.execute(select(ChannelConfig).where(
+    result = await query_dao.execute(db, select(ChannelConfig).where(
         ChannelConfig.agent_id == agent_id,
         ChannelConfig.channel_type == "feishu",
     ))
@@ -385,7 +385,7 @@ async def configure_channel(
         existing.verification_token = data.verification_token
         existing.extra_config = data.extra_config or {}
         existing.is_configured = True
-        await db.flush()
+        await query_dao.flush(db)
         
         # Start/Stop WS client in background
         from app.services.feishu_ws import feishu_ws_manager
@@ -408,8 +408,8 @@ async def configure_channel(
         extra_config=data.extra_config or {},
         is_configured=True,
     )
-    db.add(config)
-    await db.flush()
+    query_dao.add(db, config)
+    await query_dao.flush(db)
 
     # Start WS client in background
     from app.services.feishu_ws import feishu_ws_manager
@@ -429,7 +429,7 @@ async def get_channel_config(
 ):
     """Get Feishu channel configuration for an agent."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(select(ChannelConfig).where(
+    result = await query_dao.execute(db, select(ChannelConfig).where(
         ChannelConfig.agent_id == agent_id,
         ChannelConfig.channel_type == "feishu",
     ))
@@ -457,14 +457,14 @@ async def delete_channel_config(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
-    result = await db.execute(select(ChannelConfig).where(
+    result = await query_dao.execute(db, select(ChannelConfig).where(
         ChannelConfig.agent_id == agent_id,
         ChannelConfig.channel_type == "feishu",
     ))
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Channel not configured")
-    await db.delete(config)
+    await query_dao.delete(db, config)
 
 
 
@@ -505,8 +505,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
         return {"code": 0, "msg": "already processed"}
 
     # ── Phase 1: Short transaction — load config + agent/model for LLM ──
-    async with _async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "feishu",
@@ -650,14 +650,14 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
             from app.services.channel_session import find_or_create_channel_session
-            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
             creator_id = agent_obj.creator_id if agent_obj else agent_id
             from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
             ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
 
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
-            _pre_sess_r = await db.execute(
+            _pre_sess_r = await query_dao.execute(db, 
                 select(__import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession).where(
                     __import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession.agent_id == agent_id,
                     __import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession.external_conv_id == conv_id,
@@ -665,7 +665,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             )
             _pre_sess = _pre_sess_r.scalar_one_or_none()
             _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
-            history_result = await db.execute(
+            history_result = await query_dao.execute(db, 
                 select(ChatMessage)
                 .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
                 .order_by(ChatMessage.created_at.desc())
@@ -811,9 +811,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             session_conv_id = str(_sess.id)
 
             # Save user message
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+            query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
             _sess.last_message_at = _dt.now(_tz.utc)
-            await db.commit()
+            await query_dao.commit(db)
             # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
             await db.close()
 
@@ -1028,9 +1028,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                     _tool_status_done.append(f"ℹ️ Tool update: `{tool_name}` ({status})")
 
                 if status and status != "running":
-                    from app.database import async_session as _async_session_tc
                     await _save_feishu_tool_call(
-                        db_session_factory=_async_session_tc,
                         agent_id=agent_id,
                         user_id=platform_user_id,
                         conversation_id=session_conv_id,
@@ -1088,9 +1086,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                         from app.services.task_executor import execute_task
                         import asyncio as _asyncio
 
-                        async with _async_session() as _task_db:
+                        async with query_dao.session() as _task_db:
                             # Find the agent's creator to use as task creator
-                            agent_r = await _task_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                            agent_r = await query_dao.execute(_task_db, select(AgentModel).where(AgentModel.id == agent_id))
                             agent_obj = agent_r.scalar_one_or_none()
                             _task_creator_id = agent_obj.creator_id if agent_obj else agent_id
 
@@ -1101,9 +1099,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                                 status="pending",
                                 priority="medium",
                             )
-                            _task_db.add(task_obj)
-                            await _task_db.commit()
-                            await _task_db.refresh(task_obj)
+                            query_dao.add(_task_db, task_obj)
+                            await query_dao.commit(_task_db)
+                            await query_dao.refresh(_task_db, task_obj)
                             _task_id = str(task_obj.id)
                         _asyncio.create_task(execute_task(_task_id, agent_id))
                         reply_text += f"\n\n📋 已同步创建任务到任务面板：【{task_title}】"
@@ -1179,8 +1177,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             await log_activity(agent_id, "chat_reply", f"回复了飞书消息: {final_reply_text[:80]}", detail={"channel": "feishu", "user_text": user_text[:200], "reply": final_reply_text[:500]})
 
             # Save assistant reply to history (new short transaction)
-            async with _async_session() as _save_db:
-                _save_db.add(ChatMessage(
+            async with query_dao.session() as _save_db:
+                query_dao.add(_save_db, ChatMessage(
                     agent_id=agent_id,
                     user_id=platform_user_id,
                     role="assistant",
@@ -1190,13 +1188,13 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 ))
                 # Reload session object in new transaction to update last_message_at
                 from app.models.chat_session import ChatSession
-                _sess_r = await _save_db.execute(
+                _sess_r = await query_dao.execute(_save_db, 
                     select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
                 )
                 _sess_fresh = _sess_r.scalar_one_or_none()
                 if _sess_fresh:
                     _sess_fresh.last_message_at = _dt.now(_tz.utc)
-                await _save_db.commit()
+                await query_dao.commit(_save_db)
 
     return {"code": 0, "msg": "ok"}
 
@@ -1227,7 +1225,6 @@ async def _handle_feishu_file(
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.services.channel_session import find_or_create_channel_session
-    from app.database import async_session as _async_session
     from datetime import datetime as _dt, timezone as _tz
     from sqlalchemy import select as _select
 
@@ -1276,8 +1273,8 @@ async def _handle_feishu_file(
         return
 
     # Resolve platform user and session using a fresh db session
-    async with _async_session() as db:
-        agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+    async with query_dao.session() as db:
+        agent_r = await query_dao.execute(db, _select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
 
         # Resolve sender's Feishu user_id (more stable than open_id)
@@ -1369,7 +1366,7 @@ async def _handle_feishu_file(
         # For group file sessions, use agent creator as placeholder user_id
         _file_user_id = platform_user_id
         if _is_group_file:
-            _ag_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+            _ag_r = await query_dao.execute(db, _select(AgentModel).where(AgentModel.id == agent_id))
             _ag_obj = _ag_r.scalar_one_or_none()
             _file_user_id = _ag_obj.creator_id if _ag_obj else platform_user_id
         _sess = await find_or_create_channel_session(
@@ -1389,7 +1386,7 @@ async def _handle_feishu_file(
             user_msg_content = f"[用户发送了图片]\n{_image_marker}"
         else:
             user_msg_content = f"[file:{filename}]"
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
+        query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
                            content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
                            conversation_id=session_conv_id))
         _sess.last_message_at = _dt.now(_tz.utc)
@@ -1397,7 +1394,7 @@ async def _handle_feishu_file(
         # Load conversation history for LLM context
         from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
         ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
-        _hist_r = await db.execute(
+        _hist_r = await query_dao.execute(db, 
             _select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
@@ -1408,7 +1405,7 @@ async def _handle_feishu_file(
         # Pre-load agent/model for LLM call before releasing DB connection
         _agent_model_img, _llm_model_img, _fallback_model_img = await _load_agent_and_model(db, agent_id)
 
-        await db.commit()
+        await query_dao.commit(db)
         # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
     # For images: call LLM so vision models can actually see the image
     if msg_type == "image":
@@ -1544,10 +1541,10 @@ async def _handle_feishu_file(
                 logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
 
         # Save assistant reply in DB
-        async with _async_session() as _db_save:
-            _db_save.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
+        async with query_dao.session() as _db_save:
+            query_dao.add(_db_save, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                                      content=reply_text, conversation_id=session_conv_id))
-            await _db_save.commit()
+            await query_dao.commit(_db_save)
 
         # Log activity
         from app.services.activity_logger import log_activity
@@ -1573,7 +1570,7 @@ async def _handle_feishu_file(
         logger.error(f"[Feishu] Failed to send ack: {e}")
 
     # Store ack in DB
-    async with _async_session() as db2:
+    async with query_dao.session() as db2:
         db2.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                             content=ack, conversation_id=session_conv_id))
         await db2.commit()
@@ -1609,14 +1606,14 @@ async def _load_agent_and_model(
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent:
         return None, None, None
 
     model = None
     if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+        model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.primary_model_id))
         model = model_result.scalar_one_or_none()
         if model and not model.enabled:
             logger.info(f"[Channel] Primary model {model.model} is disabled, skipping")
@@ -1624,7 +1621,7 @@ async def _load_agent_and_model(
 
     fallback_model = None
     if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
+        fb_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
         fallback_model = fb_result.scalar_one_or_none()
         if fallback_model and not fallback_model.enabled:
             logger.info(f"[Channel] Fallback model {fallback_model.model} is disabled, skipping")

@@ -2,7 +2,7 @@
 
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.dao import query_dao
 from app.models.skill import Skill, SkillFile
 
 
@@ -972,9 +972,9 @@ async def seed_skills():
             else:
                 logger.warning("[SkillSeeder] mcp-installer/SKILL.md not found in agent_template/skills/")
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         for skill_data in BUILTIN_SKILLS:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Skill).where(Skill.folder_name == skill_data["folder_name"])
             )
             existing = result.scalar_one_or_none()
@@ -988,7 +988,7 @@ async def seed_skills():
                 existing.is_default = is_default
                 # Sync files — add missing ones
                 from sqlalchemy.orm import selectinload
-                res2 = await db.execute(
+                res2 = await query_dao.execute(db, 
                     select(Skill).where(Skill.id == existing.id).options(selectinload(Skill.files))
                 )
                 sk = res2.scalar_one()
@@ -1001,7 +1001,7 @@ async def seed_skills():
                             existing_file.content = f["content"]
                             logger.info(f"[SkillSeeder] Updated {f['path']} in {skill_data['name']}")
                     else:
-                        db.add(SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
+                        query_dao.add(db, SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
                         logger.info(f"[SkillSeeder] Added file {f['path']} to {skill_data['name']}")
             else:
                 skill = Skill(
@@ -1013,12 +1013,12 @@ async def seed_skills():
                     is_builtin=True,
                     is_default=is_default,
                 )
-                db.add(skill)
-                await db.flush()
+                query_dao.add(db, skill)
+                await query_dao.flush(db)
                 for f in skill_data["files"]:
-                    db.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
+                    query_dao.add(db, SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
                 logger.info(f"[SkillSeeder] Created skill: {skill_data['name']}")
-        await db.commit()
+        await query_dao.commit(db)
         logger.info("[SkillSeeder] Skills seeded")
 
 
@@ -1036,9 +1036,9 @@ async def push_default_skills_to_existing_agents():
     from app.services.storage import get_storage_backend
     import hashlib
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Load all is_default skills with their files
-        default_skills_r = await db.execute(
+        default_skills_r = await query_dao.execute(db, 
             select(Skill).where(Skill.is_default == True).options(selectinload(Skill.files))
         )
         default_skills = default_skills_r.scalars().all()
@@ -1052,7 +1052,7 @@ async def push_default_skills_to_existing_agents():
         current_hash = hasher.hexdigest()
 
         # Check if we already synced this version of default skills
-        setting_r = await db.execute(
+        setting_r = await query_dao.execute(db, 
             select(SystemSetting).where(SystemSetting.key == "default_skills_sync_hash")
         )
         setting = setting_r.scalar_one_or_none()
@@ -1061,7 +1061,7 @@ async def push_default_skills_to_existing_agents():
             return
 
         # Load all agents
-        agents_r = await db.execute(select(Agent))
+        agents_r = await query_dao.execute(db, select(Agent))
         agents = agents_r.scalars().all()
 
         pushed = 0
@@ -1095,8 +1095,8 @@ async def push_default_skills_to_existing_agents():
         if setting:
             setting.value = {"hash": current_hash}
         else:
-            db.add(SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
-        await db.commit()
+            query_dao.add(db, SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
+        await query_dao.commit(db)
 
         if pushed or removed_legacy:
             logger.info(

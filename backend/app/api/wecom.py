@@ -22,9 +22,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import create_access_token, get_current_user
-from app.database import async_session, get_db
+from app.database import get_db
 from app.models.agent import Agent as AgentModel
 from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.audit import ChatMessage
@@ -36,9 +37,8 @@ from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import channel_user_service
 from app.services.platform_service import platform_service
-from app.api.feishu import _call_agent_llm
 from app.schemas.schemas import ChannelConfigOut
-from app.services.wecom_stream import wecom_stream_manager
+from app.services import wecom_stream
 
 router = APIRouter(tags=["wecom"])
 
@@ -128,7 +128,7 @@ async def serve_wecom_verify_file(
         return Response(status_code=404)
 
     # Search all active WeCom providers for a matching verification entry
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(IdentityProvider).where(
             IdentityProvider.provider_type == "wecom",
             IdentityProvider.is_active == True,
@@ -195,7 +195,7 @@ async def configure_wecom_channel(
         "connection_mode": "websocket" if has_ws_mode else "webhook",
     }
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wecom",
@@ -210,7 +210,7 @@ async def configure_wecom_channel(
         existing.extra_config = extra_config
         existing.is_configured = True
         existing.is_connected = False
-        await db.flush()
+        await query_dao.flush(db)
         config_out = ChannelConfigOut.model_validate(existing)
     else:
         config = ChannelConfig(
@@ -224,18 +224,18 @@ async def configure_wecom_channel(
             is_configured=True,
             is_connected=False,
         )
-        db.add(config)
-        await db.flush()
+        query_dao.add(db, config)
+        await query_dao.flush(db)
         config_out = ChannelConfigOut.model_validate(config)
 
     try:
         if has_ws_mode:
             asyncio.create_task(
-                wecom_stream_manager.start_client(agent_id, bot_id, bot_secret)
+                wecom_stream.wecom_stream_manager.start_client(agent_id, bot_id, bot_secret)
             )
             logger.info(f"[WeCom] WebSocket client start triggered for agent {agent_id}")
         else:
-            asyncio.create_task(wecom_stream_manager.stop_client(agent_id))
+            asyncio.create_task(wecom_stream.wecom_stream_manager.stop_client(agent_id))
             logger.info(f"[WeCom] WebSocket client stop triggered for agent {agent_id}")
     except Exception as e:
         logger.error(f"[WeCom] Failed to update WebSocket client state: {e}")
@@ -250,7 +250,7 @@ async def get_wecom_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wecom",
@@ -262,7 +262,7 @@ async def get_wecom_channel(
 
     config_out = ChannelConfigOut.model_validate(config)
     if (config.extra_config or {}).get("connection_mode") == "websocket":
-        config_out.is_connected = wecom_stream_manager.status().get(str(agent_id), False)
+        config_out.is_connected = wecom_stream.wecom_stream_manager.status().get(str(agent_id), False)
     else:
         config_out.is_connected = False
     return config_out
@@ -287,7 +287,7 @@ async def delete_wecom_channel(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wecom",
@@ -296,8 +296,8 @@ async def delete_wecom_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WeCom not configured")
-    await wecom_stream_manager.stop_client(agent_id)
-    await db.delete(config)
+    await wecom_stream.wecom_stream_manager.stop_client(agent_id)
+    await query_dao.delete(db, config)
 
 
 # ─── Event Webhook ──────────────────────────────────────
@@ -317,7 +317,7 @@ async def wecom_verify_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     """Handle WeCom callback URL verification (GET request)."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wecom",
@@ -358,7 +358,7 @@ async def wecom_event_webhook(
     body_bytes = await request.body()
 
     # Get channel config
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wecom",
@@ -449,8 +449,8 @@ async def _process_wecom_kf_event(agent_id: uuid.UUID, config_obj: ChannelConfig
     """Sync WeCom Customer Service (KF) messages in background."""
     try:
         # Short transaction: load config only
-        async with async_session() as _cfg_db:
-            r = await _cfg_db.execute(
+        async with query_dao.session() as _cfg_db:
+            r = await query_dao.execute(_cfg_db, 
                 select(ChannelConfig).where(ChannelConfig.agent_id == agent_id, ChannelConfig.channel_type == "wecom")
             )
             config = r.scalar_one_or_none()
@@ -527,9 +527,9 @@ async def _process_wecom_text(
     Manages its own short-lived database transactions.
     """
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Load agent
-        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+        agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         if not agent_obj:
             logger.warning(f"[WeCom] Agent {agent_id} not found")
@@ -573,7 +573,7 @@ async def _process_wecom_text(
         session_conv_id = str(sess.id)
 
         # Load history
-        history_r = await db.execute(
+        history_r = await query_dao.execute(db, 
             select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
@@ -583,7 +583,7 @@ async def _process_wecom_text(
         history = _conv(reversed(history_r.scalars().all()))
 
         # Save user message
-        db.add(ChatMessage(
+        query_dao.add(db, ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
             role="user", content=user_text,
             conversation_id=session_conv_id,
@@ -594,7 +594,7 @@ async def _process_wecom_text(
         from app.api.feishu import _load_agent_and_model
         _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
 
-        await db.commit()
+        await query_dao.commit(db)
         # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
         await db.close()
 
@@ -645,21 +645,21 @@ async def _process_wecom_text(
             logger.error(f"[WeCom] Failed to send reply: {e}")
 
         # Save assistant reply (new short transaction)
-        async with async_session() as _save_db:
-            _save_db.add(ChatMessage(
+        async with query_dao.session() as _save_db:
+            query_dao.add(_save_db, ChatMessage(
                 agent_id=agent_id, user_id=platform_user_id,
                 role="assistant", content=reply_text,
                 conversation_id=session_conv_id,
             ))
             # Reload session object to update last_message_at
             from app.models.chat_session import ChatSession
-            _sess_r = await _save_db.execute(
+            _sess_r = await query_dao.execute(_save_db, 
                 select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
             )
             _sess_fresh = _sess_r.scalar_one_or_none()
             if _sess_fresh:
                 _sess_fresh.last_message_at = datetime.now(timezone.utc)
-            await _save_db.commit()
+            await query_dao.commit(_save_db)
 
         # Log activity
         await log_activity(
@@ -682,7 +682,7 @@ async def wecom_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 tenant_id = session.tenant_id
@@ -698,7 +698,7 @@ async def wecom_callback(
         # Fallback to unscoped
         provider_query = provider_query.where(IdentityProvider.tenant_id.is_(None))
 
-    provider_result = await db.execute(provider_query)
+    provider_result = await query_dao.execute(db, provider_query)
     provider = provider_result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="WeCom provider not configured for this tenant")
@@ -740,7 +740,7 @@ async def wecom_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 session.status = "authorized"
@@ -748,7 +748,7 @@ async def wecom_callback(
                 session.user_id = user.id
                 session.access_token = token
                 session.error_msg = None
-                await db.commit()
+                await query_dao.commit(db)
                 return HTMLResponse(
                     f"""<html><head><meta charset="utf-8" /></head>
                     <body style="font-family: sans-serif; padding: 24px;">

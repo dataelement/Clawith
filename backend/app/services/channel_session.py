@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.chat_session import ChatSession
 
 
@@ -31,7 +32,7 @@ async def find_or_create_channel_session(
                   are excluded from the user's "mine" session list.
         group_name: Display name for group sessions (e.g. IM group/channel name).
     """
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession).where(
             ChatSession.agent_id == agent_id,
             ChatSession.external_conv_id == external_conv_id,
@@ -51,8 +52,8 @@ async def find_or_create_channel_session(
             group_name=group_name,
             created_at=now,
         )
-        db.add(session)
-        await db.flush()  # populate session.id
+        query_dao.add(db, session)
+        await query_dao.flush(db)  # populate session.id
     else:
         # For P2P sessions: re-attribute to the correct user
         # (fixes legacy sessions stored under creator_id)

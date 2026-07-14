@@ -7,8 +7,6 @@ Usage:
     python -m app.scripts.migrate_schedules_to_triggers
 """
 import asyncio
-import uuid
-from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select

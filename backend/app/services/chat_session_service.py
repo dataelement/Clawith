@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import case, cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
@@ -19,7 +20,7 @@ async def get_primary_platform_session(
 ) -> ChatSession | None:
     """Return the current primary first-party session for a user+agent pair, if any."""
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession)
         .where(
             ChatSession.agent_id == agent_id,
@@ -61,7 +62,7 @@ async def ensure_primary_platform_session(
         .subquery()
     )
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession)
         .outerjoin(user_message_count, user_message_count.c.conversation_id == cast(ChatSession.id, String))
         .where(
@@ -80,7 +81,7 @@ async def ensure_primary_platform_session(
     existing = result.scalar_one_or_none()
     if existing:
         existing.is_primary = True
-        await db.flush()
+        await query_dao.flush(db)
         return existing
 
     now = datetime.now(timezone.utc)
@@ -92,8 +93,8 @@ async def ensure_primary_platform_session(
         is_primary=True,
         created_at=now,
     )
-    db.add(session)
-    await db.flush()
+    query_dao.add(db, session)
+    await query_dao.flush(db)
     return session
 
 
@@ -112,7 +113,6 @@ async def save_tool_call_log(
     if not conversation_id:
         return
     import json
-    from app.database import async_session
     from loguru import logger
 
     payload = {
@@ -125,15 +125,15 @@ async def save_tool_call_log(
     }
 
     try:
-        async with async_session() as db:
-            db.add(ChatMessage(
+        async with query_dao.session() as db:
+            query_dao.add(db, ChatMessage(
                 agent_id=agent_id,
                 user_id=user_id,
                 role="tool_call",
                 content=json.dumps(payload, ensure_ascii=False, default=str),
                 conversation_id=conversation_id,
             ))
-            await db.commit()
+            await query_dao.commit(db)
     except Exception as e:
         logger.warning(f"Failed to save tool call log: {e}")
 

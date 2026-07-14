@@ -13,10 +13,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.logging_config import set_trace_id
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.core.security import decode_access_token
-from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -214,7 +214,7 @@ async def maybe_mark_session_read_for_active_viewer(
     if not await manager.is_user_viewing_session(str(agent_id), session_id, str(user_id)):
         return False
 
-    session = await db.get(ChatSession, uuid.UUID(session_id))
+    session = await query_dao.get(db, ChatSession, uuid.UUID(session_id))
     if not session:
         return False
 
@@ -302,8 +302,8 @@ class WebSocketChatHandler:
             return False
 
         try:
-            async with async_session() as db:
-                result = await db.execute(select(User).where(User.id == user_id))
+            async with query_dao.session() as db:
+                result = await query_dao.execute(db, select(User).where(User.id == user_id))
                 self.user = result.scalar_one_or_none()
                 if not self.user:
                     logger.error("[WS] User not found")
@@ -366,7 +366,7 @@ class WebSocketChatHandler:
     async def _load_models(self, db: AsyncSession):
         """Loads primary and fallback models for the agent."""
         if self.agent.primary_model_id:
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == self.agent.primary_model_id))
+            model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == self.agent.primary_model_id))
             self.llm_model = model_result.scalar_one_or_none()
             if self.llm_model and not self.llm_model.enabled:
                 logger.info(f"[WS] Primary model {self.llm_model.model} is disabled, skipping")
@@ -375,7 +375,7 @@ class WebSocketChatHandler:
                 logger.info(f"[WS] Primary model loaded: {self.llm_model.model if self.llm_model else 'None'}")
 
         if self.agent.fallback_model_id:
-            fb_result = await db.execute(select(LLMModel).where(LLMModel.id == self.agent.fallback_model_id))
+            fb_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == self.agent.fallback_model_id))
             self.fallback_llm_model = fb_result.scalar_one_or_none()
             if self.fallback_llm_model and not self.fallback_llm_model.enabled:
                 logger.info(f"[WS] Fallback model {self.fallback_llm_model.model} is disabled, skipping")
@@ -398,7 +398,7 @@ class WebSocketChatHandler:
                 conv_id = None
                 _existing = None
             else:
-                _sr = await db.execute(
+                _sr = await query_dao.execute(db, 
                     select(ChatSession).where(
                         ChatSession.id == _sid,
                         ChatSession.agent_id == self.agent_id,
@@ -412,7 +412,7 @@ class WebSocketChatHandler:
                     await self.websocket.close(code=4003)
                     return None
         if not conv_id:
-            _sr = await db.execute(
+            _sr = await query_dao.execute(db, 
                 select(ChatSession)
                 .where(
                     ChatSession.agent_id == self.agent_id,
@@ -429,8 +429,8 @@ class WebSocketChatHandler:
                 conv_id = str(_latest.id)
             else:
                 _new_session = await ensure_primary_platform_session(db, self.agent_id, user_id)
-                await db.commit()
-                await db.refresh(_new_session)
+                await query_dao.commit(db)
+                await query_dao.refresh(db, _new_session)
                 conv_id = str(_new_session.id)
                 logger.info(f"[WS] Selected primary session {conv_id}")
         return conv_id
@@ -438,7 +438,7 @@ class WebSocketChatHandler:
     async def _load_history(self, db: AsyncSession):
         """Loads and prepares history messages for the conversation."""
         try:
-            history_result = await db.execute(
+            history_result = await query_dao.execute(db, 
                 select(ChatMessage)
                 .where(ChatMessage.agent_id == self.agent_id, ChatMessage.conversation_id == self.conv_id)
                 .order_by(ChatMessage.created_at.desc())
@@ -538,7 +538,7 @@ class WebSocketChatHandler:
 
     async def _handle_onboarding_trigger_guard(self) -> bool:
         """Returns True if the onboarding trigger was ignored (already onboarded)."""
-        async with async_session() as _gdb:
+        async with query_dao.session() as _gdb:
             if await is_onboarded(_gdb, self.agent_id, self.user.id):
                 logger.info("[WS] Onboarding trigger ignored — pair already onboarded")
                 await self.websocket.send_json(
@@ -552,19 +552,19 @@ class WebSocketChatHandler:
 
     async def _resolve_effective_model(self, override_model_id: str | None) -> LLMModel | None:
         """Reloads model config and resolves effective model (taking overrides into account)."""
-        async with async_session() as _mdb:
-            _agent_r = await _mdb.execute(select(Agent).where(Agent.id == self.agent_id))
+        async with query_dao.session() as _mdb:
+            _agent_r = await query_dao.execute(_mdb, select(Agent).where(Agent.id == self.agent_id))
             _agent_cur = _agent_r.scalar_one_or_none()
             if _agent_cur:
                 if _agent_cur.primary_model_id:
-                    _m_r = await _mdb.execute(select(LLMModel).where(LLMModel.id == _agent_cur.primary_model_id))
+                    _m_r = await query_dao.execute(_mdb, select(LLMModel).where(LLMModel.id == _agent_cur.primary_model_id))
                     _m = _m_r.scalar_one_or_none()
                     self.llm_model = _m if (_m and _m.enabled) else None
                 else:
                     self.llm_model = None
 
                 if _agent_cur.fallback_model_id:
-                    _fb_r = await _mdb.execute(select(LLMModel).where(LLMModel.id == _agent_cur.fallback_model_id))
+                    _fb_r = await query_dao.execute(_mdb, select(LLMModel).where(LLMModel.id == _agent_cur.fallback_model_id))
                     _fb = _fb_r.scalar_one_or_none()
                     self.fallback_llm_model = _fb if (_fb and _fb.enabled) else None
                 else:
@@ -578,8 +578,8 @@ class WebSocketChatHandler:
         if override_model_id:
             try:
                 _ovr_uuid = uuid.UUID(str(override_model_id))
-                async with async_session() as _mdb:
-                    _mr = await _mdb.execute(select(LLMModel).where(LLMModel.id == _ovr_uuid))
+                async with query_dao.session() as _mdb:
+                    _mr = await query_dao.execute(_mdb, select(LLMModel).where(LLMModel.id == _ovr_uuid))
                     _ovr = _mr.scalar_one_or_none()
                     if (
                         _ovr
@@ -622,14 +622,14 @@ class WebSocketChatHandler:
 
         if is_onboarding_trigger:
             logger.info("[WS] Onboarding trigger — skipping user-message persistence")
-            async with async_session() as _sdb:
-                _sr = await _sdb.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(self.conv_id)))
+            async with query_dao.session() as _sdb:
+                _sr = await query_dao.execute(_sdb, select(ChatSession).where(ChatSession.id == uuid.UUID(self.conv_id)))
                 _s = _sr.scalar_one_or_none()
                 if _s and _s.title.startswith("Session "):
                     _s.title = "Onboarding"
-                    await _sdb.commit()
+                    await query_dao.commit(_sdb)
         else:
-            async with async_session() as db:
+            async with query_dao.session() as db:
                 user_msg = ChatMessage(
                     agent_id=self.agent_id,
                     user_id=self.user.id,
@@ -637,10 +637,10 @@ class WebSocketChatHandler:
                     content=saved_content,
                     conversation_id=self.conv_id,
                 )
-                db.add(user_msg)
+                query_dao.add(db, user_msg)
                 # Update session
                 _now = datetime.now(tz.utc)
-                _sess_r = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(self.conv_id)))
+                _sess_r = await query_dao.execute(db, select(ChatSession).where(ChatSession.id == uuid.UUID(self.conv_id)))
                 _sess = _sess_r.scalar_one_or_none()
                 if _sess:
                     _sess.last_message_at = _now
@@ -650,14 +650,14 @@ class WebSocketChatHandler:
                         if file_name and not clean_title:
                             clean_title = f"📎 {file_name}"
                         _sess.title = clean_title[:40] if clean_title else content[:40]
-                await db.commit()
+                await query_dao.commit(db)
             logger.info("[WS] User message saved")
 
     async def _route_openclaw(self, content: str):
         """Enqueues message for OpenClaw edge node poll."""
         from app.models.gateway_message import GatewayMessage as GwMsg
 
-        async with async_session() as db:
+        async with query_dao.session() as db:
             gw_msg = GwMsg(
                 agent_id=self.agent_id,
                 sender_user_id=self.user.id,
@@ -665,8 +665,8 @@ class WebSocketChatHandler:
                 content=content,
                 status="pending",
             )
-            db.add(gw_msg)
-            await db.commit()
+            query_dao.add(db, gw_msg)
+            await query_dao.commit(db)
         logger.info("[WS] OpenClaw: message queued for gateway poll")
         await self.websocket.send_json(
             {
@@ -699,7 +699,7 @@ class WebSocketChatHandler:
                 if needs_onboarding_mark and not onboarding_mark_done:
                     onboarding_mark_done = True
                     try:
-                        async with async_session() as _ob_db:
+                        async with query_dao.session() as _ob_db:
                             await mark_onboarding_phase(
                                 _ob_db,
                                 self.agent_id,
@@ -811,7 +811,7 @@ class WebSocketChatHandler:
                 # Resolve onboarding prompt
                 skip_tools_for_greeting = False
                 try:
-                    async with async_session() as _ob_db:
+                    async with query_dao.session() as _ob_db:
                         _onb = await resolve_onboarding_prompt(
                             _ob_db,
                             self.agent,
@@ -1005,26 +1005,26 @@ class WebSocketChatHandler:
                 tool_call_id=data.get("call_id"),
                 reasoning_content=data.get("reasoning_content"),
             )
-            async with async_session() as _tc_db:
+            async with query_dao.session() as _tc_db:
                 await maybe_mark_session_read_for_active_viewer(
                     _tc_db,
                     agent_id=self.agent_id,
                     session_id=self.conv_id,
                     user_id=self.user.id,
                 )
-                await _tc_db.commit()
+                await query_dao.commit(_tc_db)
         except Exception as _tc_err:
             logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
 
     async def _update_activity_and_quota(self, assistant_response: str):
         """Update last_active_at, conversation/agent LLM usage, and log activity."""
         try:
-            async with async_session() as _db:
-                _ar = await _db.execute(select(Agent).where(Agent.id == self.agent_id))
+            async with query_dao.session() as _db:
+                _ar = await query_dao.execute(_db, select(Agent).where(Agent.id == self.agent_id))
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
                     _agent.last_active_at = datetime.now(tz.utc)
-                    await _db.commit()
+                    await query_dao.commit(_db)
         except Exception as e:
             logger.warning(f"[WS] Failed to update last_active_at: {e}")
 
@@ -1050,7 +1050,7 @@ class WebSocketChatHandler:
         if not task_title:
             return assistant_response
         try:
-            async with async_session() as db:
+            async with query_dao.session() as db:
                 task = Task(
                     agent_id=self.agent_id,
                     title=task_title,
@@ -1058,9 +1058,9 @@ class WebSocketChatHandler:
                     status="pending",
                     priority="medium",
                 )
-                db.add(task)
-                await db.commit()
-                await db.refresh(task)
+                query_dao.add(db, task)
+                await query_dao.commit(db)
+                await query_dao.refresh(db, task)
                 logger.info(f"[WS] Task created: {task.id}")
                 task_id = task.id
             asyncio.create_task(execute_task(task_id, self.agent_id))
@@ -1071,7 +1071,7 @@ class WebSocketChatHandler:
 
     async def _save_assistant_reply(self, assistant_response: str, thinking_content: list[str]):
         """Saves assistant reply to DB."""
-        async with async_session() as db:
+        async with query_dao.session() as db:
             assistant_msg = ChatMessage(
                 agent_id=self.agent_id,
                 user_id=self.user.id,
@@ -1080,12 +1080,12 @@ class WebSocketChatHandler:
                 conversation_id=self.conv_id,
                 thinking="".join(thinking_content) if thinking_content else None,
             )
-            db.add(assistant_msg)
+            query_dao.add(db, assistant_msg)
             await maybe_mark_session_read_for_active_viewer(
                 db,
                 agent_id=self.agent_id,
                 session_id=self.conv_id,
                 user_id=self.user.id,
             )
-            await db.commit()
+            await query_dao.commit(db)
         logger.info("[WS] Assistant message saved")

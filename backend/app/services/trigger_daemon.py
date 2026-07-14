@@ -11,8 +11,8 @@ from datetime import datetime, timezone, timedelta
 from loguru import logger
 from sqlalchemy import select
 
+from app.dao import query_dao
 from app.core.logging_config import new_trace_id
-from app.database import async_session
 from app.models.trigger import AgentTrigger
 from app.services.trigger_runtime.evaluator import (
     evaluate_trigger as evaluate_trigger_runtime,
@@ -26,8 +26,6 @@ from app.services.trigger_runtime.invoker import invoke_agent_for_triggers as in
 from app.services.trigger_runtime import (
     claim_ready_trigger_invocations,
     enqueue_due_trigger,
-    mark_trigger_executions_completed,
-    mark_trigger_executions_failed,
 )
 
 TICK_INTERVAL = 15  # seconds
@@ -96,8 +94,8 @@ async def _tick():
     new_trace_id()
     now = datetime.now(timezone.utc)
 
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(AgentTrigger.is_enabled == True)
         )
         all_triggers = result.scalars().all()
@@ -117,12 +115,12 @@ async def _tick():
     for trigger in all_triggers:
         # Auto-disable expired triggers
         if trigger.expires_at and now >= trigger.expires_at:
-            async with async_session() as db:
-                result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger.id))
+            async with query_dao.session() as db:
+                result = await query_dao.execute(db, select(AgentTrigger).where(AgentTrigger.id == trigger.id))
                 t = result.scalar_one_or_none()
                 if t:
                     t.is_enabled = False
-                    await db.commit()
+                    await query_dao.commit(db)
             continue
 
         try:
@@ -142,14 +140,14 @@ async def _tick():
                                 f"on_message rate limit ({_ON_MSG_RATE_LIMIT}/hr). "
                                 f"Auto-disabling trigger '{trigger.name}'."
                             )
-                            async with async_session() as db:
-                                result = await db.execute(
+                            async with query_dao.session() as db:
+                                result = await query_dao.execute(db, 
                                     select(AgentTrigger).where(AgentTrigger.id == trigger.id)
                                 )
                                 t_obj = result.scalar_one_or_none()
                                 if t_obj:
                                     t_obj.is_enabled = False
-                                    await db.commit()
+                                    await query_dao.commit(db)
                             continue
                         recent.append(now)
                         _on_msg_fire_log[trigger.agent_id] = recent
@@ -178,7 +176,7 @@ async def _tick():
         # minutes). Without this, the 15s tick interval + 30s dedup window
         # would cause repeated invocations for long-running triggers.
         try:
-            async with async_session() as db:
+            async with query_dao.session() as db:
                 for t in agent_triggers:
                     cfg = t.config or {}
                     if isinstance(cfg, str):
@@ -189,7 +187,7 @@ async def _tick():
                             cfg = {}
                     if cfg.get("_execution_id"):
                         continue
-                    result = await db.execute(
+                    result = await query_dao.execute(db, 
                         select(AgentTrigger).where(AgentTrigger.id == t.id)
                     )
                     trigger = result.scalar_one_or_none()
@@ -201,7 +199,7 @@ async def _tick():
                             trigger.is_enabled = False
                         if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
                             trigger.is_enabled = False
-                await db.commit()
+                await query_dao.commit(db)
         except Exception as e:
             logger.warning(f"Failed to pre-update trigger state: {e}")
 
@@ -224,7 +222,6 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
         skip_dedup: If True, bypass the dedup window check.
         a2a_session_id: Optional A2A chat session ID to mirror the reply into.
     """
-    import time as _time
 
     now = datetime.now(timezone.utc)
 
@@ -258,9 +255,9 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
     from_agent_name = ""
     if from_agent_id:
         try:
-            async with async_session() as db:
+            async with query_dao.session() as db:
                 from app.models.agent import Agent as AgentModel
-                r = await db.execute(select(AgentModel.name).where(AgentModel.id == from_agent_id))
+                r = await query_dao.execute(db, select(AgentModel.name).where(AgentModel.id == from_agent_id))
                 from_agent_name = r.scalar() or ""
         except Exception as e:
             logger.warning(f"Failed to lookup sender agent name: {e}")

@@ -5,11 +5,12 @@ Provides Config CRUD and message handling for DingTalk bots using Stream mode.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -44,7 +45,7 @@ async def configure_dingtalk_channel(
     conn_mode = extra_config.get("connection_mode", "websocket")
     dingtalk_agent_id = extra_config.get("agent_id", "")  # DingTalk AgentId for API messaging
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "dingtalk",
@@ -56,7 +57,7 @@ async def configure_dingtalk_channel(
         existing.app_secret = app_secret
         existing.is_configured = True
         existing.extra_config = {**existing.extra_config, "connection_mode": conn_mode, "agent_id": dingtalk_agent_id}
-        await db.flush()
+        await query_dao.flush(db)
 
         # Restart Stream client if in websocket mode
         if conn_mode == "websocket":
@@ -79,8 +80,8 @@ async def configure_dingtalk_channel(
         is_configured=True,
         extra_config={"connection_mode": conn_mode},
     )
-    db.add(config)
-    await db.flush()
+    query_dao.add(db, config)
+    await query_dao.flush(db)
 
     # Start Stream client if in websocket mode
     if conn_mode == "websocket":
@@ -98,7 +99,7 @@ async def get_dingtalk_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "dingtalk",
@@ -119,7 +120,7 @@ async def delete_dingtalk_channel(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "dingtalk",
@@ -128,7 +129,7 @@ async def delete_dingtalk_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="DingTalk not configured")
-    await db.delete(config)
+    await query_dao.delete(db, config)
 
     # Stop Stream client
     from app.services.dingtalk_stream import dingtalk_stream_manager
@@ -161,17 +162,16 @@ async def process_dingtalk_message(
     import httpx
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
-    from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_user_service import channel_user_service
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         sender_staff_id = (sender_staff_id or "").strip()
 
         # Load agent
-        agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+        agent_r = await query_dao.execute(db, _select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         if not agent_obj:
             logger.warning(f"[DingTalk] Agent {agent_id} not found")
@@ -212,7 +212,7 @@ async def process_dingtalk_message(
         session_conv_id = str(sess.id)
 
         # Load history
-        history_r = await db.execute(
+        history_r = await query_dao.execute(db, 
             _select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
@@ -237,7 +237,7 @@ async def process_dingtalk_message(
             saved_content = _clean_text or user_text
 
         # Save user message
-        db.add(ChatMessage(
+        query_dao.add(db, ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
             role="user", content=saved_content,
             conversation_id=session_conv_id,
@@ -245,7 +245,7 @@ async def process_dingtalk_message(
         sess.last_message_at = datetime.now(timezone.utc)
 
         # Also load DingTalk credentials and agent/model config in this transaction
-        _dt_cfg_r = await db.execute(
+        _dt_cfg_r = await query_dao.execute(db, 
             _select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "dingtalk",
@@ -262,7 +262,7 @@ async def process_dingtalk_message(
         # Extract agent name before closing session
         _agent_name = agent_obj.name
 
-        await db.commit()
+        await query_dao.commit(db)
         # ── Phase 1 complete: release connection before slow LLM/HTTP work ──
         await db.close()
 
@@ -397,21 +397,21 @@ async def process_dingtalk_message(
                 logger.error(f"[DingTalk] Fallback text reply also failed: {e2}")
 
         # Save assistant reply (new short transaction)
-        async with async_session() as _save_db:
-            _save_db.add(ChatMessage(
+        async with query_dao.session() as _save_db:
+            query_dao.add(_save_db, ChatMessage(
                 agent_id=agent_id, user_id=platform_user_id,
                 role="assistant", content=reply_text,
                 conversation_id=session_conv_id,
             ))
             # Reload session object to update last_message_at
             from app.models.chat_session import ChatSession
-            _sess_r = await _save_db.execute(
+            _sess_r = await query_dao.execute(_save_db, 
                 _select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
             )
             _sess_fresh = _sess_r.scalar_one_or_none()
             if _sess_fresh:
                 _sess_fresh.last_message_at = datetime.now(timezone.utc)
-            await _save_db.commit()
+            await query_dao.commit(_save_db)
 
         # Log activity
         from app.services.activity_logger import log_activity
@@ -441,7 +441,7 @@ async def dingtalk_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 tenant_id = session.tenant_id
@@ -485,7 +485,7 @@ async def dingtalk_callback(
     if state:
         try:
             sid = uuid.UUID(state)
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 session.status = "authorized"
@@ -493,7 +493,7 @@ async def dingtalk_callback(
                 session.user_id = user.id
                 session.access_token = token
                 session.error_msg = None
-                await db.commit()
+                await query_dao.commit(db)
                 return HTMLResponse(
                     f"""<html><head><meta charset="utf-8" /></head>
                     <body style="font-family: sans-serif; padding: 24px;">

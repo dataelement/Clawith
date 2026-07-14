@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import AgentTemplate
 
 
@@ -446,7 +446,7 @@ async def seed_agent_templates():
     """Insert default agent templates if they don't exist. Update stale ones."""
     templates = _merged_templates()
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         with db.no_autoflush:
             # Remove old builtin templates that are no longer in our list
             # BUT skip templates that are still referenced by agents
@@ -454,25 +454,25 @@ async def seed_agent_templates():
             from sqlalchemy import func
 
             current_names = {t["name"] for t in templates}
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(AgentTemplate).where(AgentTemplate.is_builtin == True)
             )
             existing_builtins = result.scalars().all()
             for old in existing_builtins:
                 if old.name not in current_names:
                     # Check if any agents still reference this template
-                    ref_count = await db.execute(
+                    ref_count = await query_dao.execute(db, 
                         select(func.count(Agent.id)).where(Agent.template_id == old.id)
                     )
                     if ref_count.scalar() == 0:
-                        await db.delete(old)
+                        await query_dao.delete(db, old)
                         logger.info(f"[TemplateSeeder] Removed old template: {old.name}")
                     else:
                         logger.info(f"[TemplateSeeder] Skipping delete of '{old.name}' (still referenced by agents)")
 
             # Upsert templates
             for tmpl in templates:
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(AgentTemplate).where(
                         AgentTemplate.name == tmpl["name"],
                         AgentTemplate.is_builtin == True,
@@ -490,7 +490,7 @@ async def seed_agent_templates():
                     existing.capability_bullets = tmpl["capability_bullets"]
                     existing.bootstrap_content = tmpl["bootstrap_content"]
                 else:
-                    db.add(AgentTemplate(
+                    query_dao.add(db, AgentTemplate(
                         name=tmpl["name"],
                         description=tmpl["description"],
                         icon=tmpl["icon"],
@@ -504,7 +504,7 @@ async def seed_agent_templates():
                         bootstrap_content=tmpl["bootstrap_content"],
                     ))
                     logger.info(f"[TemplateSeeder] Created template: {tmpl['name']}")
-            await db.commit()
+            await query_dao.commit(db)
             logger.info(f"[TemplateSeeder] Seeded {len(templates)} templates "
                         f"({len(DEFAULT_TEMPLATES)} legacy + "
                         f"{len(templates) - len(DEFAULT_TEMPLATES)} folder)")

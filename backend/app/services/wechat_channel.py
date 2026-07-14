@@ -14,7 +14,7 @@ import httpx
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent as AgentModel
 from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
 from app.models.audit import ChatMessage
@@ -158,7 +158,7 @@ async def remember_wechat_context(
     context_token: str,
     conv_id: str,
 ) -> None:
-    config_result = await db.execute(
+    config_result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wechat",
@@ -202,8 +202,8 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
         logger.warning(f"[WeChat] Missing context_token for agent {agent_id}, message skipped")
         return
 
-    async with async_session() as db:
-        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    async with query_dao.session() as db:
+        agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         if not agent_obj:
             return
@@ -240,7 +240,7 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
             conv_id=conv_id,
         )
 
-        history_r = await db.execute(
+        history_r = await query_dao.execute(db, 
             select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
@@ -248,7 +248,7 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
         )
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
-        db.add(
+        query_dao.add(db, 
             ChatMessage(
                 agent_id=agent_id,
                 user_id=platform_user_id,
@@ -262,7 +262,7 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
         # Pre-load agent/model before releasing the connection
         _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
 
-        await db.commit()
+        await query_dao.commit(db)
         # ── Phase 1 complete: release connection before slow LLM call ──
 
     # ── Phase 2: LLM call (no DB session) ──
@@ -289,8 +289,8 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
     )
 
     # ── Phase 3: Save reply (new short transaction) ──
-    async with async_session() as _save_db:
-        _save_db.add(
+    async with query_dao.session() as _save_db:
+        query_dao.add(_save_db, 
             ChatMessage(
                 agent_id=agent_id,
                 user_id=platform_user_id,
@@ -300,13 +300,13 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
             )
         )
         from app.models.chat_session import ChatSession
-        _sess_r = await _save_db.execute(
+        _sess_r = await query_dao.execute(_save_db, 
             select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
         )
         _sess_fresh = _sess_r.scalar_one_or_none()
         if _sess_fresh:
             _sess_fresh.last_message_at = datetime.now(timezone.utc)
-        await _save_db.commit()
+        await query_dao.commit(_save_db)
 
     await log_activity(
         agent_id,
@@ -350,8 +350,8 @@ class WeChatPollManager:
 
     async def reconcile_clients(self) -> None:
         configured_agent_ids: set[uuid.UUID] = set()
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.channel_type == "wechat",
                     ChannelConfig.is_configured == True,
@@ -450,8 +450,8 @@ class WeChatPollManager:
             return data
 
     async def _load_config(self, agent_id: uuid.UUID) -> ChannelConfig | None:
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "wechat",
@@ -460,8 +460,8 @@ class WeChatPollManager:
             return result.scalar_one_or_none()
 
     async def _update_extra(self, agent_id: uuid.UUID, updates: dict[str, Any]) -> None:
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "wechat",
@@ -473,11 +473,11 @@ class WeChatPollManager:
             extra = dict(config.extra_config or {})
             extra.update(updates)
             config.extra_config = extra
-            await db.commit()
+            await query_dao.commit(db)
 
     async def _set_connected(self, agent_id: uuid.UUID, connected: bool) -> None:
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "wechat",
@@ -487,7 +487,7 @@ class WeChatPollManager:
             if not config:
                 return
             config.is_connected = connected
-            await db.commit()
+            await query_dao.commit(db)
 
 
 wechat_poll_manager = WeChatPollManager()

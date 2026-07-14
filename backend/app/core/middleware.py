@@ -6,7 +6,7 @@ import time
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.logging_config import set_trace_id, get_trace_id
+from app.core.logging_config import set_trace_id
 from loguru import logger
 
 

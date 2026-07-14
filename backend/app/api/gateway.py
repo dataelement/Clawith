@@ -14,7 +14,8 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db, async_session
+from app.dao import query_dao
+from app.database import get_db
 from app.core.permissions import evaluate_agent_relationship_status, evaluate_human_relationship_status
 from app.models.agent import Agent
 from app.models.gateway_message import GatewayMessage
@@ -35,7 +36,7 @@ def _hash_key(key: str) -> str:
 async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     """Authenticate an OpenClaw agent by its API key."""
     # First try plaintext (new behavior)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Agent).where(
             Agent.api_key_hash == api_key,
             Agent.agent_type == "openclaw",
@@ -46,7 +47,7 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     # Fallback to hashed (legacy behavior)
     if not agent:
         key_hash = _hash_key(api_key)
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(Agent).where(
                 Agent.api_key_hash == key_hash,
                 Agent.agent_type == "openclaw",
@@ -79,7 +80,7 @@ async def poll_messages(
     agent.status = "running"
 
     # Fetch pending messages
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(GatewayMessage)
         .where(GatewayMessage.agent_id == agent.id, GatewayMessage.status == "pending")
         .order_by(GatewayMessage.created_at.asc())
@@ -97,17 +98,17 @@ async def poll_messages(
         sender_agent_name = None
         sender_user_name = None
         if msg.sender_agent_id:
-            r = await db.execute(select(Agent.name).where(Agent.id == msg.sender_agent_id))
+            r = await query_dao.execute(db, select(Agent.name).where(Agent.id == msg.sender_agent_id))
             sender_agent_name = r.scalar_one_or_none()
         if msg.sender_user_id:
-            r = await db.execute(select(User.display_name).where(User.id == msg.sender_user_id))
+            r = await query_dao.execute(db, select(User.display_name).where(User.id == msg.sender_user_id))
             sender_user_name = r.scalar_one_or_none()
 
         # Fetch conversation history (last 10 messages) for context
         history = []
         if msg.conversation_id:
             from app.models.audit import ChatMessage
-            hist_result = await db.execute(
+            hist_result = await query_dao.execute(db, 
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == msg.conversation_id)
                 .order_by(ChatMessage.created_at.desc())
@@ -118,7 +119,7 @@ async def poll_messages(
                 # Resolve sender name for each history message
                 h_sender = None
                 if h.role == "user" and h.user_id:
-                    r = await db.execute(select(User.display_name).where(User.id == h.user_id))
+                    r = await query_dao.execute(db, select(User.display_name).where(User.id == h.user_id))
                     h_sender = r.scalar_one_or_none()
                 elif h.role == "assistant":
                     h_sender = agent.name
@@ -147,7 +148,7 @@ async def poll_messages(
     rel_items = []
 
     # Human relationships (with available channels)
-    h_result = await db.execute(
+    h_result = await query_dao.execute(db, 
         select(AgentRelationship)
         .where(AgentRelationship.agent_id == agent.id)
         .options(selectinload(AgentRelationship.member))
@@ -169,7 +170,7 @@ async def poll_messages(
             ))
 
     # Agent-to-agent relationships
-    a_result = await db.execute(
+    a_result = await query_dao.execute(db, 
         select(AgentAgentRelationship)
         .where(AgentAgentRelationship.agent_id == agent.id)
         .options(selectinload(AgentAgentRelationship.target_agent))
@@ -185,7 +186,7 @@ async def poll_messages(
                 channels=["agent"],
             ))
 
-    await db.commit()
+    await query_dao.commit(db)
     return GatewayPollResponse(messages=out, relationships=rel_items)
 
 
@@ -203,7 +204,7 @@ async def report_result(
     logger.info(f"[Gateway] report called, key_prefix={x_api_key[:8]}..., msg_id={body.message_id}")
     agent = await _get_agent_by_key(x_api_key, db)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(GatewayMessage).where(
             GatewayMessage.id == body.message_id,
             GatewayMessage.agent_id == agent.id,
@@ -226,7 +227,7 @@ async def report_result(
         from app.models.audit import ChatMessage
         from app.models.participant import Participant
         # Look up OpenClaw agent's participant_id
-        part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == agent.id))
+        part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == agent.id))
         participant = part_r.scalar_one_or_none()
         
         assistant_msg = ChatMessage(
@@ -237,9 +238,9 @@ async def report_result(
             conversation_id=msg.conversation_id,
             participant_id=participant.id if participant else None,
         )
-        db.add(assistant_msg)
+        query_dao.add(db, assistant_msg)
 
-    await db.commit()
+    await query_dao.commit(db)
 
     # Push to WebSocket if user is connected
     if body.result and msg.conversation_id and msg.sender_user_id:
@@ -256,7 +257,7 @@ async def report_result(
     # If the original message was from another agent (OpenClaw-to-OpenClaw),
     # write the reply back as a gateway_message for the sender agent to poll
     if body.result and msg.sender_agent_id:
-        async with async_session() as reply_db:
+        async with query_dao.session() as reply_db:
             conv_id = msg.conversation_id or f"gw_agent_{msg.sender_agent_id}_{agent.id}"
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
@@ -265,8 +266,8 @@ async def report_result(
                 status="pending",
                 conversation_id=conv_id,
             )
-            reply_db.add(gw_reply)
-            await reply_db.commit()
+            query_dao.add(reply_db, gw_reply)
+            await query_dao.commit(reply_db)
             logger.info(f"[Gateway] Reply routed back to sender agent {msg.sender_agent_id}")
 
     return {"status": "ok"}
@@ -283,7 +284,7 @@ async def heartbeat(
     agent = await _get_agent_by_key(x_api_key, db)
     agent.openclaw_last_seen = datetime.now(timezone.utc)
     agent.status = "running"
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "agent_id": str(agent.id)}
 
 
@@ -314,12 +315,12 @@ async def _send_to_agent_background(
         from app.models.audit import ChatMessage
         from app.models.chat_session import ChatSession
 
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Load target agent's LLM model
             if not target_primary_model_id:
                 logger.warning(f"Target agent {target_agent_name} has no LLM model")
                 return
-            result = await db.execute(select(LLMModel).where(LLMModel.id == target_primary_model_id))
+            result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == target_primary_model_id))
             model = result.scalar_one_or_none()
             if not model:
                 return
@@ -339,7 +340,7 @@ async def _send_to_agent_background(
             conv_id = str(session_uuid)
 
             # Find or create the ChatSession
-            existing = await db.execute(
+            existing = await query_dao.execute(db, 
                 select(ChatSession).where(ChatSession.id == session_uuid)
             )
             session = existing.scalar_one_or_none()
@@ -354,19 +355,19 @@ async def _send_to_agent_background(
                     peer_agent_id=session_peer_id,
                     created_at=datetime.now(timezone.utc),
                 )
-                db.add(session)
-                await db.commit()
-                await db.refresh(session)
+                query_dao.add(db, session)
+                await query_dao.commit(db)
+                await query_dao.refresh(db, session)
 
                 # Migrate any existing messages from old gw_agent_ format
                 old_conv_id = f"gw_agent_{source_agent_id}_{target_agent_id}"
                 from sqlalchemy import update
-                await db.execute(
+                await query_dao.execute(db, 
                     update(ChatMessage)
                     .where(ChatMessage.conversation_id == old_conv_id)
                     .values(conversation_id=conv_id)
                 )
-                await db.commit()
+                await query_dao.commit(db)
 
             # Update last_message_at
             from datetime import datetime, timezone
@@ -384,7 +385,7 @@ async def _send_to_agent_background(
             )
 
             # Load recent conversation history for context
-            hist_result = await db.execute(
+            hist_result = await query_dao.execute(db, 
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == conv_id)
                 .order_by(ChatMessage.created_at.desc())
@@ -402,13 +403,13 @@ async def _send_to_agent_background(
             from app.models.participant import Participant
             
             # Lookup participants for both agents
-            src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == source_agent_id))
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
+            src_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == source_agent_id))
+            tgt_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
             src_participant = src_part_r.scalar_one_or_none()
             tgt_participant = tgt_part_r.scalar_one_or_none()
             
             # Save user message to conversation
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=target_agent_id,
                 conversation_id=conv_id,
                 role="user",
@@ -416,7 +417,7 @@ async def _send_to_agent_background(
                 user_id=target_creator_id,
                 participant_id=src_participant.id if src_participant else None,
             ))
-            await db.commit()
+            await query_dao.commit(db)
 
         # Call LLM
         collected = []
@@ -436,12 +437,12 @@ async def _send_to_agent_background(
         final_reply = reply or "".join(collected)
 
         # Save assistant reply to conversation
-        async with async_session() as db:
+        async with query_dao.session() as db:
             from app.models.participant import Participant
-            tgt_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
+            tgt_part_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id))
             tgt_participant = tgt_part_r.scalar_one_or_none()
             
-            db.add(ChatMessage(
+            query_dao.add(db, ChatMessage(
                 agent_id=target_agent_id,
                 conversation_id=conv_id,
                 role="assistant",
@@ -458,8 +459,8 @@ async def _send_to_agent_background(
                 status="pending",
                 conversation_id=conv_id,
             )
-            db.add(gw_reply)
-            await db.commit()
+            query_dao.add(db, gw_reply)
+            await query_dao.commit(db)
 
         logger.info(f"[Gateway] Agent {target_agent_name} replied to {source_agent_name}")
 
@@ -492,7 +493,7 @@ async def send_message(
     from app.models.org import AgentAgentRelationship
     from sqlalchemy.orm import selectinload
 
-    rel_result = await db.execute(
+    rel_result = await query_dao.execute(db, 
         select(AgentAgentRelationship)
         .where(AgentAgentRelationship.agent_id == agent.id)
         .options(selectinload(AgentAgentRelationship.target_agent))
@@ -523,8 +524,8 @@ async def send_message(
                 status="pending",
                 conversation_id=conv_id,
             )
-            db.add(gw_msg)
-            await db.commit()
+            query_dao.add(db, gw_msg)
+            await query_dao.commit(db)
             return {
                 "status": "accepted",
                 "target": target_agent.name,
@@ -541,7 +542,7 @@ async def send_message(
             _tgt_model = str(target_agent.primary_model_id) if target_agent.primary_model_id else ""
             _tgt_role = target_agent.role_description or ""
             _tgt_creator = str(target_agent.creator_id) if target_agent.creator_id else ""
-            await db.commit()
+            await query_dao.commit(db)
             task = asyncio.create_task(_send_to_agent_background(
                 _src_id, _src_name, _tgt_id, _tgt_name,
                 _tgt_model, _tgt_role, _tgt_creator, content,
@@ -559,7 +560,7 @@ async def send_message(
     from app.models.org import AgentRelationship
     from sqlalchemy.orm import selectinload
 
-    rel_result = await db.execute(
+    rel_result = await query_dao.execute(db, 
         select(AgentRelationship)
         .where(AgentRelationship.agent_id == agent.id)
         .options(selectinload(AgentRelationship.member))
@@ -581,7 +582,7 @@ async def send_message(
                 break
 
     if not target_member:
-        await db.commit()
+        await query_dao.commit(db)
         raise HTTPException(
             status_code=404,
             detail=f"Target '{target_name}' not found. Check your relationships list."
@@ -593,25 +594,25 @@ async def send_message(
         from app.services.feishu_service import feishu_service
         import json as _json
 
-        config_result = await db.execute(
+        config_result = await query_dao.execute(db, 
             select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
         )
         config = config_result.scalar_one_or_none()
         if not config:
             # Try to find any feishu config in the org
-            config_result = await db.execute(
+            config_result = await query_dao.execute(db, 
                 select(ChannelConfig).where(ChannelConfig.channel == "feishu").limit(1)
             )
             config = config_result.scalar_one_or_none()
 
         if not config:
-            await db.commit()
+            await query_dao.commit(db)
             raise HTTPException(status_code=400, detail="No Feishu channel configured")
 
         # Extract config values and release connection before Feishu HTTP calls
         _cfg_app_id = config.app_id
         _cfg_app_secret = config.app_secret
-        await db.commit()
+        await query_dao.commit(db)
         await db.close()
 
         # Prefer user_id (tenant-stable, works across apps), fallback to open_id
@@ -646,7 +647,7 @@ async def send_message(
                 detail=f"Feishu send failed: {resp.get('msg') if resp else 'no ID available'} (code {resp.get('code') if resp else 'N/A'})"
             )
 
-    await db.commit()
+    await query_dao.commit(db)
     raise HTTPException(
         status_code=400,
         detail=f"No available channel to reach {target_member.name}. feishu_user_id={'yes' if target_member.external_id else 'no'}, feishu_open_id={'yes' if target_member.open_id else 'no'}"

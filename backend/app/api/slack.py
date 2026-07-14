@@ -6,14 +6,15 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.database import async_session as _async_session, get_db
+from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
@@ -43,7 +44,7 @@ async def configure_slack_channel(
     if not bot_token or not signing_secret:
         raise HTTPException(status_code=422, detail="bot_token and signing_secret are required")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "slack",
@@ -54,7 +55,7 @@ async def configure_slack_channel(
         existing.app_secret = bot_token        # Bot Token
         existing.encrypt_key = signing_secret  # Signing Secret
         existing.is_configured = True
-        await db.flush()
+        await query_dao.flush(db)
         return ChannelConfigOut.model_validate(existing)
 
     config = ChannelConfig(
@@ -65,8 +66,8 @@ async def configure_slack_channel(
         encrypt_key=signing_secret,   # Signing Secret
         is_configured=True,
     )
-    db.add(config)
-    await db.flush()
+    query_dao.add(db, config)
+    await query_dao.flush(db)
     return ChannelConfigOut.model_validate(config)
 
 
@@ -77,7 +78,7 @@ async def get_slack_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "slack",
@@ -105,7 +106,7 @@ async def delete_slack_channel(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "slack",
@@ -114,7 +115,7 @@ async def delete_slack_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Slack not configured")
-    await db.delete(config)
+    await query_dao.delete(db, config)
 
 
 # ─── Event Webhook ──────────────────────────────────────
@@ -159,7 +160,7 @@ async def slack_event_webhook(
     body_bytes = await request.body()
 
     # Get channel config
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "slack",
@@ -228,7 +229,7 @@ async def slack_event_webhook(
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.services.channel_session import find_or_create_channel_session
-    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
     agent_obj = agent_r.scalar_one_or_none()
     creator_id = agent_obj.creator_id if agent_obj else agent_id
     from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
@@ -237,7 +238,7 @@ async def slack_event_webhook(
     # Find-or-create platform user for this Slack sender via unified service
     from app.services.channel_user_service import channel_user_service
     from app.models.agent import Agent as AgentModel
-    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
     agent_obj = agent_r.scalar_one_or_none()
 
     # Resolve real display name and email from Slack API
@@ -284,7 +285,7 @@ async def slack_event_webhook(
     # Update display_name if we now have the real name
     if _slack_real_name and platform_user.display_name and platform_user.display_name.startswith("Slack User "):
         platform_user.display_name = _slack_real_name
-        await db.flush()
+        await query_dao.flush(db)
     platform_user_id = platform_user.id
 
     # Find-or-create session for this Slack conversation
@@ -300,7 +301,7 @@ async def slack_event_webhook(
     )
     session_conv_id = str(sess.id)
 
-    history_r = await db.execute(
+    history_r = await query_dao.execute(db, 
         select(ChatMessage)
         .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
         .order_by(ChatMessage.created_at.desc())
@@ -346,10 +347,10 @@ async def slack_event_webhook(
         # Files were present but all downloads failed — still send ack so user knows we got the file event
         _file_names = ", ".join(_sf.get("name", "file") for _sf in slack_files)
         _ack = f"收到了文件 {_file_names}，不过我暂时无法下载其内容，请检查 Slack App 是否已授权 files:read 权限。"
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
+        query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                            content=_ack, conversation_id=session_conv_id))
         sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
+        await query_dao.commit(db)
         if _bot_token and channel_id:
             await _send_slack_messages(_bot_token, channel_id, _ack)
         return {"ok": True}
@@ -357,14 +358,14 @@ async def slack_event_webhook(
     if _file_user_messages and not user_text:
         # Files downloaded, no text — store file paths as user message & send ack
         _file_content = " ".join(f"[file:{p.split('/')[-1]}]" for p in _file_user_messages)
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
+        query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
                            content=_file_content, conversation_id=session_conv_id))
         await _asyncio.sleep(_random.uniform(1.0, 2.0))
         _ack = _random.choice(_FILE_ACK_MESSAGES)
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
+        query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
                            content=_ack, conversation_id=session_conv_id))
         sess.last_message_at = datetime.now(timezone.utc)
-        await db.commit()
+        await query_dao.commit(db)
         if _bot_token and channel_id:
             await _send_slack_messages(_bot_token, channel_id, _ack)
         return {"ok": True}
@@ -374,7 +375,7 @@ async def slack_event_webhook(
         user_text += "\n" + " ".join(f"[file:{p.split('/')[-1]}]" for p in _file_user_messages)
 
     # Save user message
-    db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+    query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
     sess.last_message_at = datetime.now(timezone.utc)
 
     # Pre-load agent/model for LLM call and extract config values before closing
@@ -382,7 +383,7 @@ async def slack_event_webhook(
     _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
     _cfg_app_secret = config.app_secret or ""
 
-    await db.commit()
+    await query_dao.commit(db)
     # ── Phase 1 complete: release connection before slow LLM work ──
     await db.close()
 
@@ -429,17 +430,17 @@ async def slack_event_webhook(
     logger.info(f"[Slack] LLM reply: {reply_text[:80]}")
 
     # Save reply (new short transaction)
-    async with _async_session() as _save_db:
-        _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+    async with query_dao.session() as _save_db:
+        query_dao.add(_save_db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
         # Reload session object to update last_message_at
         from app.models.chat_session import ChatSession
-        _sess_r = await _save_db.execute(
+        _sess_r = await query_dao.execute(_save_db, 
             select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
         )
         _sess_fresh = _sess_r.scalar_one_or_none()
         if _sess_fresh:
             _sess_fresh.last_message_at = datetime.now(timezone.utc)
-        await _save_db.commit()
+        await query_dao.commit(_save_db)
 
     # Send to Slack (chunked)
     if _cfg_app_secret and channel_id:

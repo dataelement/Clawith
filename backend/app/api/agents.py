@@ -13,10 +13,11 @@ from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.permissions import build_visible_agents_query, check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.database import async_session, get_db
+from app.database import get_db
 from app.models.agent import Agent, AgentPermission, AgentTemplate
 from app.models.org import OrgMember
 from app.models.audit import ChatMessage
@@ -40,7 +41,7 @@ settings = get_settings()
 async def _get_active_admin_users(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[User]:
     if not tenant_id:
         return []
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User).where(
             User.tenant_id == tenant_id,
             User.is_active == True,  # noqa: E712
@@ -58,7 +59,7 @@ async def _archive_agent_task_history(db: AsyncSession, agent_id: uuid.UUID, arc
     """Persist task and task-log history into the agent archive directory before DB cleanup."""
     from app.models.task import Task, TaskLog
 
-    task_result = await db.execute(select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.asc()))
+    task_result = await query_dao.execute(db, select(Task).where(Task.agent_id == agent_id).order_by(Task.created_at.asc()))
     tasks = task_result.scalars().all()
     if not tasks:
         return None
@@ -72,7 +73,7 @@ async def _archive_agent_task_history(db: AsyncSession, agent_id: uuid.UUID, arc
     }
 
     for task in tasks:
-        log_result = await db.execute(
+        log_result = await query_dao.execute(db, 
             select(TaskLog).where(TaskLog.task_id == task.id).order_by(TaskLog.created_at.asc())
         )
         logs = log_result.scalars().all()
@@ -156,7 +157,7 @@ async def _build_unread_count_by_agent(
         return {}
 
     agent_ids = [agent.id for agent in agents]
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession.agent_id, func.count(ChatMessage.id))
         .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
         .where(
@@ -190,7 +191,7 @@ async def list_templates(
     """List all available agent templates."""
     from app.models.agent import AgentTemplate
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentTemplate).order_by(AgentTemplate.is_builtin.desc(), AgentTemplate.created_at.asc())
     )
     templates = result.scalars().all()
@@ -262,7 +263,7 @@ async def list_agents(
         tenant_id=requested_tenant_id,
     ).order_by(Agent.created_at.desc())
 
-    result = await db.execute(stmt)
+    result = await query_dao.execute(db, stmt)
     agents = result.scalars().all()
     # Lazy reset token counters
     needs_flush = False
@@ -270,7 +271,7 @@ async def list_agents(
         if await _lazy_reset_token_counters(a, db):
             needs_flush = True
     if needs_flush:
-        await db.commit()
+        await query_dao.commit(db)
     unread_by_agent = await _build_unread_count_by_agent(db, agents, current_user)
     from app.services.onboarding import onboarded_agent_ids
 
@@ -294,8 +295,8 @@ async def _background_agent_setup(
     """Run all creation tasks asynchronously with small, short-lived transactions."""
     # 1. Initialize agent file system from template
     try:
-        async with async_session() as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 logger.error(f"[background_agent_setup] Agent {agent_id} not found")
@@ -306,33 +307,33 @@ async def _background_agent_setup(
                 personality=personality,
                 boundaries=boundaries,
             )
-            await db.commit()
+            await query_dao.commit(db)
     except Exception as e:
         logger.exception(f"Error during agent file initialization for {agent_id}: {e}")
-        async with async_session() as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if agent:
                 agent.status = "error"
-                await db.commit()
+                await query_dao.commit(db)
         return
 
     # 2. Skill resolution (reads from DB)
     skill_files_to_write = []
     try:
-        async with async_session() as db:
-            default_result = await db.execute(select(Skill).where(Skill.is_default))
+        async with query_dao.session() as db:
+            default_result = await query_dao.execute(db, select(Skill).where(Skill.is_default))
             default_ids = {s.id for s in default_result.scalars().all()}
 
             template_skill_ids = set()
             if template_skill_folder_names:
-                tpl_skills_r = await db.execute(select(Skill).where(Skill.folder_name.in_(template_skill_folder_names)))
+                tpl_skills_r = await query_dao.execute(db, select(Skill).where(Skill.folder_name.in_(template_skill_folder_names)))
                 template_skill_ids = {s.id for s in tpl_skills_r.scalars().all()}
 
             all_skill_ids = set(skill_ids) | default_ids | template_skill_ids
 
             if all_skill_ids:
-                skills_result = await db.execute(
+                skills_result = await query_dao.execute(db, 
                     select(Skill).where(Skill.id.in_(all_skill_ids)).options(selectinload(Skill.files))
                 )
                 skills = skills_result.scalars().all()
@@ -344,12 +345,12 @@ async def _background_agent_setup(
                         )
     except Exception as e:
         logger.exception(f"Error resolving skills for agent {agent_id}: {e}")
-        async with async_session() as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if agent:
                 agent.status = "error"
-                await db.commit()
+                await query_dao.commit(db)
         return
 
     # 3. Skills Copying (I/O only, NO db connection held!)
@@ -364,12 +365,12 @@ async def _background_agent_setup(
             logger.info(f"[_skills_copy] background agent={agent_id} files={len(skill_files_to_write)} completed")
         except Exception as e:
             logger.exception(f"Error copying skills files for agent {agent_id}: {e}")
-            async with async_session() as db:
-                agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            async with query_dao.session() as db:
+                agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
                 agent = agent_result.scalar_one_or_none()
                 if agent:
                     agent.status = "error"
-                    await db.commit()
+                    await query_dao.commit(db)
             return
 
     # 4. Install template MCP servers
@@ -397,8 +398,8 @@ async def _background_agent_setup(
 
     # 5. Start container and Hook OKR Agent
     try:
-        async with async_session() as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 logger.error(f"[background_agent_setup] Agent {agent_id} not found before starting container")
@@ -409,15 +410,15 @@ async def _background_agent_setup(
             if agent.tenant_id:
                 await hook_new_agent(db, agent.id, agent.tenant_id)
 
-            await db.commit()
+            await query_dao.commit(db)
     except Exception as e:
         logger.exception(f"Error starting container for agent {agent_id}: {e}")
-        async with async_session() as db:
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             if agent:
                 agent.status = "error"
-                await db.commit()
+                await query_dao.commit(db)
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -450,7 +451,7 @@ async def create_agent(
     default_heartbeat_interval = 240  # model default
     tenant_default_model_id = None
     if target_tenant_id:
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
+        tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == target_tenant_id))
         tenant = tenant_result.scalar_one_or_none()
         if tenant:
             ttl_hours = tenant.default_agent_ttl_hours
@@ -494,11 +495,11 @@ async def create_agent(
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
 
-    db.add(agent)
-    await db.flush()
+    query_dao.add(db, agent)
+    await query_dao.flush(db)
 
     # Auto-create Participant identity for the new agent
-    db.add(
+    query_dao.add(db, 
         Participant(
             type="agent",
             ref_id=agent.id,
@@ -506,7 +507,7 @@ async def create_agent(
             avatar_url=agent.avatar_url,
         )
     )
-    await db.flush()
+    await query_dao.flush(db)
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
@@ -515,26 +516,26 @@ async def create_agent(
     if data.permission_scope_type == "company":
         agent.access_mode = "company"
         agent.company_access_level = access_level
-        db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
+        query_dao.add(db, AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
         agent.access_mode = "private"
         agent.company_access_level = access_level
         if data.permission_scope_ids:
             for scope_id in data.permission_scope_ids:
-                db.add(
+                query_dao.add(db, 
                     AgentPermission(agent_id=agent.id, scope_type="user", scope_id=scope_id, access_level=access_level)
                 )
         else:
             # "仅自己" — insert creator as the only permitted user
-            db.add(
+            query_dao.add(db, 
                 AgentPermission(agent_id=agent.id, scope_type="user", scope_id=current_user.id, access_level="manage")
             )
     elif data.permission_scope_type == "custom":
         agent.access_mode = "custom"
         agent.company_access_level = access_level
-        db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+        query_dao.add(db, AgentPermission(agent_id=agent.id, scope_type="user", scope_id=current_user.id, access_level="manage"))
 
-    await db.flush()
+    await query_dao.flush(db)
     await ensure_access_granted_platform_relationships(db, agent, created_by_user_id=current_user.id)
 
     # For OpenClaw agents: skip file system and container setup, generate API key
@@ -542,11 +543,11 @@ async def create_agent(
         raw_key = f"oc-{secrets.token_urlsafe(32)}"
         agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         agent.status = "idle"
-        await db.commit()
+        await query_dao.commit(db)
 
         if agent.tenant_id:
             await hook_new_agent(db, agent.id, agent.tenant_id)
-            await db.commit()
+            await query_dao.commit(db)
 
         out_model = await _agent_to_out(db, agent, current_user.id)
         out = out_model.model_dump()
@@ -557,7 +558,7 @@ async def create_agent(
     folder_names = []
     template_mcp_servers = []
     if data.template_id:
-        tpl_r = await db.execute(select(AgentTemplate).where(AgentTemplate.id == data.template_id))
+        tpl_r = await query_dao.execute(db, select(AgentTemplate).where(AgentTemplate.id == data.template_id))
         tpl = tpl_r.scalar_one_or_none()
         if tpl:
             folder_names = list(tpl.default_skills or [])
@@ -567,7 +568,7 @@ async def create_agent(
     out = await _agent_to_out(db, agent, current_user.id)
 
     # Commit initial state to DB so background task can read the agent row
-    await db.commit()
+    await query_dao.commit(db)
 
     # Dispatch heavy setup to background task
     background_tasks.add_task(
@@ -593,7 +594,7 @@ async def get_agent(
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     # Lazy reset token counters
     if await _lazy_reset_token_counters(agent, db):
-        await db.commit()
+        await query_dao.commit(db)
     out_model = await _agent_to_out(db, agent, current_user.id)
     out = out_model.model_dump()
     out["access_level"] = access_level
@@ -606,7 +607,7 @@ async def get_agent(
         from sqlalchemy.orm import selectinload
         from app.models.user import Identity  # noqa: F401
 
-        creator_result = await db.execute(
+        creator_result = await query_dao.execute(db, 
             select(User).where(User.id == agent.creator_id).options(selectinload(User.identity))
         )
         creator = creator_result.scalar_one_or_none()
@@ -617,7 +618,7 @@ async def get_agent(
     if not effective_tz and agent.tenant_id:
         from app.models.tenant import Tenant
 
-        t_result = await db.execute(select(Tenant).where(Tenant.id == agent.tenant_id))
+        t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == agent.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant:
             effective_tz = tenant.timezone or "UTC"
@@ -634,7 +635,7 @@ async def get_agent_permissions(
 ):
     """Get agent permission scope."""
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
+    result = await query_dao.execute(db, select(AgentPermission).where(AgentPermission.agent_id == agent_id))
     perms = result.scalars().all()
     can_manage = access_level == "manage"
     is_owner = is_agent_creator(current_user, agent)
@@ -669,7 +670,7 @@ async def get_agent_permissions(
         display_user_ids.update(admin.id for admin in await _get_active_admin_users(db, agent.tenant_id))
 
     if display_user_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(display_user_ids)))
+        users_result = await query_dao.execute(db, select(User).where(User.id.in_(display_user_ids)))
         users_by_id = {str(u.id): u for u in users_result.scalars().all()}
         access_by_user_id = {
             str(perm.scope_id): (perm.access_level or "use")
@@ -750,19 +751,19 @@ async def update_agent_permissions(
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
 
-    await db.execute(sql_delete(AgentPermission).where(AgentPermission.agent_id == agent_id))
+    await query_dao.execute(db, sql_delete(AgentPermission).where(AgentPermission.agent_id == agent_id))
 
     # Insert new permissions
     if scope_type == "company":
         agent.access_mode = "company"
         agent.company_access_level = access_level
-        db.add(AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
+        query_dao.add(db, AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
     elif scope_type == "private":
         agent.access_mode = "private"
         agent.company_access_level = access_level
         # "Only me" means private to the agent creator, even when an org admin
         # is managing a company-visible agent created by someone else.
-        db.add(
+        query_dao.add(db, 
             AgentPermission(
                 agent_id=agent_id,
                 scope_type="user",
@@ -790,12 +791,12 @@ async def update_agent_permissions(
             if uid in required_manager_ids:
                 lvl = "manage"
             seen_user_ids.add(uid)
-            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uid, access_level=lvl))
+            query_dao.add(db, AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uid, access_level=lvl))
         for sid in scope_ids:
             uid = uuid.UUID(str(sid))
             if uid not in seen_user_ids:
                 seen_user_ids.add(uid)
-                db.add(
+                query_dao.add(db, 
                     AgentPermission(
                         agent_id=agent_id,
                         scope_type="user",
@@ -805,9 +806,9 @@ async def update_agent_permissions(
                 )
         for uid in required_manager_ids:
             if uid not in seen_user_ids:
-                db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uid, access_level="manage"))
+                query_dao.add(db, AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uid, access_level="manage"))
 
-    await db.flush()
+    await query_dao.flush(db)
     relationships_changed = await ensure_access_granted_platform_relationships(
         db,
         agent,
@@ -818,7 +819,7 @@ async def update_agent_permissions(
 
         await _regenerate_relationships_file(db, agent_id)
 
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok"}
 
 
@@ -852,14 +853,14 @@ async def get_agent_permission_candidates(
             | OrgMember.name_translit_initial.ilike(pattern)
         )
 
-    members_result = await db.execute(member_query.order_by(OrgMember.name.asc()).limit(50))
+    members_result = await query_dao.execute(db, member_query.order_by(OrgMember.name.asc()).limit(50))
     members = members_result.scalars().all()
 
     # For members already linked, batch-load User rows for display info.
     linked_user_ids = [m.user_id for m in members if m.user_id]
     users_by_id: dict[uuid.UUID, User] = {}
     if linked_user_ids:
-        users_result = await db.execute(
+        users_result = await query_dao.execute(db, 
             select(User)
             .where(User.id.in_(linked_user_ids), User.tenant_id == agent.tenant_id)
             .options(selectinload(User.identity))
@@ -895,7 +896,7 @@ async def get_agent_permission_candidates(
             }
         )
 
-    await db.commit()
+    await query_dao.commit(db)
 
     return {
         "users": candidates,
@@ -941,7 +942,7 @@ async def update_agent(
     if "heartbeat_interval_minutes" in update_data and current_user.tenant_id:
         from app.models.tenant import Tenant
 
-        t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+        t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant and update_data["heartbeat_interval_minutes"] < tenant.min_heartbeat_interval_minutes:
             update_data["heartbeat_interval_minutes"] = tenant.min_heartbeat_interval_minutes
@@ -959,7 +960,7 @@ async def update_agent(
     if trigger_fields & set(update_data.keys()) and current_user.tenant_id:
         from app.models.tenant import Tenant
 
-        t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+        t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant:
             if "min_poll_interval_min" in update_data:
@@ -989,20 +990,20 @@ async def update_agent(
 
     for field, value in update_data.items():
         setattr(agent, field, value)
-    await db.flush()
+    await query_dao.flush(db)
 
     # Sync Participant display_name / avatar if changed
     if "name" in update_data or "avatar_url" in update_data:
         from app.models.participant import Participant
 
-        p_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id))
+        p_r = await query_dao.execute(db, select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id))
         p = p_r.scalar_one_or_none()
         if p:
             if "name" in update_data:
                 p.display_name = agent.name
             if "avatar_url" in update_data:
                 p.avatar_url = agent.avatar_url
-            await db.flush()
+            await query_dao.flush(db)
 
     out_model = await _agent_to_out(db, agent, current_user.id)
     out = out_model.model_dump()
@@ -1077,7 +1078,7 @@ async def delete_agent(
     for table in cleanup_tables:
         try:
             async with db.begin_nested():
-                await db.execute(text(f"DELETE FROM {table} WHERE agent_id = :aid"), {"aid": agent_id})
+                await query_dao.execute(db, text(f"DELETE FROM {table} WHERE agent_id = :aid"), {"aid": agent_id})
         except Exception:
             pass
 
@@ -1092,14 +1093,14 @@ async def delete_agent(
     for sql in secondary_fk_cleanups:
         try:
             async with db.begin_nested():
-                await db.execute(text(sql), {"aid": agent_id})
+                await query_dao.execute(db, text(sql), {"aid": agent_id})
         except Exception:
             pass
 
     # Also clean agent_agent_relationships (has both agent_id and target_agent_id)
     try:
         async with db.begin_nested():
-            await db.execute(
+            await query_dao.execute(db, 
                 text("DELETE FROM agent_agent_relationships WHERE agent_id = :aid OR target_agent_id = :aid"),
                 {"aid": agent_id},
             )
@@ -1109,22 +1110,22 @@ async def delete_agent(
     # Also clear plaza posts by this agent
     try:
         async with db.begin_nested():
-            await db.execute(text("DELETE FROM plaza_posts WHERE author_id = :aid"), {"aid": str(agent_id)})
+            await query_dao.execute(db, text("DELETE FROM plaza_posts WHERE author_id = :aid"), {"aid": str(agent_id)})
     except Exception:
         pass
 
     # Clean up Participant identity
     try:
         async with db.begin_nested():
-            await db.execute(
+            await query_dao.execute(db, 
                 text("DELETE FROM participants WHERE type = 'agent' AND ref_id = :aid"),
                 {"aid": agent_id},
             )
     except Exception:
         pass
 
-    await db.delete(agent)
-    await db.commit()
+    await query_dao.delete(db, agent)
+    await query_dao.commit(db)
 
 
 @router.post("/{agent_id}/start", response_model=AgentOut)
@@ -1141,7 +1142,7 @@ async def start_agent(
     from app.services.agent_manager import agent_manager
 
     await agent_manager.start_container(db, agent)
-    await db.flush()
+    await query_dao.flush(db)
     return await _agent_to_out(db, agent, current_user.id)
 
 
@@ -1159,7 +1160,7 @@ async def stop_agent(
     from app.services.agent_manager import agent_manager
 
     await agent_manager.stop_container(agent)
-    await db.flush()
+    await query_dao.flush(db)
     return await _agent_to_out(db, agent, current_user.id)
 
 
@@ -1186,7 +1187,7 @@ async def list_agent_approvals(
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
     query = query.order_by(ApprovalRequest.created_at.desc())
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     approvals = result.scalars().all()
 
     return [
@@ -1223,7 +1224,7 @@ async def resolve_agent_approval(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    await db.commit()
+    await query_dao.commit(db)
     return {
         "id": str(approval.id),
         "status": approval.status,
@@ -1249,7 +1250,7 @@ async def generate_or_reset_api_key(
 
     raw_key = f"oc-{secrets.token_urlsafe(32)}"
     agent.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    await db.commit()
+    await query_dao.commit(db)
 
     return {"api_key": raw_key, "message": "Key configured successfully."}
 
@@ -1265,7 +1266,7 @@ async def list_gateway_messages(
 
     from app.models.gateway_message import GatewayMessage
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(GatewayMessage)
         .where(GatewayMessage.agent_id == agent_id)
         .order_by(GatewayMessage.created_at.desc())
@@ -1277,7 +1278,7 @@ async def list_gateway_messages(
     for m in messages:
         sender_name = None
         if m.sender_agent_id:
-            r = await db.execute(select(Agent.name).where(Agent.id == m.sender_agent_id))
+            r = await query_dao.execute(db, select(Agent.name).where(Agent.id == m.sender_agent_id))
             sender_name = r.scalar_one_or_none()
         out.append(
             {

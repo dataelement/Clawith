@@ -10,18 +10,17 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import encrypt_data, get_current_user
+from app.dao import agent_credential_dao
 from app.database import get_db
 from app.models.agent_credential import AgentCredential
 from app.models.user import User
 from app.schemas.agent_credential import (
     AgentCredentialCreate,
-    AgentCredentialResponse,
     AgentCredentialUpdate,
 )
 
@@ -64,12 +63,7 @@ async def list_credentials(
             detail="Manage access required to view credentials",
         )
 
-    result = await db.execute(
-        select(AgentCredential)
-        .where(AgentCredential.agent_id == agent_id)
-        .order_by(AgentCredential.created_at.desc())
-    )
-    credentials = result.scalars().all()
+    credentials = await agent_credential_dao.list_by_agent(agent_id)
     return [_to_response(c) for c in credentials]
 
 
@@ -105,23 +99,19 @@ async def create_credential(
                 detail=f"Invalid cookies_json format: {e}",
             )
 
-    cred = AgentCredential(
-        agent_id=agent_id,
-        credential_type=data.credential_type,
-        platform=data.platform,
-        display_name=data.display_name or "",
-        status="active",
-    )
+    obj_in = {
+        "credential_type": data.credential_type,
+        "platform": data.platform,
+        "display_name": data.display_name or "",
+        "status": "active",
+    }
 
     # Encrypt sensitive fields
     if data.cookies_json:
-        cred.cookies_json = encrypt_data(data.cookies_json, settings.SECRET_KEY)
-        cred.cookies_updated_at = datetime.now(timezone.utc)
+        obj_in["cookies_json"] = encrypt_data(data.cookies_json, settings.SECRET_KEY)
+        obj_in["cookies_updated_at"] = datetime.now(timezone.utc)
 
-    db.add(cred)
-    await db.commit()
-    await db.refresh(cred)
-
+    cred = await agent_credential_dao.create_for_agent(agent_id=agent_id, obj_in=obj_in)
     return _to_response(cred)
 
 
@@ -145,13 +135,7 @@ async def update_credential(
             detail="Manage access required to update credentials",
         )
 
-    result = await db.execute(
-        select(AgentCredential).where(
-            AgentCredential.id == credential_id,
-            AgentCredential.agent_id == agent_id,
-        )
-    )
-    cred = result.scalar_one_or_none()
+    cred = await agent_credential_dao.get_by_agent(credential_id=credential_id, agent_id=agent_id)
     if not cred:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -183,8 +167,7 @@ async def update_credential(
             cred.cookies_json = None
             cred.cookies_updated_at = None
 
-    await db.commit()
-    await db.refresh(cred)
+    cred = await agent_credential_dao.save(cred)
 
     return _to_response(cred)
 
@@ -204,15 +187,6 @@ async def delete_credential(
             detail="Manage access required to delete credentials",
         )
 
-    result = await db.execute(
-        select(AgentCredential).where(
-            AgentCredential.id == credential_id,
-            AgentCredential.agent_id == agent_id,
-        )
-    )
-    cred = result.scalar_one_or_none()
-    if not cred:
+    deleted = await agent_credential_dao.delete_by_agent(credential_id=credential_id, agent_id=agent_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Credential not found")
-
-    await db.delete(cred)
-    await db.commit()

@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.dao import query_dao
 from app.config import get_settings
-from app.database import async_session
 
 # NOTE: agent_tools imports are deferred to function bodies to avoid circular
 # import: agent_tools → llm.finish → llm/__init__ → caller → agent_tools
@@ -179,8 +179,8 @@ async def _get_agent_config(agent_id) -> tuple[int, str | None]:
 
     try:
         from app.models.agent import Agent as AgentModel
-        async with async_session() as _db:
-            _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+        async with query_dao.session() as _db:
+            _ar = await query_dao.execute(_db, select(AgentModel).where(AgentModel.id == agent_id))
             _agent = _ar.scalar_one_or_none()
             if _agent:
                 max_rounds = _agent.max_tool_rounds or 50
@@ -201,13 +201,13 @@ async def _get_user_name(user_id) -> str | None:
     try:
         from app.models.user import User as _UserModel
         from app.models.agent import Agent as _AgentModel
-        async with async_session() as _udb:
-            _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
+        async with query_dao.session() as _udb:
+            _ur = await query_dao.execute(_udb, select(_UserModel).where(_UserModel.id == user_id))
             _u = _ur.scalar_one_or_none()
             if _u:
                 return _u.display_name or _u.username
             # Check Agent name fallback
-            _ar = await _udb.execute(select(_AgentModel).where(_AgentModel.id == user_id))
+            _ar = await query_dao.execute(_udb, select(_AgentModel).where(_AgentModel.id == user_id))
             _a = _ar.scalar_one_or_none()
             if _a:
                 return _a.name
@@ -799,7 +799,7 @@ async def call_agent_llm(
     from app.core.permissions import is_agent_expired
 
     # Load agent
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
     agent: Agent | None = agent_result.scalar_one_or_none()
     if not agent:
         return "⚠️ 数字员工未找到"
@@ -810,13 +810,13 @@ async def call_agent_llm(
     # Load primary model
     primary_model: LLMModel | None = None
     if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+        model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.primary_model_id))
         primary_model = model_result.scalar_one_or_none()
 
     # Load fallback model
     fallback_model: LLMModel | None = None
     if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
+        fb_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
         fallback_model = fb_result.scalar_one_or_none()
 
     # Config-level fallback: primary missing -> use fallback
@@ -869,7 +869,7 @@ async def call_agent_llm_with_tools(
     from app.models.llm import LLMModel
 
     # Load agent and models
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
     agent: Agent | None = agent_result.scalar_one_or_none()
     if not agent:
         return "⚠️ Agent not found"
@@ -877,12 +877,12 @@ async def call_agent_llm_with_tools(
     # Load models
     primary_model: LLMModel | None = None
     if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
+        model_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.primary_model_id))
         primary_model = model_result.scalar_one_or_none()
 
     fallback_model: LLMModel | None = None
     if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
+        fb_result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
         fallback_model = fb_result.scalar_one_or_none()
 
     # Config-level fallback

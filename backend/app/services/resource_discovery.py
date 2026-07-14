@@ -4,7 +4,7 @@ import uuid
 import httpx
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.dao import query_dao
 from app.models.tool import Tool, AgentTool
 from app.services.tool_config import decrypt_sensitive_fields, get_tenant_tool_config
 
@@ -31,16 +31,16 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
         return decrypt_sensitive_fields({"value": raw}, {"fields": [{"key": "value", "type": "password"}]}).get("value", raw)
 
     try:
-        async with async_session() as db:
+        async with query_dao.session() as db:
             agent_tenant_id = None
             if agent_id:
                 from app.models.agent import Agent as AgentModel
-                tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+                tenant_r = await query_dao.execute(db, select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
                 agent_tenant_id = tenant_r.scalar_one_or_none()
 
             # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
             if agent_id:
-                at_r = await db.execute(
+                at_r = await query_dao.execute(db, 
                     select(AgentTool).where(AgentTool.agent_id == agent_id)
                 )
                 for at in at_r.scalars().all():
@@ -48,7 +48,7 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                         return _maybe_decrypt(at.config["smithery_api_key"])
             # 2) Tenant/company fallback for builtin discovery tools
             for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if not tool:
                     continue
@@ -97,14 +97,14 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
 async def _get_modelscope_api_token(agent_id: uuid.UUID | None = None) -> str:
     """Read ModelScope API token from discover_resources tool config."""
     try:
-        async with async_session() as db:
+        async with query_dao.session() as db:
             agent_tenant_id = None
             if agent_id:
                 from app.models.agent import Agent as AgentModel
-                tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
+                tenant_r = await query_dao.execute(db, select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
                 agent_tenant_id = tenant_r.scalar_one_or_none()
             for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if not tool:
                     continue
@@ -297,13 +297,13 @@ async def import_mcp_from_smithery(
     # Write key back to discover_resources / import_mcp_server AgentTool configs
     # so it shows up in the Config dialog
     try:
-        async with async_session() as db:
+        async with query_dao.session() as db:
             for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if not tool:
                     continue
-                at_r = await db.execute(
+                at_r = await query_dao.execute(db, 
                     select(AgentTool).where(
                         AgentTool.agent_id == agent_id,
                         AgentTool.tool_id == tool.id,
@@ -313,11 +313,11 @@ async def import_mcp_from_smithery(
                 if at:
                     at.config = {**(at.config or {}), "smithery_api_key": api_key}
                 else:
-                    db.add(AgentTool(
+                    query_dao.add(db, AgentTool(
                         agent_id=agent_id, tool_id=tool.id, enabled=True,
                         source="system", config={"smithery_api_key": api_key},
                     ))
-            await db.commit()
+            await query_dao.commit(db)
     except Exception:
         pass  # non-critical — key is still usable from MCP tool configs
 
@@ -326,9 +326,9 @@ async def import_mcp_from_smithery(
     # (e.g., "github" vs "@anthropic/github" both produce server_name "GitHub")
     clean_id_check = server_id.replace("/", "_").replace("@", "")
     try:
-        async with async_session() as db:
+        async with query_dao.session() as db:
             from sqlalchemy import or_
-            existing_server_r = await db.execute(
+            existing_server_r = await query_dao.execute(db, 
                 select(Tool).where(
                     Tool.type == "mcp",
                     or_(
@@ -341,7 +341,7 @@ async def import_mcp_from_smithery(
             if existing_server_tools and not config and not reauthorize:
                 # Check if this agent has assignments for these tools
                 tool_ids = [t.id for t in existing_server_tools]
-                agent_assignments_r = await db.execute(
+                agent_assignments_r = await query_dao.execute(db, 
                     select(AgentTool).where(
                         AgentTool.agent_id == agent_id,
                         AgentTool.tool_id.in_(tool_ids),
@@ -510,12 +510,12 @@ async def import_mcp_from_smithery(
     # Merge smithery_config + user config for AgentTool
     agent_tool_config = {**smithery_config, **config}
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         imported_tools = []
 
         # Helper: ensure AgentTool link exists and save config
         async def _ensure_agent_tool(tool_id: uuid.UUID):
-            agent_check = await db.execute(
+            agent_check = await query_dao.execute(db, 
                 select(AgentTool).where(
                     AgentTool.agent_id == agent_id,
                     AgentTool.tool_id == tool_id,
@@ -525,7 +525,7 @@ async def import_mcp_from_smithery(
             if at:
                 at.config = {**(at.config or {}), **agent_tool_config}
             else:
-                db.add(AgentTool(
+                query_dao.add(db, AgentTool(
                     agent_id=agent_id, tool_id=tool_id, enabled=True,
                     source="user_installed", installed_by_agent_id=agent_id,
                     config=agent_tool_config,
@@ -533,7 +533,7 @@ async def import_mcp_from_smithery(
 
         # On re-import/reauthorize: update ALL existing tools for this server
         if config or reauthorize:
-            existing_server_tools_r = await db.execute(
+            existing_server_tools_r = await query_dao.execute(db, 
                 select(Tool).where(Tool.mcp_server_name == display_name, Tool.type == "mcp")
             )
             for et in existing_server_tools_r.scalars().all():
@@ -543,21 +543,21 @@ async def import_mcp_from_smithery(
         if tools_discovered:
             # Clean up old generic entry if individual tools are now discovered
             generic_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
-            old_generic_r = await db.execute(select(Tool).where(Tool.name == generic_name))
+            old_generic_r = await query_dao.execute(db, select(Tool).where(Tool.name == generic_name))
             old_generic = old_generic_r.scalar_one_or_none()
             if old_generic:
-                await db.execute(
+                await query_dao.execute(db, 
                     AgentTool.__table__.delete().where(AgentTool.tool_id == old_generic.id)
                 )
-                await db.delete(old_generic)
-                await db.flush()
+                await query_dao.delete(db, old_generic)
+                await query_dao.flush(db)
 
             # Create one Tool record per MCP tool
             for mcp_tool in tools_discovered:
                 tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}_{mcp_tool['name']}"
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
-                existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                existing_r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
                 existing_tool = existing_r.scalar_one_or_none()
                 if existing_tool:
                     existing_tool.mcp_server_url = base_mcp_url
@@ -585,8 +585,8 @@ async def import_mcp_from_smithery(
                     is_default=False,
                     source="agent",
                 )
-                db.add(tool)
-                await db.flush()
+                query_dao.add(db, tool)
+                await query_dao.flush(db)
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
         else:
@@ -594,13 +594,13 @@ async def import_mcp_from_smithery(
             tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
             tool_display = display_name
 
-            existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+            existing_r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:
                 existing_tool.mcp_server_url = base_mcp_url
                 await _ensure_agent_tool(existing_tool.id)
                 if config:
-                    await db.commit()
+                    await query_dao.commit(db)
                     return f"🔄 {tool_display} config updated. The tool is now ready to use."
                 else:
                     return f"⏭️ {tool_display} is already imported."
@@ -619,12 +619,12 @@ async def import_mcp_from_smithery(
                 is_default=False,
                 source="agent",
             )
-            db.add(tool)
-            await db.flush()
+            query_dao.add(db, tool)
+            await query_dao.flush(db)
             await _ensure_agent_tool(tool.id)
             imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
 
-        await db.commit()
+        await query_dao.commit(db)
 
     result = f"🔌 Imported MCP server: **{display_name}** (`{server_id}`)\n\n"
     result += "\n".join(imported_tools)
@@ -675,11 +675,11 @@ async def import_mcp_direct(
     if api_key:
         agent_tool_config["api_key"] = api_key
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         imported_tools = []
 
         async def _ensure_agent_tool(tool_id: uuid.UUID):
-            agent_check = await db.execute(
+            agent_check = await query_dao.execute(db, 
                 select(AgentTool).where(
                     AgentTool.agent_id == agent_id,
                     AgentTool.tool_id == tool_id,
@@ -689,7 +689,7 @@ async def import_mcp_direct(
             if at:
                 at.config = {**(at.config or {}), **agent_tool_config}
             else:
-                db.add(AgentTool(
+                query_dao.add(db, AgentTool(
                     agent_id=agent_id, tool_id=tool_id, enabled=True,
                     source="user_installed", installed_by_agent_id=agent_id,
                     config=agent_tool_config,
@@ -700,7 +700,7 @@ async def import_mcp_direct(
                 tool_name = f"mcp_{safe_name}_{mcp_tool['name']}"
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
-                existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                existing_r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
                 existing_tool = existing_r.scalar_one_or_none()
                 if existing_tool:
                     existing_tool.mcp_server_url = mcp_url
@@ -723,13 +723,13 @@ async def import_mcp_direct(
                     is_default=False,
                     source="agent",
                 )
-                db.add(tool)
-                await db.flush()
+                query_dao.add(db, tool)
+                await query_dao.flush(db)
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
         else:
             tool_name = f"mcp_{safe_name}"
-            existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+            existing_r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:
                 existing_tool.mcp_server_url = mcp_url
@@ -750,12 +750,12 @@ async def import_mcp_direct(
                 is_default=False,
                 source="agent",
             )
-            db.add(tool)
-            await db.flush()
+            query_dao.add(db, tool)
+            await query_dao.flush(db)
             await _ensure_agent_tool(tool.id)
             imported_tools.append(f"✅ {display_name} (tools couldn't be listed — server may need configuration)")
 
-        await db.commit()
+        await query_dao.commit(db)
 
     result = f"🔌 Imported MCP server: **{display_name}**\n\n"
     result += "\n".join(imported_tools)
@@ -794,7 +794,7 @@ async def seed_atlassian_rovo_tools(api_key: str) -> None:
 
     logger.info(f"[AtlassianRovo] Discovered {len(tools_discovered)} tools")
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         upserted = 0
         for mcp_tool in tools_discovered:
             raw_name = mcp_tool.get("name", "")
@@ -816,7 +816,7 @@ async def seed_atlassian_rovo_tools(api_key: str) -> None:
             else:
                 icon = "🔷"
 
-            existing_r = await db.execute(select(Tool).where(Tool.name == tool_name))
+            existing_r = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
             existing_tool = existing_r.scalar_one_or_none()
 
             if existing_tool:
@@ -841,10 +841,10 @@ async def seed_atlassian_rovo_tools(api_key: str) -> None:
                     config={"api_key": api_key},
                     source="admin",
                 )
-                db.add(tool)
+                query_dao.add(db, tool)
                 upserted += 1
 
-        await db.commit()
+        await query_dao.commit(db)
 
     logger.info(f"[AtlassianRovo] Seeded {upserted} new Atlassian Rovo tools")
 
@@ -854,12 +854,12 @@ async def refresh_atlassian_rovo_api_key(api_key: str) -> None:
 
     Called when the user updates the API key via the config UI.
     """
-    async with async_session() as db:
+    async with query_dao.session() as db:
         from sqlalchemy import update as _update
-        await db.execute(
+        await query_dao.execute(db, 
             _update(Tool)
             .where(Tool.mcp_server_name == ATLASSIAN_ROVO_SERVER_NAME, Tool.type == "mcp")
             .values(config={"api_key": api_key})
         )
-        await db.commit()
+        await query_dao.commit(db)
     logger.info("[AtlassianRovo] API key refreshed for all Rovo tools")

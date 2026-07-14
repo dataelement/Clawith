@@ -14,9 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiofiles
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
 from app.services.storage import get_storage_backend, normalize_storage_key
 from app.services.storage_runtime.base import WriteCondition
@@ -122,7 +123,7 @@ async def read_text_if_exists(path: Path) -> str | None:
 async def cleanup_expired_locks(db: AsyncSession) -> None:
     """Remove stale edit locks."""
     now = datetime.now(timezone.utc)
-    await db.execute(delete(WorkspaceEditLock).where(WorkspaceEditLock.expires_at <= now))
+    await query_dao.execute(db, delete(WorkspaceEditLock).where(WorkspaceEditLock.expires_at <= now))
 
 
 async def acquire_edit_lock(
@@ -139,7 +140,7 @@ async def acquire_edit_lock(
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=EDIT_LOCK_TTL_SECONDS)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceEditLock).where(
             WorkspaceEditLock.agent_id == agent_id,
             WorkspaceEditLock.path == normalized,
@@ -160,8 +161,8 @@ async def acquire_edit_lock(
             expires_at=expires_at,
             heartbeat_count=1,
         )
-        db.add(lock)
-    await db.flush()
+        query_dao.add(db, lock)
+    await query_dao.flush(db)
     return lock
 
 
@@ -173,7 +174,7 @@ async def release_edit_lock(
     user_id: uuid.UUID,
 ) -> None:
     """Release a human edit lock owned by a user."""
-    await db.execute(
+    await query_dao.execute(db, 
         delete(WorkspaceEditLock).where(
             WorkspaceEditLock.agent_id == agent_id,
             WorkspaceEditLock.path == normalize_workspace_path(path),
@@ -190,7 +191,7 @@ async def get_active_lock(
 ) -> WorkspaceEditLock | None:
     """Return an active lock for a file, if present."""
     await cleanup_expired_locks(db)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceEditLock).where(
             WorkspaceEditLock.agent_id == agent_id,
             WorkspaceEditLock.path == normalize_workspace_path(path),
@@ -227,7 +228,7 @@ async def record_revision(
     if merge_user_autosave and actor_type == "user" and actor_id:
         group_key = f"user-autosave:{agent_id}:{normalized}:{actor_id}"
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=USER_AUTOSAVE_MERGE_SECONDS)
-        existing_result = await db.execute(
+        existing_result = await query_dao.execute(db, 
             select(WorkspaceFileRevision)
             .where(
                 WorkspaceFileRevision.agent_id == agent_id,
@@ -246,7 +247,7 @@ async def record_revision(
             existing.after_content = after
             existing.content_hash = content_hash(after)
             existing.session_id = session_id or existing.session_id
-            await db.flush()
+            await query_dao.flush(db)
             return existing
 
     revision = WorkspaceFileRevision(
@@ -261,8 +262,8 @@ async def record_revision(
         content_hash=content_hash(after_content),
         group_key=group_key,
     )
-    db.add(revision)
-    await db.flush()
+    query_dao.add(db, revision)
+    await query_dao.flush(db)
     return revision
 
 
@@ -592,7 +593,7 @@ async def list_revisions(
     limit: int = 50,
 ) -> list[WorkspaceFileRevision]:
     """List recent revisions for one file."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceFileRevision)
         .where(
             WorkspaceFileRevision.agent_id == agent_id,

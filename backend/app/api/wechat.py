@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
@@ -105,7 +106,7 @@ async def get_wechat_qrcode_status(
             raise HTTPException(status_code=resp.status_code, detail=str(payload)[:300])
 
     if payload.get("status") == "confirmed":
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "wechat",
@@ -130,7 +131,7 @@ async def get_wechat_qrcode_status(
             existing.extra_config = extra
             existing.is_configured = True
             existing.is_connected = False
-            await db.flush()
+            await query_dao.flush(db)
         else:
             config = ChannelConfig(
                 agent_id=agent_id,
@@ -141,10 +142,10 @@ async def get_wechat_qrcode_status(
                 is_configured=True,
                 is_connected=False,
             )
-            db.add(config)
-            await db.flush()
+            query_dao.add(db, config)
+            await query_dao.flush(db)
 
-        await db.commit()
+        await query_dao.commit(db)
         if _role_enabled("connector"):
             asyncio.create_task(wechat_poll_manager.start_client(agent_id))
 
@@ -179,7 +180,7 @@ async def get_wechat_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wechat",
@@ -201,7 +202,7 @@ async def delete_wechat_channel(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "wechat",
@@ -212,5 +213,5 @@ async def delete_wechat_channel(
         raise HTTPException(status_code=404, detail="WeChat not configured")
 
     await wechat_poll_manager.stop_client(agent_id)
-    await db.delete(config)
-    await db.commit()
+    await query_dao.delete(db, config)
+    await query_dao.commit(db)

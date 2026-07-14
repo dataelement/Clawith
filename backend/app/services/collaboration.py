@@ -1,6 +1,5 @@
 """Agent collaboration service — Agent-to-Agent communication."""
 
-import json
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +7,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.services.storage import store_agent_bytes
@@ -30,9 +30,9 @@ class CollaborationService:
         from app.models.task import Task
 
         # Verify both agents exist and are running
-        from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
+        from_result = await query_dao.execute(db, select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
-        to_result = await db.execute(select(Agent).where(Agent.id == to_agent_id))
+        to_result = await query_dao.execute(db, select(Agent).where(Agent.id == to_agent_id))
         to_agent = to_result.scalar_one_or_none()
 
         if not from_agent or not to_agent:
@@ -50,10 +50,10 @@ class CollaborationService:
             created_by=from_agent.creator_id,
             assignee="self",
         )
-        db.add(task)
+        query_dao.add(db, task)
 
         # Audit log
-        db.add(AuditLog(
+        query_dao.add(db, AuditLog(
             agent_id=from_agent_id,
             action="collaboration:delegate",
             details={
@@ -62,7 +62,7 @@ class CollaborationService:
                 "task_title": task_title,
             },
         ))
-        await db.flush()
+        await query_dao.flush(db)
 
         logger.info(f"Agent {from_agent.name} delegated task to {to_agent.name}: {task_title}")
         return {
@@ -77,13 +77,13 @@ class CollaborationService:
 
         Returns agents from the same enterprise (same creator's org).
         """
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
         agent = result.scalar_one_or_none()
         if not agent:
             return []
 
         # Find agents by same creator or with company-wide permissions
-        collaborators_result = await db.execute(
+        collaborators_result = await query_dao.execute(db, 
             select(Agent).where(
                 Agent.id != agent_id,
                 Agent.status.in_(["running", "stopped"]),
@@ -109,7 +109,7 @@ class CollaborationService:
 
         msg_type: 'notify' (fire-and-forget) or 'consult' (expects reply)
         """
-        from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
+        from_result = await query_dao.execute(db, select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -124,12 +124,12 @@ class CollaborationService:
             content_type="text/markdown; charset=utf-8",
         )
 
-        db.add(AuditLog(
+        query_dao.add(db, AuditLog(
             agent_id=from_agent_id,
             action=f"collaboration:{msg_type}",
             details={"to_agent": str(to_agent_id), "message_preview": message[:100]},
         ))
-        await db.flush()
+        await query_dao.flush(db)
 
         return {"status": "sent", "type": msg_type}
 

@@ -7,6 +7,9 @@ workspace files and composes a comprehensive system prompt.
 import uuid
 from pathlib import Path
 
+from sqlalchemy import select
+
+from app.dao import query_dao
 from app.config import get_settings
 from app.services.storage import get_storage_backend, normalize_storage_key
 
@@ -170,7 +173,7 @@ async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
     }
 
     # Load human relationships
-    h_result = await db.execute(
+    h_result = await query_dao.execute(db, 
         select(
             AgentRelationship,
             IdentityProvider.name.label("provider_name"),
@@ -194,7 +197,7 @@ async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
             human_rows.append((rel, _display_provider_name(provider_name, provider_type)))
 
     # Load agent relationships
-    a_result = await db.execute(
+    a_result = await query_dao.execute(db, 
         select(AgentAgentRelationship)
         .where(AgentAgentRelationship.agent_id == agent_id)
         .options(selectinload(AgentAgentRelationship.target_agent))
@@ -272,12 +275,10 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     skills_text = await _load_skills_index(agent_id)
 
     # --- Relationships ---
-    from app.database import async_session
-    async with async_session() as db:
+    async with query_dao.session() as db:
         relationships = await _load_relationships_from_db(db, agent_id)
 
     # --- Compose static and dynamic system prompt blocks ---
-    from datetime import datetime, timezone as _tz
     from app.services.timezone_utils import get_agent_timezone, now_in_timezone
     agent_tz_name = await get_agent_timezone(agent_id)
     agent_local_now = now_in_timezone(agent_tz_name)
@@ -328,9 +329,8 @@ When installing or importing an MCP server via `discover_resources` / `import_mc
     _has_feishu = False
     try:
         from app.models.channel_config import ChannelConfig
-        from app.database import async_session as _ctx_session
-        async with _ctx_session() as _ctx_db:
-            _cfg_r = await _ctx_db.execute(
+        async with query_dao.session() as _ctx_db:
+            _cfg_r = await query_dao.execute(_ctx_db, 
                 select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "feishu",
@@ -408,11 +408,10 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 
     # --- Atlassian Rovo Tools (injected when Atlassian channel is configured) ---
     try:
-        from app.database import async_session
         from app.models.channel_config import ChannelConfig
         from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 sa_select(ChannelConfig).where(
                     ChannelConfig.agent_id == agent_id,
                     ChannelConfig.channel_type == "atlassian",
@@ -462,13 +461,12 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 
     # --- Company Intro (from system settings) ---
     try:
-        from app.database import async_session
         from app.models.system_settings import SystemSetting
         from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Resolve agent's tenant_id
-            _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
+            _ag_r = await query_dao.execute(db, sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
             _agent_tenant_id = _ag_r.scalar_one_or_none()
 
             company_intro = ""
@@ -477,7 +475,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
             if _agent_tenant_id:
                 try:
                     from app.models.tenant_setting import TenantSetting
-                    result = await db.execute(
+                    result = await query_dao.execute(db, 
                         sa_select(TenantSetting).where(
                             TenantSetting.tenant_id == _agent_tenant_id,
                             TenantSetting.key == "company_intro",
@@ -492,7 +490,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
             # Priority 2: system_settings with tenant-scoped key (backward compat)
             if not company_intro and _agent_tenant_id:
                 tenant_key = f"company_intro_{_agent_tenant_id}"
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     sa_select(SystemSetting).where(SystemSetting.key == tenant_key)
                 )
                 setting = result.scalar_one_or_none()
@@ -501,7 +499,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 
             # Priority 3: global system_settings fallback
             if not company_intro:
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
                 )
                 setting = result.scalar_one_or_none()
@@ -672,24 +670,24 @@ If no search or webpage-reading tool is available, say that web lookup is not en
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) --- DISABLED: injecting completed focus items
-    # into the system prompt was reinforcing stale workflow patterns over updated
-    # soul.md instructions.  Agents can still query focus via list_focus_items.
-    # try:
-    #     from app.services.focus_service import render_focus_context
-    #     focus = await render_focus_context(agent_id)
-    #     if focus.strip():
-    #         dynamic_parts.append(f"\n## Focus\n{focus}")
-    # except Exception:
-    #     pass
+    # --- Focus (working memory) ---
+    try:
+        from app.services.focus_service import render_focus_context
+
+        focus = await render_focus_context(agent_id)
+        if not focus.strip():
+            focus = await _read_file_safe(normalize_storage_key(f"{agent_id}/focus.md"), 3000)
+        if focus.strip():
+            dynamic_parts.append(f"\n## Focus\n{focus}")
+    except Exception:
+        pass
 
     # --- Active Triggers ---
     try:
-        from app.database import async_session
         from app.models.trigger import AgentTrigger
         from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 sa_select(AgentTrigger).where(
                     AgentTrigger.agent_id == agent_id,
                     AgentTrigger.is_enabled == True,

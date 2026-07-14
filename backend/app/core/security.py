@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.database import get_db
 
@@ -26,7 +27,7 @@ settings = get_settings()
 security = HTTPBearer()
 
 # Thread pool for CPU-intensive bcrypt operations (avoids blocking the event loop)
-_bcrypt_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bcrypt")
+_bcrypt_executor = ThreadPoolExecutor(max_workers=max(1, settings.BCRYPT_WORKERS), thread_name_prefix="bcrypt")
 
 
 def hash_password(password: str) -> str:
@@ -162,7 +163,7 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User)
         .where(User.id == uuid.UUID(user_id))
         .options(selectinload(User.identity))
@@ -185,7 +186,7 @@ async def get_authenticated_user(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User)
         .where(User.id == uuid.UUID(user_id))
         .options(selectinload(User.identity))

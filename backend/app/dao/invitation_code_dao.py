@@ -18,7 +18,7 @@ class InvitationCodeDAO(BaseDAO[InvitationCode]):
             result = await db.execute(
                 select(InvitationCode).where(
                     InvitationCode.code == code,
-                    InvitationCode.is_active == True,
+                    InvitationCode.is_active.is_(True),
                     InvitationCode.tenant_id.is_not(None),
                 )
             )

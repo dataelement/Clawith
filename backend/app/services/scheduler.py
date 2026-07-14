@@ -6,13 +6,13 @@ and executes them by calling the LLM with the schedule's instruction.
 """
 
 import asyncio
-import json
 import uuid
 from datetime import datetime, timezone
 
 from croniter import croniter
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import select
+from app.dao import query_dao
 
 
 def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime | None:
@@ -29,12 +29,11 @@ def compute_next_run(cron_expr: str, after: datetime | None = None) -> datetime 
 async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruction: str):
     """Execute a single schedule by calling the LLM with the instruction."""
     try:
-        from app.database import async_session
         from app.models.agent import Agent
 
-        async with async_session() as db:
+        async with query_dao.session() as db:
             # Load agent
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning(f"Schedule {schedule_id}: agent {agent_id} not found")
@@ -84,15 +83,14 @@ async def _execute_schedule(schedule_id: uuid.UUID, agent_id: uuid.UUID, instruc
 
 async def _tick():
     """One scheduler tick: find and execute due schedules."""
-    from app.database import async_session
     from app.models.schedule import AgentSchedule
     from app.services.audit_logger import write_audit_log
 
     now = datetime.now(timezone.utc)
 
     try:
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(AgentSchedule).where(
                     AgentSchedule.is_enabled == True,
                     AgentSchedule.next_run_at <= now,
@@ -109,7 +107,7 @@ async def _tick():
                 sched.last_run_at = now
                 sched.next_run_at = next_run
                 sched.run_count = (sched.run_count or 0) + 1
-                await db.commit()
+                await query_dao.commit(db)
 
                 await write_audit_log(
                     "schedule_fire",

@@ -3,7 +3,6 @@
 import uuid
 from datetime import datetime
 
-import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship

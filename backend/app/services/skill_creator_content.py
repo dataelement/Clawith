@@ -6,7 +6,6 @@ All auxiliary files are stored in skill_creator_files/ and loaded at runtime
 to keep the seeder clean and avoid triple-quote nesting issues.
 """
 
-import os
 from pathlib import Path
 
 _DIR = Path(__file__).parent / "skill_creator_files"

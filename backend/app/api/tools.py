@@ -3,22 +3,20 @@
 import uuid
 from loguru import logger
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import String, cast, select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.tool import Tool, AgentTool
 from app.models.user import User
 from app.services.tool_config import (
-    SENSITIVE_FIELD_KEYS,
-    delete_tenant_tool_config,
     decrypt_sensitive_fields,
     encrypt_sensitive_fields,
     get_sensitive_keys,
-    get_tenant_tool_config,
     get_tool_company_config,
     mask_sensitive_fields,
     meaningful_config,
@@ -37,7 +35,7 @@ async def _load_agent_for_tool_scope(db: AsyncSession, agent_id: uuid.UUID):
     """Load the agent whose tenant boundary determines tool visibility."""
     from app.models.agent import Agent as AgentModel
 
-    agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
     agent = agent_r.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -46,7 +44,7 @@ async def _load_agent_for_tool_scope(db: AsyncSession, agent_id: uuid.UUID):
 
 async def _load_agent_tool_assignments(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, AgentTool]:
     """Return explicit tool assignments for one agent keyed by tool ID string."""
-    agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
+    agent_tools_r = await query_dao.execute(db, select(AgentTool).where(AgentTool.agent_id == agent_id))
     return {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
 
 
@@ -167,7 +165,7 @@ async def list_tools(
     if target_tenant_id:
         from sqlalchemy import or_ as _or
         query = query.where(_or(Tool.tenant_id == None, Tool.tenant_id == target_tenant_id))
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     tools = result.scalars().all()
     response = []
     for t in tools:
@@ -211,7 +209,7 @@ async def create_tool(
     target_tenant_id = _resolve_target_tenant_id(current_user, data.tenant_id)
 
     # Unique name check is scoped per tenant to avoid cross-tenant collisions.
-    existing = await db.execute(
+    existing = await query_dao.execute(db, 
         select(Tool).where(Tool.name == data.name, Tool.tenant_id == target_tenant_id)
     )
     if existing.scalar_one_or_none():
@@ -232,9 +230,9 @@ async def create_tool(
         tenant_id=target_tenant_id,
         source="admin",
     )
-    db.add(tool)
-    await db.commit()
-    await db.refresh(tool)
+    query_dao.add(db, tool)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, tool)
     return {"id": str(tool.id), "name": tool.name}
 
 
@@ -254,14 +252,14 @@ async def update_tools_bulk(
 ):
     """Bulk update the enabled status of multiple tools."""
     tool_ids = [uuid.UUID(u.tool_id) for u in updates]
-    result = await db.execute(select(Tool).where(Tool.id.in_(tool_ids)))
+    result = await query_dao.execute(db, select(Tool).where(Tool.id.in_(tool_ids)))
     tools_map = {str(t.id): t for t in result.scalars().all()}
     
     for update in updates:
         if update.tool_id in tools_map:
             tools_map[update.tool_id].enabled = update.enabled
             
-    await db.commit()
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -273,7 +271,7 @@ async def update_tool(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a tool."""
-    result = await db.execute(select(Tool).where(Tool.id == tool_id))
+    result = await query_dao.execute(db, select(Tool).where(Tool.id == tool_id))
     tool = result.scalar_one_or_none()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
@@ -292,7 +290,7 @@ async def update_tool(
 
     for field, value in update_data.items():
         setattr(tool, field, value)
-    await db.commit()
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -303,16 +301,16 @@ async def delete_tool(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a tool (only non-builtin)."""
-    result = await db.execute(select(Tool).where(Tool.id == tool_id))
+    result = await query_dao.execute(db, select(Tool).where(Tool.id == tool_id))
     tool = result.scalar_one_or_none()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
     if tool.type == "builtin":
         raise HTTPException(status_code=400, detail="Cannot delete builtin tools")
 
-    await db.execute(delete(AgentTool).where(AgentTool.tool_id == tool_id))
-    await db.delete(tool)
-    await db.commit()
+    await query_dao.execute(db, delete(AgentTool).where(AgentTool.tool_id == tool_id))
+    await query_dao.delete(db, tool)
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -336,7 +334,7 @@ async def get_agent_tools(
     assignments = await _load_agent_tool_assignments(db, agent_id)
 
     # All tools visible within this agent's tenant boundary
-    all_tools_r = await db.execute(
+    all_tools_r = await query_dao.execute(db, 
         select(Tool)
         .where(Tool.enabled == True, _agent_visible_tool_clause(agent_obj.tenant_id, assignments))
         .order_by(Tool.category, Tool.name)
@@ -362,11 +360,11 @@ async def get_agent_tools(
                     tool_id=t.id,
                     enabled=t.is_default,
                 )
-                db.add(new_at)
+                query_dao.add(db, new_at)
                 assignments[tid] = new_at
                 backfilled += 1
         if backfilled:
-            await db.commit()
+            await query_dao.commit(db)
             logger.info(
                 f"[Tools] Backfilled {backfilled} AgentTool records for "
                 f"agent={agent_id}"
@@ -417,7 +415,7 @@ async def update_agent_tools(
     assignments = await _load_agent_tool_assignments(db, agent_id)
     for u in updates:
         tool_id = uuid.UUID(u.tool_id)
-        tool_r = await db.execute(
+        tool_r = await query_dao.execute(db, 
             select(Tool).where(
                 Tool.id == tool_id,
                 _agent_visible_tool_clause(agent_obj.tenant_id, assignments),
@@ -433,15 +431,15 @@ async def update_agent_tools(
             continue
 
         # Upsert
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
         )
         at = result.scalar_one_or_none()
         if at:
             at.enabled = u.enabled
         else:
-            db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=u.enabled))
-    await db.commit()
+            query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=u.enabled))
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -512,7 +510,7 @@ async def update_mcp_server(
         target_tenant_id = current_user.tenant_id
 
     # Load all tools from this server under the target tenant
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Tool).where(
             Tool.mcp_server_name == data.server_name,
             Tool.tenant_id == target_tenant_id,
@@ -534,7 +532,7 @@ async def update_mcp_server(
             tool.config = _encrypt_sensitive_fields(current_config, tool.config_schema)
         # If api_key is None (not provided), preserve the existing encrypted key
 
-    await db.commit()
+    await query_dao.commit(db)
     return {"ok": True, "updated": len(tools)}
 
 
@@ -566,7 +564,7 @@ async def list_agent_installed_tools(
         # column to text so this admin listing works across both schemas.
         tenant_agent_ids = select(cast(Ag.id, String)).where(cast(Ag.tenant_id, String) == str(tid))
         query = query.where(cast(AgentTool.agent_id, String).in_(tenant_agent_ids))
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     rows = result.all()
     return [
         {
@@ -599,21 +597,21 @@ async def delete_agent_tool(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin: remove an agent-tool assignment. Also deletes the tool record if no other agents use it."""
-    at_r = await db.execute(select(AgentTool).where(AgentTool.id == agent_tool_id))
+    at_r = await query_dao.execute(db, select(AgentTool).where(AgentTool.id == agent_tool_id))
     at = at_r.scalar_one_or_none()
     if not at:
         raise HTTPException(status_code=404, detail="Agent tool assignment not found")
     tool_id = at.tool_id
-    await db.delete(at)
-    await db.flush()
+    await query_dao.delete(db, at)
+    await query_dao.flush(db)
     # If no other agent uses this tool, delete the tool record too (for MCP tools)
-    remaining_r = await db.execute(select(AgentTool).where(AgentTool.tool_id == tool_id).limit(1))
+    remaining_r = await query_dao.execute(db, select(AgentTool).where(AgentTool.tool_id == tool_id).limit(1))
     if not remaining_r.scalar_one_or_none():
-        tool_r = await db.execute(select(Tool).where(Tool.id == tool_id))
+        tool_r = await query_dao.execute(db, select(Tool).where(Tool.id == tool_id))
         tool = tool_r.scalar_one_or_none()
         if tool and tool.type == "mcp":
-            await db.delete(tool)
-    await db.commit()
+            await query_dao.delete(db, tool)
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -635,12 +633,12 @@ async def get_agent_tool_config(
     Both configs are decrypted before returning. Global sensitive fields are
     masked so the frontend can show a key is configured without exposing it.
     """
-    tool_r = await db.execute(select(Tool).where(Tool.id == tool_id))
+    tool_r = await query_dao.execute(db, select(Tool).where(Tool.id == tool_id))
     tool = tool_r.scalar_one_or_none()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
     agent = await _load_agent_for_tool_scope(db, agent_id)
-    at_r = await db.execute(
+    at_r = await query_dao.execute(db, 
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
     at = at_r.scalar_one_or_none()
@@ -683,11 +681,11 @@ async def update_agent_tool_config(
             )
 
     # Encrypt sensitive fields using the tool's config_schema for field type awareness
-    tool_r2 = await db.execute(select(Tool).where(Tool.id == tool_id))
+    tool_r2 = await query_dao.execute(db, select(Tool).where(Tool.id == tool_id))
     tool_for_schema = tool_r2.scalar_one_or_none()
     encrypted_config = _encrypt_sensitive_fields(data.config, tool_for_schema.config_schema if tool_for_schema else None)
 
-    at_r = await db.execute(
+    at_r = await query_dao.execute(db, 
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
     at = at_r.scalar_one_or_none()
@@ -695,8 +693,8 @@ async def update_agent_tool_config(
         at.config = encrypted_config
     else:
         # Create assignment if not exists
-        db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True, config=encrypted_config))
-    await db.commit()
+        query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True, config=encrypted_config))
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -724,7 +722,7 @@ async def get_agent_tools_with_config(
     is_system_agent2 = bool(agent_obj2 and agent_obj2.is_system)
 
     assignments = await _load_agent_tool_assignments(db, agent_id)
-    all_tools_r = await db.execute(
+    all_tools_r = await query_dao.execute(db, 
         select(Tool)
         .where(Tool.enabled == True, _agent_visible_tool_clause(agent_obj2.tenant_id, assignments))
         .order_by(Tool.category, Tool.name)
@@ -765,7 +763,7 @@ async def get_agent_tools_with_config(
             if ss_key not in system_keys_cache:
                 try:
                     from app.models.system_settings import SystemSetting
-                    ss_r = await db.execute(
+                    ss_r = await query_dao.execute(db, 
                         select(SystemSetting).where(SystemSetting.key == ss_key)
                     )
                     ss = ss_r.scalar_one_or_none()
@@ -865,7 +863,7 @@ async def get_category_config(
     # Find a tool in this category that actually has config data.
     # We cannot just LIMIT 1 because most tools may have empty config.
     primary_tool_name = CATEGORY_CONFIG_PRIMARY_TOOL.get(category)
-    all_cat_tools = await db.execute(
+    all_cat_tools = await query_dao.execute(db, 
         select(Tool).where(
             Tool.category == category,
             Tool.enabled == True,
@@ -885,7 +883,7 @@ async def get_category_config(
     masked_global = mask_sensitive_fields(raw_global, cat_schema)
 
     # ── 2. Load agent-level config from ChannelConfig ───────────────────────
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == category,
@@ -946,7 +944,7 @@ async def update_category_config(
     app_secret = encrypted_config.get("api_key") or encrypted_config.get("api_secret") or encrypted_config.get("app_secret")
     extra = {k: v for k, v in encrypted_config.items() if k not in ("api_key", "api_secret", "app_secret")}
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == category,
@@ -968,9 +966,9 @@ async def update_category_config(
             extra_config=extra,
             is_configured=True,
         )
-        db.add(config)
+        query_dao.add(db, config)
 
-    await db.commit()
+    await query_dao.commit(db)
 
     # Special logic for Atlassian: trigger sync
     if category == "atlassian":
@@ -998,13 +996,13 @@ async def delete_category_config(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove config")
 
-    await db.execute(
+    await query_dao.execute(db, 
         delete(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == category,
         )
     )
-    await db.commit()
+    await query_dao.commit(db)
 
 
 @router.post("/agents/{agent_id}/category-config/{category}/test")

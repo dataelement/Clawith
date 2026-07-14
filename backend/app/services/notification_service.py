@@ -6,6 +6,7 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.notification import Notification
 
 
@@ -47,8 +48,8 @@ async def send_notification(
         ref_id=ref_id,
         sender_name=sender_name,
     )
-    db.add(notif)
-    await db.flush()
+    query_dao.add(db, notif)
+    await query_dao.flush(db)
     recipient = f"user {user_id}" if user_id else f"agent {agent_id}"
     logger.info(f"Notification [{type}] sent to {recipient}: {title}")
     return notif

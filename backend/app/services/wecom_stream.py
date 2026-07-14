@@ -11,7 +11,7 @@ from typing import Dict
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.channel_config import ChannelConfig
 
 
@@ -214,8 +214,8 @@ class WeComStreamManager:
                 try:
                     # Look up agent's welcome message
                     from app.models.agent import Agent as AgentModel
-                    async with async_session() as db:
-                        r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                    async with query_dao.session() as db:
+                        r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
                         agent = r.scalar_one_or_none()
                         welcome = (agent.welcome_message if agent else None) or "Hello! How can I help you?"
                     await client.reply_welcome(frame, {
@@ -291,8 +291,8 @@ class WeComStreamManager:
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
         logger.info("[WeCom Stream] Initializing all active WeCom AI Bot channels...")
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured,
                     ChannelConfig.channel_type == "wecom",
@@ -334,16 +334,15 @@ async def _process_wecom_stream_message(
     """Process a WeCom message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
     from sqlalchemy import select as _select
-    from app.database import async_session
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_user_service import channel_user_service
     from app.api.feishu import _call_llm_with_config, _load_agent_and_model
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Load agent
-        agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
+        agent_r = await query_dao.execute(db, _select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         if not agent_obj:
             logger.warning(f"[WeCom Stream] Agent {agent_id} not found")
@@ -379,7 +378,7 @@ async def _process_wecom_stream_message(
         session_conv_id = str(sess.id)
 
         # Load history
-        history_r = await db.execute(
+        history_r = await query_dao.execute(db, 
             _select(ChatMessage)
             .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
             .order_by(ChatMessage.created_at.desc())
@@ -389,7 +388,7 @@ async def _process_wecom_stream_message(
         history = _conv(reversed(history_r.scalars().all()))
 
         # Save user message
-        db.add(ChatMessage(
+        query_dao.add(db, ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
             role="user", content=user_text,
             conversation_id=session_conv_id,
@@ -399,7 +398,7 @@ async def _process_wecom_stream_message(
         # Pre-load agent/model before releasing connection
         _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
 
-        await db.commit()
+        await query_dao.commit(db)
         # ── Phase 1 complete: release connection before slow LLM call ──
 
     # ── Phase 2: LLM call (no DB session) ──
@@ -412,21 +411,21 @@ async def _process_wecom_stream_message(
     logger.info(f"[WeCom Stream] LLM reply: {reply_text[:100]}")
 
     # ── Phase 3: Save assistant reply (new short transaction) ──
-    async with async_session() as _save_db:
-        _save_db.add(ChatMessage(
+    async with query_dao.session() as _save_db:
+        query_dao.add(_save_db, ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
             role="assistant", content=reply_text,
             conversation_id=session_conv_id,
         ))
         from app.models.chat_session import ChatSession
         import uuid as _uuid_ws
-        _sess_r = await _save_db.execute(
+        _sess_r = await query_dao.execute(_save_db, 
             _select(ChatSession).where(ChatSession.id == _uuid_ws.UUID(session_conv_id))
         )
         _sess_fresh = _sess_r.scalar_one_or_none()
         if _sess_fresh:
             _sess_fresh.last_message_at = datetime.now(timezone.utc)
-        await _save_db.commit()
+        await query_dao.commit(_save_db)
 
     # Log activity
     from app.services.activity_logger import log_activity

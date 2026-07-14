@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import select
 
+from app.dao import query_dao
+async_session = query_dao.session
 from app.core.events import get_redis
-from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.trigger import AgentTrigger
@@ -70,7 +71,7 @@ async def receive_webhook(token: str, request: Request):
 
     # Look up trigger
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.type == "webhook",
                 AgentTrigger.is_enabled,
@@ -91,7 +92,7 @@ async def receive_webhook(token: str, request: Request):
             return JSONResponse({"ok": True})
 
         # Per-agent rate limit check
-        agent_result = await db.execute(select(Agent).where(Agent.id == target.agent_id))
+        agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == target.agent_id))
         agent_obj = agent_result.scalar_one_or_none()
         agent_rate_limit = (agent_obj.webhook_rate_limit if agent_obj else None) or RATE_LIMIT
 
@@ -108,7 +109,7 @@ async def receive_webhook(token: str, request: Request):
             logger.warning(f"Webhook per-agent rate limit ({agent_rate_limit}/min) for token {token[:8]}...")
             # Log audit entry so user can see dropped webhooks
             try:
-                db.add(
+                query_dao.add(db, 
                     AuditLog(
                         agent_id=target_agent_id,
                         action="webhook_rate_limited",
@@ -119,7 +120,7 @@ async def receive_webhook(token: str, request: Request):
                         },
                     )
                 )
-                await db.commit()
+                await query_dao.commit(db)
             except Exception:
                 pass
             return JSONResponse({"ok": True}, status_code=429)

@@ -86,6 +86,8 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://clawith:clawith@localhost:5432/clawith"
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -117,6 +119,9 @@ class Settings(BaseSettings):
 
     # Process role
     PROCESS_ROLE: str = "all"
+    APP_WORKERS: int = 1
+    BCRYPT_WORKERS: int = 4
+    LOGIN_SLOW_LOG_THRESHOLD_MS: int = 1000
 
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"

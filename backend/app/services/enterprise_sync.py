@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.events import publish_event
 from app.models.agent import Agent
 from app.models.audit import EnterpriseInfo
@@ -28,7 +29,7 @@ class EnterpriseSyncService:
         visible_roles: list[str], updated_by: uuid.UUID
     ) -> EnterpriseInfo:
         """Update enterprise info in database and notify all agents."""
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(EnterpriseInfo).where(EnterpriseInfo.info_type == info_type)
         )
         info = result.scalar_one_or_none()
@@ -45,9 +46,9 @@ class EnterpriseSyncService:
                 visible_roles=visible_roles,
                 updated_by=updated_by,
             )
-            db.add(info)
+            query_dao.add(db, info)
 
-        await db.flush()
+        await query_dao.flush(db)
 
         # Publish update event
         await publish_event(ENTERPRISE_INFO_CHANNEL, {
@@ -64,7 +65,7 @@ class EnterpriseSyncService:
 
         Filters by visible_roles — if empty, all roles can see it.
         """
-        result = await db.execute(select(EnterpriseInfo))
+        result = await query_dao.execute(db, select(EnterpriseInfo))
         all_info = result.scalars().all()
 
         for info in all_info:
@@ -87,7 +88,7 @@ class EnterpriseSyncService:
 
     async def sync_to_all_agents(self, db: AsyncSession) -> int:
         """Sync enterprise info to all running agents. Returns count."""
-        result = await db.execute(select(Agent).where(Agent.status == "running"))
+        result = await query_dao.execute(db, select(Agent).where(Agent.status == "running"))
         agents = result.scalars().all()
 
         for agent in agents:

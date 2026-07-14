@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.agent import Agent, AgentTemplate, AgentUserOnboarding
 from app.models.audit import ChatMessage
 
@@ -242,7 +243,7 @@ async def resolve_onboarding_prompt(
     proceed normally. Otherwise returns an :class:`OnboardingInjection` with
     either the first greeting prompt or the second configuration prompt.
     """
-    existing_result = await db.execute(
+    existing_result = await query_dao.execute(db, 
         select(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent.id,
             AgentUserOnboarding.user_id == user_id,
@@ -255,7 +256,7 @@ async def resolve_onboarding_prompt(
 
     # Count real user messages this person has sent to this agent. Onboarding
     # triggers are not persisted, so only authentic typed turns are counted.
-    user_turn_count = await db.execute(
+    user_turn_count = await query_dao.execute(db, 
         select(func.count()).select_from(ChatMessage).where(
             ChatMessage.agent_id == agent.id,
             ChatMessage.user_id == user_id,
@@ -267,7 +268,7 @@ async def resolve_onboarding_prompt(
     # Is anyone at least greeted by this agent yet? If not, this user is the
     # founder. We intentionally count all rows, including "greeted", because
     # a greeting already establishes that this agent has met its first human.
-    peer_count = await db.execute(
+    peer_count = await query_dao.execute(db, 
         select(func.count()).select_from(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent.id,
         )
@@ -277,7 +278,7 @@ async def resolve_onboarding_prompt(
     template_prompt: str | None = None
     capability_bullets: list[str] | None = None
     if agent.template_id:
-        tpl_result = await db.execute(
+        tpl_result = await query_dao.execute(db, 
             select(AgentTemplate).where(AgentTemplate.id == agent.template_id)
         )
         tpl = tpl_result.scalar_one_or_none()
@@ -369,8 +370,8 @@ async def mark_onboarding_phase(
         index_elements=["agent_id", "user_id"],
         set_={"phase": phase},
     )
-    await db.execute(stmt)
-    await db.commit()
+    await query_dao.execute(db, stmt)
+    await query_dao.commit(db)
 
 
 async def mark_onboarded(
@@ -388,7 +389,7 @@ async def is_onboarded(
     user_id: uuid.UUID,
 ) -> bool:
     """Shortcut for API serializers that need ``onboarded_for_me`` on AgentOut."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentUserOnboarding).where(
             AgentUserOnboarding.agent_id == agent_id,
             AgentUserOnboarding.user_id == user_id,
@@ -408,7 +409,7 @@ async def onboarded_agent_ids(
     """
     if not agent_ids:
         return set()
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentUserOnboarding.agent_id).where(
             AgentUserOnboarding.user_id == user_id,
             AgentUserOnboarding.agent_id.in_(agent_ids),

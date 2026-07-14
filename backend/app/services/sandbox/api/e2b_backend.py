@@ -1,7 +1,6 @@
 """E2B API-based sandbox backend."""
 
 import time
-from typing import Any
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig

@@ -17,7 +17,7 @@ class BaseDAO(Generic[ModelType]):
         self.model = model
 
     @asynccontextmanager
-    async def session(self) -> AsyncGenerator[AsyncSession, None]:
+    async def session(self, readonly: bool = False) -> AsyncGenerator[AsyncSession, None]:
         """Context manager yielding the active context session or a new one."""
         context_session = _session_ctx.get()
         if context_session is not None:
@@ -27,7 +27,7 @@ class BaseDAO(Generic[ModelType]):
                 token = _session_ctx.set(session)
                 try:
                     yield session
-                    if hasattr(session, "commit"):
+                    if not readonly and hasattr(session, "commit"):
                         await session.commit()
                 except Exception:
                     if hasattr(session, "rollback"):
@@ -38,7 +38,7 @@ class BaseDAO(Generic[ModelType]):
 
     async def get(self, id: Any) -> ModelType | None:
         """Fetch a single record by its primary key ID."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             if hasattr(db, "get"):
                 return await db.get(self.model, id)
             # Fallback for custom mock DB clients in tests
@@ -48,14 +48,14 @@ class BaseDAO(Generic[ModelType]):
 
     async def is_empty(self) -> bool:
         """Check if the table is empty (no records)."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             stmt = select(self.model.id).limit(1)
             result = await db.execute(stmt)
             return result.scalar() is None
 
     async def get_all(self, skip: int = 0, limit: int = 100) -> Sequence[ModelType]:
         """Fetch all records with offset and limit."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             stmt = select(self.model).offset(skip).limit(limit)
             result = await db.execute(stmt)
             return result.scalars().all()

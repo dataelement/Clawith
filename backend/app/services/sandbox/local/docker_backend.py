@@ -1,7 +1,6 @@
 """Local docker-based sandbox backend."""
 
 import time
-from pathlib import Path
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig

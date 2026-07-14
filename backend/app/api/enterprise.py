@@ -11,9 +11,10 @@ from sqlalchemy import select, func, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
-from app.core.security import get_current_admin, get_current_user, require_role, encrypt_data
-from app.database import async_session, get_db
+from app.core.security import get_current_admin, get_current_user, encrypt_data
+from app.database import get_db
 from app.models.org import OrgDepartment, OrgMember
 from app.models.identity import IdentityProvider
 from app.models.user import User
@@ -58,7 +59,7 @@ async def check_email_exists(
     Only returns a boolean; does not expose any user data.
     """
     from app.models.user import Identity
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Identity).where(Identity.email == data.email.strip().lower())
     )
     exists = result.scalar_one_or_none() is not None
@@ -87,8 +88,8 @@ async def _load_llm_test_api_key(model_id: str | None) -> str | None:
     if not model_id:
         return None
 
-    async with async_session() as session:
-        result = await session.execute(select(LLMModel).where(LLMModel.id == model_id))
+    async with query_dao.session() as session:
+        result = await query_dao.execute(session, select(LLMModel).where(LLMModel.id == model_id))
         existing = result.scalar_one_or_none()
         return get_model_api_key(existing) if existing else None
 
@@ -146,7 +147,7 @@ async def list_llm_models(
     query = select(LLMModel).order_by(LLMModel.created_at.desc())
     if tid:
         query = query.where(LLMModel.tenant_id == uuid.UUID(tid))
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     models = []
     for m in result.scalars().all():
         out = LLMModelOut.model_validate(m)
@@ -180,14 +181,14 @@ async def add_llm_model(
         request_timeout=data.request_timeout,
         tenant_id=uuid.UUID(tid) if tid else None,
     )
-    db.add(model)
-    await db.flush()
+    query_dao.add(db, model)
+    await query_dao.flush(db)
 
     # First enabled model for a tenant becomes that tenant's default.
     # Admins can later reassign via PATCH /llm-models/{id}/set-default.
     if model.tenant_id and model.enabled:
         from app.models.tenant import Tenant
-        t_result = await db.execute(select(Tenant).where(Tenant.id == model.tenant_id))
+        t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == model.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant and tenant.default_model_id is None:
             tenant.default_model_id = model.id
@@ -202,7 +203,7 @@ async def set_default_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark this model as the tenant's default for new agents."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -212,7 +213,7 @@ async def set_default_llm_model(
         raise HTTPException(status_code=400, detail="Model is disabled")
 
     from app.models.tenant import Tenant
-    t_result = await db.execute(select(Tenant).where(Tenant.id == model.tenant_id))
+    t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == model.tenant_id))
     tenant = t_result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -230,7 +231,7 @@ async def set_default_llm_model(
     # explicitly picked it) are left alone.
     if previous_default and previous_default != model.id:
         from app.models.agent import Agent
-        await db.execute(
+        await query_dao.execute(db, 
             update(Agent)
             .where(Agent.tenant_id == tenant.id)
             .where(Agent.primary_model_id == previous_default)
@@ -241,7 +242,7 @@ async def set_default_llm_model(
             f"from {previous_default} -> {model.id}"
         )
 
-    await db.commit()
+    await query_dao.commit(db)
 
 
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -252,14 +253,14 @@ async def remove_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an LLM model from the pool."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
     # Check if any agents reference this model
     from sqlalchemy import or_
-    ref_result = await db.execute(
+    ref_result = await query_dao.execute(db, 
         select(Agent.name).where(
             or_(Agent.primary_model_id == model_id, Agent.fallback_model_id == model_id)
         )
@@ -277,14 +278,14 @@ async def remove_llm_model(
 
     # Nullify FK references in agents before deleting
     if agent_names:
-        await db.execute(
+        await query_dao.execute(db, 
             update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None)
         )
-        await db.execute(
+        await query_dao.execute(db, 
             update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None)
         )
-    await db.delete(model)
-    await db.commit()
+    await query_dao.delete(db, model)
+    await query_dao.commit(db)
 
 
 @router.put("/llm-models/{model_id}", response_model=LLMModelOut)
@@ -295,7 +296,7 @@ async def update_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing LLM model in the pool (admin)."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await query_dao.execute(db, select(LLMModel).where(LLMModel.id == model_id))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -324,11 +325,11 @@ async def update_llm_model(
         if hasattr(data, 'request_timeout') and data.request_timeout is not None:
             model.request_timeout = data.request_timeout
 
-        await db.commit()
-        await db.refresh(model)
+        await query_dao.commit(db)
+        await query_dao.refresh(db, model)
         return LLMModelOut.model_validate(model)
     except SQLAlchemyError as e:
-        await db.rollback()
+        await query_dao.rollback(db)
         raise HTTPException(status_code=500, detail="Failed to update model")
 
 
@@ -340,7 +341,7 @@ async def list_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """List all enterprise information entries."""
-    result = await db.execute(select(EnterpriseInfo).order_by(EnterpriseInfo.info_type))
+    result = await query_dao.execute(db, select(EnterpriseInfo).order_by(EnterpriseInfo.info_type))
     return [EnterpriseInfoOut.model_validate(e) for e in result.scalars().all()]
 
 
@@ -385,14 +386,14 @@ async def list_approvals(
         query = query.where(ApprovalRequest.status == status_filter)
     query = query.order_by(ApprovalRequest.created_at.desc())
 
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     approvals = result.scalars().all()
 
     # Batch-load agent names
     agent_ids_set = {a.agent_id for a in approvals}
     agent_names: dict[uuid.UUID, str] = {}
     if agent_ids_set:
-        agents_r = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids_set)))
+        agents_r = await query_dao.execute(db, select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids_set)))
         agent_names = {row.id: row.name for row in agents_r.all()}
 
     out = []
@@ -439,7 +440,7 @@ async def list_audit_logs(
         query = query.where(AuditLog.agent_id.in_(tenant_agent_ids))
     if agent_id:
         query = query.where(AuditLog.agent_id == agent_id)
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     return [AuditLogOut.model_validate(log) for log in result.scalars().all()]
 
 
@@ -472,12 +473,12 @@ async def get_enterprise_stats(
             select(Agent.id).where(Agent.tenant_id == tid)
         ))
 
-    total_agents = await db.execute(agent_q)
-    running_agents = await db.execute(
+    total_agents = await query_dao.execute(db, agent_q)
+    running_agents = await query_dao.execute(db, 
         agent_q.where(Agent.status == "running")
     )
-    total_users = await db.execute(user_q)
-    pending_approvals = await db.execute(
+    total_users = await query_dao.execute(db, user_q)
+    pending_approvals = await query_dao.execute(db, 
         approval_q.where(ApprovalRequest.status == "pending")
     )
 
@@ -514,7 +515,7 @@ async def get_tenant_quotas(
     """Get tenant quota defaults and heartbeat settings."""
     if not current_user.tenant_id:
         return {}
-    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         return {}
@@ -541,7 +542,7 @@ async def update_tenant_quotas(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
 
-    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -574,7 +575,7 @@ async def update_tenant_quotas(
     if data.max_webhook_rate_ceiling is not None:
         tenant.max_webhook_rate_ceiling = data.max_webhook_rate_ceiling
 
-    await db.commit()
+    await query_dao.commit(db)
     return {
         "message": "Tenant quotas updated",
         "heartbeat_agents_adjusted": adjusted_count,
@@ -666,7 +667,7 @@ async def update_email_templates_endpoint(
                 detail=f"Unknown email template scenario: {key}"
             )
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(SystemSetting).where(SystemSetting.key == "email_templates")
     )
     setting = result.scalar_one_or_none()
@@ -674,8 +675,8 @@ async def update_email_templates_endpoint(
         setting.value = data.templates
     else:
         setting = SystemSetting(key="email_templates", value=data.templates)
-        db.add(setting)
-    await db.commit()
+        query_dao.add(db, setting)
+    await query_dao.commit(db)
     return {"success": True, "message": "Email templates saved"}
 
 
@@ -693,7 +694,7 @@ async def get_notification_bar_public(
     db: AsyncSession = Depends(get_db),
 ):
     """Public (no auth) endpoint to read the notification bar config."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(SystemSetting).where(SystemSetting.key == "notification_bar")
     )
     setting = result.scalar_one_or_none()
@@ -713,7 +714,7 @@ async def get_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a system setting by key."""
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    result = await query_dao.execute(db, select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if not setting:
         return {"key": key, "value": {}}
@@ -731,20 +732,20 @@ async def update_system_setting(
     # Platform-level settings (e.g. PUBLIC_BASE_URL) require platform_admin
     if key == "platform" and not _is_platform_admin_user(current_user):
         raise HTTPException(status_code=403, detail="Only platform admin can modify platform settings")
-    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    result = await query_dao.execute(db, select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if setting:
         setting.value = data.value
     else:
         setting = SystemSetting(key=key, value=data.value)
-        db.add(setting)
-    await db.commit()
+        query_dao.add(db, setting)
+    await query_dao.commit(db)
 
     # When public_base_url changes, regenerate sso_domain for all SSO-enabled tenants
     if key == "platform" and data.value.get("public_base_url"):
         await _regenerate_all_sso_domains(db)
 
-    await db.refresh(setting)
+    await query_dao.refresh(db, setting)
     return {
         "key": setting.key,
         "value": setting.value,
@@ -765,7 +766,7 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
     Raises HTTPException(400) if IP mode and another tenant already owns the sso_domain.
     """
     from app.models.tenant import Tenant
-    count_result = await db.execute(
+    count_result = await query_dao.execute(db, 
         select(func.count(IdentityProvider.id)).where(
             IdentityProvider.tenant_id == tenant_id,
             IdentityProvider.sso_login_enabled == True,
@@ -774,7 +775,7 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
     )
     active_sso_count = count_result.scalar() or 0
 
-    tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = tenant_result.scalar_one_or_none()
     if not tenant:
         return
@@ -790,7 +791,7 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
         if is_ip:
             # IP mode: first clear ALL other tenants' sso_domain, then set for this tenant
             # (unique constraint - only one tenant can hold the IP domain)
-            await db.execute(
+            await query_dao.execute(db, 
                 update(Tenant)
                 .where(Tenant.id != tenant_id)
                 .values(sso_domain=None, sso_enabled=False)
@@ -799,7 +800,7 @@ async def _sync_tenant_sso_state(db: AsyncSession, tenant_id: uuid.UUID):
 
         tenant.sso_domain = sso_base
 
-    await db.commit()
+    await query_dao.commit(db)
 
 
 async def _regenerate_all_sso_domains(db: AsyncSession):
@@ -815,7 +816,7 @@ async def _regenerate_all_sso_domains(db: AsyncSession):
     is_ip = platform_service.is_ip_address(host)
 
     # Fetch all tenants; put SSO-enabled ones first so they win the IP slot
-    all_tenants_result = await db.execute(
+    all_tenants_result = await query_dao.execute(db, 
         select(Tenant).order_by(Tenant.sso_enabled.desc(), Tenant.created_at.asc())
     )
     tenants = all_tenants_result.scalars().all()
@@ -835,7 +836,7 @@ async def _regenerate_all_sso_domains(db: AsyncSession):
         logger.info(f"[SSO regen] tenant={tenant.slug} sso_domain={tenant.sso_domain}")
 
     if tenants:
-        await db.commit()
+        await query_dao.commit(db)
 
 
 # ─── Identity Providers ─────────────────────────────────
@@ -866,7 +867,7 @@ async def list_identity_providers(
     elif not _is_platform_admin_user(current_user):
         raise HTTPException(status_code=400, detail="tenant_id is required for identity providers")
 
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     providers = []
     for p in result.scalars().all():
         providers.append(_identity_provider_response(p))
@@ -1039,9 +1040,9 @@ async def create_identity_provider(
         config=data.config,
         tenant_id=tid
     )
-    db.add(provider)
-    await db.commit()
-    await db.refresh(provider)
+    query_dao.add(db, provider)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, provider)
     auth_provider_registry._clear_cache(provider.provider_type)
     return _identity_provider_response(provider)
 
@@ -1092,9 +1093,9 @@ async def create_oauth2_provider(
         config=config,
         tenant_id=tid
     )
-    db.add(provider)
-    await db.commit()
-    await db.refresh(provider)
+    query_dao.add(db, provider)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, provider)
     auth_provider_registry._clear_cache(provider.provider_type)
     return _identity_provider_response(provider)
 
@@ -1121,7 +1122,7 @@ async def update_oauth2_provider(
     """Update an OAuth2 identity provider with simplified fields."""
     from app.services.auth_registry import auth_provider_registry
 
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -1166,8 +1167,8 @@ async def update_oauth2_provider(
         validate_provider_config("oauth2", current_config)
         provider.config = current_config
 
-    await db.commit()
-    await db.refresh(provider)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, provider)
     auth_provider_registry._clear_cache(provider.provider_type)
     return _identity_provider_response(provider)
 
@@ -1189,7 +1190,7 @@ async def update_identity_provider(
     """Update an existing identity provider."""
     from app.services.auth_registry import auth_provider_registry
 
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -1220,8 +1221,8 @@ async def update_identity_provider(
         
         provider.config = new_config
         
-    await db.commit()
-    await db.refresh(provider)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, provider)
     auth_provider_registry._clear_cache(provider.provider_type)
 
     # Recompute tenant.sso_enabled derived state whenever sso_login_enabled changes
@@ -1229,7 +1230,7 @@ async def update_identity_provider(
     if data.sso_login_enabled is not None and provider.tenant_id:
         await _sync_tenant_sso_state(db, provider.tenant_id)
         from app.models.tenant import Tenant
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == provider.tenant_id))
+        tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == provider.tenant_id))
         t = tenant_result.scalar_one_or_none()
         if t:
             sso_domain = t.sso_domain
@@ -1244,7 +1245,7 @@ async def delete_identity_provider(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete an identity provider."""
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -1255,24 +1256,23 @@ async def delete_identity_provider(
     try:
         # Nullify references in synced org data before deleting the provider
         from sqlalchemy import update
-        await db.execute(
+        await query_dao.execute(db, 
             update(OrgMember).where(OrgMember.provider_id == provider_id).values(provider_id=None)
         )
-        await db.execute(
+        await query_dao.execute(db, 
             update(OrgDepartment).where(OrgDepartment.provider_id == provider_id).values(provider_id=None)
         )
         
-        await db.delete(provider)
-        await db.commit()
+        await query_dao.delete(db, provider)
+        await query_dao.commit(db)
     except SQLAlchemyError as e:
-        await db.rollback()
+        await query_dao.rollback(db)
         logger.error(f"Failed to delete identity provider {provider_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete identity provider due to database constraints")
 
 
 # ─── Org Structure ──────────────────────────────────────
 
-from app.models.org import OrgDepartment, OrgMember
 
 
 @router.get("/org/departments")
@@ -1309,7 +1309,7 @@ async def list_org_departments(
         query = query.where(OrgDepartment.tenant_id == uuid.UUID(tenant_id))
     if provider_id:
         query = query.where(OrgDepartment.provider_id == uuid.UUID(provider_id))
-    result = await db.execute(query.order_by(OrgDepartment.name))
+    result = await query_dao.execute(db, query.order_by(OrgDepartment.name))
     rows = result.all()
     # Calculate total members for this scope (for the "All" entry in frontend)
     total_q = select(func.count(OrgMember.id)).where(OrgMember.status == "active")
@@ -1317,7 +1317,7 @@ async def list_org_departments(
         total_q = total_q.where(OrgMember.tenant_id == uuid.UUID(tenant_id))
     if provider_id:
         total_q = total_q.where(OrgMember.provider_id == uuid.UUID(provider_id))
-    total_result = await db.execute(total_q)
+    total_result = await query_dao.execute(db, total_q)
     total_member = total_result.scalar() or 0
 
     return {
@@ -1378,7 +1378,7 @@ async def list_org_members(
         query = query.where(OrgMember.tenant_id == uuid.UUID(tenant_id))
     if department_id:
         # Get the department to find its path and then include all sub-departments
-        dept_result = await db.execute(select(OrgDepartment).where(OrgDepartment.id == uuid.UUID(department_id)))
+        dept_result = await query_dao.execute(db, select(OrgDepartment).where(OrgDepartment.id == uuid.UUID(department_id)))
         target_dept = dept_result.scalar_one_or_none()
         if target_dept:
             # Build sub-department query: the selected dept itself, plus any dept whose path
@@ -1388,7 +1388,7 @@ async def list_org_members(
                 # Use SQL LIKE to find all descendants based on path prefix
                 sub_dept_conditions.append(OrgDepartment.path.like(f"{target_dept.path}/%"))
             sub_depts_query = select(OrgDepartment.id).where(or_(*sub_dept_conditions))
-            sub_dept_ids_result = await db.execute(sub_depts_query)
+            sub_dept_ids_result = await query_dao.execute(db, sub_depts_query)
             sub_dept_ids = [row[0] for row in sub_dept_ids_result.all()]
             query = query.where(OrgMember.department_id.in_(sub_dept_ids))
         else:
@@ -1405,7 +1405,7 @@ async def list_org_members(
             )
         )
     query = query.order_by(OrgMember.name).limit(100)
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     rows = result.all()
     member_paths = await derive_member_department_paths(
         db,
@@ -1445,7 +1445,7 @@ async def trigger_org_sync(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid provider_id")
 
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == pid))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == pid))
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -1487,7 +1487,7 @@ async def wecom_org_sync_verify(
     from fastapi.responses import Response as _Response
     from app.api.wecom import _decrypt_msg, _verify_signature
 
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
         return _Response(status_code=404)
@@ -1627,10 +1627,10 @@ async def create_invitation_codes(
             max_uses=data.max_uses,
             created_by=current_user.id,
         )
-        db.add(code)
+        query_dao.add(db, code)
         codes_created.append(code_str)
 
-    await db.commit()
+    await query_dao.commit(db)
     return {"created": len(codes_created), "codes": codes_created}
 
 
@@ -1653,7 +1653,7 @@ async def invite_users(
     from app.services.platform_service import platform_service
     from app.models.tenant import Tenant
     
-    tenant_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
     tenant = tenant_result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -1677,7 +1677,7 @@ async def invite_users(
             max_uses=1,
             created_by=current_user.id,
         )
-        db.add(code)
+        query_dao.add(db, code)
         codes.append(code)
         
         invite_url = f"{base_url}/login?code={code_str}&email={email}"
@@ -1695,7 +1695,7 @@ async def invite_users(
         invited_count += 1
 
     if invited_count > 0:
-        await db.commit()
+        await query_dao.commit(db)
         
     return {"invited": invited_count, "message": "Invitations sent successfully"}
 
@@ -1720,11 +1720,11 @@ async def list_invitation_codes(
         stmt = stmt.where(InvitationCode.code.ilike(f"%{search}%"))
         count_stmt = count_stmt.where(InvitationCode.code.ilike(f"%{search}%"))
 
-    total_result = await db.execute(count_stmt)
+    total_result = await query_dao.execute(db, count_stmt)
     total = total_result.scalar() or 0
 
     offset = (max(page, 1) - 1) * page_size
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         stmt.order_by(InvitationCode.created_at.desc()).offset(offset).limit(page_size)
     )
     codes = result.scalars().all()
@@ -1758,7 +1758,7 @@ async def export_invitation_codes_csv(
     import io
     from fastapi.responses import StreamingResponse
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(InvitationCode)
         .where(InvitationCode.tenant_id == current_user.tenant_id)
         .order_by(InvitationCode.created_at.asc())
@@ -1794,7 +1794,7 @@ async def deactivate_invitation_code(
     """Deactivate an invitation code (must belong to current user's company)."""
     _require_tenant_admin(current_user)
     import uuid as _uuid
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(InvitationCode).where(
             InvitationCode.id == _uuid.UUID(code_id),
             InvitationCode.tenant_id == current_user.tenant_id,
@@ -1804,5 +1804,5 @@ async def deactivate_invitation_code(
     if not code:
         raise HTTPException(status_code=404, detail="Code not found")
     code.is_active = False
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "deactivated"}

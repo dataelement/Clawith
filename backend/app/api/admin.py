@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import require_role
 from app.database import get_db
 from app.models.agent import Agent
@@ -71,26 +72,26 @@ async def list_companies(
     db: AsyncSession = Depends(get_db),
 ):
     """List all companies with stats."""
-    tenants = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+    tenants = await query_dao.execute(db, select(Tenant).order_by(Tenant.created_at.desc()))
     result = []
 
     for tenant in tenants.scalars().all():
         tid = tenant.id
 
         # User count
-        uc = await db.execute(
+        uc = await query_dao.execute(db, 
             select(sqla_func.count()).select_from(User).where(User.tenant_id == tid)
         )
         user_count = uc.scalar() or 0
 
         # Agent count
-        ac = await db.execute(
+        ac = await query_dao.execute(db, 
             select(sqla_func.count()).select_from(Agent).where(Agent.tenant_id == tid)
         )
         agent_count = ac.scalar() or 0
 
         # Running agents
-        rc = await db.execute(
+        rc = await query_dao.execute(db, 
             select(sqla_func.count()).select_from(Agent).where(
                 Agent.tenant_id == tid, Agent.status == "running"
             )
@@ -98,7 +99,7 @@ async def list_companies(
         agent_running = rc.scalar() or 0
 
         # Total tokens
-        tc = await db.execute(
+        tc = await query_dao.execute(db, 
             select(
                 sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0),
                 sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0),
@@ -109,7 +110,7 @@ async def list_companies(
         total_tokens, cache_read_tokens_total = tc.one()
 
         # Org Admin Email (first found if multiple)
-        admin_q = await db.execute(
+        admin_q = await query_dao.execute(db, 
             select(Identity.email)
             .join(User, Identity.id == User.identity_id)
             .where(User.tenant_id == tid, User.role == "org_admin")
@@ -152,8 +153,8 @@ async def create_company(
     slug = f"{slug}-{secrets.token_hex(3)}"
 
     tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
-    db.add(tenant)
-    await db.flush()
+    query_dao.add(db, tenant)
+    await query_dao.flush(db)
 
     # Generate admin invitation code (single-use)
     code_str = secrets.token_urlsafe(12)[:16].upper()
@@ -163,8 +164,8 @@ async def create_company(
         max_uses=1,
         created_by=current_user.id,
     )
-    db.add(invite)
-    await db.flush()
+    query_dao.add(db, invite)
+    await query_dao.flush(db)
 
     return CompanyCreateResponse(
         company=CompanyStats(
@@ -185,7 +186,7 @@ async def toggle_company(
     db: AsyncSession = Depends(get_db),
 ):
     """Enable or disable a company."""
-    result = await db.execute(select(Tenant).where(Tenant.id == company_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == company_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -195,20 +196,19 @@ async def toggle_company(
 
     # When disabling: pause all running agents
     if not new_state:
-        agents = await db.execute(
+        agents = await query_dao.execute(db, 
             select(Agent).where(Agent.tenant_id == company_id, Agent.status == "running")
         )
         for agent in agents.scalars().all():
             agent.status = "paused"
 
-    await db.flush()
+    await query_dao.flush(db)
     return {"ok": True, "is_active": new_state}
 
 
 # ─── Platform Metrics Dashboard ─────────────────────────
 
 from typing import Any
-from fastapi import Query
 
 @router.get("/metrics/timeseries", response_model=list[dict[str, Any]])
 async def get_platform_timeseries(
@@ -228,7 +228,7 @@ async def get_platform_timeseries(
     from datetime import timedelta
 
     # 1. New Companies per day
-    companies_q = await db.execute(
+    companies_q = await query_dao.execute(db, 
         select(
             cast(Tenant.created_at, Date).label('d'),
             sqla_func.count().label('c')
@@ -240,7 +240,7 @@ async def get_platform_timeseries(
     companies_by_day = {row.d: row.c for row in companies_q.all()}
 
     # 2. New Users per day
-    users_q = await db.execute(
+    users_q = await query_dao.execute(db, 
         select(
             cast(User.created_at, Date).label('d'),
             sqla_func.count().label('c')
@@ -252,7 +252,7 @@ async def get_platform_timeseries(
     users_by_day = {row.d: row.c for row in users_q.all()}
 
     # 3. Tokens consumed per day
-    tokens_q = await db.execute(
+    tokens_q = await query_dao.execute(db, 
         select(
             cast(DailyTokenUsage.date, Date).label('d'),
             sqla_func.sum(DailyTokenUsage.tokens_used).label('c'),
@@ -263,7 +263,7 @@ async def get_platform_timeseries(
         ).group_by('d')
     )
     tokens_by_day = {row.d: row.c for row in tokens_q.all()}
-    tokens_q = await db.execute(
+    tokens_q = await query_dao.execute(db, 
         select(
             cast(DailyTokenUsage.date, Date).label('d'),
             sqla_func.sum(DailyTokenUsage.cache_read_tokens).label('cache_read'),
@@ -275,7 +275,7 @@ async def get_platform_timeseries(
     cache_by_day = {row.d: row.cache_read for row in tokens_q.all()}
 
     # 4. New Sessions per day (DAU = distinct users with sessions that day)
-    sessions_q = await db.execute(
+    sessions_q = await query_dao.execute(db, 
         select(
             cast(ChatSession.created_at, Date).label('d'),
             sqla_func.count().label('sessions'),
@@ -293,7 +293,7 @@ async def get_platform_timeseries(
 
     # 5. WAU/MAU: for each day, count distinct users in rolling 7/30-day window.
     #    Use a single SQL query with window functions for efficiency.
-    wau_mau_q = await db.execute(text("""
+    wau_mau_q = await query_dao.execute(db, text("""
         WITH daily_users AS (
             SELECT DISTINCT
                 DATE(created_at) AS d,
@@ -335,11 +335,11 @@ async def get_platform_timeseries(
     end_d = end_date.date()
 
     # Cumulative totals up to start_date
-    total_companies = (await db.execute(select(sqla_func.count()).select_from(Tenant).where(Tenant.created_at < start_date))).scalar() or 0
-    total_users = (await db.execute(select(sqla_func.count()).select_from(User).where(User.created_at < start_date))).scalar() or 0
-    total_tokens = (await db.execute(select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
-    total_cache_read = (await db.execute(select(sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
-    total_sessions = (await db.execute(select(sqla_func.count()).select_from(ChatSession).where(ChatSession.created_at < start_date))).scalar() or 0
+    total_companies = (await query_dao.execute(db, select(sqla_func.count()).select_from(Tenant).where(Tenant.created_at < start_date))).scalar() or 0
+    total_users = (await query_dao.execute(db, select(sqla_func.count()).select_from(User).where(User.created_at < start_date))).scalar() or 0
+    total_tokens = (await query_dao.execute(db, select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
+    total_cache_read = (await query_dao.execute(db, select(sqla_func.coalesce(sqla_func.sum(Agent.cache_read_tokens_total), 0)).where(Agent.created_at < start_date))).scalar() or 0
+    total_sessions = (await query_dao.execute(db, select(sqla_func.count()).select_from(ChatSession).where(ChatSession.created_at < start_date))).scalar() or 0
 
     while current_d <= end_d:
         nc = companies_by_day.get(current_d, 0)
@@ -384,7 +384,7 @@ async def get_platform_leaderboards(
 ):
     """Get Top 20 token consuming companies and agents."""
     # Top 20 Companies by total tokens
-    top_companies_q = await db.execute(
+    top_companies_q = await query_dao.execute(db, 
         select(
             Tenant.name,
             sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label('total'),
@@ -406,7 +406,7 @@ async def get_platform_leaderboards(
     ]
 
     # Top 20 Agents by total tokens
-    top_agents_q = await db.execute(
+    top_agents_q = await query_dao.execute(db, 
         select(Agent.name, Tenant.name.label('tenant_name'), Agent.tokens_used_total, Agent.cache_read_tokens_total)
         .join(Tenant, Tenant.id == Agent.tenant_id)
         .order_by(Agent.tokens_used_total.desc())
@@ -448,11 +448,11 @@ async def get_enhanced_metrics(
     # Sum of daily_token_usage / count of chat_sessions in last 30 days
     thirty_days_ago = now - timedelta(days=30)
     from app.models.activity_log import DailyTokenUsage
-    total_tok_30d = (await db.execute(
+    total_tok_30d = (await query_dao.execute(db, 
         select(sqla_func.coalesce(sqla_func.sum(DailyTokenUsage.tokens_used), 0))
         .where(DailyTokenUsage.date >= thirty_days_ago)
     )).scalar() or 0
-    total_sess_30d = (await db.execute(
+    total_sess_30d = (await query_dao.execute(db, 
         select(sqla_func.count())
         .select_from(ChatSession)
         .where(ChatSession.created_at >= thirty_days_ago)
@@ -461,7 +461,7 @@ async def get_enhanced_metrics(
 
     # ── 2. 7-Day Retention Rate (excluding companies <14 days old) ──
     # Last week = 14..7 days ago, This week = 7..0 days ago
-    retention_q = await db.execute(text("""
+    retention_q = await query_dao.execute(db, text("""
         WITH established AS (
             SELECT id FROM tenants WHERE created_at < NOW() - INTERVAL '14 days'
         ),
@@ -492,7 +492,7 @@ async def get_enhanced_metrics(
     retention_rate = round(retained * 100.0 / max(last_week_total, 1), 1)
 
     # ── 3. Channel Distribution (last 30 days) ──
-    channel_q = await db.execute(
+    channel_q = await query_dao.execute(db, 
         select(
             ChatSession.source_channel,
             sqla_func.count().label('count')
@@ -508,7 +508,7 @@ async def get_enhanced_metrics(
 
     # ── 4. Top 10 Tool Categories ──
     # Count enabled agent_tools grouped by tool category
-    tool_q = await db.execute(
+    tool_q = await query_dao.execute(db, 
         select(
             Tool.category,
             sqla_func.count().label('count')
@@ -524,7 +524,7 @@ async def get_enhanced_metrics(
     ]
 
     # ── 5. Churn Warnings (>10M tokens, 14+ days inactive) ──
-    churn_q = await db.execute(text("""
+    churn_q = await query_dao.execute(db, text("""
         WITH tenant_token_totals AS (
             SELECT
                 tenant_id,
@@ -593,7 +593,7 @@ async def get_platform_settings(
         ("invitation_code_enabled", False),
         ("sso_custom_domain_redirect_enabled", True),
     ]:
-        r = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+        r = await query_dao.execute(db, select(SystemSetting).where(SystemSetting.key == key))
         s = r.scalar_one_or_none()
         settings[key] = s.value.get("enabled", default) if s else default
 
@@ -610,12 +610,12 @@ async def update_platform_settings(
     updates = data.model_dump(exclude_unset=True)
 
     for key, value in updates.items():
-        r = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+        r = await query_dao.execute(db, select(SystemSetting).where(SystemSetting.key == key))
         s = r.scalar_one_or_none()
         if s:
             s.value = {"enabled": value}
         else:
-            db.add(SystemSetting(key=key, value={"enabled": value}))
+            query_dao.add(db, SystemSetting(key=key, value={"enabled": value}))
 
-    await db.flush()
+    await query_dao.flush(db)
     return await get_platform_settings(current_user=current_user, db=db)

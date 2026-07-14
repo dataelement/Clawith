@@ -4,11 +4,12 @@ import uuid
 from datetime import datetime, timezone as tz
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import cast, select, func, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -69,7 +70,7 @@ async def list_sessions(
 ):
     """List chat sessions for an agent. scope=all for org/platform admins and agent_admin."""
     # Verify agent exists
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -80,7 +81,7 @@ async def list_sessions(
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ChatSession)
             .where(
                 (ChatSession.agent_id == agent_id)
@@ -98,7 +99,7 @@ async def list_sessions(
         message_counts: dict[str, int] = {}
         unread_counts: dict[str, int] = {}
         if session_ids:
-            count_res = await db.execute(
+            count_res = await query_dao.execute(db, 
                 select(ChatMessage.conversation_id, func.count(ChatMessage.id))
                 .where(ChatMessage.conversation_id.in_(session_ids))
                 .group_by(ChatMessage.conversation_id)
@@ -106,24 +107,30 @@ async def list_sessions(
             for row in count_res.all():
                 message_counts[row[0]] = row[1]
 
-            unread_res = await db.execute(
-                select(ChatSession.id, func.count(ChatMessage.id))
-                .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
-                .where(
-                    ChatSession.id.in_(session_uuid_ids),
-                    ChatSession.user_id == current_user.id,
-                    ChatSession.source_channel.notin_(["agent", "trigger"]),
-                    ChatSession.is_group == False,
-                    ChatMessage.role.in_(["assistant", "system", "tool_call"]),
-                    ChatMessage.created_at > func.coalesce(
-                        ChatSession.last_read_at_by_user,
-                        datetime(1970, 1, 1, tzinfo=tz.utc),
-                    ),
+            owned_session_uuid_ids = [
+                s.id
+                for s in sessions
+                if s.user_id == current_user.id and s.source_channel not in ("agent", "trigger") and not s.is_group
+            ]
+            if owned_session_uuid_ids:
+                unread_res = await query_dao.execute(db,
+                    select(ChatSession.id, func.count(ChatMessage.id))
+                    .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
+                    .where(
+                        ChatSession.id.in_(owned_session_uuid_ids),
+                        ChatSession.user_id == current_user.id,
+                        ChatSession.source_channel.notin_(["agent", "trigger"]),
+                        ChatSession.is_group == False,
+                        ChatMessage.role.in_(["assistant", "system", "tool_call"]),
+                        ChatMessage.created_at > func.coalesce(
+                            ChatSession.last_read_at_by_user,
+                            datetime(1970, 1, 1, tzinfo=tz.utc),
+                        ),
+                    )
+                    .group_by(ChatSession.id)
                 )
-                .group_by(ChatSession.id)
-            )
-            for row in unread_res.all():
-                unread_counts[str(row[0])] = int(row[1] or 0)
+                for row in unread_res.all():
+                    unread_counts[str(row[0])] = int(row[1] or 0)
 
         # Collect IDs to resolve in bulk
         from app.models.user import Identity
@@ -131,7 +138,7 @@ async def list_sessions(
                          if not s.is_group and s.source_channel != "agent" and s.user_id})
         user_names: dict[str, str] = {}
         if user_ids:
-            user_r = await db.execute(
+            user_r = await query_dao.execute(db, 
                 select(User.id, func.coalesce(User.display_name, Identity.username))
                 .join(Identity, User.identity_id == Identity.id)
                 .where(User.id.in_(user_ids))
@@ -146,7 +153,7 @@ async def list_sessions(
                 agent_ids_to_fetch.add(s.peer_agent_id)
         agent_names: dict[str, str] = {}
         if agent_ids_to_fetch:
-            agent_r = await db.execute(
+            agent_r = await query_dao.execute(db, 
                 select(Agent.id, Agent.name).where(Agent.id.in_(list(agent_ids_to_fetch)))
             )
             for row in agent_r.all():
@@ -185,7 +192,7 @@ async def list_sessions(
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                 message_count=count,
                 unread_count=unread_counts.get(str(session.id), 0),
-                is_primary=bool(session.is_primary),
+                is_primary=bool(getattr(session, "is_primary", False)),
                 peer_agent_id=peer_agent_id,
                 peer_agent_name=peer_agent_name,
                 participant_type="group" if session.is_group else participant_type,
@@ -195,7 +202,7 @@ async def list_sessions(
         return out
 
     else:  # scope == "mine"
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ChatSession)
             .where(
                 ChatSession.agent_id == agent_id,
@@ -215,7 +222,7 @@ async def list_sessions(
         total_counts: dict[str, int] = {}
         unread_counts: dict[str, int] = {}
         if session_ids:
-            counts_res = await db.execute(
+            counts_res = await query_dao.execute(db, 
                 select(
                     ChatMessage.conversation_id,
                     func.count(ChatMessage.id)
@@ -227,7 +234,7 @@ async def list_sessions(
             for row in counts_res.all():
                 total_counts[row[0]] = int(row[1] or 0)
 
-            unread_res = await db.execute(
+            unread_res = await query_dao.execute(db, 
                 select(ChatSession.id, func.count(ChatMessage.id))
                 .join(ChatMessage, ChatMessage.conversation_id == cast(ChatSession.id, String))
                 .where(
@@ -286,9 +293,9 @@ async def create_session(
         is_primary=False,
         created_at=now,
     )
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
+    query_dao.add(db, session)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, session)
     return SessionOut(
         id=str(session.id),
         agent_id=str(session.agent_id),
@@ -315,7 +322,7 @@ async def rename_session(
 ):
     """Rename a session. Owner, agent creator, or admin may rename others' sessions."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
     session = result.scalar_one_or_none()
@@ -326,7 +333,7 @@ async def rename_session(
         raise HTTPException(status_code=403, detail="Not authorized")
 
     session.title = body.title
-    await db.commit()
+    await query_dao.commit(db)
     return {"id": str(session.id), "title": session.title}
 
 
@@ -339,7 +346,7 @@ async def delete_session(
 ):
     """Delete a chat session and its messages. Owner, agent creator, or admin may delete others' sessions."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
     )
     session = result.scalar_one_or_none()
@@ -351,9 +358,9 @@ async def delete_session(
 
     # Delete associated messages first
     from sqlalchemy import delete as sql_delete
-    await db.execute(sql_delete(ChatMessage).where(ChatMessage.conversation_id == str(session_id)))
-    await db.delete(session)
-    await db.commit()
+    await query_dao.execute(db, sql_delete(ChatMessage).where(ChatMessage.conversation_id == str(session_id)))
+    await query_dao.delete(db, session)
+    await query_dao.commit(db)
     return None
 
 
@@ -367,9 +374,13 @@ async def get_session_messages(
     db: AsyncSession = Depends(get_db),
 ):
     """Get chat messages for a specific session."""
+    if not isinstance(limit, int):
+        limit = 20
+    if not isinstance(before, str):
+        before = None
     agent, _ = await check_agent_access(db, current_user, agent_id)
     # Allow looking up sessions where agent_id OR peer_agent_id matches
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChatSession).where(
             ChatSession.id == session_id,
             (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
@@ -400,13 +411,13 @@ async def get_session_messages(
             query = query.where(ChatMessage.created_at < before_dt)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid `before` timestamp format. Use ISO 8601.")
-    msgs_result = await db.execute(query)
+    msgs_result = await query_dao.execute(db, query)
     messages = list(reversed(msgs_result.scalars().all()))
 
     # Reading your own first-party/channel session should clear its unread state.
     if str(session.user_id) == str(current_user.id) and not session.is_group and session.source_channel not in ("agent", "trigger"):
         session.last_read_at_by_user = datetime.now(tz.utc)
-        await db.commit()
+        await query_dao.commit(db)
 
     # Batch fetch all participant names to avoid N+1 queries
     sender_cache: dict = {}
@@ -414,7 +425,7 @@ async def get_session_messages(
         from app.models.participant import Participant
         participant_ids = list({m.participant_id for m in messages if m.participant_id})
         if participant_ids:
-            p_result = await db.execute(
+            p_result = await query_dao.execute(db, 
                 select(Participant.id, Participant.display_name)
                 .where(Participant.id.in_(participant_ids))
             )

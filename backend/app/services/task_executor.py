@@ -4,18 +4,15 @@ Uses the same agent context (soul, memory, skills, relationships, tools)
 as the chat dialog. Supports tool-calling loop for autonomous execution.
 """
 
-import asyncio
-import json
 import uuid
 from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select
 
+from app.dao import query_dao
 from app.config import get_settings
-from app.database import async_session
 from app.models.agent import Agent
-from app.models.llm import LLMModel
 from app.models.task import Task, TaskLog
 
 settings = get_settings()
@@ -34,24 +31,24 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     logger.info(f"[TaskExec] Starting task {task_id} for agent {agent_id}")
 
     # Step 1: Mark as doing
-    async with async_session() as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if not task:
             logger.warning(f"[TaskExec] Task {task_id} not found")
             return
 
         task.status = "doing"
-        db.add(TaskLog(task_id=task_id, content="🤖 开始执行任务..."))
-        await db.commit()
+        query_dao.add(db, TaskLog(task_id=task_id, content="🤖 开始执行任务..."))
+        await query_dao.commit(db)
         task_title = task.title
         task_description = task.description or ""
         task_type = task.type  # 'todo' or 'supervision'
         supervision_target = task.supervision_target_name or ""
 
     # Step 2: Load agent
-    async with async_session() as db:
-        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    async with query_dao.session() as db:
+        agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到")
@@ -101,7 +98,7 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
     try:
         logger.info(f"[TaskExec] Calling LLM with tools for task: {task_title}")
         
-        async with async_session() as db:
+        async with query_dao.session() as db:
             reply = await call_agent_llm_with_tools(
                 db=db,
                 agent_id=agent_id,
@@ -121,19 +118,19 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
         return
 
     # Step 5: Save result and update status
-    async with async_session() as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if task:
             if task_type == 'supervision':
                 # Supervision tasks stay active; just log the result
                 task.status = "pending"
-                db.add(TaskLog(task_id=task_id, content=f"✅ 督办执行完成\n\n{reply}"))
+                query_dao.add(db, TaskLog(task_id=task_id, content=f"✅ 督办执行完成\n\n{reply}"))
             else:
                 task.status = "done"
                 task.completed_at = datetime.now(timezone.utc)
-                db.add(TaskLog(task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
-            await db.commit()
+                query_dao.add(db, TaskLog(task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
+            await query_dao.commit(db)
             logger.info(f"[TaskExec] Task {task_id} {'logged' if task_type == 'supervision' else 'completed'}!")
 
     # Log activity
@@ -149,16 +146,16 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
 async def _log_error(task_id: uuid.UUID, message: str) -> None:
     """Add an error log to the task."""
     logger.error(f"[TaskExec] Error for {task_id}: {message}")
-    async with async_session() as db:
-        db.add(TaskLog(task_id=task_id, content=f"❌ {message}"))
-        await db.commit()
+    async with query_dao.session() as db:
+        query_dao.add(db, TaskLog(task_id=task_id, content=f"❌ {message}"))
+        await query_dao.commit(db)
 
 
 async def _restore_supervision_status(task_id: uuid.UUID) -> None:
     """Restore supervision task status back to pending after a failed execution."""
-    async with async_session() as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if task and task.status == "doing":
             task.status = "pending"
-            await db.commit()
+            await query_dao.commit(db)

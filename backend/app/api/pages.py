@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.published_page import PublishedPage
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/pages", tags=["pages"])
 @public_router.get("/p/{short_id}")
 async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     """Serve a published HTML page. No authentication required."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(PublishedPage).where(PublishedPage.short_id == short_id)
     )
     page = result.scalar_one_or_none()
@@ -39,12 +40,12 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     html_content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
 
     # Increment view count
-    await db.execute(
+    await query_dao.execute(db, 
         update(PublishedPage)
         .where(PublishedPage.id == page.id)
         .values(view_count=PublishedPage.view_count + 1)
     )
-    await db.commit()
+    await query_dao.commit(db)
 
     return HTMLResponse(
         content=html_content,
@@ -68,7 +69,7 @@ async def list_pages(
     from app.core.permissions import check_agent_access
     await check_agent_access(db, current_user, agent_id)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(PublishedPage)
         .where(PublishedPage.agent_id == agent_id)
         .order_by(PublishedPage.created_at.desc())

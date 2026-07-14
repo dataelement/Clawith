@@ -2,11 +2,11 @@
 
 import uuid
 from zoneinfo import ZoneInfo
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 
 
 # Common timezones for frontend dropdown
@@ -40,8 +40,8 @@ async def get_agent_timezone(agent_id: uuid.UUID) -> str:
     from app.models.agent import Agent
     from app.models.tenant import Tenant
 
-    async with async_session() as db:
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
         agent = result.scalar_one_or_none()
         if not agent:
             return "UTC"
@@ -52,7 +52,7 @@ async def get_agent_timezone(agent_id: uuid.UUID) -> str:
 
         # Tenant-level default
         if agent.tenant_id:
-            t_result = await db.execute(select(Tenant).where(Tenant.id == agent.tenant_id))
+            t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == agent.tenant_id))
             tenant = t_result.scalar_one_or_none()
             if tenant and tenant.timezone:
                 return tenant.timezone

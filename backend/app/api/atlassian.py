@@ -12,6 +12,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -51,7 +52,7 @@ async def configure_atlassian_channel(
     from app.config import get_settings
     encrypted_key = encrypt_data(api_key, get_settings().SECRET_KEY)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "atlassian",
@@ -62,7 +63,7 @@ async def configure_atlassian_channel(
         existing.app_secret = encrypted_key
         existing.is_configured = True
         existing.extra_config = {**(existing.extra_config or {}), "cloud_id": cloud_id}
-        await db.commit()
+        await query_dao.commit(db)
         # Sync tools for this agent in background
         import asyncio
         asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, api_key))
@@ -76,9 +77,9 @@ async def configure_atlassian_channel(
         is_configured=True,
         extra_config={"cloud_id": cloud_id},
     )
-    db.add(config)
-    await db.commit()
-    await db.refresh(config)
+    query_dao.add(db, config)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, config)
     # Sync tools for this agent in background
     import asyncio
     asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, api_key))
@@ -92,7 +93,7 @@ async def get_atlassian_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "atlassian",
@@ -113,7 +114,7 @@ async def delete_atlassian_channel(
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "atlassian",
@@ -122,8 +123,8 @@ async def delete_atlassian_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Atlassian not configured")
-    await db.delete(config)
-    await db.commit()
+    await query_dao.delete(db, config)
+    await query_dao.commit(db)
 
 
 @router.post("/agents/{agent_id}/atlassian-channel/test")
@@ -134,7 +135,7 @@ async def test_atlassian_channel(
 ):
     """Test connectivity to Atlassian Rovo MCP and list available tools."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "atlassian",
@@ -183,7 +184,6 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
     """
     from app.services.mcp_client import MCPClient
     from app.models.tool import Tool, AgentTool
-    from app.database import async_session
     from sqlalchemy import select as sa_select
 
     logger.info(f"[AtlassianChannel] Syncing tools for agent {agent_id} ...")
@@ -200,7 +200,7 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
 
     logger.info(f"[AtlassianChannel] Found {len(tools_discovered)} tools, assigning to agent {agent_id}")
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         assigned = 0
         for mcp_tool in tools_discovered:
             raw_name = mcp_tool.get("name", "")
@@ -221,7 +221,7 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
                 icon = "🔷"
 
             # Ensure Tool record exists (shared across all agents)
-            tool_r = await db.execute(sa_select(Tool).where(Tool.name == tool_name))
+            tool_r = await query_dao.execute(db, sa_select(Tool).where(Tool.name == tool_name))
             tool = tool_r.scalar_one_or_none()
             if not tool:
                 tool = Tool(
@@ -239,8 +239,8 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
                     is_default=False,
                     source="admin",
                 )
-                db.add(tool)
-                await db.flush()
+                query_dao.add(db, tool)
+                await query_dao.flush(db)
             else:
                 # Update schema in case it changed
                 tool.description = tool_desc
@@ -248,7 +248,7 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
 
             # Assign to this specific agent (api_key stored per-agent via channel config,
             # but we also put it in AgentTool.config as fallback for _execute_mcp_tool)
-            at_r = await db.execute(
+            at_r = await query_dao.execute(db, 
                 sa_select(AgentTool).where(
                     AgentTool.agent_id == agent_id,
                     AgentTool.tool_id == tool.id,
@@ -259,7 +259,7 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
                 at.enabled = True
                 at.config = {"api_key": api_key}
             else:
-                db.add(AgentTool(
+                query_dao.add(db, AgentTool(
                     agent_id=agent_id,
                     tool_id=tool.id,
                     enabled=True,
@@ -269,18 +269,17 @@ async def _sync_atlassian_tools_for_agent(agent_id: uuid.UUID, api_key: str) -> 
                 ))
                 assigned += 1
 
-        await db.commit()
+        await query_dao.commit(db)
     logger.info(f"[AtlassianChannel] {assigned} new tool assignments for agent {agent_id}")
 
 
 async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str | None:
     """Return the configured Atlassian API key for the given agent, or None."""
-    from app.database import async_session
 
     async def _fetch(session):
         from app.core.security import decrypt_data
         from app.config import get_settings
-        result = await session.execute(
+        result = await query_dao.execute(session, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "atlassian",
@@ -298,5 +297,5 @@ async def get_atlassian_api_key_for_agent(agent_id: uuid.UUID, db=None) -> str |
 
     if db is not None:
         return await _fetch(db)
-    async with async_session() as session:
+    async with query_dao.session() as session:
         return await _fetch(session)
