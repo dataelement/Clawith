@@ -20,6 +20,7 @@ import {
     IconChevronsRight,
     IconBell,
     IconBuildingMonument,
+    IconUsersGroup,
     IconSearch,
     IconX,
     IconPin,
@@ -426,6 +427,8 @@ export default function Layout() {
     // Detect chat page: needs fixed-height main-content for inner scroll to work
     const isChatPage = !!useMatch('/agents/:id/chat');
     const isAgentSettingsPage = !!useMatch('/agents/:id/settings');
+    // Group chat scrolls inside its own panes, so it needs the same fixed-height shell.
+    const isGroupsPage = !!useMatch('/groups/*');
     const activeAgentNestedMatch = useMatch('/agents/:id/*');
     const activeAgentRootMatch = useMatch('/agents/:id');
     const activeAgentId = activeAgentNestedMatch?.params.id || activeAgentRootMatch?.params.id;
@@ -1046,6 +1049,12 @@ export default function Layout() {
                             </span>
                             <span className="sidebar-item-text">{t('nav.plaza', 'Plaza')}</span>
                         </NavLink>
+                        <NavLink to="/groups" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconUsersGroup size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.groups', 'Groups')}</span>
+                        </NavLink>
                         <NavLink to="/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                             <span className="sidebar-item-icon" style={{ display: 'flex' }}>{SidebarIcons.home}</span>
                             <span className="sidebar-item-text">{t('nav.dashboard')}</span>
@@ -1365,7 +1374,7 @@ export default function Layout() {
                 </div>
             )}
 
-            <main className={`main-content${isChatPage ? ' chat-page' : ''}${isAgentSettingsPage ? ' agent-settings-page' : ''}`}>
+            <main className={`main-content${isChatPage ? ' chat-page' : ''}${isAgentSettingsPage ? ' agent-settings-page' : ''}${isGroupsPage ? ' groups-shell' : ''}`}>
                 <Outlet context={{ openTalentMarket: () => setShowTalentMarket(true) }} />
             </main>
 
