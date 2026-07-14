@@ -26,8 +26,49 @@ class _Session:
     pass
 
 
+class _TickResult:
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
+class _TickSession:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, statement):
+        self.statements.append(str(statement))
+        return _TickResult()
+
+    async def commit(self) -> None:
+        return None
+
+
 def test_heartbeat_entrypoint_has_no_independent_model_tool_loop() -> None:
     assert not hasattr(heartbeat_service, "_execute_heartbeat")
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_tick_excludes_agents_without_runtime_ownership(monkeypatch) -> None:
+    from app import database
+
+    session = _TickSession()
+    monkeypatch.setattr(database, "async_session", lambda: session)
+
+    await heartbeat_service._heartbeat_tick()
+
+    assert len(session.statements) == 1
+    statement = session.statements[0]
+    assert "agents.tenant_id IS NOT NULL" in statement
+    assert "agents.primary_model_id IS NOT NULL" in statement
 
 
 def _settings(*, enabled: bool) -> Settings:

@@ -280,6 +280,8 @@ async def _heartbeat_tick():
                 select(Agent).where(
                     Agent.heartbeat_enabled.is_(True),
                     Agent.status.in_(["running", "idle"]),
+                    Agent.tenant_id.is_not(None),
+                    Agent.primary_model_id.is_not(None),
                 )
             )
             agents = result.scalars().all()
