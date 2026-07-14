@@ -471,6 +471,12 @@ class RuntimeCommandWorker:
         except RetryableCommandError:
             raise
         except Exception as exc:
+            logger.exception(
+                "Post-checkpoint side effects failed for run=%s command=%s checkpoint=%s",
+                run.run_id,
+                command.id,
+                checkpoint.checkpoint_id,
+            )
             raise RetryableCommandError(
                 "post_checkpoint_handler_failed",
                 "post-checkpoint side effects did not complete",

@@ -151,16 +151,17 @@ def test_both_input_capabilities_use_the_smaller_effective_limit() -> None:
     assert input_limit == 48_000
 
 
-def test_unknown_input_capabilities_fail_closed() -> None:
+def test_unknown_input_capabilities_use_non_blocking_budget() -> None:
     model = _model(max_output_tokens=4_000)
 
-    with pytest.raises(ModelCapabilityError, match="neither an independent input limit") as exc_info:
-        ModelCapabilityResolver.runtime_budget(
-            model,
-            requested_max_output_tokens=1_000,
-        )
+    budget = ModelCapabilityResolver.runtime_budget(
+        model,
+        requested_max_output_tokens=1_000,
+    )
 
-    assert exc_info.value.code == "unknown_input_limit"
+    assert budget.request_input_limit == 32_000
+    assert budget.effective_runtime_budget == 32_000
+    assert budget.compact_threshold == 27_200
 
 
 def test_shared_context_without_output_reservation_fails_closed() -> None:

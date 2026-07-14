@@ -623,7 +623,7 @@ async def test_mixed_finish_and_tool_calls_are_repaired_before_any_tool_runs() -
 
 
 @pytest.mark.asyncio
-async def test_unknown_model_budget_fails_closed_before_provider_call() -> None:
+async def test_unknown_model_budget_does_not_block_provider_call() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id, capable=False)
     agent = _agent(tenant_id)
@@ -634,7 +634,13 @@ async def test_unknown_model_budget_fails_closed_before_provider_call() -> None:
         nonlocal called
         del args, kwargs
         called = True
-        raise AssertionError("provider must not be called")
+        return LLMCompletionStep(
+            content="Ready",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
 
     result = await _service(
         model,
@@ -643,10 +649,11 @@ async def test_unknown_model_budget_fails_closed_before_provider_call() -> None:
         complete,
     ).complete_once(state, _context(state))
 
-    assert result.intent == "error"
-    assert result.error is not None
-    assert result.error["code"] == "unknown_input_limit"
-    assert called is False
+    assert result.intent == "text"
+    assert result.error is None
+    assert result.assistant_message is not None
+    assert result.assistant_message["content"] == "Ready"
+    assert called is True
 
 
 @pytest.mark.asyncio

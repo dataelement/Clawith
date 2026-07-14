@@ -15,6 +15,12 @@ from app.config import Settings, get_settings
 from app.models.llm import LLMModel
 
 
+# Missing provider metadata must not block a request. This value is only an
+# internal budgeting fallback; explicit administrator/provider limits still
+# take precedence and retain strict validation.
+UNKNOWN_MODEL_INPUT_BUDGET_TOKENS = 32_000
+
+
 class ModelCapabilityError(RuntimeError):
     """A model cannot provide a safe input budget for the requested call."""
 
@@ -134,10 +140,7 @@ class ModelCapabilityResolver:
 
         input_limit = _minimum_defined(capabilities.max_input_tokens, shared_input_limit)
         if input_limit is None:
-            raise ModelCapabilityError(
-                "unknown_input_limit",
-                "model has neither an independent input limit nor a shared context window",
-            )
+            input_limit = UNKNOWN_MODEL_INPUT_BUDGET_TOKENS
         return input_limit, effective_output
 
     @classmethod
