@@ -361,7 +361,36 @@ async def test_retryable_failure_does_not_switch_session_compact_models() -> Non
         await compactor.compact(request)
 
     assert exc_info.value.code == "session_compact_model_failed"
-    assert called == [primary.id]
+    assert called == [primary.id, primary.id]
+
+
+@pytest.mark.asyncio
+async def test_retryable_session_compact_failure_recovers_on_same_model() -> None:
+    request = _request()
+    primary = _model(request.tenant_id, name="primary")
+    called: list[uuid.UUID] = []
+
+    async def complete(model, _messages, **_kwargs):
+        called.append(model.id)
+        if len(called) == 1:
+            raise TimeoutError("provider timeout")
+        return _step("summary")
+
+    compactor = LLMSessionContextCompactor(
+        session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
+        model_resolver=_resolver(
+            CompactModelSelection(
+                primary=primary,
+                usage_agent_id=request.source_agent_id,
+            )
+        ),
+        completion=complete,
+    )
+
+    candidate = await compactor.compact(request)
+
+    assert candidate.summary == "summary"
+    assert called == [primary.id, primary.id]
 
 
 @pytest.mark.asyncio

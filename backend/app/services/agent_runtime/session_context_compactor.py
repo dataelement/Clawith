@@ -22,6 +22,7 @@ from app.services.agent_runtime.model_capabilities import (
     PlatformModelConfigurationError,
     resolve_multi_agent_compact_model,
 )
+from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.agent_runtime.session_context_completion import (
     SessionCompactRequest,
 )
@@ -438,12 +439,22 @@ class LLMSessionContextCompactor:
                         "Session Compact message ID is not a UUID",
                     ) from exc
             payload = _request_payload(current, batch, delta)
-            candidate = await self._complete_batch(
-                model=model,
-                usage_agent_id=usage_agent_id,
-                payload=payload,
-                watermark=watermark,
-            )
+            try:
+                candidate = await self._complete_batch(
+                    model=model,
+                    usage_agent_id=usage_agent_id,
+                    payload=payload,
+                    watermark=watermark,
+                )
+            except Exception as primary_error:
+                if classify_error(primary_error) != FailoverErrorType.RETRYABLE:
+                    raise
+                candidate = await self._complete_batch(
+                    model=model,
+                    usage_agent_id=usage_agent_id,
+                    payload=payload,
+                    watermark=watermark,
+                )
             current = _snapshot_from_candidate(
                 candidate,
                 version=request.snapshot.version,

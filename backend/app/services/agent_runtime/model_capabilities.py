@@ -16,9 +16,11 @@ from app.models.llm import LLMModel
 from app.models.tenant import Tenant
 
 
-# Missing provider metadata must not block a request. This value is only an
-# internal budgeting fallback; explicit administrator/provider limits still
-# take precedence and retain strict validation.
+# Missing provider metadata must not block a request. This value is only a
+# soft budget for trimming Runtime-owned messages and triggering compaction;
+# it is not evidence that the provider rejects a larger total request.
+# Explicit administrator/provider limits still take precedence and retain
+# strict validation.
 UNKNOWN_MODEL_INPUT_BUDGET_TOKENS = 32_000
 
 
@@ -179,17 +181,29 @@ class ModelCapabilityResolver:
             model,
             requested_max_output_tokens=requested_max_output_tokens,
         )
-        effective_budget = input_limit - sum(components.values())
-        if effective_budget <= 0:
-            raise ModelCapabilityError(
-                "insufficient_runtime_budget",
-                "static, tool, reserved, and safety budgets consume the model input limit",
-            )
+        capabilities = cls.capabilities(model)
+        has_explicit_input_limit = (
+            capabilities.context_window_tokens is not None
+            or capabilities.max_input_tokens is not None
+        )
+        if has_explicit_input_limit:
+            effective_budget = input_limit - sum(components.values())
+            if effective_budget <= 0:
+                raise ModelCapabilityError(
+                    "insufficient_runtime_budget",
+                    "static, tool, reserved, and safety budgets consume the model input limit",
+                )
+        else:
+            # With no cached input capability, the fallback cannot safely gate
+            # provider I/O. Keep using its remainder for best-effort trimming,
+            # but clamp it instead of rejecting the request; the provider
+            # remains the only authority on its actual context limit.
+            effective_budget = max(1, input_limit - sum(components.values()))
         return RuntimeTokenBudget(
             requested_max_output_tokens=effective_output,
             request_input_limit=input_limit,
             effective_runtime_budget=effective_budget,
-            compact_threshold=int(effective_budget * compact_threshold_ratio),
+            compact_threshold=max(1, int(effective_budget * compact_threshold_ratio)),
         )
 
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import UTC, datetime
+import json
 import uuid
 from unittest.mock import AsyncMock
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 import pytest
 
+from app import database as database_api
 from app.api import groups as groups_api
 from app.models.agent import Agent
 from app.models.audit import AuditLog, ChatMessage
@@ -49,6 +51,33 @@ class _RecordingDB:
 
     async def commit(self) -> None:
         raise AssertionError("group API must leave transaction ownership to get_db")
+
+
+class _ResponseBoundaryDB(_RecordingDB):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+        self.info: dict = {}
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+
+
+class _ResponseBoundarySessionFactory:
+    def __init__(self, session: _ResponseBoundaryDB) -> None:
+        self.session = session
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self) -> _ResponseBoundaryDB:
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 class _ChunkedUpload:
@@ -132,6 +161,58 @@ def _session(tenant_id: uuid.UUID, group_id: uuid.UUID, participant_id: uuid.UUI
     )
 
 
+async def _invoke_group_api(
+    *,
+    app: FastAPI,
+    method: str,
+    path: str,
+    body: dict,
+    events: list[str],
+) -> list[dict]:
+    request_body = json.dumps(body).encode()
+    request_received = False
+    messages: list[dict] = []
+
+    async def receive() -> dict:
+        nonlocal request_received
+        if request_received:
+            return {"type": "http.disconnect"}
+        request_received = True
+        return {
+            "type": "http.request",
+            "body": request_body,
+            "more_body": False,
+        }
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+        if message["type"] == "http.response.body" and not message.get(
+            "more_body", False
+        ):
+            events.append("response")
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("test", 123),
+            "server": ("test", 80),
+            "state": {},
+        },
+        receive,
+        send,
+    )
+    return messages
+
+
 def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     routes = {
         (method, route.path)
@@ -159,6 +240,149 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("POST", "/api/groups/{group_id}/workspace/upload") in routes
     assert ("GET", "/api/groups/{group_id}/workspace/download") in routes
     assert ("PATCH", "/api/groups/{group_id}/members/{member_id}") not in routes
+
+
+def test_group_write_routes_finalize_database_dependency_before_response() -> None:
+    write_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    write_routes = [
+        route
+        for route in groups_api.router.routes
+        if (route.methods or set()) & write_methods
+    ]
+
+    assert write_routes
+    for route in write_routes:
+        db_dependencies = [
+            dependency
+            for dependency in route.dependant.dependencies
+            if dependency.name == "db" and dependency.call is groups_api.get_db
+        ]
+        assert len(db_dependencies) == 1, route.path
+        assert db_dependencies[0].scope == "function", route.path
+
+
+@pytest.mark.asyncio
+async def test_create_group_session_commits_before_success_response(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    session = _session(tenant_id, group_id, participant.id)
+    events: list[str] = []
+    db = _ResponseBoundaryDB(events)
+
+    async def fake_participant(_db, _user):
+        assert _db is db
+        assert _user is user
+        return participant
+
+    monkeypatch.setattr(
+        database_api,
+        "async_session",
+        _ResponseBoundarySessionFactory(db),
+    )
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(
+        groups_api.group_chat_service,
+        "create_group_session",
+        AsyncMock(return_value=session),
+    )
+    app = FastAPI()
+    app.include_router(groups_api.router)
+    app.dependency_overrides[groups_api.get_current_user] = lambda: user
+
+    messages = await _invoke_group_api(
+        app=app,
+        method="POST",
+        path=f"/api/groups/{group_id}/sessions",
+        body={"title": "Runtime"},
+        events=events,
+    )
+
+    assert messages[0]["status"] == 201
+    assert events == ["commit", "response"]
+
+
+@pytest.mark.asyncio
+async def test_create_group_message_broadcasts_after_commit_before_success_response(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    message = ChatMessage(
+        id=uuid.uuid4(),
+        role="user",
+        content="Commit before acknowledging",
+        conversation_id=str(session_id),
+        participant_id=participant.id,
+        user_id=user.id,
+        mentions=[],
+        created_at=NOW,
+    )
+    intake = GroupMessageIntake(
+        message=message,
+        mentions=(),
+        dispatch_kind="none",
+        run_handles=(),
+        created=True,
+    )
+    output = groups_api.GroupMessageOut(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        participant_id=participant.id,
+        sender_name=participant.display_name,
+        mentions=[],
+        created_at=NOW,
+        cursor=f"{NOW.isoformat()}|{message.id}",
+    )
+    events: list[str] = []
+    db = _ResponseBoundaryDB(events)
+
+    async def fake_participant(_db, _user):
+        assert _db is db
+        assert _user is user
+        return participant
+
+    async def fake_outputs(_db, messages):
+        assert _db is db
+        assert messages == [message]
+        return [output]
+
+    async def fake_publish(**kwargs):
+        assert kwargs == {"tenant_id": tenant_id, "message_id": message.id}
+        events.append("broadcast")
+
+    monkeypatch.setattr(
+        database_api,
+        "async_session",
+        _ResponseBoundarySessionFactory(db),
+    )
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(
+        groups_api.group_message_service,
+        "enqueue_group_message",
+        AsyncMock(return_value=intake),
+    )
+    monkeypatch.setattr(groups_api, "_message_outputs", fake_outputs)
+    monkeypatch.setattr(groups_api, "publish_committed_group_message", fake_publish)
+    app = FastAPI()
+    app.include_router(groups_api.router)
+    app.dependency_overrides[groups_api.get_current_user] = lambda: user
+
+    messages = await _invoke_group_api(
+        app=app,
+        method="POST",
+        path=f"/api/groups/{group_id}/sessions/{session_id}/messages",
+        body={"content": message.content},
+        events=events,
+    )
+
+    assert messages[0]["status"] == 201
+    assert events == ["commit", "broadcast", "response"]
 
 
 @pytest.mark.asyncio

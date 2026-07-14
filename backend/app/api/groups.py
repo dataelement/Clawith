@@ -45,6 +45,8 @@ from app.services.storage import get_storage_backend
 
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
+# Do not acknowledge a mutation until its commit and after-commit callbacks finish.
+GROUP_WRITE_DB_DEPENDENCY = Depends(get_db, scope="function")
 
 GROUP_WORKSPACE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 GROUP_WORKSPACE_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -623,7 +625,7 @@ async def _message_outputs(
 async def create_group(
     body: CreateGroupIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -685,7 +687,7 @@ async def patch_group(
     group_id: uuid.UUID,
     body: PatchGroupIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     if "name" not in body.model_fields_set and "description" not in body.model_fields_set:
         raise HTTPException(status_code=400, detail="At least one field must be supplied")
@@ -718,7 +720,7 @@ async def patch_group(
 async def delete_group(
     group_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -770,7 +772,7 @@ async def invite_group_member(
     group_id: uuid.UUID,
     body: InviteGroupMemberIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -825,7 +827,7 @@ async def remove_group_member(
     group_id: uuid.UUID,
     member_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -895,7 +897,7 @@ async def create_group_session(
     group_id: uuid.UUID,
     body: CreateGroupSessionIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -926,7 +928,7 @@ async def patch_group_session(
     session_id: uuid.UUID,
     body: PatchGroupSessionIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -960,7 +962,7 @@ async def delete_group_session(
     group_id: uuid.UUID,
     session_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1000,7 +1002,7 @@ async def mark_group_session_read(
     session_id: uuid.UUID,
     body: MarkGroupSessionReadIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1074,7 +1076,7 @@ async def create_group_message(
     session_id: uuid.UUID,
     body: CreateGroupMessageIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1135,7 +1137,7 @@ async def put_group_announcement(
     group_id: uuid.UUID,
     body: GroupTextFileIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1193,7 +1195,7 @@ async def put_group_agent_memory(
     agent_id: uuid.UUID,
     body: GroupTextFileIn,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1234,7 +1236,7 @@ async def delete_group_agent_memory(
     agent_id: uuid.UUID,
     expected_version_token: Annotated[str | None, Query()] = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1352,7 +1354,7 @@ async def put_group_workspace_file(
     body: GroupTextFileIn,
     path: Annotated[str, Query(min_length=1, max_length=500)],
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1390,7 +1392,7 @@ async def delete_group_workspace_file(
     path: Annotated[str, Query(min_length=1, max_length=500)],
     expected_version_token: Annotated[str | None, Query()] = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)
@@ -1428,7 +1430,7 @@ async def upload_group_workspace_file(
     file: UploadFile = File(...),
     path: Annotated[str, Query(max_length=500)] = "",
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = GROUP_WRITE_DB_DEPENDENCY,
 ):
     tenant_id = _tenant_id(current_user)
     participant = await _current_participant(db, current_user)

@@ -155,17 +155,34 @@ def test_both_input_capabilities_use_the_smaller_effective_limit() -> None:
     assert input_limit == 48_000
 
 
-def test_unknown_input_capabilities_use_non_blocking_budget() -> None:
+def test_unknown_input_capabilities_use_non_blocking_soft_budget() -> None:
     model = _model(max_output_tokens=4_000)
 
     budget = ModelCapabilityResolver.runtime_budget(
         model,
         requested_max_output_tokens=1_000,
+        static_prompt_tokens=40_000,
+        tool_schema_tokens=80_000,
+        reserved_runtime_tokens=1_000,
+        safety_margin_tokens=1_000,
     )
 
     assert budget.request_input_limit == 32_000
-    assert budget.effective_runtime_budget == 32_000
-    assert budget.compact_threshold == 27_200
+    assert budget.effective_runtime_budget == 1
+    assert budget.compact_threshold == 1
+
+
+def test_explicit_input_capability_still_rejects_exhausted_budget() -> None:
+    model = _model(max_input_tokens=32_000)
+
+    with pytest.raises(ModelCapabilityError) as exc_info:
+        ModelCapabilityResolver.runtime_budget(
+            model,
+            requested_max_output_tokens=1_000,
+            tool_schema_tokens=40_000,
+        )
+
+    assert exc_info.value.code == "insufficient_runtime_budget"
 
 
 def test_shared_context_without_output_reservation_fails_closed() -> None:

@@ -481,12 +481,18 @@ async def write_announcement(
         actor_participant_id=actor_participant_id,
         human_only=True,
     )
+    revision_path = _revision_path("announcement", "")
+    await _hold_workspace_mutation_lock(
+        db,
+        group_id=group_id,
+        path=revision_path,
+    )
     return await _write_text(
         db,
         group_id=group_id,
         key=_announcement_key(group_id),
         business_path="announcement.md",
-        revision_path=_revision_path("announcement", ""),
+        revision_path=revision_path,
         content=content,
         actor=actor,
         expected_version_token=expected_version_token,
@@ -551,15 +557,21 @@ async def write_agent_memory(
             "group_memory_write_denied",
             "An Agent can only write its own memory for this group",
         )
+    revision_path = _revision_path(
+        "memory",
+        f"agents/{agent_id}/memory/memory.md",
+    )
+    await _hold_workspace_mutation_lock(
+        db,
+        group_id=group_id,
+        path=revision_path,
+    )
     return await _write_text(
         db,
         group_id=group_id,
         key=_memory_key(group_id, agent_id),
         business_path="memory.md",
-        revision_path=_revision_path(
-            "memory",
-            f"agents/{agent_id}/memory/memory.md",
-        ),
+        revision_path=revision_path,
         content=content,
         actor=actor,
         expected_version_token=expected_version_token,
@@ -590,14 +602,20 @@ async def delete_agent_memory(
         group_id=group_id,
         agent_id=agent_id,
     )
+    revision_path = _revision_path(
+        "memory",
+        f"agents/{agent_id}/memory/memory.md",
+    )
+    await _hold_workspace_mutation_lock(
+        db,
+        group_id=group_id,
+        path=revision_path,
+    )
     await _delete_text(
         db,
         group_id=group_id,
         key=_memory_key(group_id, agent_id),
-        revision_path=_revision_path(
-            "memory",
-            f"agents/{agent_id}/memory/memory.md",
-        ),
+        revision_path=revision_path,
         actor=actor,
         expected_version_token=expected_version_token,
         session_id=None,

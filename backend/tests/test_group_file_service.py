@@ -686,14 +686,13 @@ async def test_announcement_write_requires_human_authorization(
     group_id = uuid.uuid4()
     actor = _participant("user")
     db = _RecordingDB()
-    storage = LocalStorageBackend(str(tmp_path))
+    storage = _stub_storage_and_authorization(monkeypatch, tmp_path, actor)
     calls = []
 
     async def authorize(_db, **kwargs):
         calls.append(kwargs)
         return None, None, actor
 
-    monkeypatch.setattr(group_file_service, "get_storage_backend", lambda: storage)
     monkeypatch.setattr(
         group_file_service.group_chat_service,
         "authorize_group_member",
@@ -720,3 +719,104 @@ async def test_announcement_write_requires_human_authorization(
     assert await storage.read_text(
         f"groups/{group_id}/system/announcement.md"
     ) == result.content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["announcement", "memory"])
+async def test_group_text_same_version_concurrent_put_has_one_winner(
+    monkeypatch,
+    tmp_path,
+    kind: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    actor = _participant("user")
+    lock_redis = _FakeWorkspaceLockRedis()
+    storage = _stub_storage_and_authorization(
+        monkeypatch,
+        tmp_path,
+        actor,
+        lock_redis=lock_redis,
+    )
+
+    if kind == "memory":
+        agent = _participant("agent", agent_id)
+
+        async def active_agent(_db, **kwargs):
+            assert kwargs["agent_id"] == agent_id
+            return agent
+
+        monkeypatch.setattr(
+            group_file_service,
+            "_active_agent_participant",
+            active_agent,
+        )
+
+    async def write(db, content, expected_version_token=None):
+        if kind == "announcement":
+            return await group_file_service.write_announcement(
+                db,
+                tenant_id=tenant_id,
+                group_id=group_id,
+                actor_participant_id=actor.id,
+                content=content,
+                expected_version_token=expected_version_token,
+            )
+        return await group_file_service.write_agent_memory(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            agent_id=agent_id,
+            content=content,
+            expected_version_token=expected_version_token,
+        )
+
+    seed_db = _RecordingDB()
+    async with transaction(seed_db):  # type: ignore[arg-type]
+        seed = await write(seed_db, "seed")
+
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    original_write = storage.write_bytes_if_match
+
+    async def gated_write(key, data, *, condition=None, content_type=None):
+        if data == b"winner-a":
+            first_entered.set()
+            await release_first.wait()
+        return await original_write(
+            key,
+            data,
+            condition=condition,
+            content_type=content_type,
+        )
+
+    monkeypatch.setattr(storage, "write_bytes_if_match", gated_write)
+
+    async def put(db, content):
+        async with transaction(db):  # type: ignore[arg-type]
+            return await write(db, content, seed.version_token)
+
+    winner_db = _RecordingDB()
+    loser_db = _RecordingDB()
+    winner_task = asyncio.create_task(put(winner_db, "winner-a"))
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+    try:
+        with pytest.raises(group_file_service.GroupFileServiceError) as conflict:
+            await put(loser_db, "winner-b")
+        assert conflict.value.code == "group_file_conflict"
+    finally:
+        release_first.set()
+    winner = await winner_task
+
+    assert winner.content == "winner-a"
+    storage_key = (
+        f"groups/{group_id}/system/announcement.md"
+        if kind == "announcement"
+        else f"groups/{group_id}/agents/{agent_id}/memory/memory.md"
+    )
+    assert await storage.read_text(storage_key) == "winner-a"
+    assert winner_db.commit_count == 1
+    assert loser_db.rollback_count == 1
+    assert lock_redis.values == {}
