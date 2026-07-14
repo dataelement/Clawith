@@ -255,6 +255,33 @@ def _validate_registry(
     return values
 
 
+def _is_framework_initial_snapshot(snapshot: StateSnapshot, *, run: AgentRun) -> bool:
+    """Recognize LangGraph's empty pre-run checkpoint without weakening validation.
+
+    LangGraph persists an implementation checkpoint before the Runtime graph has
+    written the product registry.  It is identifiable by its empty state and
+    sole ``__start__`` continuation.  Product checkpoints, including any other
+    empty or registry-less state, must still pass the normal strict validator.
+    """
+
+    if (
+        not isinstance(snapshot.values, Mapping)
+        or snapshot.values
+        or tuple(str(node) for node in snapshot.next) != ("__start__",)
+        or snapshot.parent_config is not None
+        or snapshot.interrupts
+    ):
+        return False
+    if _checkpoint_thread_id(snapshot) != run.runtime_thread_id:
+        raise ProjectionCheckpointError("checkpoint thread_id does not match Run runtime_thread_id")
+    # Validate the framework checkpoint's own identity even though it does not
+    # participate in the product projection.
+    _checkpoint_id(snapshot)
+    _checkpoint_version(snapshot)
+    _checkpoint_created_at(snapshot)
+    return True
+
+
 def _normalize_snapshot(snapshot: StateSnapshot, *, run: AgentRun) -> _CheckpointView:
     if _checkpoint_thread_id(snapshot) != run.runtime_thread_id:
         raise ProjectionCheckpointError("checkpoint thread_id does not match Run runtime_thread_id")
@@ -284,10 +311,11 @@ async def _read_history(
 ) -> list[_CheckpointView]:
     if run.runtime_thread_id != str(run.id):
         raise ProjectionCheckpointError("Run runtime_thread_id must equal its Run ID")
-    newest_first = [
-        _normalize_snapshot(snapshot, run=run)
-        async for snapshot in source.aget_state_history(runtime_thread_config(run.id))
-    ]
+    newest_first: list[_CheckpointView] = []
+    async for snapshot in source.aget_state_history(runtime_thread_config(run.id)):
+        if _is_framework_initial_snapshot(snapshot, run=run):
+            continue
+        newest_first.append(_normalize_snapshot(snapshot, run=run))
     if not newest_first:
         raise ProjectionCheckpointError("Run has no observable checkpoint")
 

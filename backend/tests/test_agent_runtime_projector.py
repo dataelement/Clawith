@@ -171,6 +171,28 @@ def _snapshot(
     )
 
 
+def _framework_initial_snapshot(
+    run: AgentRun,
+    *,
+    checkpoint_id: str = "framework-initial",
+) -> StateSnapshot:
+    return StateSnapshot(
+        values={},
+        next=("__start__",),
+        config={
+            "configurable": {
+                "thread_id": run.runtime_thread_id,
+                "checkpoint_id": checkpoint_id,
+            }
+        },
+        metadata={"step": -1},
+        created_at=datetime(2026, 7, 13, 7, 59, tzinfo=UTC).isoformat(),
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+
+
 def _sql(statement) -> str:
     return str(
         statement.compile(
@@ -466,6 +488,65 @@ async def test_full_history_rebuild_uses_the_first_started_checkpoint():
     )
 
     assert run.projected_started_at == started_at
+
+
+@pytest.mark.asyncio
+async def test_framework_initial_checkpoint_is_ignored_before_product_projection():
+    run = _run()
+    running = _snapshot(
+        run,
+        checkpoint_id="checkpoint-0",
+        version=0,
+        status="running",
+        created_at=datetime(2026, 7, 13, 8, 0, tzinfo=UTC),
+        parent_checkpoint_id="framework-initial",
+    )
+    source = _SnapshotSource([running, _framework_initial_snapshot(run)])
+    db = _FakeSession(_Result(scalar=run), _Result(rows=[]))
+
+    result = await RuntimeProjector(source).project_run(
+        db,
+        tenant_id=run.tenant_id,
+        run_id=run.id,
+    )
+
+    assert result.applied_checkpoint_ids == ("checkpoint-0",)
+    assert result.authoritative_status == "running"
+    assert run.projected_checkpoint_id == "checkpoint-0"
+    assert all(
+        event.source_checkpoint_id == "checkpoint-0" for event in db.added
+    )
+
+
+@pytest.mark.asyncio
+async def test_registry_less_non_initial_checkpoint_still_fails_closed():
+    run = _run()
+    malformed = StateSnapshot(
+        values={},
+        next=(),
+        config={
+            "configurable": {
+                "thread_id": run.runtime_thread_id,
+                "checkpoint_id": "checkpoint-0",
+            }
+        },
+        metadata={"step": 0},
+        created_at=datetime(2026, 7, 13, 8, 0, tzinfo=UTC).isoformat(),
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+    db = _FakeSession(_Result(scalar=run))
+
+    with pytest.raises(ProjectionCheckpointError, match="registry is required"):
+        await RuntimeProjector(_SnapshotSource([malformed])).project_run(
+            db,
+            tenant_id=run.tenant_id,
+            run_id=run.id,
+        )
+
+    assert run.projected_checkpoint_id is None
+    assert db.flush_count == 0
 
 
 @pytest.mark.asyncio
