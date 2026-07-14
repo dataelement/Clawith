@@ -126,6 +126,12 @@ class _CheckpointHandler:
             raise self.error
 
 
+class _CodedError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def _records(
     *,
     status: str = "completed",
@@ -308,6 +314,37 @@ async def test_terminal_delivery_happens_before_a_failing_derived_handler() -> N
         await handler.handle(run=run, command=command, checkpoint=checkpoint)
 
     assert timeline.index("deliver") < timeline.index("terminal_handler")
+    deliver.assert_awaited_once()
+    assert terminal.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_optional_compact_model_does_not_retry_delivered_chat() -> None:
+    timeline: list[str] = []
+    run, command, checkpoint = _records(lifecycle={"final_answer": "done"})
+    terminal = _TerminalHandler(
+        timeline,
+        error=_CodedError(
+            "session_compact_model_unavailable",
+            "Session Agent has no current primary model",
+        ),
+    )
+    handler = RuntimeCheckpointSideEffects(
+        session_factory=_SessionFactory(timeline),  # type: ignore[arg-type]
+        projector=_Projector(
+            timeline,
+            status="completed",
+            checkpoint_id=checkpoint.checkpoint_id,
+        ),  # type: ignore[arg-type]
+        terminal_handlers=(terminal,),
+    )
+
+    with patch(
+        "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
+        new=AsyncMock(),
+    ) as deliver:
+        await handler.handle(run=run, command=command, checkpoint=checkpoint)
+
     deliver.assert_awaited_once()
     assert terminal.calls == 1
 

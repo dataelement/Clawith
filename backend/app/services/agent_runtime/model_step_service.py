@@ -356,6 +356,22 @@ def _parse_step(
     if step.retry_instruction:
         return _repair(state, step, step.retry_instruction)
     if not step.tool_calls:
+        content = step.content.strip() if isinstance(step.content, str) else ""
+        registry = state["registry"]
+        if (
+            registry.source_type == "chat"
+            and registry.run_kind == "foreground"
+            and content
+        ):
+            return ModelStepResult(
+                intent="finish",
+                assistant_message=_assistant_message(
+                    state,
+                    replace(step, content=content),
+                    runtime_intent="finish",
+                ),
+                finish_content=content,
+            )
         return ModelStepResult(
             intent="text",
             assistant_message=_assistant_message(state, step),

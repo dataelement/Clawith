@@ -117,7 +117,7 @@ class SessionCompactPolicyResolver:
         *,
         tenant_id: uuid.UUID,
         session_id: uuid.UUID,
-    ) -> SessionCompactPolicy:
+    ) -> SessionCompactPolicy | None:
         session_result = await db.execute(
             select(ChatSession).where(
                 ChatSession.id == session_id,
@@ -134,10 +134,7 @@ class SessionCompactPolicyResolver:
 
         if session.session_type != "group":
             if session.agent_id is None:
-                raise SessionContextBackgroundError(
-                    "session_compact_budget_unavailable",
-                    "Session has no current Agent model for compact budgeting",
-                )
+                return None
             agent_result = await db.execute(
                 select(Agent).where(
                     Agent.id == session.agent_id,
@@ -148,10 +145,7 @@ class SessionCompactPolicyResolver:
             )
             agent = agent_result.scalar_one_or_none()
             if agent is None or agent.primary_model_id is None:
-                raise SessionContextBackgroundError(
-                    "session_compact_budget_unavailable",
-                    "Session Agent has no current primary model",
-                )
+                return None
             model_result = await db.execute(
                 select(LLMModel).where(LLMModel.id == agent.primary_model_id)
             )
@@ -211,10 +205,7 @@ class SessionCompactPolicyResolver:
         agents = list(agent_result.scalars().all())
         model_ids = {agent.primary_model_id for agent in agents if agent.primary_model_id}
         if not model_ids:
-            raise SessionContextBackgroundError(
-                "session_compact_budget_unavailable",
-                "Group has no valid Agent models for shared compact budgeting",
-            )
+            return None
         model_result = await db.execute(
             select(LLMModel).where(LLMModel.id.in_(model_ids))
         )
@@ -331,6 +322,8 @@ class SessionContextMessageCompactionService:
                 tenant_id=tenant_id,
                 session_id=session_id,
             )
+            if policy is None:
+                return None
             snapshot = await self._context_service.load_snapshot(
                 db,
                 tenant_id=tenant_id,

@@ -1,6 +1,7 @@
 """Runtime model-step adapter tests."""
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import uuid
 
 import pytest
@@ -341,7 +342,7 @@ async def test_current_input_uses_executable_content_and_trusted_runtime_instruc
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     assert calls[0][0][1].content == "Executable question with workspace evidence"
     assert "Begin the trusted onboarding flow." in calls[0][0][0].dynamic_content
 
@@ -384,7 +385,7 @@ async def test_user_resume_envelope_is_rendered_as_plain_user_input() -> None:
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     assert calls[0][0][-1].role == "user"
     assert calls[0][0][-1].content == "Yes, continue"
 
@@ -477,7 +478,7 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     tool_names = {tool["function"]["name"] for tool in calls[0][1]["tools"]}
     assert {
         "group_query_members",
@@ -649,11 +650,44 @@ async def test_unknown_model_budget_does_not_block_provider_call() -> None:
         complete,
     ).complete_once(state, _context(state))
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     assert result.error is None
     assert result.assistant_message is not None
     assert result.assistant_message["content"] == "Ready"
     assert called is True
+
+
+@pytest.mark.asyncio
+async def test_non_chat_plain_text_keeps_the_strict_finish_protocol() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    state["registry"] = replace(
+        state["registry"],
+        source_type="task",
+        run_kind="background",
+    )
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="Candidate result",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "text"
+    assert result.finish_content is None
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,7 @@ def _settings() -> Settings:
         _env_file=None,
         AGENT_RUNTIME_GRAPH_NAME="worker_service_test",
         AGENT_RUNTIME_GRAPH_VERSION="v1",
+        AGENT_RUNTIME_COMMAND_CONCURRENCY=4,
     )
 
 
@@ -282,6 +283,32 @@ async def test_running_context_stops_daemon_before_closing_checkpointer() -> Non
         "daemon_active",
         "checkpointer_exit",
     ]
+
+
+@pytest.mark.asyncio
+async def test_running_context_starts_configured_command_worker_pool() -> None:
+    started: list[asyncio.Event] = []
+
+    @asynccontextmanager
+    async def manager():
+        yield InMemorySaver()
+
+    async def run(_daemon, stop: asyncio.Event) -> None:
+        started.append(stop)
+        await stop.wait()
+
+    with patch.object(RuntimeCommandDaemon, "run", new=run):
+        async with running_runtime_worker_context(
+            settings=_settings(),
+            checkpointer_manager=manager(),
+            session_factory=_SessionFactory(),  # type: ignore[arg-type]
+            lock_engine=_Engine(),  # type: ignore[arg-type]
+            claimant="worker-test",
+            verify_schema=False,
+        ):
+            await asyncio.sleep(0)
+            assert len(started) == 4
+            assert len({id(stop) for stop in started}) == 1
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 from typing import Protocol, cast
 
 from sqlalchemy import select
@@ -25,6 +26,12 @@ from app.services.group_realtime import publish_committed_group_message
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_PROMPT = "需要你的确认或补充信息后才能继续。"
+_NON_BLOCKING_TERMINAL_ERROR_CODES = frozenset(
+    {"session_compact_model_unavailable"}
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeCheckpointSideEffectError(RuntimeError):
@@ -255,6 +262,13 @@ class RuntimeCheckpointSideEffects:
                         checkpoint=checkpoint,
                     )
                 except Exception as exc:
+                    if getattr(exc, "code", None) in _NON_BLOCKING_TERMINAL_ERROR_CODES:
+                        logger.info(
+                            "Skipping optional terminal side effect for run=%s: %s",
+                            run.run_id,
+                            exc,
+                        )
+                        continue
                     errors.append(exc)
 
         if errors:

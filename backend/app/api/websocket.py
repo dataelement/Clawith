@@ -1153,6 +1153,14 @@ class WebSocketChatHandler:
                 "chat_connection_not_ready",
                 "Web Chat connection has no authenticated session",
             )
+        await self.websocket.send_json(
+            {
+                "type": "runtime_status",
+                "run_id": str(intake.handle.run_id),
+                "event": "accepted",
+                "status": "queued",
+            }
+        )
         session_id = uuid.UUID(self.conv_id)
         stream_task = asyncio.create_task(
             stream_web_chat_run(

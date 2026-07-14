@@ -458,11 +458,13 @@ async def running_runtime_worker_context(
         verify_schema=verify_schema,
     ) as components:
         stop = asyncio.Event()
-        daemon = RuntimeCommandDaemon(components.worker)
-        task = asyncio.create_task(
-            daemon.run(stop),
-            name="agent-runtime-command-worker",
-        )
+        command_tasks = [
+            asyncio.create_task(
+                RuntimeCommandDaemon(components.worker).run(stop),
+                name=f"agent-runtime-command-worker-{index + 1}",
+            )
+            for index in range(runtime_settings.AGENT_RUNTIME_COMMAND_CONCURRENCY)
+        ]
         compact_task = asyncio.create_task(
             components.session_context_scanner.run(stop),
             name="agent-runtime-session-context-compact",
@@ -480,11 +482,13 @@ async def running_runtime_worker_context(
             yield components
         finally:
             stop.set()
-            task.cancel()
+            for task in command_tasks:
+                task.cancel()
             compact_task.cancel()
             channel_delivery_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            for task in command_tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
             with suppress(asyncio.CancelledError):
                 await compact_task
             with suppress(asyncio.CancelledError):

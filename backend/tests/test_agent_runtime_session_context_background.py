@@ -179,6 +179,64 @@ async def test_direct_compact_trigger_uses_current_primary_without_fallback_mini
     assert policy.threshold_tokens > _threshold(fallback, settings)
 
 
+@pytest.mark.asyncio
+async def test_direct_session_without_primary_model_is_not_compact_eligible() -> None:
+    tenant_id = uuid.uuid4()
+    agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Direct",
+        status="idle",
+        is_expired=False,
+        primary_model_id=None,
+    )
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="direct",
+        agent_id=agent.id,
+        user_id=uuid.uuid4(),
+        title="Direct",
+        source_channel="web",
+        is_primary=True,
+    )
+    db = _DB(_Result([session]), _Result([agent]))
+
+    policy = await background.SessionCompactPolicyResolver().resolve(
+        db,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        session_id=session.id,
+    )
+
+    assert policy is None
+
+
+@pytest.mark.asyncio
+async def test_group_without_active_agent_models_is_not_compact_eligible() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="group",
+        group_id=group_id,
+        title="Group",
+        source_channel="web",
+        is_group=True,
+        is_primary=True,
+    )
+    db = _DB(_Result([session]), _Result([group_id]), _Result())
+
+    policy = await background.SessionCompactPolicyResolver().resolve(
+        db,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        session_id=session.id,
+    )
+
+    assert policy is None
+
+
 def test_message_trigger_keeps_short_sessions_uncompacted_and_honors_early_count() -> None:
     snapshot = SessionContextSnapshot.empty()
     messages = ({"id": str(uuid.uuid4()), "role": "user", "content": "short"},)
