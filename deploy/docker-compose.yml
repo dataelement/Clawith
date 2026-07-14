@@ -38,8 +38,8 @@ services:
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://clawith:clawith@postgres:5432/clawith}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
