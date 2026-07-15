@@ -637,7 +637,11 @@ class RuntimeModelStepService:
             state,
             tool_execution_ledger=ledger,
             run_message_token_budget=budget.effective_runtime_budget,
-            token_counter=_message_token_counter,
+            token_counter=(
+                _message_token_counter
+                if budget.effective_runtime_budget is not None
+                else None
+            ),
         )
         if build.requires_confirmation:
             return ModelStepResult(

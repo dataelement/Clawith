@@ -321,6 +321,7 @@ async def test_unknown_model_input_metadata_disables_local_run_message_budget() 
     assert result.intent == "finish"
     assert len(builder.calls) == 2
     assert builder.calls[1]["run_message_token_budget"] is None
+    assert builder.calls[1]["token_counter"] is None
 
 
 @pytest.mark.asyncio
