@@ -216,14 +216,14 @@ def test_component_builder_installs_pinned_agent_and_planning_graphs() -> None:
     )
     terminal_handlers = components.worker._post_checkpoint_handler._terminal_handlers
     assert [type(handler) for handler in terminal_handlers] == [
+        PlanningChildCompletionHandler,
+        SchedulingLaneCompletionHandler,
         SessionContextCompletionHandler,
         TaskRuntimeCompletionHandler,
         TriggerRuntimeCompletionHandler,
         HeartbeatRuntimeCompletionHandler,
         OnboardingRuntimeCompletionHandler,
         A2ARuntimeCompletionHandler,
-        PlanningChildCompletionHandler,
-        SchedulingLaneCompletionHandler,
     ]
     checkpoint_handlers = components.worker._post_checkpoint_handler._checkpoint_handlers
     assert [type(handler) for handler in checkpoint_handlers] == [

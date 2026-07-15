@@ -283,6 +283,11 @@ def build_runtime_worker_components(
             ),
         ),
         terminal_handlers=(
+            # Release deterministic control-plane work before the optional
+            # model-backed Session Context merge.  Planning roots and queued
+            # work must not wait for a compaction call on the same session.
+            PlanningChildCompletionHandler(session_factory=session_factory),
+            SchedulingLaneCompletionHandler(session_factory=session_factory),
             SessionContextCompletionHandler(
                 session_factory=session_factory,
                 context_service=session_context_service,
@@ -293,8 +298,6 @@ def build_runtime_worker_components(
             HeartbeatRuntimeCompletionHandler(session_factory=session_factory),
             OnboardingRuntimeCompletionHandler(session_factory=session_factory),
             A2ARuntimeCompletionHandler(session_factory=session_factory),
-            PlanningChildCompletionHandler(session_factory=session_factory),
-            SchedulingLaneCompletionHandler(session_factory=session_factory),
         ),
     )
     resolved_claimant = claimant or runtime_worker_claimant()
