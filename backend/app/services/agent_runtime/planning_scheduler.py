@@ -115,6 +115,32 @@ def _dependency_summaries(plan: Mapping[str, object], step: Mapping[str, object]
     return output
 
 
+def _planning_runtime_instruction(step: Mapping[str, object]) -> str:
+    """Keep Planning as coordination scope without replacing the user request."""
+    required_tools = step.get("required_tool_names", [])
+    required_artifacts = step.get("required_artifact_paths", [])
+    tool_text = ", ".join(str(name) for name in required_tools) or "none"
+    artifact_text = ", ".join(str(path) for path in required_artifacts) or "none"
+    return "\n".join(
+        (
+            "The user message in this Run is the complete, authoritative original group request.",
+            (
+                "Planning supplies coordination order and a bounded work scope only; "
+                "it never replaces, rewrites, or summarizes the original request."
+            ),
+            "Execute only the assigned Planning step in this Run; do not complete sibling steps.",
+            f"Assigned Planning step ID: {step['step_id']}",
+            f"Assigned Planning step: {step['instruction']}",
+            f"Required group tools: {tool_text}",
+            f"Required workspace artifacts: {artifact_text}",
+            (
+                "Use dependency summaries as evidence, preserve every applicable constraint "
+                "from the original request, then report only this step's result."
+            ),
+        )
+    )
+
+
 class PlanningCheckpointScheduler:
     """Create every ready child Run from a committed Planning checkpoint."""
 
@@ -353,13 +379,8 @@ class PlanningCheckpointScheduler:
                                 "planning_required_artifact_paths": list(
                                     step.get("required_artifact_paths", [])
                                 ),
-                                "input_content": str(step["instruction"]),
-                                "runtime_instruction": (
-                                    "Execute only the assigned Planning step in this Run. "
-                                    "Do not repeat the original group request or complete sibling "
-                                    "steps. Use dependency summaries as evidence, then report only "
-                                    "this step's result."
-                                ),
+                                "input_content": message.content,
+                                "runtime_instruction": _planning_runtime_instruction(step),
                                 "related_run_summaries": _dependency_summaries(plan, step),
                                 "source_channel": session.source_channel,
                             },

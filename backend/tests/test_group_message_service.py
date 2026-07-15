@@ -315,6 +315,7 @@ async def test_public_message_and_single_mention_start_share_one_session() -> No
     }
     assert command.origin_user_id == user.id
     assert command.payload["target_participant_id"] == str(target.id)
+    assert command.payload["input_content"] == message.content
 
 
 @pytest.mark.asyncio

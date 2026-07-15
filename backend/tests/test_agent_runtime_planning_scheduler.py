@@ -35,6 +35,10 @@ from app.services.agent_runtime.state import (
 
 
 NOW = datetime(2026, 7, 14, 13, 0, tzinfo=UTC)
+ORIGINAL_GROUP_REQUEST = (
+    "Research the facts, preserve every source hash, then write the final answer.\n"
+    "Do not replace this request with a shortened Planning instruction."
+)
 
 
 class _Result:
@@ -112,7 +116,7 @@ def _records():
         source_id=str(message_id),
         source_execution_id=f"group_mention:{message_id}:plan",
         origin_user_id=uuid.uuid4(),
-        goal="Research then write",
+        goal=ORIGINAL_GROUP_REQUEST,
         run_kind="orchestration",
         system_role="group_planning",
         model_id=planning_model_id,
@@ -336,8 +340,10 @@ async def test_waiting_checkpoint_creates_only_ready_child_run() -> None:
         "group_write_workspace_file",
     ]
     assert command.payload["planning_required_artifact_paths"] == ["evidence/research.md"]
-    assert command.payload["input_content"] == "Research the facts"
+    assert command.payload["input_content"] == message.content
+    assert command.payload["input_content"] != command.payload["planning_instruction"]
     assert "only the assigned Planning step" in command.payload["runtime_instruction"]
+    assert "Research the facts" in command.payload["runtime_instruction"]
     assert command.payload["related_run_summaries"] == []
 
 

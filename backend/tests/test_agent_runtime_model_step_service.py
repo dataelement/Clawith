@@ -348,6 +348,149 @@ async def test_current_input_uses_executable_content_and_trusted_runtime_instruc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trigger_in_recent", [True, False])
+async def test_planning_child_keeps_original_group_request_as_user_input(
+    trigger_in_recent: bool,
+) -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    original_request = (
+        "Analyze the complete dataset and preserve every row-level exception.\n"
+        "Write the required artifact to reports/final.json."
+    )
+    planning_step = "Compute the risk metrics"
+    recent_messages = (
+        (
+            {
+                "id": "session-message-1",
+                "role": "user",
+                "content": original_request,
+            },
+        )
+        if trigger_in_recent
+        else ()
+    )
+    initial_input = {
+        "message_id": "session-message-1",
+        "input_content": original_request,
+        "planning_instruction": planning_step,
+        "runtime_instruction": (
+            "Execute only the assigned Planning step in this Run. "
+            f"Assigned Planning step: {planning_step}"
+        ),
+    }
+    state["snapshots"] = RunInputSnapshots(
+        session_context=state["snapshots"].session_context,
+        session_context_version=state["snapshots"].session_context_version,
+        recent_session_messages=recent_messages,
+        related_run_summaries=(),
+        initial_input=initial_input,
+    )
+    builder = _ContextBuilder(
+        _build(
+            recent_session_messages_snapshot=recent_messages,
+            initial_input=initial_input,
+        )
+    )
+    calls = []
+
+    async def complete(_model, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return LLMCompletionStep(
+            content="Done",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(model, agent, builder, complete).complete_once(
+        state,
+        _context(state),
+    )
+
+    assert result.intent == "finish"
+    user_messages = [message.content for message in calls[0][0] if message.role == "user"]
+    assert user_messages == [original_request]
+    assert planning_step not in user_messages
+    assert planning_step in calls[0][0][0].dynamic_content
+
+
+@pytest.mark.asyncio
+async def test_group_history_preserves_sender_and_mentions_without_wrapping_trigger() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    historical_message = {
+        "id": "session-message-0",
+        "role": "assistant",
+        "content": "The baseline is ready.",
+        "created_at": "2026-07-15T01:00:00+00:00",
+        "participant_id": "participant-0",
+        "sender_name": "Research Agent",
+        "sender_type": "agent",
+        "mentions": [{"participant_id": "participant-reviewer"}],
+    }
+    trigger_message = {
+        "id": "session-message-1",
+        "role": "user",
+        "content": "Review the baseline now.",
+        "created_at": "2026-07-15T01:01:00+00:00",
+        "participant_id": "participant-user",
+        "sender_name": "Alice",
+        "sender_type": "user",
+        "mentions": [],
+    }
+    recent_messages = (historical_message, trigger_message)
+    initial_input = {
+        "message_id": "session-message-1",
+        "input_content": trigger_message["content"],
+        "group_context": {"group": {"group_id": str(uuid.uuid4())}},
+    }
+    state["snapshots"] = RunInputSnapshots(
+        session_context=state["snapshots"].session_context,
+        session_context_version=state["snapshots"].session_context_version,
+        recent_session_messages=recent_messages,
+        related_run_summaries=(),
+        initial_input=initial_input,
+    )
+    builder = _ContextBuilder(
+        _build(
+            recent_session_messages_snapshot=recent_messages,
+            initial_input=initial_input,
+        )
+    )
+    calls = []
+
+    async def complete(_model, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return LLMCompletionStep(
+            content="Done",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(model, agent, builder, complete).complete_once(
+        state,
+        _context(state),
+    )
+
+    assert result.intent == "finish"
+    historical_content = calls[0][0][1].content
+    assert isinstance(historical_content, str)
+    assert '"sender_name": "Research Agent"' in historical_content
+    assert '"sender_type": "agent"' in historical_content
+    assert '"participant_id": "participant-reviewer"' in historical_content
+    assert historical_content.endswith("Group message content:\nThe baseline is ready.")
+    assert calls[0][0][2].content == "Review the baseline now."
+
+
+@pytest.mark.asyncio
 async def test_user_resume_envelope_is_rendered_as_plain_user_input() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

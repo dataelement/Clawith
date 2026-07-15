@@ -465,6 +465,7 @@ def _single_mention_command(
         idempotency_key=f"start:{source_execution_id}",
         payload={
             "message_id": str(message.id),
+            "input_content": message.content,
             "group_id": str(scope.group.id),
             "session_id": str(scope.session.id),
             "sender_participant_id": str(scope.participant.id),
