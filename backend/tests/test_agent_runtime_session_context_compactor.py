@@ -29,7 +29,12 @@ from app.services.llm.single_step import LLMCompletionStep
 from app.services.token_tracker import TokenUsage
 
 
-def _model(tenant_id: uuid.UUID, *, name: str, input_tokens: int = 100_000) -> LLMModel:
+def _model(
+    tenant_id: uuid.UUID,
+    *,
+    name: str,
+    input_tokens: int | None = 100_000,
+) -> LLMModel:
     return LLMModel(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
@@ -333,6 +338,41 @@ async def test_oversized_session_is_compacted_in_complete_message_batches() -> N
     assert [len(payload["new_messages"]) for payload in payloads] == [1, 1]
     assert payloads[0]["terminal_delta"] is not None
     assert payloads[1]["terminal_delta"] is None
+    assert candidate.covered_through_message_id == message_ids[-1]
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_input_metadata_skips_local_compact_batch_limits() -> None:
+    message_ids = [uuid.uuid4(), uuid.uuid4()]
+    request = _request(
+        messages=tuple(
+            {
+                "id": str(message_id),
+                "role": "user",
+                "content": character * 100_000,
+            }
+            for message_id, character in zip(message_ids, ("a", "b"), strict=True)
+        )
+    )
+    model = _model(request.tenant_id, name="unknown-input", input_tokens=None)
+    payloads: list[dict] = []
+
+    async def complete(_model, messages, **_kwargs):
+        payloads.append(json.loads(messages[1].content))
+        return _step()
+
+    compactor = LLMSessionContextCompactor(
+        session_factory=_UnusedSessionFactory(),  # type: ignore[arg-type]
+        model_resolver=_resolver(
+            CompactModelSelection(primary=model, usage_agent_id=None)
+        ),
+        completion=complete,
+    )
+
+    candidate = await compactor.compact(request)
+
+    assert len(payloads) == 1
+    assert len(payloads[0]["new_messages"]) == 2
     assert candidate.covered_through_message_id == message_ids[-1]
 
 

@@ -297,6 +297,33 @@ async def test_normal_tool_proposal_is_stable_and_does_not_execute_in_model_step
 
 
 @pytest.mark.asyncio
+async def test_unknown_model_input_metadata_disables_local_run_message_budget() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id, capable=False)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    builder = _ContextBuilder(_build())
+
+    async def complete(*_args, **_kwargs):
+        return LLMCompletionStep(
+            content="Provider accepts the request",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=8),
+        )
+
+    result = await _service(model, agent, builder, complete).complete_once(
+        state,
+        _context(state),
+    )
+
+    assert result.intent == "finish"
+    assert len(builder.calls) == 2
+    assert builder.calls[1]["run_message_token_budget"] is None
+
+
+@pytest.mark.asyncio
 async def test_current_input_uses_executable_content_and_trusted_runtime_instruction() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

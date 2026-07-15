@@ -38,7 +38,7 @@ def _settings(**overrides) -> Settings:
     )
 
 
-def _model(tenant_id: uuid.UUID, *, input_tokens: int = 100_000) -> LLMModel:
+def _model(tenant_id: uuid.UUID, *, input_tokens: int | None = 100_000) -> LLMModel:
     return LLMModel(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
@@ -370,6 +370,51 @@ async def test_eighty_five_percent_token_threshold_compacts_even_under_twenty_me
     assert len(result.run_messages) < len(messages)
     assert result.covered_through_run_message_id is not None
     assert calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_input_metadata_does_not_trigger_token_compaction() -> None:
+    state, context, tenant_id = _state(
+        [_normal("oversized", "x" * 500_000)]
+    )
+
+    async def complete(*_args, **_kwargs):
+        raise AssertionError("unknown metadata must not trigger local token compaction")
+
+    result = await _service(
+        model=_model(tenant_id, input_tokens=None),
+        settings=_settings(),
+        completion=complete,
+    ).compact_if_needed(state, context, forced=False)
+
+    assert result == RunCompactResult()
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_input_metadata_keeps_count_trigger_without_token_batching() -> None:
+    messages = [
+        _normal("old-a", "a" * 100_000),
+        _normal("old-b", "b" * 100_000),
+        *[_normal(f"recent-{index}") for index in range(20)],
+    ]
+    state, context, tenant_id = _state(messages)
+    payloads: list[dict] = []
+
+    async def complete(_model, prompt, **_kwargs):
+        payloads.append(json.loads(prompt[1].content))
+        return _step(len(payloads))
+
+    result = await _service(
+        model=_model(tenant_id, input_tokens=None),
+        settings=_settings(AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD=21),
+        completion=complete,
+    ).compact_if_needed(state, context, forced=False)
+
+    assert result.compacted is True
+    assert result.covered_through_run_message_id == "old-b"
+    assert result.run_messages == tuple(messages[2:])
+    assert len(payloads) == 1
+    assert len(payloads[0]["covered_messages"]) == 2
 
 
 @pytest.mark.asyncio

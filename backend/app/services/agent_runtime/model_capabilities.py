@@ -16,14 +16,6 @@ from app.models.llm import LLMModel
 from app.models.tenant import Tenant
 
 
-# Missing provider metadata must not block a request. This value is only a
-# soft budget for trimming Runtime-owned messages and triggering compaction;
-# it is not evidence that the provider rejects a larger total request.
-# Explicit administrator/provider limits still take precedence and retain
-# strict validation.
-UNKNOWN_MODEL_INPUT_BUDGET_TOKENS = 32_000
-
-
 class ModelCapabilityError(RuntimeError):
     """A model cannot provide a safe input budget for the requested call."""
 
@@ -53,12 +45,12 @@ class ResolvedModelCapabilities:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeTokenBudget:
-    """Token limits for one concrete model request."""
+    """Token limits for one request; input budgets are unknown when unset."""
 
     requested_max_output_tokens: int | None
-    request_input_limit: int
-    effective_runtime_budget: int
-    compact_threshold: int
+    request_input_limit: int | None
+    effective_runtime_budget: int | None
+    compact_threshold: int | None
 
 
 def _positive_optional(value: int | None, field_name: str) -> int | None:
@@ -112,13 +104,14 @@ class ModelCapabilityResolver:
         model: LLMModel,
         *,
         requested_max_output_tokens: int | None,
-    ) -> tuple[int, int | None]:
+    ) -> tuple[int | None, int | None]:
         """Return the safe input limit and effective output reservation.
 
         An independent input limit is never reduced by output tokens. A shared
         context window is reduced by the output limit for this request. If a
         shared window is the only available input capability, an unknown output
-        reservation is unsafe and therefore rejected.
+        reservation is unsafe and therefore rejected. Missing input metadata
+        returns ``None`` so callers do not mistake a guess for a provider limit.
         """
         capabilities = cls.capabilities(model)
         request_output = _positive_optional(
@@ -141,10 +134,10 @@ class ModelCapabilityResolver:
                     "requested output tokens leave no room in the shared context window",
                 )
 
-        input_limit = _minimum_defined(capabilities.max_input_tokens, shared_input_limit)
-        if input_limit is None:
-            input_limit = UNKNOWN_MODEL_INPUT_BUDGET_TOKENS
-        return input_limit, effective_output
+        return (
+            _minimum_defined(capabilities.max_input_tokens, shared_input_limit),
+            effective_output,
+        )
 
     @classmethod
     def runtime_budget(
@@ -181,29 +174,24 @@ class ModelCapabilityResolver:
             model,
             requested_max_output_tokens=requested_max_output_tokens,
         )
-        capabilities = cls.capabilities(model)
-        has_explicit_input_limit = (
-            capabilities.context_window_tokens is not None
-            or capabilities.max_input_tokens is not None
-        )
-        if has_explicit_input_limit:
+        effective_budget: int | None = None
+        compact_threshold: int | None = None
+        if input_limit is not None:
             effective_budget = input_limit - sum(components.values())
             if effective_budget <= 0:
                 raise ModelCapabilityError(
                     "insufficient_runtime_budget",
                     "static, tool, reserved, and safety budgets consume the model input limit",
                 )
-        else:
-            # With no cached input capability, the fallback cannot safely gate
-            # provider I/O. Keep using its remainder for best-effort trimming,
-            # but clamp it instead of rejecting the request; the provider
-            # remains the only authority on its actual context limit.
-            effective_budget = max(1, input_limit - sum(components.values()))
+            compact_threshold = max(
+                1,
+                int(effective_budget * compact_threshold_ratio),
+            )
         return RuntimeTokenBudget(
             requested_max_output_tokens=effective_output,
             request_input_limit=input_limit,
             effective_runtime_budget=effective_budget,
-            compact_threshold=max(1, int(effective_budget * compact_threshold_ratio)),
+            compact_threshold=compact_threshold,
         )
 
 

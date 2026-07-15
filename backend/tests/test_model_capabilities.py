@@ -155,7 +155,7 @@ def test_both_input_capabilities_use_the_smaller_effective_limit() -> None:
     assert input_limit == 48_000
 
 
-def test_unknown_input_capabilities_use_non_blocking_soft_budget() -> None:
+def test_unknown_input_capabilities_disable_local_input_budget_validation() -> None:
     model = _model(max_output_tokens=4_000)
 
     budget = ModelCapabilityResolver.runtime_budget(
@@ -167,9 +167,9 @@ def test_unknown_input_capabilities_use_non_blocking_soft_budget() -> None:
         safety_margin_tokens=1_000,
     )
 
-    assert budget.request_input_limit == 32_000
-    assert budget.effective_runtime_budget == 1
-    assert budget.compact_threshold == 1
+    assert budget.request_input_limit is None
+    assert budget.effective_runtime_budget is None
+    assert budget.compact_threshold is None
 
 
 def test_explicit_input_capability_still_rejects_exhausted_budget() -> None:

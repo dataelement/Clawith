@@ -63,7 +63,7 @@ class SessionCompactPolicy:
     """The shared-context trigger budget for one active session."""
 
     source_agent_id: uuid.UUID | None
-    threshold_tokens: int
+    threshold_tokens: int | None
     contributing_model_ids: tuple[uuid.UUID, ...]
 
 
@@ -78,7 +78,7 @@ def _estimate_tokens(value: object) -> int:
     return max(1, math.ceil(len(serialized.encode("utf-8")) / 4))
 
 
-def _model_threshold(model: LLMModel, settings: Settings) -> int:
+def _model_threshold(model: LLMModel, settings: Settings) -> int | None:
     requested_output = get_max_tokens(
         model.provider,
         model.model,
@@ -227,9 +227,14 @@ class SessionCompactPolicyResolver:
             }
         except ModelCapabilityError as exc:
             raise SessionContextBackgroundError(exc.code, str(exc)) from exc
+        defined_thresholds = [
+            threshold
+            for threshold in thresholds.values()
+            if threshold is not None
+        ]
         return SessionCompactPolicy(
             source_agent_id=None,
-            threshold_tokens=min(thresholds.values()),
+            threshold_tokens=(min(defined_thresholds) if defined_thresholds else None),
             contributing_model_ids=tuple(sorted(thresholds, key=str)),
         )
 
@@ -254,7 +259,10 @@ class SessionCompactPolicyResolver:
                 "recent_messages": recent_messages,
             }
         )
-        return estimated >= policy.threshold_tokens
+        return (
+            policy.threshold_tokens is not None
+            and estimated >= policy.threshold_tokens
+        )
 
 
 def _session_lock_key(session_id: uuid.UUID) -> int:

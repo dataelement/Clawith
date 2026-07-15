@@ -183,7 +183,7 @@ def _should_compact(
     messages: Sequence[JsonObject],
     *,
     forced: bool,
-    compact_threshold: int,
+    compact_threshold: int | None,
     settings: Settings,
 ) -> bool:
     if forced:
@@ -215,14 +215,17 @@ def _should_compact(
         "waiting_request": state["lifecycle"].get("waiting_request"),
         "verification_result": state["lifecycle"].get("verification_result"),
     }
-    return _estimate_tokens(estimated_context) >= compact_threshold
+    return (
+        compact_threshold is not None
+        and _estimate_tokens(estimated_context) >= compact_threshold
+    )
 
 
 def _retained_boundary(
     blocks: Sequence[MessageBlock],
     *,
     target_messages: int,
-    token_budget: int,
+    token_budget: int | None,
 ) -> int:
     retained_messages = 0
     retained_blocks: list[MessageBlock] = []
@@ -235,7 +238,11 @@ def _retained_boundary(
         candidate_messages = [
             message for candidate_block in candidate for message in candidate_block.messages
         ]
-        if retained_blocks and _estimate_tokens(candidate_messages) > token_budget:
+        if (
+            retained_blocks
+            and token_budget is not None
+            and _estimate_tokens(candidate_messages) > token_budget
+        ):
             break
         retained_blocks.insert(0, block)
         retained_messages += block.message_count
@@ -247,7 +254,7 @@ def _compactable_prefix(
     blocks: Sequence[MessageBlock],
     *,
     target_messages: int,
-    token_budget: int,
+    token_budget: int | None,
 ) -> tuple[tuple[MessageBlock, ...], tuple[MessageBlock, ...]]:
     boundary = _retained_boundary(
         blocks,
@@ -493,7 +500,7 @@ class RuntimeRunCompactorService:
         *,
         model: LLMModel,
         blocks: Sequence[MessageBlock],
-        batch_budget: int,
+        batch_budget: int | None,
     ) -> JsonObject:
         raw_summary = state["lifecycle"].get("run_summary")
         if raw_summary is not None and not isinstance(raw_summary, Mapping):
@@ -511,14 +518,17 @@ class RuntimeRunCompactorService:
         while remaining:
             batch: list[MessageBlock] = []
             base = _payload(state, summary, batch)
-            if _estimate_tokens(base) > batch_budget:
+            if batch_budget is not None and _estimate_tokens(base) > batch_budget:
                 raise RunCompactorError(
                     "run_summary_too_large",
                     "existing Run Summary does not fit the compact model",
                 )
             while remaining:
                 proposed = [*batch, remaining[0]]
-                if _estimate_tokens(_payload(state, summary, proposed)) > batch_budget:
+                if (
+                    batch_budget is not None
+                    and _estimate_tokens(_payload(state, summary, proposed)) > batch_budget
+                ):
                     break
                 batch.append(remaining.pop(0))
             if not batch:
@@ -584,7 +594,11 @@ class RuntimeRunCompactorService:
             compactable, retained = _compactable_prefix(
                 blocks,
                 target_messages=self._settings.AGENT_RUNTIME_SESSION_RECENT_MESSAGES,
-                token_budget=max(1, budget.compact_threshold // 2),
+                token_budget=(
+                    max(1, budget.compact_threshold // 2)
+                    if budget.compact_threshold is not None
+                    else None
+                ),
             )
             if not compactable:
                 return _error(

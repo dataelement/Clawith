@@ -48,7 +48,7 @@ class _DB:
 def _model(
     tenant_id: uuid.UUID,
     *,
-    input_tokens: int,
+    input_tokens: int | None,
     platform: bool = False,
 ) -> LLMModel:
     return LLMModel(
@@ -65,7 +65,7 @@ def _model(
 
 
 def _threshold(model: LLMModel, settings: Settings) -> int:
-    return ModelCapabilityResolver.runtime_budget(
+    threshold = ModelCapabilityResolver.runtime_budget(
         model,
         requested_max_output_tokens=get_max_tokens(
             model.provider,
@@ -76,6 +76,8 @@ def _threshold(model: LLMModel, settings: Settings) -> int:
         safety_margin_tokens=256,
         compact_threshold_ratio=settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO,
     ).compact_threshold
+    assert threshold is not None
+    return threshold
 
 
 @pytest.mark.asyncio
@@ -210,6 +212,56 @@ async def test_direct_session_without_primary_model_is_not_compact_eligible() ->
     )
 
     assert policy is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_primary_input_metadata_disables_only_the_token_trigger() -> None:
+    tenant_id = uuid.uuid4()
+    primary = _model(tenant_id, input_tokens=None)
+    agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Direct",
+        status="idle",
+        is_expired=False,
+        primary_model_id=primary.id,
+    )
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="direct",
+        agent_id=agent.id,
+        user_id=uuid.uuid4(),
+        title="Direct",
+        source_channel="web",
+        is_primary=True,
+    )
+    settings = Settings(AGENT_RUNTIME_SESSION_COMPACT_MESSAGE_THRESHOLD=2)
+    db = _DB(_Result([session]), _Result([agent]), _Result([primary]))
+    resolver = background.SessionCompactPolicyResolver(settings=settings)
+
+    policy = await resolver.resolve(
+        db,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        session_id=session.id,
+    )
+
+    assert policy is not None
+    assert policy.threshold_tokens is None
+    oversized = (
+        {"id": str(uuid.uuid4()), "role": "user", "content": "x" * 500_000},
+    )
+    assert resolver.should_compact(
+        snapshot=SessionContextSnapshot.empty(),
+        messages=oversized,
+        policy=policy,
+    ) is False
+    assert resolver.should_compact(
+        snapshot=SessionContextSnapshot.empty(),
+        messages=(*oversized, oversized[0]),
+        policy=policy,
+    ) is True
 
 
 @pytest.mark.asyncio

@@ -406,7 +406,10 @@ class LLMSessionContextCompactor:
         while remaining or candidate is None:
             batch: list[JsonObject] = []
             base_payload = _request_payload(current, batch, delta)
-            if _estimate_tokens(base_payload) > budget.compact_threshold:
+            if (
+                budget.compact_threshold is not None
+                and _estimate_tokens(base_payload) > budget.compact_threshold
+            ):
                 raise SessionContextCompactorError(
                     "session_compact_input_too_large",
                     "Session Context and terminal delta do not fit the compact model",
@@ -414,7 +417,10 @@ class LLMSessionContextCompactor:
             while remaining:
                 proposed = [*batch, remaining[0]]
                 payload = _request_payload(current, proposed, delta)
-                if _estimate_tokens(payload) > budget.compact_threshold:
+                if (
+                    budget.compact_threshold is not None
+                    and _estimate_tokens(payload) > budget.compact_threshold
+                ):
                     break
                 batch.append(remaining.pop(0))
             if remaining and not batch:
