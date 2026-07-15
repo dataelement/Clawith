@@ -30,6 +30,16 @@ interface LLMProviderSpec {
     default_base_url?: string | null;
     supports_tool_choice: boolean;
     default_max_tokens: number;
+    default_model_id?: string | null;
+    model_ids?: string[];
+    endpoints?: LLMProviderEndpoint[];
+}
+
+interface LLMProviderEndpoint {
+    region: string;
+    openai_base_url: string;
+    anthropic_base_url: string;
+    docs_root?: string | null;
 }
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
@@ -37,7 +47,30 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
     { provider: 'openai', display_name: 'OpenAI', protocol: 'openai_compatible', default_base_url: 'https://api.openai.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
     { provider: 'azure', display_name: 'Azure OpenAI', protocol: 'openai_compatible', default_base_url: '', supports_tool_choice: true, default_max_tokens: 16384 },
     { provider: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_compatible', default_base_url: 'https://api.deepseek.com/v1', supports_tool_choice: true, default_max_tokens: 8192 },
-    { provider: 'minimax', display_name: 'MiniMax', protocol: 'openai_compatible', default_base_url: 'https://api.minimaxi.com/v1', supports_tool_choice: true, default_max_tokens: 16384 },
+    {
+        provider: 'minimax',
+        display_name: 'MiniMax',
+        protocol: 'openai_compatible',
+        default_base_url: 'https://api.minimax.io/v1',
+        supports_tool_choice: true,
+        default_max_tokens: 16384,
+        default_model_id: 'MiniMax-M3',
+        model_ids: ['MiniMax-M3', 'MiniMax-M2.7'],
+        endpoints: [
+            {
+                region: 'global_en',
+                openai_base_url: 'https://api.minimax.io/v1',
+                anthropic_base_url: 'https://api.minimax.io/anthropic',
+                docs_root: 'https://platform.minimax.io/docs',
+            },
+            {
+                region: 'cn_zh',
+                openai_base_url: 'https://api.minimaxi.com/v1',
+                anthropic_base_url: 'https://api.minimaxi.com/anthropic',
+                docs_root: 'https://platform.minimaxi.com/docs',
+            },
+        ],
+    },
     { provider: 'qwen', display_name: 'Qwen (DashScope)', protocol: 'openai_compatible', default_base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'zhipu', display_name: 'Zhipu', protocol: 'openai_compatible', default_base_url: 'https://open.bigmodel.cn/api/paas/v4', supports_tool_choice: true, default_max_tokens: 8192 },
     { provider: 'baidu', display_name: 'Baidu (Qianfan)', protocol: 'openai_compatible', default_base_url: 'https://qianfan.baidubce.com/v2', supports_tool_choice: false, default_max_tokens: 4096 },
@@ -91,6 +124,14 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
     });
     const providerOptions = providerSpecs.length > 0 ? providerSpecs : FALLBACK_LLM_PROVIDERS;
+    const activeProviderSpec = providerOptions.find((p) => p.provider === modelForm.provider);
+    const modelOptions = activeProviderSpec?.model_ids || [];
+    const endpointOptions = Array.from(new Set(
+        (activeProviderSpec?.endpoints || []).flatMap((endpoint) => [
+            endpoint.openai_base_url,
+            endpoint.anthropic_base_url,
+        ]),
+    ));
 
     const addModel = useMutation({
         mutationFn: (data: any) => fetchJson(`/enterprise/llm-models${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`, { method: 'POST', body: JSON.stringify(data) }),
@@ -248,7 +289,11 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                 const updates: any = { provider: newProvider };
                                 updates.base_url = spec?.default_base_url || '';
                                 if (spec) updates.max_output_tokens = String(spec.default_max_tokens);
-                                setModelForm(f => ({ ...f, ...updates }));
+                                setModelForm(f => ({
+                                    ...f,
+                                    ...updates,
+                                    model: f.model || spec?.default_model_id || '',
+                                }));
                             }}>
                                 {providerOptions.map((p) => (
                                     <option key={p.provider} value={p.provider}>{p.display_name}</option>
@@ -257,7 +302,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                         </div>
                         <div className="form-group">
                             <label className="form-label">{t('enterprise.llm.model')}</label>
-                            <input className="form-input" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                            <input className="form-input" list="llm-model-options" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                            <datalist id="llm-model-options">
+                                {modelOptions.map((modelId) => <option key={modelId} value={modelId} />)}
+                            </datalist>
                         </div>
                         <div className="form-group">
                             <label className="form-label">{t('enterprise.llm.label')}</label>
@@ -265,7 +313,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                         </div>
                         <div className="form-group">
                             <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
-                            <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                            <input className="form-input" list="llm-endpoint-options" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                            <datalist id="llm-endpoint-options">
+                                {endpointOptions.map((endpoint) => <option key={endpoint} value={endpoint} />)}
+                            </datalist>
                         </div>
                         <div className="form-group" style={{ gridColumn: 'span 2' }}>
                             <label className="form-label">{t('enterprise.llm.apiKey')}</label>
@@ -334,7 +385,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.model')}</label>
-                                        <input className="form-input" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                                        <input className="form-input" list="llm-model-options" placeholder={t('enterprise.llm.modelPlaceholder', 'e.g. claude-sonnet-4-20250514')} value={modelForm.model} onChange={e => setModelForm({ ...modelForm, model: e.target.value })} />
+                                        <datalist id="llm-model-options">
+                                            {modelOptions.map((modelId) => <option key={modelId} value={modelId} />)}
+                                        </datalist>
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.label')}</label>
@@ -342,7 +396,10 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.baseUrl')}</label>
-                                        <input className="form-input" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                                        <input className="form-input" list="llm-endpoint-options" placeholder={t('enterprise.llm.baseUrlPlaceholder')} value={modelForm.base_url} onChange={e => setModelForm({ ...modelForm, base_url: e.target.value })} />
+                                        <datalist id="llm-endpoint-options">
+                                            {endpointOptions.map((endpoint) => <option key={endpoint} value={endpoint} />)}
+                                        </datalist>
                                     </div>
                                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                                         <label className="form-label">{t('enterprise.llm.apiKey')}</label>
