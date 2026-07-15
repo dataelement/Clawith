@@ -44,6 +44,7 @@ from app.services.agent_runtime.graph import (
     RuntimeGraphIdentity,
     build_agent_runtime_graph,
 )
+from app.services.agent_runtime.group_planning_verifier import PlanningStepToolVerifier
 from app.services.agent_runtime.group_status import (
     RuntimeGroupCheckpointStatusHandler,
     RuntimeGroupStartStatusHandler,
@@ -226,6 +227,7 @@ def build_runtime_worker_components(
         model_service=model_service,
         tool_service=tool_service,
         run_compactor=run_compactor,
+        verifier=PlanningStepToolVerifier(),
     )
     graph = build_agent_runtime_graph(
         checkpointer=checkpointer,

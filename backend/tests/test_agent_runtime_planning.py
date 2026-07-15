@@ -207,6 +207,59 @@ def test_plan_validator_accepts_the_three_execution_strategies() -> None:
     ] == "dependency"
 
 
+def test_plan_validator_normalizes_group_tool_and_artifact_requirements() -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    raw = _plan(first, second)
+    raw["steps"][0].update(
+        {
+            "required_tool_names": [
+                "group_list_workspace",
+                "group_write_workspace_file",
+            ],
+            "required_artifact_paths": ["evidence/research.md"],
+        }
+    )
+
+    plan = validate_planning_output(
+        raw,
+        candidate_agent_ids=frozenset({first, second}),
+    )
+
+    assert plan["steps"][0]["required_tool_names"] == [
+        "group_list_workspace",
+        "group_write_workspace_file",
+    ]
+    assert plan["steps"][0]["required_artifact_paths"] == ["evidence/research.md"]
+    assert plan["steps"][1]["required_tool_names"] == []
+    assert plan["steps"][1]["required_artifact_paths"] == []
+
+
+@pytest.mark.parametrize(
+    ("tools", "artifacts", "match"),
+    [
+        (["private_write_file"], [], "outside the group runtime contract"),
+        ([], ["evidence/research.md"], "requires group_write_workspace_file"),
+        (
+            ["group_write_workspace_file", "group_write_workspace_file"],
+            [],
+            "must not contain duplicates",
+        ),
+    ],
+)
+def test_plan_validator_rejects_invalid_completion_requirements(
+    tools: list[str],
+    artifacts: list[str],
+    match: str,
+) -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    raw = _plan(first, second)
+    raw["steps"][0]["required_tool_names"] = tools
+    raw["steps"][0]["required_artifact_paths"] = artifacts
+
+    with pytest.raises(PlanningContractError, match=match):
+        validate_planning_output(raw, candidate_agent_ids=frozenset({first, second}))
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

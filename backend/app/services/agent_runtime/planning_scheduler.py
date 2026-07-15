@@ -347,6 +347,12 @@ class PlanningCheckpointScheduler:
                                 "planning_root_run_id": str(root.id),
                                 "planning_step_id": step_id,
                                 "planning_instruction": str(step["instruction"]),
+                                "planning_required_tool_names": list(
+                                    step.get("required_tool_names", [])
+                                ),
+                                "planning_required_artifact_paths": list(
+                                    step.get("required_artifact_paths", [])
+                                ),
                                 "input_content": str(step["instruction"]),
                                 "runtime_instruction": (
                                     "Execute only the assigned Planning step in this Run. "

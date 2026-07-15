@@ -158,6 +158,11 @@ def _records():
                     "agent_id": str(first_agent_id),
                     "instruction": "Research the facts",
                     "depends_on_step_ids": [],
+                    "required_tool_names": [
+                        "group_list_workspace",
+                        "group_write_workspace_file",
+                    ],
+                    "required_artifact_paths": ["evidence/research.md"],
                 },
                 {
                     "step_id": "write",
@@ -326,6 +331,11 @@ async def test_waiting_checkpoint_creates_only_ready_child_run() -> None:
     assert command.scheduling_position_id == message.id
     assert command.payload["planning_step_id"] == "research"
     assert command.payload["planning_instruction"] == "Research the facts"
+    assert command.payload["planning_required_tool_names"] == [
+        "group_list_workspace",
+        "group_write_workspace_file",
+    ]
+    assert command.payload["planning_required_artifact_paths"] == ["evidence/research.md"]
     assert command.payload["input_content"] == "Research the facts"
     assert "only the assigned Planning step" in command.payload["runtime_instruction"]
     assert command.payload["related_run_summaries"] == []

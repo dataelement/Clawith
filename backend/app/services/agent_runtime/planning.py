@@ -13,6 +13,10 @@ from sqlalchemy import select
 
 from app.models.llm import LLMModel
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
+from app.services.agent_runtime.group_runtime_tools import (
+    GROUP_TOOL_NAMES,
+    GROUP_WRITE_WORKSPACE_FILE,
+)
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
@@ -54,11 +58,21 @@ Schema:
       "step_id": "stable-id",
       "agent_id": "candidate UUID",
       "instruction": "work assigned to that Agent",
-      "depends_on_step_ids": []
+      "depends_on_step_ids": [],
+      "required_tool_names": [],
+      "required_artifact_paths": []
     }
   ]
 }
 parallel means every dependency list is empty. sequential means each step after the first depends only on the immediately previous step. dependency is any other acyclic dependency graph. Preserve explicit user assignments and ordering."""
+
+_SYSTEM_PROMPT += (
+    """
+For every step, declare the concrete group tools whose successful receipts are required before completion. Allowed required_tool_names are: """
+    + ", ".join(sorted(GROUP_TOOL_NAMES))
+    + """.
+If a step must create or replace a workspace file, include group_write_workspace_file in required_tool_names and include every exact relative path in required_artifact_paths. Preserve explicit artifact paths exactly. Use empty arrays only when the step genuinely needs no group tool or workspace artifact."""
+)
 
 
 class PlanningContractError(RuntimeError):
@@ -101,6 +115,32 @@ def _required_text(value: object, *, field: str, max_length: int) -> str:
             f"{field} exceeds {max_length} characters",
         )
     return value.strip()
+
+
+def _optional_unique_text_list(
+    value: object,
+    *,
+    field: str,
+    max_items: int,
+    max_length: int,
+) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > max_items:
+        raise PlanningContractError(
+            "invalid_plan",
+            f"{field} must be an array with at most {max_items} entries",
+        )
+    normalized = [
+        _required_text(item, field=field, max_length=max_length)
+        for item in value
+    ]
+    if len(normalized) != len(set(normalized)):
+        raise PlanningContractError(
+            "invalid_plan",
+            f"{field} must not contain duplicates",
+        )
+    return normalized
 
 
 def _candidate_agent_ids(state: RuntimeGraphState) -> frozenset[uuid.UUID]:
@@ -235,12 +275,40 @@ def validate_planning_output(
                 "invalid_plan",
                 "depends_on_step_ids must not contain duplicates",
             )
+        required_tool_names = _optional_unique_text_list(
+            raw_step.get("required_tool_names"),
+            field="required_tool_names",
+            max_items=len(GROUP_TOOL_NAMES),
+            max_length=128,
+        )
+        unknown_tool_names = set(required_tool_names) - GROUP_TOOL_NAMES
+        if unknown_tool_names:
+            raise PlanningContractError(
+                "invalid_plan",
+                "required_tool_names contains a tool outside the group runtime contract",
+            )
+        required_artifact_paths = _optional_unique_text_list(
+            raw_step.get("required_artifact_paths"),
+            field="required_artifact_paths",
+            max_items=100,
+            max_length=1_024,
+        )
+        if (
+            required_artifact_paths
+            and GROUP_WRITE_WORKSPACE_FILE not in required_tool_names
+        ):
+            raise PlanningContractError(
+                "invalid_plan",
+                "required_artifact_paths requires group_write_workspace_file",
+            )
         steps.append(
             {
                 "step_id": step_id,
                 "agent_id": str(agent_id),
                 "instruction": instruction,
                 "depends_on_step_ids": list(dependencies),
+                "required_tool_names": required_tool_names,
+                "required_artifact_paths": required_artifact_paths,
                 "status": "pending",
                 "child_run_id": None,
                 "result_summary": None,
