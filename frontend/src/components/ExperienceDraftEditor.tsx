@@ -7,8 +7,8 @@
  */
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { experienceApi, orgApi, type ExperienceEntry } from '../services/api';
+import { useMutation } from '@tanstack/react-query';
+import { experienceApi, type ExperienceEntry } from '../services/api';
 
 export type Draft = Partial<ExperienceEntry>;
 
@@ -114,24 +114,15 @@ export function DraftEditor({ draft, onClose, onSaved, onDeleted, docked, autoEx
 }) {
     const [form, setForm] = useState<Draft>({
         title: '', applicability: '',
-        tags: [], visibility_scope: 'company', visibility_scope_id: null, ...draft,
+        tags: [], ...draft,
         // Seed the section scaffold only when there's nothing to show yet.
         body: hasProse(draft.body) ? draft.body : BODY_TEMPLATE,
     });
     const [err, setErr] = useState('');
     const isNew = !draft.id;
 
-    // "指定部门" only means something once an org directory is synced (Feishu/DingTalk/
-    // WeCom). Without it, publish silently degrades department → company, so hide the
-    // option entirely rather than let the user pick something that won't stick.
-    const { data: deptData } = useQuery({
-        queryKey: ['org-departments'], queryFn: orgApi.departments, staleTime: 300000, retry: false,
-    });
-    const hasDepartments = (deptData?.items?.length ?? 0) > 0;
-
     const buildPayload = (): Draft => ({
         title: form.title, body: form.body, applicability: form.applicability, tags: form.tags,
-        visibility_scope: form.visibility_scope, visibility_scope_id: form.visibility_scope_id || null,
         // Provenance (chat-sourced drafts): records the source agent + conversation.
         origin_agent_id: form.origin_agent_id, origin_session_id: form.origin_session_id,
     });
@@ -255,31 +246,6 @@ export function DraftEditor({ draft, onClose, onSaved, onDeleted, docked, autoEx
 
             <label style={labelStyle}>标签（逗号分隔）</label>
             <input value={(form.tags || []).join(', ')} onChange={e => set('tags', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} style={inputStyle} />
-
-            <label style={labelStyle}>可见范围</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-                <select value={form.visibility_scope} onChange={e => set('visibility_scope', e.target.value)} style={{ ...inputStyle, flex: '0 0 140px' }}>
-                    <option value="company">全公司</option>
-                    {/* Show 指定部门 only when an org is synced — or when editing an entry that is already department-scoped. */}
-                    {(hasDepartments || form.visibility_scope === 'department') && <option value="department">指定部门</option>}
-                    <option value="user">指定用户</option>
-                </select>
-                {form.visibility_scope !== 'company' && (
-                    <input placeholder={form.visibility_scope === 'department' ? '部门 ID' : '用户 ID'}
-                        value={form.visibility_scope_id || ''} onChange={e => set('visibility_scope_id', e.target.value)}
-                        style={{ ...inputStyle, flex: 1 }} />
-                )}
-            </div>
-            {!hasDepartments && (
-                <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                    未检测到已同步的组织架构，「指定部门」暂不可用；如需按部门可见，请先在「企业设置 › 组织架构」同步（飞书 / 钉钉 / 企业微信）。
-                </p>
-            )}
-            {form.visibility_scope !== 'company' && (
-                <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                    需填写目标 ID；留空则发布后自动降级为全公司。
-                </p>
-            )}
         </Drawer>
     );
 }

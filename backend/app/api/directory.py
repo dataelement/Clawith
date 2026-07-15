@@ -100,7 +100,7 @@ async def get_custom_directory_humans(
             AgentPermission.scope_id.is_not(None),
             AgentPermission.access_level.in_(["use", "manage"]),
         )
-        .order_by(User.display_name.asc(), User.username.asc())
+        .order_by(User.display_name.asc(), User.id.asc())
     )
     by_permission: dict[uuid.UUID, dict] = {}
     for permission, user, member in result.all():
@@ -136,11 +136,7 @@ async def get_custom_directory_human_candidates(
         OrgMember.tenant_id == agent.tenant_id,
         OrgMember.status == "active",
         OrgMember.user_id.is_not(None),
-        exists().where(
-            User.id == OrgMember.user_id,
-            User.tenant_id == agent.tenant_id,
-            User.is_active == True,  # noqa: E712
-        ),
+        User.is_active.is_(True),
         ~exists().where(
             AgentPermission.agent_id == agent_id,
             AgentPermission.scope_type == "user",

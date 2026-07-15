@@ -9,11 +9,13 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, desc, or_, and_
+from sqlalchemy import cast, desc, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.api.auth import get_current_user
 from app.database import async_session
@@ -21,7 +23,6 @@ from app.models.agent import Agent
 from app.models.experience import ExperienceEntry
 from app.models.experience_reference import ExperienceReference
 from app.models.llm import LLMModel
-from app.models.org import OrgDepartment, OrgMember
 from app.models.user import User
 
 router = APIRouter(prefix="/api/experience", tags=["experience"])
@@ -40,6 +41,7 @@ class EntryCreate(BaseModel):
     body: str = ""
     applicability: str = ""
     tags: list[str] = Field(default_factory=list)
+    # Accepted for legacy clients; published Experience is always tenant-wide.
     visibility_scope: str = "company"
     visibility_scope_id: uuid.UUID | None = None
     origin_session_id: uuid.UUID | None = None
@@ -57,6 +59,7 @@ class EntryUpdate(BaseModel):
     body: str | None = None
     applicability: str | None = None
     tags: list[str] | None = None
+    # Accepted for legacy clients but cannot make published Experience private.
     visibility_scope: str | None = None
     visibility_scope_id: uuid.UUID | None = None
 
@@ -115,35 +118,7 @@ async def _agent_creator_id(db, agent_id: uuid.UUID | None) -> uuid.UUID | None:
     return (await db.execute(select(Agent.creator_id).where(Agent.id == agent_id))).scalar_one_or_none()
 
 
-async def _user_department_ids(db, current_user: User) -> set[uuid.UUID]:
-    """Departments the human viewer belongs to (User → OrgMember.department_id)."""
-    rows = await db.execute(
-        select(OrgMember.department_id).where(
-            OrgMember.user_id == current_user.id,
-            OrgMember.tenant_id == current_user.tenant_id,
-            OrgMember.department_id.isnot(None),
-        )
-    )
-    return {r[0] for r in rows.all() if r[0]}
-
-
-def _human_visibility_condition(dept_ids: set[uuid.UUID], user_id: uuid.UUID):
-    """P0-6 filter for a human viewer: company always; own department; own user-scoped."""
-    conds = [ExperienceEntry.visibility_scope == "company"]
-    if dept_ids:
-        conds.append(
-            and_(
-                ExperienceEntry.visibility_scope == "department",
-                ExperienceEntry.visibility_scope_id.in_(dept_ids),
-            )
-        )
-    conds.append(
-        and_(ExperienceEntry.visibility_scope == "user", ExperienceEntry.visibility_scope_id == user_id)
-    )
-    return or_(*conds)
-
-
-# ── P0-7: operation permissions (orthogonal to P0-6 visibility) ──
+# ── Management permissions (independent from tenant-wide published reads) ──
 # chat initiator (created_by): may publish + edit + retire
 # agent creator (origin_agent_id → creator): may edit + retire + re-publish
 # admins act as a governance backstop across all three.
@@ -168,29 +143,6 @@ def _can_retire(current_user: User, entry: ExperienceEntry, agent_creator: uuid.
         or entry.created_by == current_user.id
         or (agent_creator is not None and agent_creator == current_user.id)
     )
-
-
-async def _resolve_publish_visibility(db, entry: ExperienceEntry) -> tuple[str, uuid.UUID | None]:
-    """Apply the P0-6 degrade rule at publish time.
-
-    department/user scopes require a target id and a synced org; when the org
-    hierarchy is empty (e.g. Feishu org sync not connected) visibility degrades
-    to company.
-    """
-    scope = entry.visibility_scope or "company"
-    scope_id = entry.visibility_scope_id
-    if scope not in VISIBILITY_SCOPES:
-        scope = "company"
-    if scope == "department":
-        has_departments = (await db.execute(select(OrgDepartment.id).limit(1))).first() is not None
-        if not scope_id or not has_departments:
-            scope, scope_id = "company", None
-    elif scope == "user":
-        if not scope_id:
-            scope, scope_id = "company", None
-    else:  # company
-        scope_id = None
-    return scope, scope_id
 
 
 async def _serialize_entries(db, entries: list[ExperienceEntry]) -> list[EntryOut]:
@@ -221,7 +173,7 @@ async def _serialize_entries(db, entries: list[ExperienceEntry]) -> list[EntryOu
 
 
 async def _get_entry_scoped(db, entry_id: uuid.UUID, current_user: User) -> ExperienceEntry:
-    """Fetch an entry, enforcing tenant isolation. Raises 404 if not visible."""
+    """Fetch an entry with tenant isolation only; mutation routes add permission checks."""
     q = select(ExperienceEntry).where(ExperienceEntry.id == entry_id)
     eff = _effective_tenant_id(current_user)
     if eff and current_user.role != "platform_admin":
@@ -232,11 +184,30 @@ async def _get_entry_scoped(db, entry_id: uuid.UUID, current_user: User) -> Expe
     return entry
 
 
+async def _get_entry_readable(
+    db,
+    entry_id: uuid.UUID,
+    current_user: User,
+) -> tuple[ExperienceEntry, uuid.UUID | None]:
+    """Fetch an entry under the human read contract.
+
+    Published, non-legacy experience is public to every member in the tenant.
+    Draft and retired entries remain visible only to an existing manager. A 404
+    hides the existence of entries the caller cannot read.
+    """
+    entry = await _get_entry_scoped(db, entry_id, current_user)
+    agent_creator = await _agent_creator_id(db, entry.origin_agent_id)
+    can_manage = _can_edit(current_user, entry, agent_creator)
+    if can_manage or (entry.status == "published" and entry.origin != "legacy_plaza"):
+        return entry, agent_creator
+    raise HTTPException(404, "Experience entry not found")
+
+
 # ── Routes ──────────────────────────────────────────
 
 @router.get("/entries", response_model=list[EntryOut])
 async def list_entries(
-    view: str = "team",
+    view: Literal["team", "mine", "all"] = "team",
     status: str | None = None,
     tag: str | None = None,
     q: str | None = None,
@@ -247,15 +218,18 @@ async def list_entries(
     """List experience entries, scoped to the caller's tenant.
 
     `view`:
-      - team    (default): published entries visible to me (P0-6 human filter). The
+      - team    (default): all published entries in the tenant. The
                  "公司最新经验" feed / 团队经验 view.
       - mine    : entries I can manage (I distilled, or I created the source agent).
       - all     : whole tenant, no visibility filter (admins).
     """
+    if view == "all" and not _is_admin(current_user):
+        raise HTTPException(403, "Admin access is required for the all view")
+
     eff = _effective_tenant_id(current_user)
     order_col = desc(ExperienceEntry.last_reviewed_at) if view == "team" else desc(ExperienceEntry.updated_at)
     async with async_session() as db:
-        query = select(ExperienceEntry).order_by(order_col)
+        query = select(ExperienceEntry).order_by(order_col, desc(ExperienceEntry.id))
         if eff:
             query = query.where(ExperienceEntry.tenant_id == eff)
 
@@ -264,9 +238,6 @@ async def list_entries(
 
         if view == "team":
             query = query.where(ExperienceEntry.status == "published")
-            if not _is_admin(current_user):
-                dept_ids = await _user_department_ids(db, current_user)
-                query = query.where(_human_visibility_condition(dept_ids, current_user.id))
         elif view == "mine":
             managed_agent_ids = (
                 await db.execute(select(Agent.id).where(Agent.creator_id == current_user.id))
@@ -281,11 +252,12 @@ async def list_entries(
         if q:
             like = f"%{q}%"
             query = query.where(or_(ExperienceEntry.title.ilike(like), ExperienceEntry.body.ilike(like)))
+        if tag:
+            # ExperienceEntry.tags is legacy PostgreSQL JSON. Cast to JSONB so
+            # membership is evaluated before offset/limit without a schema migration.
+            query = query.where(cast(ExperienceEntry.tags, JSONB).contains([tag]))
         query = query.offset(offset).limit(limit)
         entries = (await db.execute(query)).scalars().all()
-        # tag filter is applied in Python to stay portable across JSON backends
-        if tag:
-            entries = [e for e in entries if tag in (e.tags or [])]
         return await _serialize_entries(db, entries)
 
 
@@ -336,7 +308,6 @@ async def create_entry(payload: EntryCreate, current_user: User = Depends(get_cu
     prevents accidental repeated sedimentation while still allowing edited variants.
     """
     eff = _effective_tenant_id(current_user)
-    scope = payload.visibility_scope if payload.visibility_scope in VISIBILITY_SCOPES else "company"
     async with async_session() as db:
         dupe = await _find_identical(db, eff, payload)
         if dupe:
@@ -348,8 +319,10 @@ async def create_entry(payload: EntryCreate, current_user: User = Depends(get_cu
             applicability=payload.applicability,
             tags=_norm_tags(payload.tags),
             status="draft",
-            visibility_scope=scope,
-            visibility_scope_id=payload.visibility_scope_id if scope != "company" else None,
+            # Legacy clients may still send visibility fields. Human Experience
+            # publishing is tenant-wide now, so new entries always start canonical.
+            visibility_scope="company",
+            visibility_scope_id=None,
             origin="chat",
             origin_session_id=payload.origin_session_id,
             origin_agent_id=payload.origin_agent_id,
@@ -527,9 +500,8 @@ async def create_draft_from_content(payload: DraftFromContent, current_user: Use
 @router.get("/entries/{entry_id}", response_model=EntryOut)
 async def get_entry(entry_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     async with async_session() as db:
-        entry = await _get_entry_scoped(db, entry_id, current_user)
+        entry, agent_creator = await _get_entry_readable(db, entry_id, current_user)
         out = (await _serialize_entries(db, [entry]))[0]
-        agent_creator = await _agent_creator_id(db, entry.origin_agent_id)
         out.can_manage = _can_edit(current_user, entry, agent_creator)
         return out
 
@@ -545,13 +517,17 @@ async def update_entry(entry_id: uuid.UUID, body: EntryUpdate, current_user: Use
         data = body.model_dump(exclude_unset=True)
         if "visibility_scope" in data and data["visibility_scope"] not in VISIBILITY_SCOPES:
             raise HTTPException(422, "Invalid visibility_scope")
+        visibility_was_provided = "visibility_scope" in data or "visibility_scope_id" in data
         for field, value in data.items():
+            if field in {"visibility_scope", "visibility_scope_id"}:
+                continue
             if field == "title" and value is not None:
                 value = value[:200]
             if field == "tags" and value is not None:
                 value = _norm_tags(value)
             setattr(entry, field, value)
-        if entry.visibility_scope == "company":
+        if visibility_was_provided or entry.status == "published":
+            entry.visibility_scope = "company"
             entry.visibility_scope_id = None
         await db.commit()
         await db.refresh(entry)
@@ -579,8 +555,10 @@ async def publish_entry(entry_id: uuid.UUID, current_user: User = Depends(get_cu
         missing = [label for field, label in REQUIRED_PARTS if not (getattr(entry, field) or "").strip()]
         if missing:
             raise HTTPException(422, f"无法发布 — 以下必填项为空：{'、'.join(missing)}")
-        # P0-6 degrade rule applied at publish time.
-        entry.visibility_scope, entry.visibility_scope_id = await _resolve_publish_visibility(db, entry)
+        # Published Experience is tenant-wide. Normalize legacy private metadata
+        # whenever an entry crosses the publication boundary.
+        entry.visibility_scope = "company"
+        entry.visibility_scope_id = None
         entry.status = "published"
         entry.retired_at = None  # re-publishing clears the 30-day deletion clock
         entry.reviewed_by = current_user.id
@@ -651,7 +629,7 @@ async def delete_entry(entry_id: uuid.UUID, current_user: User = Depends(get_cur
 async def entry_references(entry_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     """Reuse stats for an entry: read vs cited counted separately (adoption uses cited only)."""
     async with async_session() as db:
-        await _get_entry_scoped(db, entry_id, current_user)  # enforce visibility
+        await _get_entry_readable(db, entry_id, current_user)
         counts = dict(
             (row[0], row[1])
             for row in (
@@ -678,9 +656,9 @@ class LibraryStats(BaseModel):
 
 @router.get("/stats", response_model=LibraryStats)
 async def library_stats(current_user: User = Depends(get_current_user)):
-    """Header stats for the 公司最新经验 feed, over entries visible to the caller.
+    """Header stats for the tenant-wide 公司最新经验 feed.
 
-    total = published visible entries; today = of those, created today;
+    total = published tenant entries; today = of those, created today;
     cited = adoption events on them; top_contributors = publishers by entry count.
     """
     eff = _effective_tenant_id(current_user)
@@ -689,9 +667,6 @@ async def library_stats(current_user: User = Depends(get_current_user)):
         base = [ExperienceEntry.status == "published", ExperienceEntry.origin != "legacy_plaza"]
         if eff:
             base.append(ExperienceEntry.tenant_id == eff)
-        if not _is_admin(current_user):
-            dept_ids = await _user_department_ids(db, current_user)
-            base.append(_human_visibility_condition(dept_ids, current_user.id))
 
         total = (await db.execute(select(func.count(ExperienceEntry.id)).where(*base))).scalar() or 0
         today = (

@@ -11,8 +11,6 @@ import { experienceApi, type ExperienceEntry } from '../services/api';
 import { Drawer, EXP_FIELDS, secondaryBtn } from './ExperienceDraftEditor';
 import MarkdownRenderer from './MarkdownRenderer';
 
-export const SCOPE_LABELS: Record<string, string> = { company: '全公司', department: '本部门', user: '指定人' };
-
 // 2026年7月9日; empty string for null/invalid.
 export function fmtDate(s?: string | null): string {
     if (!s) return '';
@@ -123,7 +121,6 @@ export function EntryDrawer({ entryId, onClose, onEdit, onChanged, docked }: {
                 <button onClick={onClose} style={{ ...secondaryBtn, padding: '4px 10px' }}>✕</button>
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '10px 0 16px' }}>
-                <Badge tone="accent">{SCOPE_LABELS[entry.visibility_scope]}</Badge>
                 {f.label && <Badge tone={f.stale ? 'warn' : 'ok'}>{f.label}</Badge>}
                 {(entry.tags || []).map(tg => <Badge key={tg}>#{tg}</Badge>)}
             </div>

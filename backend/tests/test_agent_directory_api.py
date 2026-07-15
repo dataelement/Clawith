@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
 
 from app.api import directory as directory_api
 
@@ -44,12 +45,23 @@ class RecordingDB:
     def __init__(self, responses=None):
         self.responses = list(responses or [])
         self.execute_count = 0
+        self.statements = []
 
-    async def execute(self, _statement, _params=None):
+    async def execute(self, statement, _params=None):
         self.execute_count += 1
+        self.statements.append(statement)
         if not self.responses:
             raise AssertionError("unexpected execute() call")
         return self.responses.pop(0)
+
+
+def _sql(statement) -> str:
+    return str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
 
 
 def test_agent_directory_router_uses_directory_prefix_only():
@@ -60,12 +72,71 @@ def test_agent_directory_router_uses_directory_prefix_only():
 def test_agent_directory_router_exposes_custom_maintenance_routes():
     paths = {route.path for route in directory_api.router.routes}
 
-    assert "/custom/humans" in paths
-    assert "/custom/human-candidates" in paths
-    assert "/custom/humans/{user_id}" in paths
-    assert "/custom/agents" in paths
-    assert "/custom/agent-candidates" in paths
-    assert "/custom/agents/{target_agent_id}" in paths
+    prefix = "/agents/{agent_id}/directory"
+    assert f"{prefix}/custom/humans" in paths
+    assert f"{prefix}/custom/human-candidates" in paths
+    assert f"{prefix}/custom/humans/{{user_id}}" in paths
+    assert f"{prefix}/custom/agents" in paths
+    assert f"{prefix}/custom/agent-candidates" in paths
+    assert f"{prefix}/custom/agents/{{target_agent_id}}" in paths
+
+
+@pytest.mark.asyncio
+async def test_get_custom_directory_humans_orders_by_real_user_columns(monkeypatch):
+    tenant_id = uuid.uuid4()
+    source = _make_agent(tenant_id=tenant_id, access_mode="custom")
+    db = RecordingDB([DummyResult()])
+
+    async def fake_require_custom_directory_manager(_db, _current_user, _agent_id):
+        return source
+
+    monkeypatch.setattr(
+        directory_api,
+        "_require_custom_directory_manager",
+        fake_require_custom_directory_manager,
+    )
+
+    result = await directory_api.get_custom_directory_humans(
+        agent_id=source.id,
+        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id),
+        db=db,
+    )
+
+    compiled = _sql(db.statements[-1])
+    assert result == {"members": []}
+    assert "ORDER BY users.display_name ASC, users.id ASC" in compiled
+    assert "identities.username ASC" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_get_custom_directory_human_candidates_compiles_tenant_scoped_user_filter(monkeypatch):
+    tenant_id = uuid.uuid4()
+    source = _make_agent(tenant_id=tenant_id, access_mode="custom")
+    db = RecordingDB([DummyResult()])
+
+    async def fake_require_custom_directory_manager(_db, _current_user, _agent_id):
+        return source
+
+    monkeypatch.setattr(
+        directory_api,
+        "_require_custom_directory_manager",
+        fake_require_custom_directory_manager,
+    )
+
+    result = await directory_api.get_custom_directory_human_candidates(
+        agent_id=source.id,
+        query="",
+        limit=50,
+        offset=0,
+        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id),
+        db=db,
+    )
+
+    compiled = _sql(db.statements[-1])
+    assert result == {"candidates": [], "limit": 50, "offset": 0, "has_more": False}
+    assert "users.is_active IS true" in compiled
+    assert "agent_permissions.scope_id = org_members.user_id" in compiled
+    assert "LIMIT 51" in compiled
 
 
 @pytest.mark.asyncio

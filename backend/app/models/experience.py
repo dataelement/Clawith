@@ -45,9 +45,8 @@ class ExperienceEntry(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)  # P1-2
 
-    # ── P0-6: visibility (mirrors AgentPermission.scope_type / scope_id) ──
-    # scope: company | department | user
-    # scope_id: null for company, department_id for department, user_id for user
+    # Legacy visibility metadata retained for API/data compatibility. Published
+    # human-facing Experience is tenant-wide and is canonicalized to company/null.
     visibility_scope: Mapped[str] = mapped_column(String(16), nullable=False, default="company", index=True)
     visibility_scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 

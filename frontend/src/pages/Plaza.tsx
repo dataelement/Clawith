@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { IconBuildingMonument } from '@tabler/icons-react';
 import { experienceApi, type ExperienceEntry } from '../services/api';
 import { DraftEditor, Drawer, bodyExcerpt, secondaryBtn, type Draft } from '../components/ExperienceDraftEditor';
-import { EntryDrawer, Badge, CreatorLine, freshness, retiredDaysLeft, SCOPE_LABELS } from '../components/ExperienceDetailDrawer';
+import { EntryDrawer, Badge, CreatorLine, freshness, retiredDaysLeft } from '../components/ExperienceDetailDrawer';
 
 const sicon = (d: string) => (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -39,6 +39,11 @@ export default function Plaza() {
     const [editing, setEditing] = useState<Draft | null>(null);
 
     const teamQ = useQuery({ queryKey: ['experience', 'team'], queryFn: () => experienceApi.list({ view: 'team' }), enabled: view === 'team' });
+    const taggedTeamQ = useQuery({
+        queryKey: ['experience', 'team', 'tag', teamTag],
+        queryFn: () => experienceApi.list({ view: 'team', tag: teamTag || undefined }),
+        enabled: view === 'team' && !!teamTag,
+    });
     const statsQ = useQuery({ queryKey: ['experience-stats'], queryFn: () => experienceApi.stats(), enabled: view === 'team' });
     const mineQ = useQuery({ queryKey: ['experience', 'mine'], queryFn: () => experienceApi.list({ view: 'mine' }), enabled: view === 'mine' });
 
@@ -61,17 +66,17 @@ export default function Plaza() {
     const refreshAll = () => { qc.invalidateQueries({ queryKey: ['experience'] }); qc.invalidateQueries({ queryKey: ['experience-stats'] }); };
     // Drafts open the editor; published & retired open the read/action drawer (retired → 重新发布).
     const openEntry = (e: ExperienceEntry) => (e.status === 'draft' ? setEditing(e) : setOpenId(e.id));
-    const newEntry = () => setEditing({ visibility_scope: 'company', tags: [] });
+    const newEntry = () => setEditing({ tags: [] });
 
-    const teamEntries = teamQ.data ?? [];
-    const teamShown = teamTag ? teamEntries.filter(e => (e.tags || []).includes(teamTag)) : teamEntries;
+    const unfilteredTeamEntries = teamQ.data ?? [];
+    const teamEntries = teamTag ? (taggedTeamQ.data ?? []) : unfilteredTeamEntries;
     const mineEntries = mineQ.data ?? [];
 
     const trending = useMemo(() => {
         const m = new Map<string, number>();
-        teamEntries.forEach(e => (e.tags || []).forEach(tg => m.set(tg, (m.get(tg) || 0) + 1)));
+        unfilteredTeamEntries.forEach(e => (e.tags || []).forEach(tg => m.set(tg, (m.get(tg) || 0) + 1)));
         return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
-    }, [teamEntries]);
+    }, [unfilteredTeamEntries]);
 
     const mineTags = useMemo(() => {
         const m = new Map<string, number>();
@@ -114,7 +119,7 @@ export default function Plaza() {
             </div>
 
             {view === 'team' ? (
-                <TeamView loading={teamQ.isLoading} entries={teamShown} stats={statsQ.data} trending={trending}
+                <TeamView loading={teamQ.isLoading || taggedTeamQ.isLoading} entries={teamEntries} stats={statsQ.data} trending={trending}
                     activeTag={teamTag} onOpen={openEntry} onNew={newEntry}
                     onTag={(tg) => setTeamTag(prev => prev === tg ? null : tg)}
                     onClearTag={() => setTeamTag(null)} />
@@ -340,7 +345,6 @@ function EntryCard({ entry, onOpen }: { entry: ExperienceEntry; onOpen: () => vo
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {entry.status !== 'published' && <Badge tone="warn">{entry.status === 'retired' ? '已下架' : '草稿'}</Badge>}
                     {daysLeft !== null && <Badge tone="warn">{daysLeft} 天后自动删除</Badge>}
-                    <Badge tone="accent">{SCOPE_LABELS[entry.visibility_scope] || entry.visibility_scope}</Badge>
                     {f.label && <Badge tone={f.stale ? 'warn' : 'ok'}>{f.label}</Badge>}
                 </div>
             </div>

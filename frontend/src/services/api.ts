@@ -601,6 +601,7 @@ export interface ExperienceEntry {
     applicability: string;  // 适用条件与失效信号 — the agent's read-or-skip preview; required to publish
     status: 'draft' | 'published' | 'retired';
     tags: string[];
+    // Legacy response fields; published Experience is tenant-wide.
     visibility_scope: 'company' | 'department' | 'user';
     visibility_scope_id: string | null;
     origin: 'chat' | 'legacy_plaza';

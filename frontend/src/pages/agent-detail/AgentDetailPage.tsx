@@ -379,7 +379,7 @@ function DistillButton({ text, sessionId }: { text: string; sessionId?: string |
         try {
             // Distill only — nothing persists until the human confirms in the drawer below.
             const f = await experienceApi.distill({ agent_id: agentId, content: text, session_id: sessionId || undefined });
-            setDraft({ ...f, visibility_scope: 'company', origin_agent_id: agentId, origin_session_id: sessionId || null });
+            setDraft({ ...f, origin_agent_id: agentId, origin_session_id: sessionId || null });
         } catch (err) {
             console.error('Distill failed', err);
             toast.error('生成草稿失败，请重试');
@@ -501,7 +501,6 @@ function ExperienceDraftCard({ args, sessionId }: { args: any; sessionId?: strin
     const toArr = (v: any) => Array.isArray(v) ? v : (typeof v === 'string' && v ? v.split(/[,，]/).map((s: string) => s.trim()).filter(Boolean) : []);
     const prefill: ExperienceDraft = {
         title: a.title || '', body: a.body || '', applicability: a.applicability || '', tags: toArr(a.tags),
-        visibility_scope: 'company',
         origin_agent_id: agentId, origin_session_id: sessionId || null,
     };
     // The card is a summary — flatten the markdown body so section markers don't show up
