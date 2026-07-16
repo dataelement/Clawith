@@ -219,7 +219,7 @@ async def list_files(
     path_is_dir = await storage.is_dir(storage_key)
     if not path_exists and not path_is_dir:
         if not (
-            normalized_path == ""
+            normalized_path in {"", "workspace"}
             or (is_enterprise and normalized_path == "enterprise_info")
         ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")

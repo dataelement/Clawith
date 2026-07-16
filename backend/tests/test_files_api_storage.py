@@ -105,6 +105,20 @@ async def test_list_files_allows_empty_agent_root(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_files_allows_empty_workspace_root(monkeypatch):
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files, "get_storage_backend", lambda: PrefixOnlyStorage())
+
+    async def allow_access(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(files, "check_agent_access", allow_access)
+    user = SimpleNamespace(tenant_id=None)
+
+    assert await files.list_files(agent_id, path="workspace", current_user=user, db=None) == []
+
+
+@pytest.mark.asyncio
 async def test_read_file_returns_version_token(monkeypatch):
     agent_id = uuid.uuid4()
     storage = PrefixOnlyStorage({f"{agent_id}/workspace/note.md": b"# Note\n"})
