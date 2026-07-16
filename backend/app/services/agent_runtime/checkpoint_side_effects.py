@@ -27,6 +27,7 @@ from app.services.agent_runtime.delivery import (
     deliver_runtime_message,
 )
 from app.services.group_realtime import publish_stored_group_message
+from app.services.experience_retrieval import record_experience_citations
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -389,6 +390,21 @@ class RuntimeCheckpointSideEffects:
                 and isinstance(receipt.actual_session_id, uuid.UUID)
                 and isinstance(receipt.message_id, uuid.UUID)
             ):
+                if (
+                    delivery.kind == "terminal"
+                    and delivery.lifecycle_status == "completed"
+                ):
+                    try:
+                        await record_experience_citations(
+                            delivery.content,
+                            agent_id=run.agent_id,
+                            session_id=receipt.actual_session_id,
+                            message_id=receipt.message_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"[Experience] Citation telemetry failed after delivery commit: {exc}"
+                        )
                 try:
                     await publish_stored_group_message(
                         self._session_factory,

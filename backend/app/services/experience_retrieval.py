@@ -500,7 +500,21 @@ async def record_experience_citations(
                     )
                 )
             ).scalars().all()
-            for eid in valid:
+            existing: set[uuid.UUID] = set()
+            if valid and message_id is not None:
+                existing = set(
+                    (
+                        await db.execute(
+                            select(ExperienceReference.entry_id).where(
+                                ExperienceReference.entry_id.in_(valid),
+                                ExperienceReference.kind == "cited",
+                                ExperienceReference.message_id == message_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+            new_citations = [eid for eid in valid if eid not in existing]
+            for eid in new_citations:
                 db.add(
                     ExperienceReference(
                         entry_id=eid,
@@ -511,9 +525,9 @@ async def record_experience_citations(
                         message_id=message_id,
                     )
                 )
-            if valid:
+            if new_citations:
                 await db.commit()
-            return len(valid)
+            return len(new_citations)
     except Exception as e:
         logger.warning(f"record_experience_citations failed for {agent_id}: {e}")
         return 0

@@ -278,9 +278,18 @@ async def test_terminal_realtime_publish_runs_after_delivery_commit() -> None:
         return receipt
 
     async def fake_publish(*_args, **_kwargs):
-        assert events == ["begin", "deliver", "commit"]
+        assert events == ["begin", "deliver", "commit", "cite"]
         events.append("publish")
         return True
+
+    async def fake_record_citations(text, *, agent_id, session_id, message_id):
+        assert events == ["begin", "deliver", "commit"]
+        assert text == "done"
+        assert agent_id == run.agent_id
+        assert session_id == receipt.actual_session_id
+        assert message_id == receipt.message_id
+        events.append("cite")
+        return 1
 
     handler = RuntimeCheckpointSideEffects(
         session_factory=_OrderedFactory(),  # type: ignore[arg-type]
@@ -294,10 +303,14 @@ async def test_terminal_realtime_publish_runs_after_delivery_commit() -> None:
             "app.services.agent_runtime.checkpoint_side_effects.publish_stored_group_message",
             new=fake_publish,
         ),
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.record_experience_citations",
+            new=fake_record_citations,
+        ),
     ):
         await handler.handle(run=run, command=command, checkpoint=checkpoint)
 
-    assert events == ["begin", "deliver", "commit", "publish"]
+    assert events == ["begin", "deliver", "commit", "cite", "publish"]
 
 
 @pytest.mark.asyncio
