@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   failClosedSessionActiveRun,
   sessionActiveRunFromResponse,
+  sessionRuntimeStateResponseIsValid,
   waitingSessionActiveRunHint,
 } from '../src/pages/agent-detail/sessionRuntimeState.ts';
 
@@ -83,5 +84,18 @@ test('only a valid persisted runtime-state response grants actions', () => {
       },
     })?.canResume,
     false,
+  );
+});
+
+test('onboarding only treats an authoritative runtime-state payload as loaded', () => {
+  assert.equal(sessionRuntimeStateResponseIsValid({ active_run: null }, null), true);
+  assert.equal(sessionRuntimeStateResponseIsValid({}, null), false);
+  assert.equal(
+    sessionRuntimeStateResponseIsValid({ active_run: { status: 'running' } }, null),
+    false,
+  );
+  assert.equal(
+    sessionRuntimeStateResponseIsValid({ active_run: waitingRun }, waitingRun),
+    true,
   );
 });

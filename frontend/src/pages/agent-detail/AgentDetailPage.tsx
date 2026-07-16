@@ -63,9 +63,11 @@ import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
 import {
     failClosedSessionActiveRun,
     sessionActiveRunFromResponse,
+    sessionRuntimeStateResponseIsValid,
     type SessionActiveRun,
     waitingSessionActiveRunHint,
 } from './sessionRuntimeState';
+import { onboardingKickoffKey, shouldKickoffOnboarding } from './onboardingKickoff';
 import { fetchAuth } from './utils/fetchAuth';
 
 const WORKSPACE_TOOLS = new Set([
@@ -2222,9 +2224,8 @@ export default function AgentDetailPage() {
         setOverrideModelId(newModelId);
     }, []);
 
-    // Track onboarding kickoff per (agent, session) so the agent only greets
-    // once per session. The agent opens the conversation itself — no visible
-    // user message — by sending a tagged trigger the backend filters out.
+    // The visible guard is pair-scoped; durable deduplication is enforced by
+    // the backend so reconnects and other sessions cannot create another Run.
     const onboardingKickoffRef = useRef<Set<string>>(new Set());
     const [livePanelVisible, setLivePanelVisible] = useState(false);
     const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('workspace');
@@ -2360,6 +2361,8 @@ export default function AgentDetailPage() {
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
     const sessionActiveRunRef = useRef<Record<SessionRuntimeKey, SessionActiveRun | null>>({});
     const [activeRun, setActiveRun] = useState<SessionActiveRun | null>(null);
+    const [messagesLoadedRuntimeKey, setMessagesLoadedRuntimeKey] = useState<string | null>(null);
+    const [runtimeStateLoadedRuntimeKey, setRuntimeStateLoadedRuntimeKey] = useState<string | null>(null);
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
@@ -2424,7 +2427,23 @@ export default function AgentDetailPage() {
             }
             const payload = await response.json();
             const next = sessionActiveRunFromResponse(payload);
+            if (!sessionRuntimeStateResponseIsValid(payload, next)) {
+                applySessionActiveRun(
+                    agentId,
+                    sessionId,
+                    failClosedSessionActiveRun(
+                        sessionActiveRunRef.current[buildSessionRuntimeKey(agentId, sessionId)] || null,
+                    ),
+                );
+                return;
+            }
             applySessionActiveRun(agentId, sessionId, next);
+            if (
+                currentAgentIdRef.current === agentId
+                && activeSessionIdRef.current === sessionId
+            ) {
+                setRuntimeStateLoadedRuntimeKey(buildSessionRuntimeKey(agentId, sessionId));
+            }
         } catch {
             applySessionActiveRun(
                 agentId,
@@ -2623,6 +2642,8 @@ export default function AgentDetailPage() {
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
         setActiveRun(cachedActiveRun);
+        setMessagesLoadedRuntimeKey(null);
+        setRuntimeStateLoadedRuntimeKey(null);
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
@@ -2660,6 +2681,7 @@ export default function AgentDetailPage() {
                 setChatMessages(preParsed);
                 setChatOldestTimestamp(oldestTimestamp);
                 setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
+                setMessagesLoadedRuntimeKey(runtimeKey);
             } else {
                 setHistoryMsgs(preParsed);
                 setHistoryOldestTimestamp(oldestTimestamp);
@@ -3088,6 +3110,8 @@ export default function AgentDetailPage() {
         setIsStreaming(false);
         setIsWaiting(false);
         setActiveRun(null);
+        setMessagesLoadedRuntimeKey(null);
+        setRuntimeStateLoadedRuntimeKey(null);
         setWsConnected(false);
         wsRef.current = null;
         setWorkspaceLockedPath(null);
@@ -3120,6 +3144,8 @@ export default function AgentDetailPage() {
         setIsStreaming(false);
         setIsWaiting(false);
         setActiveRun(null);
+        setMessagesLoadedRuntimeKey(null);
+        setRuntimeStateLoadedRuntimeKey(null);
         setSessionsLoading(false);
         setAllSessionsLoading(false);
         Object.keys(reconnectDisabledRef.current).forEach((k) => {
@@ -3207,12 +3233,19 @@ export default function AgentDetailPage() {
         };
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
-            // Onboarding lock fired (or trigger was rejected because the pair
-            // was already onboarded). Either way, invalidate the cached agent
-            // record so the kickoff effect stops thinking a new session needs
-            // onboarding. Fire early and unconditionally — the event is cheap.
-            if (d.type === 'onboarded') {
-                queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+            // A completed or already-running pair-scoped onboarding attempt
+            // releases the local waiting indicator and refreshes Runtime truth.
+            if (d.type === 'onboarded' || d.type === 'onboarding_pending') {
+                setSessionUiState(key, { isWaiting: false, isStreaming: false });
+                const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+                if (isActiveRuntime) {
+                    setIsWaiting(false);
+                    setIsStreaming(false);
+                }
+                void fetchSessionRuntimeState(agentId, sessionId);
+                if (d.type === 'onboarded') {
+                    queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
+                }
                 return;
             }
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
@@ -4447,15 +4480,22 @@ export default function AgentDetailPage() {
     // sending the invisible trigger. Otherwise the empty session would be
     // marked as already kicked off while the user is still configuring models.
     useEffect(() => {
-        if (!wsConnected || !id || !activeSession?.id) return;
+        if (!id || !currentUser?.id || !activeSession?.id) return;
         if (!agent || agent.onboarded_for_me !== false) return;
         if (llmModelsLoading || !effectiveModelReady || !effectiveChatModelId) return;
-        if (chatMessages.length > 0) return;
         const runtimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-        if (onboardingKickoffRef.current.has(runtimeKey)) return;
+        if (!shouldKickoffOnboarding({
+            websocketReady: wsConnected,
+            messagesLoaded: messagesLoadedRuntimeKey === runtimeKey,
+            runtimeStateLoaded: runtimeStateLoadedRuntimeKey === runtimeKey,
+            messageCount: chatMessages.length,
+            hasActiveRun: activeRun !== null,
+        })) return;
+        const pairKey = onboardingKickoffKey(id, String(currentUser.id));
+        if (onboardingKickoffRef.current.has(pairKey)) return;
         const socket = wsMapRef.current[runtimeKey];
         if (!socket || socket.readyState !== WebSocket.OPEN) return;
-        onboardingKickoffRef.current.add(runtimeKey);
+        onboardingKickoffRef.current.add(pairKey);
         setIsWaiting(true);
         setIsStreaming(false);
         socket.send(JSON.stringify({
@@ -4463,7 +4503,7 @@ export default function AgentDetailPage() {
             kind: 'onboarding_trigger',
             model_id: effectiveChatModelId,
         }));
-    }, [wsConnected, id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length]);
+    }, [wsConnected, id, currentUser?.id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length, messagesLoadedRuntimeKey, runtimeStateLoadedRuntimeKey, activeRun]);
 
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],

@@ -67,6 +67,15 @@ export const sessionActiveRunFromResponse = (payload: unknown): SessionActiveRun
     };
 };
 
+export const sessionRuntimeStateResponseIsValid = (
+    payload: unknown,
+    parsedActiveRun: SessionActiveRun | null,
+): boolean => {
+    const body = record(payload);
+    if (!body || !("active_run" in body)) return false;
+    return body.active_run === null || parsedActiveRun !== null;
+};
+
 export const failClosedSessionActiveRun = (
     current: SessionActiveRun | null,
 ): SessionActiveRun | null => current ? {

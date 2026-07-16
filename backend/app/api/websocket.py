@@ -29,13 +29,14 @@ from app.services.agent_runtime.chat_intake import (
     ChatRuntimeIntake,
     ChatRuntimeIntakeError,
     enqueue_chat_runtime,
+    onboarding_source_execution_id,
 )
 from app.services.agent_runtime.chat_stream import (
     ChatRuntimeStreamOutcome,
     stream_web_chat_run,
 )
 from app.services.agent_runtime.contracts import CancelRunCommand, RunHandle
-from app.services.agent_runtime.run_state_reader import open_run_state_reader
+from app.services.agent_runtime.run_state_reader import RunStateReadError, open_run_state_reader
 from app.services.chat_session_service import ensure_primary_platform_session
 from app.services.llm.utils import convert_chat_messages_to_llm_format
 from app.services.onboarding import is_onboarded, mark_onboarding_phase, resolve_onboarding_prompt
@@ -344,50 +345,89 @@ class WebSocketChatHandler:
 
     async def _resolve_chat_session(self, db: AsyncSession, user_id: uuid.UUID) -> str | None:
         """Resolves existing session or creates a new one."""
-        conv_id = self.session_id_param
-        if conv_id:
+        if self.agent is None or self.agent.tenant_id is None:
+            await self.websocket.send_json(
+                {
+                    "type": "error",
+                    "content": "Agent chat scope is unavailable",
+                    "code": "chat_connection_not_ready",
+                }
+            )
+            await self.websocket.close(code=4002)
+            return None
+        if self.session_id_param is not None:
             try:
-                _sid = uuid.UUID(conv_id)
+                session_id = uuid.UUID(self.session_id_param)
             except (ValueError, TypeError):
-                conv_id = None
-                _existing = None
-            else:
-                _sr = await db.execute(
-                    select(ChatSession).where(
-                        ChatSession.id == _sid,
-                        ChatSession.agent_id == self.agent_id,
-                    )
+                await self.websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": "Invalid chat session",
+                        "code": "invalid_chat_session",
+                    }
                 )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None
-                elif _existing.source_channel != "agent" and str(_existing.user_id) != str(user_id):
-                    await self.websocket.send_json({"type": "error", "content": "Not authorized for this session"})
-                    await self.websocket.close(code=4003)
-                    return None
-        if not conv_id:
-            _sr = await db.execute(
+                await self.websocket.close(code=4002)
+                return None
+            result = await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_id,
+                    ChatSession.tenant_id == self.agent.tenant_id,
+                    ChatSession.agent_id == self.agent_id,
+                    ChatSession.user_id == user_id,
+                    ChatSession.session_type == "direct",
+                    ChatSession.group_id.is_(None),
+                    ChatSession.source_channel == "web",
+                    ChatSession.is_group.is_(False),
+                    ChatSession.deleted_at.is_(None),
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if (
+                existing is None
+                or existing.tenant_id != self.agent.tenant_id
+                or existing.agent_id != self.agent_id
+                or existing.user_id != user_id
+                or existing.session_type != "direct"
+                or existing.group_id is not None
+                or existing.source_channel != "web"
+                or existing.is_group
+                or existing.deleted_at is not None
+            ):
+                await self.websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": "Not authorized for this session",
+                        "code": "chat_session_scope_mismatch",
+                    }
+                )
+                await self.websocket.close(code=4002)
+                return None
+            return str(existing.id)
+
+        result = await db.execute(
                 select(ChatSession)
                 .where(
+                    ChatSession.tenant_id == self.agent.tenant_id,
                     ChatSession.agent_id == self.agent_id,
                     ChatSession.user_id == user_id,
                     ChatSession.source_channel == "web",
-                    not ChatSession.is_group,
+                    ChatSession.session_type == "direct",
+                    ChatSession.group_id.is_(None),
+                    ChatSession.is_group.is_(False),
+                    ChatSession.deleted_at.is_(None),
                     ChatSession.is_primary,
                 )
                 .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
                 .limit(1)
             )
-            _latest = _sr.scalar_one_or_none()
-            if _latest:
-                conv_id = str(_latest.id)
-            else:
-                _new_session = await ensure_primary_platform_session(db, self.agent_id, user_id)
-                await db.commit()
-                await db.refresh(_new_session)
-                conv_id = str(_new_session.id)
-                logger.info(f"[WS] Selected primary session {conv_id}")
-        return conv_id
+        latest = result.scalar_one_or_none()
+        if latest:
+            return str(latest.id)
+        new_session = await ensure_primary_platform_session(db, self.agent_id, user_id)
+        await db.commit()
+        await db.refresh(new_session)
+        logger.info(f"[WS] Selected primary session {new_session.id}")
+        return str(new_session.id)
 
     async def _load_history(self, db: AsyncSession):
         """Loads and prepares history messages for the conversation."""
@@ -467,8 +507,10 @@ class WebSocketChatHandler:
         )
         if not isinstance(content, str) or (not content and not is_onboarding_trigger):
             return None
+        onboarding_source_execution: str | None = None
         if is_onboarding_trigger:
-            if await self._handle_onboarding_trigger_guard():
+            onboarding_source_execution = await self._handle_onboarding_trigger_guard()
+            if onboarding_source_execution is None:
                 return None
             content = "Please begin the onboarding."
 
@@ -537,6 +579,7 @@ class WebSocketChatHandler:
                 resume_run_id=resume_run_id,
                 resume_correlation_id=resume_correlation_id,
                 is_onboarding_trigger=is_onboarding_trigger,
+                onboarding_source_execution_id=onboarding_source_execution,
             )
         except ChatRuntimeIntakeError as exc:
             logger.warning(f"[WS] Runtime chat intake rejected ({exc.code}): {exc}")
@@ -546,6 +589,15 @@ class WebSocketChatHandler:
             return None
         except Exception as exc:
             error_code = getattr(exc, "code", "runtime_intake_failed")
+            if is_onboarding_trigger and error_code in {
+                "source_idempotency_mismatch",
+                "command_idempotency_mismatch",
+            }:
+                # A concurrent socket for the same pair won the durable source
+                # identity. Re-read it and acknowledge the stale trigger
+                # instead of surfacing a false chat failure.
+                await self._handle_onboarding_trigger_guard()
+                return None
             logger.exception(f"[WS] Runtime chat intake failed ({error_code}): {exc}")
             await self.websocket.send_json(
                 {
@@ -593,6 +645,7 @@ class WebSocketChatHandler:
         resume_run_id: uuid.UUID | None,
         resume_correlation_id: str | None,
         is_onboarding_trigger: bool,
+        onboarding_source_execution_id: str | None = None,
     ) -> WebChatRuntimeIntake | None:
         """Revalidate mutable ingress scope and commit one durable input."""
         if self.user is None or self.conv_id is None:
@@ -661,6 +714,11 @@ class WebSocketChatHandler:
                         runtime_instruction=(onboarding.prompt if onboarding is not None else ""),
                         onboarding_target_phase=target_phase or "",
                         persist_user_message=not is_onboarding_trigger,
+                        source_execution_id_override=(
+                            onboarding_source_execution_id
+                            if is_onboarding_trigger
+                            else None
+                        ),
                         application_tools_enabled=not (
                             onboarding is not None and onboarding.is_greeting_turn
                         ),
@@ -894,10 +952,23 @@ class WebSocketChatHandler:
             await db.commit()
         return outcome, queued_messages
 
-    async def _handle_onboarding_trigger_guard(self) -> bool:
-        """Returns True if the onboarding trigger was ignored (already onboarded)."""
-        async with async_session() as _gdb:
-            if await is_onboarded(_gdb, self.agent_id, self.user.id):
+    async def _handle_onboarding_trigger_guard(self) -> str | None:
+        """Reserve the next pair-scoped onboarding attempt or reject a stale trigger."""
+        if self.user is None or self.agent is None or self.agent.tenant_id is None:
+            raise ChatRuntimeIntakeError(
+                "chat_connection_not_ready",
+                "Web Chat connection has no authenticated onboarding scope",
+            )
+        tenant_id = self.agent.tenant_id
+        first_execution_id = onboarding_source_execution_id(
+            tenant_id,
+            self.agent_id,
+            self.user.id,
+            attempt=1,
+        )
+        source_prefix = first_execution_id.rsplit(":", 1)[0]
+        async with async_session() as db:
+            if await is_onboarded(db, self.agent_id, self.user.id):
                 logger.info("[WS] Onboarding trigger ignored — pair already onboarded")
                 await self.websocket.send_json(
                     {
@@ -905,8 +976,72 @@ class WebSocketChatHandler:
                         "agent_id": str(self.agent_id),
                     }
                 )
-                return True
-        return False
+                return None
+            result = await db.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.tenant_id == tenant_id,
+                    AgentRun.agent_id == self.agent_id,
+                    AgentRun.origin_user_id == self.user.id,
+                    AgentRun.source_type == "chat",
+                    AgentRun.source_execution_id.like(f"{source_prefix}:%"),
+                )
+                .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            )
+            runs = list(result.scalars().all())
+            attempts: list[tuple[int, AgentRun]] = []
+            for run in runs:
+                raw_attempt = (run.source_execution_id or "").removeprefix(
+                    f"{source_prefix}:"
+                )
+                if raw_attempt.isdigit() and int(raw_attempt) > 0:
+                    attempts.append((int(raw_attempt), run))
+            if not attempts:
+                return first_execution_id
+            attempt, latest = max(attempts, key=lambda item: item[0])
+            try:
+                async with open_run_state_reader(db) as reader:
+                    view = await reader.get_run_state(tenant_id, latest.id)
+            except RunStateReadError as exc:
+                logger.warning(
+                    f"[WS] Onboarding trigger held by unreadable Run {latest.id}: {exc.code}"
+                )
+                view = None
+            except Exception as exc:
+                logger.exception(
+                    f"[WS] Onboarding trigger held while Run {latest.id} state is unavailable: {exc}"
+                )
+                view = None
+
+            status = view.execution_status if view is not None else None
+            if status in {"failed", "cancelled"}:
+                return onboarding_source_execution_id(
+                    tenant_id,
+                    self.agent_id,
+                    self.user.id,
+                    attempt=attempt + 1,
+                )
+            if status == "completed":
+                # Completion normally reconciles this row in the worker. Repair
+                # the narrow crash window so future mounts also stop triggering.
+                await mark_onboarding_phase(
+                    db,
+                    self.agent_id,
+                    self.user.id,
+                    "greeted",
+                )
+                await self.websocket.send_json(
+                    {"type": "onboarded", "agent_id": str(self.agent_id)}
+                )
+                return None
+            await self.websocket.send_json(
+                {
+                    "type": "onboarding_pending",
+                    "agent_id": str(self.agent_id),
+                    "run_id": str(latest.id),
+                }
+            )
+            return None
 
     async def _mark_onboarding_runtime_phase(self, target_phase: str) -> None:
         """Advance the visible socket immediately; the worker also reconciles it."""

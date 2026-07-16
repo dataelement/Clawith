@@ -23,6 +23,7 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_runtime.chat_intake import ChatRuntimeIntake, ChatRuntimeIntakeError
+from app.services.agent_runtime.chat_intake import onboarding_source_execution_id
 from app.services.agent_runtime.chat_stream import ChatRuntimeStreamOutcome
 from app.services.agent_runtime.contracts import (
     CancelRunCommand,
@@ -35,6 +36,7 @@ class _WebSocket:
     def __init__(self, *incoming: dict) -> None:
         self.incoming = list(incoming)
         self.sent: list[dict] = []
+        self.closed_code: int | None = None
 
     async def receive_json(self):
         if not self.incoming:
@@ -43,6 +45,9 @@ class _WebSocket:
 
     async def send_json(self, packet: dict) -> None:
         self.sent.append(packet)
+
+    async def close(self, code: int) -> None:
+        self.closed_code = code
 
 
 class _Transaction:
@@ -70,6 +75,14 @@ class _Result:
 
     def scalar_one_or_none(self):
         return self.value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        if self.value is None:
+            return []
+        return self.value if isinstance(self.value, list) else [self.value]
 
 
 class _Session:
@@ -120,6 +133,149 @@ def _handler(websocket: _WebSocket) -> WebSocketChatHandler:
     handler.history_messages = [SimpleNamespace()]
     handler.conversation = []
     return handler
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_scope_mismatch_fails_closed_without_primary_fallback() -> None:
+    websocket = _WebSocket()
+    handler = _handler(websocket)
+    assert handler.user is not None
+    explicit_id = uuid.uuid4()
+    handler.session_id_param = str(explicit_id)
+    handler.agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
+    wrong_tenant_session = ChatSession(
+        id=explicit_id,
+        tenant_id=uuid.uuid4(),
+        session_type="direct",
+        agent_id=handler.agent_id,
+        user_id=handler.user.id,
+        title="Wrong tenant",
+        source_channel="web",
+        is_group=False,
+        is_primary=True,
+    )
+    db = _Session(None, wrong_tenant_session)
+
+    resolved = await handler._resolve_chat_session(db, handler.user.id)  # type: ignore[arg-type]
+
+    assert resolved is None
+    assert websocket.closed_code == 4002
+    assert websocket.sent[-1]["code"] == "chat_session_scope_mismatch"
+    assert len(db.results) == 0  # No second query may silently select the primary session.
+
+
+@pytest.mark.asyncio
+async def test_missing_explicit_session_fails_closed_without_primary_fallback() -> None:
+    websocket = _WebSocket()
+    handler = _handler(websocket)
+    assert handler.user is not None
+    handler.session_id_param = str(uuid.uuid4())
+    handler.agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
+    db = _Session(None, None)
+
+    resolved = await handler._resolve_chat_session(db, handler.user.id)  # type: ignore[arg-type]
+
+    assert resolved is None
+    assert websocket.closed_code == 4002
+    assert websocket.sent[-1]["code"] == "chat_session_scope_mismatch"
+    assert len(db.results) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_pair_onboarding_allocates_one_durable_retry_attempt() -> None:
+    websocket = _WebSocket()
+    handler = _handler(websocket)
+    assert handler.user is not None
+    handler.agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
+    first_execution = onboarding_source_execution_id(
+        handler.user.tenant_id,
+        handler.agent_id,
+        handler.user.id,
+        attempt=1,
+    )
+    failed_run = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_execution_id=first_execution,
+    )
+    db = _Session(None, [failed_run])
+    reader = SimpleNamespace(
+        get_run_state=AsyncMock(
+            return_value=SimpleNamespace(execution_status="failed")
+        )
+    )
+
+    with (
+        patch("app.api.websocket.async_session", return_value=db),
+        patch("app.api.websocket.is_onboarded", new=AsyncMock(return_value=False)),
+        patch(
+            "app.api.websocket.open_run_state_reader",
+            return_value=_AsyncContext(reader),
+        ),
+    ):
+        execution_id = await handler._handle_onboarding_trigger_guard()
+
+    assert execution_id == onboarding_source_execution_id(
+        handler.user.tenant_id,
+        handler.agent_id,
+        handler.user.id,
+        attempt=2,
+    )
+    assert websocket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_inflight_pair_onboarding_rejects_stale_cross_session_trigger() -> None:
+    websocket = _WebSocket()
+    handler = _handler(websocket)
+    assert handler.user is not None
+    handler.agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
+    execution_id = onboarding_source_execution_id(
+        handler.user.tenant_id,
+        handler.agent_id,
+        handler.user.id,
+        attempt=1,
+    )
+    active_run = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_execution_id=execution_id,
+    )
+    db = _Session(None, [active_run])
+    reader = SimpleNamespace(
+        get_run_state=AsyncMock(
+            return_value=SimpleNamespace(execution_status="running")
+        )
+    )
+
+    with (
+        patch("app.api.websocket.async_session", return_value=db),
+        patch("app.api.websocket.is_onboarded", new=AsyncMock(return_value=False)),
+        patch(
+            "app.api.websocket.open_run_state_reader",
+            return_value=_AsyncContext(reader),
+        ),
+    ):
+        accepted_execution_id = await handler._handle_onboarding_trigger_guard()
+
+    assert accepted_execution_id is None
+    assert websocket.sent == [
+        {
+            "type": "onboarding_pending",
+            "agent_id": str(handler.agent_id),
+            "run_id": str(active_run.id),
+        }
+    ]
 
 
 def _handle(tenant_id: uuid.UUID) -> RunHandle:
@@ -350,7 +506,11 @@ async def test_onboarding_trigger_uses_runtime_and_advances_after_completion() -
     )
 
     with (
-        patch.object(handler, "_handle_onboarding_trigger_guard", new=AsyncMock(return_value=False)),
+        patch.object(
+            handler,
+            "_handle_onboarding_trigger_guard",
+            new=AsyncMock(return_value="onboarding:test:attempt:1"),
+        ),
         patch.object(handler, "_resolve_effective_model", new=AsyncMock(return_value=model)),
         patch.object(handler, "_check_quotas", new=AsyncMock(return_value=True)),
         patch.object(
@@ -375,6 +535,10 @@ async def test_onboarding_trigger_uses_runtime_and_advances_after_completion() -
 
     assert enqueue.await_args.kwargs["content"] == "Please begin the onboarding."
     assert enqueue.await_args.kwargs["is_onboarding_trigger"] is True
+    assert (
+        enqueue.await_args.kwargs["onboarding_source_execution_id"]
+        == "onboarding:test:attempt:1"
+    )
     run_runtime.assert_awaited_once_with(
         intake,
         user_content="Please begin the onboarding.",
@@ -429,6 +593,7 @@ async def test_web_intake_pins_onboarding_metadata_without_a_visible_user_messag
             resume_run_id=None,
             resume_correlation_id=None,
             is_onboarding_trigger=True,
+            onboarding_source_execution_id="onboarding:test:attempt:1",
         )
 
     assert result == WebChatRuntimeIntake(
@@ -438,6 +603,10 @@ async def test_web_intake_pins_onboarding_metadata_without_a_visible_user_messag
     assert enqueue.await_args.kwargs["runtime_instruction"] == "Trusted greeting prompt"
     assert enqueue.await_args.kwargs["onboarding_target_phase"] == "greeted"
     assert enqueue.await_args.kwargs["persist_user_message"] is False
+    assert (
+        enqueue.await_args.kwargs["source_execution_id_override"]
+        == "onboarding:test:attempt:1"
+    )
     assert enqueue.await_args.kwargs["application_tools_enabled"] is False
     assert enqueue.await_args.kwargs["run_state_reader"] is run_state_reader
     assert session.title == "Onboarding"

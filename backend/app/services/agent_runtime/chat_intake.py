@@ -35,6 +35,7 @@ from app.services.participant_identity import get_or_create_user_participant
 
 
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
+_ONBOARDING_SOURCE_PREFIX = "onboarding"
 
 
 class ChatRuntimeIntakeError(RuntimeError):
@@ -53,6 +54,21 @@ class ChatRuntimeIntake:
     message_id: uuid.UUID
     resumed: bool
     stream_after: RuntimeEventCursor | None = None
+
+
+def onboarding_source_execution_id(
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    attempt: int,
+) -> str:
+    """Build the durable pair-scoped identity for one onboarding attempt."""
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt <= 0:
+        raise ValueError("onboarding attempt must be a positive integer")
+    return (
+        f"{_ONBOARDING_SOURCE_PREFIX}:{tenant_id}:{agent_id}:{user_id}:{attempt}"
+    )
 
 
 def stored_user_content(
@@ -468,6 +484,7 @@ async def enqueue_chat_runtime(
     runtime_instruction: str = "",
     onboarding_target_phase: str = "",
     persist_user_message: bool = True,
+    source_execution_id_override: str | None = None,
     application_tools_enabled: bool = True,
     channel_delivery_target: dict | None = None,
     run_state_reader: RunStateReader | None = None,
@@ -524,7 +541,26 @@ async def enqueue_chat_runtime(
             "Chat resume correlation_id must not be blank",
         )
 
-    resolved_message_id = message_id or uuid.uuid4()
+    normalized_source_execution_id = (
+        source_execution_id_override.strip()
+        if isinstance(source_execution_id_override, str)
+        else ""
+    )
+    if source_execution_id_override is not None and not normalized_source_execution_id:
+        raise ChatRuntimeIntakeError(
+            "invalid_chat_source_execution_id",
+            "Synthetic Chat source execution ID must not be blank",
+        )
+    if normalized_source_execution_id and persist_user_message:
+        raise ChatRuntimeIntakeError(
+            "invalid_chat_source_execution_override",
+            "Synthetic Chat source identity cannot persist a visible user message",
+        )
+    resolved_message_id = message_id or (
+        uuid.uuid5(uuid.NAMESPACE_URL, normalized_source_execution_id)
+        if normalized_source_execution_id
+        else uuid.uuid4()
+    )
     saved_content = stored_user_content(
         content,
         display_content=display_content,
@@ -610,7 +646,7 @@ async def enqueue_chat_runtime(
             stream_after=stream_after,
         )
 
-    source_execution_id = f"chat:{resolved_message_id}"
+    source_execution_id = normalized_source_execution_id or f"chat:{resolved_message_id}"
     delivery_target = (
         {
             "kind": "direct",
@@ -629,7 +665,10 @@ async def enqueue_chat_runtime(
     scheduling_position_created_at = (
         persisted_message.created_at
         if persisted_message is not None
-        else datetime.now(UTC)
+        # Synthetic onboarding retries use the pair's stable Session creation
+        # position so concurrent sockets submit byte-for-byte identical Run
+        # registration facts and converge through source_execution uniqueness.
+        else session.created_at or datetime.now(UTC)
     )
     handle = await adapter.start_run(
         StartRunCommand(
@@ -687,5 +726,6 @@ __all__ = [
     "ChatRuntimeIntake",
     "ChatRuntimeIntakeError",
     "enqueue_chat_runtime",
+    "onboarding_source_execution_id",
     "stored_user_content",
 ]

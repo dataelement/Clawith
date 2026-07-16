@@ -211,6 +211,41 @@ async def test_chat_message_and_start_command_share_the_caller_session() -> None
 
 
 @pytest.mark.asyncio
+async def test_synthetic_onboarding_uses_pair_scoped_source_execution_identity() -> None:
+    agent, user, session, model = _records()
+    session.created_at = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
+    db = _Session()
+    handle = _handle(agent.tenant_id)
+    source_execution_id = (
+        f"onboarding:{agent.tenant_id}:{agent.id}:{user.id}:1"
+    )
+
+    with patch(
+        "app.services.agent_runtime.chat_intake.RuntimeCommandIntake.start_run",
+        new=AsyncMock(return_value=handle),
+    ) as start_run:
+        result = await enqueue_chat_runtime(
+            db,  # type: ignore[arg-type]
+            agent=agent,
+            user=user,
+            session=session,
+            model=model,
+            content="Please begin the onboarding.",
+            persist_user_message=False,
+            source_execution_id_override=source_execution_id,
+            settings_override=_settings(enabled=True),
+        )
+
+    assert result is not None
+    command = start_run.await_args.args[0]
+    assert command.source_execution_id == source_execution_id
+    assert command.source_id == str(result.message_id)
+    assert command.scheduling_position_id == result.message_id
+    assert command.scheduling_position_created_at == session.created_at
+    assert result.message_id == uuid.uuid5(uuid.NAMESPACE_URL, source_execution_id)
+
+
+@pytest.mark.asyncio
 async def test_external_group_chat_uses_unified_session_without_native_group_scope() -> None:
     agent, user, _direct_session, model = _records()
     session = ChatSession(
