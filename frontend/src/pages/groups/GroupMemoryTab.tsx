@@ -4,6 +4,7 @@ import { IconRobot } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
 import FileBrowser, { type FileBrowserApi } from '../../components/FileBrowser';
 import type { GroupMember } from '../../types/group';
+import { createVersionedFileAdapter } from './versionedFileAdapter';
 
 /**
  * Group memory is per (agent, group): each agent keeps its own memory.md for this group, loaded
@@ -28,28 +29,27 @@ export default function GroupMemoryTab({
         if (!agentRefId && agents.length > 0) setAgentRefId(agents[0].participant_ref_id);
     }, [agents, agentRefId]);
 
-    const api = useMemo<FileBrowserApi>(() => ({
-        // Always surface the memory.md card, even before it exists, so a human can open it and write
-        // the agent's first memory; the backend returns exists:false with empty content until then.
-        list: async () => [{ name: 'memory.md', path: 'memory.md', is_dir: false }],
-        read: async () => {
-            const file = await groupApi.agentMemory(groupId, agentRefId!);
-            return { content: file.content };
-        },
-        write: async (_path: string, content: string) => {
-            // FileBrowser hands us no version token, so read the current one first: writing with it
-            // makes the backend reject a save that would clobber someone else's concurrent edit.
-            let expected: string | null = null;
-            try {
-                const current = await groupApi.agentMemory(groupId, agentRefId!);
-                expected = current.exists ? current.version_token : null;
-            } catch {
-                expected = null;
-            }
-            return groupApi.saveAgentMemory(groupId, agentRefId!, content, expected);
-        },
-        delete: () => groupApi.deleteAgentMemory(groupId, agentRefId!),
-    }), [groupId, agentRefId]);
+    const api = useMemo<FileBrowserApi>(() => {
+        const versioned = createVersionedFileAdapter({
+            read: () => groupApi.agentMemory(groupId, agentRefId!),
+            write: (_path, content, expectedVersionToken) =>
+                groupApi.saveAgentMemory(groupId, agentRefId!, content, expectedVersionToken),
+            delete: (_path, expectedVersionToken) =>
+                groupApi.deleteAgentMemory(groupId, agentRefId!, expectedVersionToken),
+        });
+        return {
+            // Always surface memory.md, including before its first write. Reading it here captures
+            // the backend version for a direct delete from the file list.
+            list: async () => {
+                const file = await groupApi.agentMemory(groupId, agentRefId!);
+                versioned.remember('memory.md', file.version_token);
+                return [{ name: 'memory.md', path: 'memory.md', is_dir: false }];
+            },
+            read: versioned.read,
+            write: versioned.write,
+            delete: versioned.delete,
+        };
+    }, [groupId, agentRefId]);
 
     if (agents.length === 0) {
         return (

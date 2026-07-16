@@ -26,6 +26,16 @@ export interface GroupMember {
     joined_at: string;
 }
 
+export interface GroupMemberCandidate {
+    participant_id: string;
+    participant_type: ParticipantType;
+    participant_ref_id: string;
+    display_name: string;
+    avatar_url: string | null;
+    role_description: string | null;
+    title: string | null;
+}
+
 export interface GroupSession {
     id: string;
     group_id: string;

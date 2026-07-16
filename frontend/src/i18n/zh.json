@@ -2254,7 +2254,6 @@
     "invite": "邀请",
     "inviteOk": "{{name}} 已入群",
     "inviteFailed": "邀请失败",
-    "inviteUnsupported": "后端邀请接口尚未支持按用户/智能体 ID 邀请，暂时无法加人",
     "tabAgents": "智能体",
     "tabPeople": "成员",
     "searchPlaceholder": "搜索名称",

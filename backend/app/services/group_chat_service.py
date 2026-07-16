@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import build_visible_agents_query, can_use_agent
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -16,6 +17,10 @@ from app.models.group import Group, GroupMember
 from app.models.participant import Participant
 from app.models.user import User
 from app.services.chat_session_service import enqueue_session_deletion_cancels
+from app.services.participant_identity import (
+    get_or_create_agent_participant,
+    get_or_create_user_participant,
+)
 
 
 _GROUP_SESSION_TYPE = "group"
@@ -47,6 +52,19 @@ class GroupReadStateUpdate:
     session_id: uuid.UUID
     last_read_message_id: uuid.UUID
     advanced: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMemberCandidate:
+    """One backend-authorized identity that can be invited by participant ID."""
+
+    participant_id: uuid.UUID
+    participant_type: str
+    participant_ref_id: uuid.UUID
+    display_name: str
+    avatar_url: str | None
+    role_description: str | None = None
+    title: str | None = None
 
 
 def _now() -> datetime:
@@ -454,6 +472,115 @@ async def list_group_members(
     return list(result.scalars().all())
 
 
+async def list_group_member_candidates(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    actor_participant_id: uuid.UUID,
+    actor_user: User,
+    participant_type: str,
+    limit: int,
+) -> tuple[GroupMemberCandidate, ...]:
+    """List inviteable identities while keeping participant IDs backend-owned."""
+    if participant_type not in {"user", "agent"}:
+        raise GroupChatServiceError(
+            "group_participant_type_invalid",
+            "Participant type must be 'user' or 'agent'",
+        )
+
+    await _active_group(db, tenant_id=tenant_id, group_id=group_id)
+    _, actor = await _human_actor(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        participant_id=actor_participant_id,
+        manager_only=False,
+    )
+    if (
+        actor.ref_id != actor_user.id
+        or actor_user.tenant_id != tenant_id
+        or not actor_user.is_active
+    ):
+        raise GroupChatServiceError(
+            "group_human_member_required",
+            "An active human group member is required",
+        )
+
+    active_refs_result = await db.execute(
+        select(Participant.ref_id)
+        .join(GroupMember, GroupMember.participant_id == Participant.id)
+        .where(
+            GroupMember.group_id == group_id,
+            GroupMember.removed_at.is_(None),
+            Participant.type == participant_type,
+        )
+    )
+    active_ref_ids = set(active_refs_result.scalars().all())
+
+    candidates: list[GroupMemberCandidate] = []
+    if participant_type == "user":
+        statement = select(User).where(
+            User.tenant_id == tenant_id,
+            User.is_active.is_(True),
+        )
+        if active_ref_ids:
+            statement = statement.where(User.id.not_in(active_ref_ids))
+        result = await db.execute(
+            statement.order_by(func.lower(User.display_name), User.id).limit(limit)
+        )
+        for user in result.scalars().all():
+            participant = await get_or_create_user_participant(
+                db,
+                user.id,
+                user.display_name,
+                user.avatar_url,
+            )
+            candidates.append(
+                GroupMemberCandidate(
+                    participant_id=participant.id,
+                    participant_type="user",
+                    participant_ref_id=user.id,
+                    display_name=user.display_name,
+                    avatar_url=user.avatar_url,
+                    title=user.title,
+                )
+            )
+    else:
+        statement = build_visible_agents_query(
+            actor_user,
+            tenant_id=tenant_id,
+        ).where(
+            Agent.access_mode != "private",
+            Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+            Agent.is_expired.is_(False),
+        )
+        if active_ref_ids:
+            statement = statement.where(Agent.id.not_in(active_ref_ids))
+        result = await db.execute(
+            statement.order_by(func.lower(Agent.name), Agent.id).limit(limit)
+        )
+        for agent in result.scalars().all():
+            participant = await get_or_create_agent_participant(
+                db,
+                agent.id,
+                agent.name,
+                agent.avatar_url,
+            )
+            candidates.append(
+                GroupMemberCandidate(
+                    participant_id=participant.id,
+                    participant_type="agent",
+                    participant_ref_id=agent.id,
+                    display_name=agent.name,
+                    avatar_url=agent.avatar_url,
+                    role_description=agent.role_description,
+                )
+            )
+
+    return tuple(candidates)
+
+
 async def invite_group_member(
     db: AsyncSession,
     *,
@@ -464,20 +591,45 @@ async def invite_group_member(
 ) -> GroupMember:
     """Invite a valid tenant participant, reusing a removed membership row."""
     await _active_group(db, tenant_id=tenant_id, group_id=group_id, lock=True)
-    await _human_actor(
+    _, actor = await _human_actor(
         db,
         tenant_id=tenant_id,
         group_id=group_id,
         participant_id=actor_participant_id,
         manager_only=False,
     )
-    await _valid_participant(
+    target = await _valid_participant(
         db,
         tenant_id=tenant_id,
         participant_id=participant_id,
         human_only=False,
         error_code="group_participant_invalid",
     )
+    if target.type == "agent":
+        actor_user_result = await db.execute(
+            select(User).where(
+                User.id == actor.ref_id,
+                User.tenant_id == tenant_id,
+                User.is_active.is_(True),
+            )
+        )
+        actor_user = actor_user_result.scalar_one_or_none()
+        target_agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == target.ref_id,
+                Agent.tenant_id == tenant_id,
+            )
+        )
+        target_agent = target_agent_result.scalar_one_or_none()
+        if (
+            actor_user is None
+            or target_agent is None
+            or not await can_use_agent(db, actor_user, target_agent)
+        ):
+            raise GroupChatServiceError(
+                "group_participant_invalid",
+                "Agent is not visible to the inviting member",
+            )
 
     existing_result = await db.execute(
         select(GroupMember)

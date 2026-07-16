@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -71,6 +71,16 @@ class GroupMemberOut(BaseModel):
     role_description: str | None = None
     title: str | None = None
     joined_at: datetime
+
+
+class GroupMemberCandidateOut(BaseModel):
+    participant_id: uuid.UUID
+    participant_type: Literal["user", "agent"]
+    participant_ref_id: uuid.UUID
+    display_name: str
+    avatar_url: str | None = None
+    role_description: str | None = None
+    title: str | None = None
 
 
 class CreateGroupSessionIn(BaseModel):
@@ -550,6 +560,37 @@ async def list_group_members(
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
     return await _member_outputs(db, memberships)
+
+
+@router.get(
+    "/{group_id}/member-candidates",
+    response_model=list[GroupMemberCandidateOut],
+)
+async def list_group_member_candidates(
+    group_id: uuid.UUID,
+    participant_type: Annotated[Literal["user", "agent"], Query()],
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        candidates = await group_chat_service.list_group_member_candidates(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            actor_user=current_user,
+            participant_type=participant_type,
+            limit=limit,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    return [
+        GroupMemberCandidateOut.model_validate(candidate, from_attributes=True)
+        for candidate in candidates
+    ]
 
 
 @router.post(

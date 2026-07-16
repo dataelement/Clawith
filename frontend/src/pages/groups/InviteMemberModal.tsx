@@ -2,24 +2,15 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { IconRobot, IconSearch, IconUser, IconX } from '@tabler/icons-react';
-import { agentApi, fetchJson } from '../../services/api';
 import { groupApi } from '../../services/groupApi';
 import { useToast } from '../../components/Toast/ToastProvider';
-import type { Agent, User } from '../../types';
-import type { GroupMember, ParticipantType } from '../../types/group';
+import type { GroupMember, GroupMemberCandidate, ParticipantType } from '../../types/group';
 
 interface InviteMemberModalProps {
     groupId: string;
     members: GroupMember[];
     onClose: () => void;
     onInvited: () => void;
-}
-
-interface Candidate {
-    type: ParticipantType;
-    refId: string;
-    name: string;
-    hint?: string;
 }
 
 export default function InviteMemberModal({
@@ -34,59 +25,37 @@ export default function InviteMemberModal({
     const [search, setSearch] = useState('');
     const [inviting, setInviting] = useState<string | null>(null);
 
-    const { data: agents = [] } = useQuery({
-        queryKey: ['group-invite-agents'],
-        queryFn: () => agentApi.list(),
-    });
-
-    // /org/users is tenant-scoped and open to any member, unlike the admin-only /users.
-    const { data: users = [] } = useQuery({
-        queryKey: ['group-invite-users'],
-        queryFn: () => fetchJson<User[]>('/org/users'),
+    const { data: backendCandidates = [] } = useQuery({
+        queryKey: ['group-member-candidates', groupId, tab],
+        queryFn: () => groupApi.memberCandidates(groupId, tab),
     });
 
     const alreadyIn = useMemo(
-        () => new Set(members.map((member) => `${member.participant_type}:${member.participant_ref_id}`)),
+        () => new Set(members.map((member) => member.participant_id)),
         [members],
     );
 
-    const candidates = useMemo<Candidate[]>(() => {
-        const source: Candidate[] = tab === 'agent'
-            ? agents.map((agent: Agent) => ({
-                type: 'agent' as const,
-                refId: agent.id,
-                name: agent.name,
-                hint: agent.role_description ?? undefined,
-            }))
-            : users.map((user: User) => ({
-                type: 'user' as const,
-                refId: user.id,
-                name: user.display_name || user.email,
-                hint: user.email,
-            }));
-
+    const candidates = useMemo<GroupMemberCandidate[]>(() => {
         const needle = search.trim().toLowerCase();
-        return source
-            .filter((candidate) => !alreadyIn.has(`${candidate.type}:${candidate.refId}`))
-            .filter((candidate) => !needle || candidate.name.toLowerCase().includes(needle));
-    }, [tab, agents, users, alreadyIn, search]);
+        return backendCandidates
+            .filter((candidate) => !alreadyIn.has(candidate.participant_id))
+            .filter((candidate) => {
+                if (!needle) return true;
+                return [candidate.display_name, candidate.role_description, candidate.title]
+                    .some((value) => value?.toLowerCase().includes(needle));
+            });
+    }, [backendCandidates, alreadyIn, search]);
 
-    const invite = async (candidate: Candidate) => {
-        setInviting(candidate.refId);
+    const invite = async (candidate: GroupMemberCandidate) => {
+        setInviting(candidate.participant_id);
         try {
             await groupApi.inviteMember(groupId, {
-                participant_type: candidate.type,
-                ref_id: candidate.refId,
+                participant_id: candidate.participant_id,
             });
-            toast.success(t('groups.inviteOk', '{{name}} 已入群', { name: candidate.name }));
+            toast.success(t('groups.inviteOk', '{{name}} 已入群', { name: candidate.display_name }));
             onInvited();
         } catch (error: any) {
-            // The backend still requires `participant_id`, which nothing exposes to us. Until it
-            // accepts (type, ref_id), every invite lands here. See the contract doc, gap 3.
-            const message = error?.status === 422
-                ? t('groups.inviteUnsupported', '后端邀请接口尚未支持按用户/智能体 ID 邀请，暂时无法加人')
-                : error?.message ?? t('groups.inviteFailed', '邀请失败');
-            toast.error(message);
+            toast.error(error?.message ?? t('groups.inviteFailed', '邀请失败'));
         } finally {
             setInviting(null);
         }
@@ -136,25 +105,27 @@ export default function InviteMemberModal({
                         </div>
                     )}
                     {candidates.map((candidate) => (
-                        <div key={`${candidate.type}:${candidate.refId}`} className="group-candidate">
-                            <span className={`group-avatar sm ${candidate.type === 'agent' ? 'agent' : ''}`}>
-                                {candidate.type === 'agent'
+                        <div key={candidate.participant_id} className="group-candidate">
+                            <span className={`group-avatar sm ${candidate.participant_type === 'agent' ? 'agent' : ''}`}>
+                                {candidate.participant_type === 'agent'
                                     ? <IconRobot size={14} stroke={1.6} />
                                     : <IconUser size={14} stroke={1.6} />}
                             </span>
                             <div className="group-candidate-body">
-                                <div className="group-candidate-name">{candidate.name}</div>
-                                {candidate.hint && (
-                                    <div className="group-candidate-hint">{candidate.hint}</div>
+                                <div className="group-candidate-name">{candidate.display_name}</div>
+                                {(candidate.role_description || candidate.title) && (
+                                    <div className="group-candidate-hint">
+                                        {candidate.role_description || candidate.title}
+                                    </div>
                                 )}
                             </div>
                             <button
                                 type="button"
                                 className="btn btn-sm"
-                                disabled={inviting === candidate.refId}
+                                disabled={inviting === candidate.participant_id}
                                 onClick={() => void invite(candidate)}
                             >
-                                {inviting === candidate.refId
+                                {inviting === candidate.participant_id
                                     ? t('common.loading', '加载中...')
                                     : t('groups.invite', '邀请')}
                             </button>

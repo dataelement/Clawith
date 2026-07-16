@@ -90,6 +90,7 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
 
     assert ("POST", "/api/groups") in routes
     assert ("GET", "/api/groups/{group_id}/members") in routes
+    assert ("GET", "/api/groups/{group_id}/member-candidates") in routes
     assert ("POST", "/api/groups/{group_id}/sessions") in routes
     assert ("DELETE", "/api/groups/{group_id}/sessions/{session_id}") in routes
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/read") in routes
@@ -106,6 +107,10 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("PUT", "/api/groups/{group_id}/workspace/file") in routes
     assert ("DELETE", "/api/groups/{group_id}/workspace/file") in routes
     assert ("PATCH", "/api/groups/{group_id}/members/{member_id}") not in routes
+
+
+def test_group_invite_write_contract_only_accepts_participant_id() -> None:
+    assert set(groups_api.InviteGroupMemberIn.model_fields) == {"participant_id"}
 
 
 @pytest.mark.asyncio

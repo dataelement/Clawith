@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import FileBrowser, { type FileBrowserApi } from '../../components/FileBrowser';
 import { groupApi } from '../../services/groupApi';
+import { createVersionedFileAdapter } from './versionedFileAdapter';
 
 /**
  * The group workspace is where agents drop their outputs and members share files. It is one shared
@@ -10,34 +11,32 @@ import { groupApi } from '../../services/groupApi';
 export default function GroupWorkspaceTab({ groupId }: { groupId: string }) {
     const { t } = useTranslation();
 
-    const api = useMemo<FileBrowserApi>(() => ({
-        list: async (path: string) => {
-            const entries = await groupApi.workspace(groupId, path);
-            return entries.map((entry) => ({
-                name: entry.name,
-                path: entry.path,
-                is_dir: entry.is_dir,
-                size: entry.size,
-            }));
-        },
-        read: async (path: string) => {
-            const file = await groupApi.workspaceFile(groupId, path);
-            return { content: file.content };
-        },
-        write: async (path: string, content: string) => {
-            // FileBrowser hands us no version token, so read the current one first: writing with it
-            // makes the backend reject a save that would clobber someone else's concurrent edit.
-            let expected: string | null = null;
-            try {
-                const current = await groupApi.workspaceFile(groupId, path);
-                expected = current.exists ? current.version_token : null;
-            } catch {
-                expected = null; // A file that does not exist yet is created unconditionally.
-            }
-            return groupApi.saveWorkspaceFile(groupId, path, content, expected);
-        },
-        delete: (path: string) => groupApi.deleteWorkspaceFile(groupId, path),
-    }), [groupId]);
+    const api = useMemo<FileBrowserApi>(() => {
+        const versioned = createVersionedFileAdapter({
+            read: (path) => groupApi.workspaceFile(groupId, path),
+            write: (path, content, expectedVersionToken) =>
+                groupApi.saveWorkspaceFile(groupId, path, content, expectedVersionToken),
+            delete: (path, expectedVersionToken) =>
+                groupApi.deleteWorkspaceFile(groupId, path, expectedVersionToken),
+        });
+        return {
+            list: async (path: string) => {
+                const entries = await groupApi.workspace(groupId, path);
+                return entries.map((entry) => {
+                    if (!entry.is_dir) versioned.remember(entry.path, entry.version_token);
+                    return {
+                        name: entry.name,
+                        path: entry.path,
+                        is_dir: entry.is_dir,
+                        size: entry.size,
+                    };
+                });
+            },
+            read: versioned.read,
+            write: versioned.write,
+            delete: versioned.delete,
+        };
+    }, [groupId]);
 
     return (
         <div className="group-workspace-tab">

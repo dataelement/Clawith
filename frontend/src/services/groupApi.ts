@@ -4,6 +4,7 @@ import { fetchJson } from './api';
 import type {
     Group,
     GroupMember,
+    GroupMemberCandidate,
     GroupMessage,
     GroupMessageIntake,
     GroupSession,
@@ -13,15 +14,8 @@ import type {
     ParticipantType,
 } from '../types/group';
 
-/**
- * The backend invite endpoint currently only accepts `participant_id`, which nothing exposes to
- * the frontend (agent participants are created lazily, so they may not exist yet). We send the
- * business identity instead — see docs/group-chat/frontend-realtime-contract.md, gap 3. Until the
- * backend accepts this shape, invites fail with 422 and the modal surfaces the error.
- */
 export interface InviteMemberPayload {
-    participant_type: ParticipantType;
-    ref_id: string;
+    participant_id: string;
 }
 
 export interface SendMessagePayload {
@@ -54,6 +48,11 @@ export const groupApi = {
     remove: (groupId: string) => fetchJson<void>(`/groups/${groupId}`, { method: 'DELETE' }),
 
     members: (groupId: string) => fetchJson<GroupMember[]>(`/groups/${groupId}/members`),
+
+    memberCandidates: (groupId: string, participantType: ParticipantType) =>
+        fetchJson<GroupMemberCandidate[]>(
+            `/groups/${groupId}/member-candidates${qs({ participant_type: participantType })}`,
+        ),
 
     inviteMember: (groupId: string, data: InviteMemberPayload) =>
         fetchJson<GroupMember>(`/groups/${groupId}/members`, {
@@ -145,8 +144,17 @@ export const groupApi = {
             }),
         }),
 
-    deleteAgentMemory: (groupId: string, agentId: string) =>
-        fetchJson<void>(`/groups/${groupId}/agents/${agentId}/memory`, { method: 'DELETE' }),
+    deleteAgentMemory: (
+        groupId: string,
+        agentId: string,
+        expectedVersionToken?: string | null,
+    ) =>
+        fetchJson<void>(
+            `/groups/${groupId}/agents/${agentId}/memory${qs({
+                expected_version_token: expectedVersionToken ?? undefined,
+            })}`,
+            { method: 'DELETE' },
+        ),
 
     workspace: (groupId: string, path = '') =>
         fetchJson<GroupWorkspaceEntry[]>(`/groups/${groupId}/workspace${qs({ path })}`),
@@ -168,6 +176,16 @@ export const groupApi = {
             }),
         }),
 
-    deleteWorkspaceFile: (groupId: string, path: string) =>
-        fetchJson<void>(`/groups/${groupId}/workspace/file${qs({ path })}`, { method: 'DELETE' }),
+    deleteWorkspaceFile: (
+        groupId: string,
+        path: string,
+        expectedVersionToken?: string | null,
+    ) =>
+        fetchJson<void>(
+            `/groups/${groupId}/workspace/file${qs({
+                path,
+                expected_version_token: expectedVersionToken ?? undefined,
+            })}`,
+            { method: 'DELETE' },
+        ),
 };

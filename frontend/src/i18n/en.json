@@ -2129,7 +2129,6 @@
     "invite": "Invite",
     "inviteOk": "{{name}} joined the group",
     "inviteFailed": "Invite failed",
-    "inviteUnsupported": "The backend invite endpoint does not accept user/agent IDs yet, so members cannot be added.",
     "tabAgents": "Agents",
     "tabPeople": "People",
     "searchPlaceholder": "Search by name",

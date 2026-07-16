@@ -14,6 +14,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.group import Group, GroupMember
 from app.models.participant import Participant
+from app.models.user import User
 from app.services import group_chat_service
 
 
@@ -210,15 +211,25 @@ async def test_ordinary_human_member_can_invite_a_company_agent() -> None:
     actor = _participant("user", actor_user_id)
     group = _group(tenant_id, actor.id)
     actor_membership = _membership(group.id, actor.id)
+    actor_user = User(
+        id=actor_user_id,
+        tenant_id=tenant_id,
+        display_name="Group Member",
+        role="member",
+        is_active=True,
+    )
     agent_id = uuid.uuid4()
     invited = _participant("agent", agent_id)
+    target_agent = _agent(tenant_id, agent_id)
     db = _RecordingDB(
         _Result([group]),
         _Result([actor_membership]),
         _Result([actor]),
         _Result([actor_user_id]),
         _Result([invited]),
-        _Result([_agent(tenant_id, agent_id)]),
+        _Result([target_agent]),
+        _Result([actor_user]),
+        _Result([target_agent]),
         _Result(),
     )
 
@@ -261,6 +272,196 @@ async def test_private_agent_cannot_be_invited() -> None:
             group_id=group.id,
             actor_participant_id=actor.id,
             participant_id=invited.id,
+        )
+
+    assert exc_info.value.code == "group_participant_invalid"
+    assert db.added == []
+    assert db.flush_count == 0
+
+
+@pytest.mark.asyncio
+async def test_member_candidates_materialize_backend_participant_ids_and_exclude_active_users(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    actor = _participant("user", actor_user_id)
+    actor_user = User(
+        id=actor_user_id,
+        tenant_id=tenant_id,
+        display_name="Group Member",
+        role="member",
+        is_active=True,
+    )
+    group = _group(tenant_id, actor.id)
+    candidate_user = User(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        display_name="Candidate User",
+        title="Researcher",
+        role="member",
+        is_active=True,
+    )
+    candidate_participant = _participant("user", candidate_user.id)
+    active_user_id = uuid.uuid4()
+    db = _RecordingDB(
+        _Result([group]),
+        _Result([_membership(group.id, actor.id)]),
+        _Result([actor]),
+        _Result([actor_user_id]),
+        _Result([active_user_id]),
+        _Result([candidate_user]),
+    )
+
+    async def fake_get_or_create(_db, user_id, display_name, avatar_url):
+        assert _db is db
+        assert (user_id, display_name, avatar_url) == (
+            candidate_user.id,
+            candidate_user.display_name,
+            candidate_user.avatar_url,
+        )
+        return candidate_participant
+
+    monkeypatch.setattr(
+        group_chat_service,
+        "get_or_create_user_participant",
+        fake_get_or_create,
+    )
+
+    candidates = await group_chat_service.list_group_member_candidates(
+        db,
+        tenant_id=tenant_id,
+        group_id=group.id,
+        actor_participant_id=actor.id,
+        actor_user=actor_user,
+        participant_type="user",
+        limit=50,
+    )
+
+    assert candidates == (
+        group_chat_service.GroupMemberCandidate(
+            participant_id=candidate_participant.id,
+            participant_type="user",
+            participant_ref_id=candidate_user.id,
+            display_name="Candidate User",
+            avatar_url=None,
+            title="Researcher",
+        ),
+    )
+    candidate_sql = _sql(db.statements[-1])
+    assert "users.tenant_id" in candidate_sql
+    assert "users.is_active IS true" in candidate_sql
+    assert str(active_user_id) in candidate_sql
+
+
+@pytest.mark.asyncio
+async def test_agent_candidates_apply_visibility_and_runtime_eligibility_filters(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    actor = _participant("user", actor_user_id)
+    actor_user = User(
+        id=actor_user_id,
+        tenant_id=tenant_id,
+        display_name="Group Member",
+        role="member",
+        is_active=True,
+    )
+    group = _group(tenant_id, actor.id)
+    candidate_agent = _agent(tenant_id, uuid.uuid4(), access_mode="company")
+    candidate_participant = _participant("agent", candidate_agent.id)
+    db = _RecordingDB(
+        _Result([group]),
+        _Result([_membership(group.id, actor.id)]),
+        _Result([actor]),
+        _Result([actor_user_id]),
+        _Result(),
+        _Result([candidate_agent]),
+    )
+
+    async def fake_get_or_create(_db, agent_id, display_name, avatar_url):
+        assert _db is db
+        assert (agent_id, display_name, avatar_url) == (
+            candidate_agent.id,
+            candidate_agent.name,
+            candidate_agent.avatar_url,
+        )
+        return candidate_participant
+
+    monkeypatch.setattr(
+        group_chat_service,
+        "get_or_create_agent_participant",
+        fake_get_or_create,
+    )
+
+    candidates = await group_chat_service.list_group_member_candidates(
+        db,
+        tenant_id=tenant_id,
+        group_id=group.id,
+        actor_participant_id=actor.id,
+        actor_user=actor_user,
+        participant_type="agent",
+        limit=50,
+    )
+
+    assert [candidate.participant_id for candidate in candidates] == [candidate_participant.id]
+    candidate_sql = _sql(db.statements[-1])
+    assert "agents.access_mode != 'private'" in candidate_sql
+    assert "agents.status IN ('creating', 'running', 'idle')" in candidate_sql
+    assert "agents.is_expired IS false" in candidate_sql
+
+
+@pytest.mark.asyncio
+async def test_invisible_custom_agent_cannot_be_invited_by_guessed_participant_id(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    actor = _participant("user", actor_user_id)
+    actor_user = User(
+        id=actor_user_id,
+        tenant_id=tenant_id,
+        display_name="Group Member",
+        role="member",
+        is_active=True,
+    )
+    group = _group(tenant_id, actor.id)
+    actor_membership = _membership(group.id, actor.id)
+    target_agent_id = uuid.uuid4()
+    target_participant = _participant("agent", target_agent_id)
+    target_agent = _agent(tenant_id, target_agent_id, access_mode="custom")
+    db = _RecordingDB(
+        _Result([group]),
+        _Result([actor_membership]),
+        _Result([actor]),
+        _Result([actor_user_id]),
+        _Result([target_participant]),
+        _Result([target_agent]),
+        _Result([actor_user]),
+        _Result([target_agent]),
+    )
+
+    async def fake_can_use_agent(_db, user, agent):
+        assert _db is db
+        assert user is actor_user
+        assert agent is target_agent
+        return False
+
+    monkeypatch.setattr(
+        group_chat_service,
+        "can_use_agent",
+        fake_can_use_agent,
+        raising=False,
+    )
+
+    with pytest.raises(group_chat_service.GroupChatServiceError) as exc_info:
+        await group_chat_service.invite_group_member(
+            db,
+            tenant_id=tenant_id,
+            group_id=group.id,
+            actor_participant_id=actor.id,
+            participant_id=target_participant.id,
         )
 
     assert exc_info.value.code == "group_participant_invalid"
