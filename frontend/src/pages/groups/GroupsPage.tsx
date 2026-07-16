@@ -274,8 +274,8 @@ export default function GroupsPage() {
 
     // Called for its transport side effects; the header no longer surfaces connection status.
     useGroupRealtime({
-        groupId,
-        sessionId,
+        groupId: activeGroup?.id,
+        sessionId: activeSession?.id,
         getLastCursor,
         onMessages: receiveMessages,
         onGroupActivity,

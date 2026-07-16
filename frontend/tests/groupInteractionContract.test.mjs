@@ -14,6 +14,10 @@ const toastProvider = readFileSync(
   new URL('../src/components/Toast/ToastProvider.tsx', import.meta.url),
   'utf8',
 );
+const groupUnread = readFileSync(
+  new URL('../src/hooks/useGroupUnread.ts', import.meta.url),
+  'utf8',
+);
 
 test('new group sessions may use the backend default title while group names stay required', () => {
   assert.match(promptModal, /allowEmpty\?: boolean/);
@@ -34,6 +38,10 @@ test('an inaccessible group route is not used as a message or member fetch scope
   assert.match(groupsPage, /queries: \(groupsReady \? groups : \[\]\)\.map/);
   assert.match(groupsPage, /enabled: Boolean\(activeGroup\)/);
   assert.match(groupsPage, /if \(!activeGroup \|\| !activeSession\)/);
+  assert.match(groupsPage, /groupId: activeGroup\?\.id/);
+  assert.match(groupsPage, /sessionId: activeSession\?\.id/);
+  assert.match(groupUnread, /const groupsReady = isFetchedAfterMount && !isRefetchError/);
+  assert.match(groupUnread, /queries: \(groupsReady \? groups : \[\]\)\.map/);
   assert.match(groupsPage, /navigate\('\/groups', \{ replace: true \}\)/);
 });
 

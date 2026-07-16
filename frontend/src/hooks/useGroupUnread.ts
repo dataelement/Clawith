@@ -9,14 +9,20 @@ import { groupApi } from '../services/groupApi';
  * that would make polling unnecessary is not on the backend yet).
  */
 export function useGroupUnread(): number {
-    const { data: groups = [] } = useQuery({
+    const {
+        data: groups = [],
+        isFetchedAfterMount,
+        isRefetchError,
+    } = useQuery({
         queryKey: ['groups'],
         queryFn: () => groupApi.list(),
         staleTime: 15_000,
+        refetchOnMount: 'always',
     });
+    const groupsReady = isFetchedAfterMount && !isRefetchError;
 
     const sessionQueries = useQueries({
-        queries: groups.map((group) => ({
+        queries: (groupsReady ? groups : []).map((group) => ({
             queryKey: ['group-sessions', group.id],
             queryFn: () => groupApi.sessions(group.id),
             staleTime: 15_000,
