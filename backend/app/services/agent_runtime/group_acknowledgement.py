@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import uuid
 
+from loguru import logger
 from sqlalchemy import select
 
 from app.models.agent_run import AgentRun
@@ -13,7 +15,12 @@ from app.services.agent_runtime.command_worker import (
     RuntimeRunRecord,
     RuntimeSessionFactory,
 )
-from app.services.agent_runtime.delivery import DeliveryRequest, deliver_runtime_message
+from app.services.agent_runtime.delivery import (
+    DeliveryReceipt,
+    DeliveryRequest,
+    deliver_runtime_message,
+)
+from app.services.group_realtime import publish_stored_group_message
 
 
 _ACK_CONTENT = "收到，我开始处理。"
@@ -36,6 +43,7 @@ class RuntimeGroupStartAcknowledgementHandler:
         if command.command_type != "start" or run.run_kind == "orchestration":
             return
 
+        receipt: DeliveryReceipt | None = None
         async with self._session_factory() as db:
             async with db.begin():
                 result = await db.execute(
@@ -47,7 +55,7 @@ class RuntimeGroupStartAcknowledgementHandler:
                 target = result.scalar_one_or_none()
                 if not isinstance(target, Mapping) or target.get("kind") != "group":
                     return
-                await deliver_runtime_message(
+                receipt = await deliver_runtime_message(
                     db,
                     DeliveryRequest(
                         tenant_id=run.tenant_id,
@@ -56,6 +64,21 @@ class RuntimeGroupStartAcknowledgementHandler:
                         content=_ACK_CONTENT,
                     ),
                 )
+        if (
+            receipt is not None
+            and receipt.status == "delivered"
+            and isinstance(receipt.actual_session_id, uuid.UUID)
+            and isinstance(receipt.message_id, uuid.UUID)
+        ):
+            try:
+                await publish_stored_group_message(
+                    self._session_factory,
+                    tenant_id=run.tenant_id,
+                    session_id=receipt.actual_session_id,
+                    message_id=receipt.message_id,
+                )
+            except Exception as exc:
+                logger.warning(f"[GroupRealtime] ACK publish lookup failed: {exc}")
 
 
 __all__ = ["RuntimeGroupStartAcknowledgementHandler"]

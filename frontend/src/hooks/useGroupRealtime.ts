@@ -1,28 +1,17 @@
 /**
  * Group chat transport. The page never learns how messages arrive.
  *
- * Target design: REST for sending and history, WebSocket for push, cursor backfill on reconnect,
- * polling only as a stopgap. Two pieces are not on the backend yet (see
- * docs/group-chat/frontend-realtime-contract.md):
- *
- *   - `WS /ws/group/{group_id}` does not exist. The socket fails to open, and after a few attempts
- *     this hook settles into polling for the rest of the mount.
- *   - `GET .../messages` has no `after` cursor, so backfill pages *backward* from the newest message
- *     until it reaches the last cursor we hold. Flip USE_AFTER_CURSOR once the backend ships it.
- *
- * Both fallbacks are contained here. When the backend lands, no page code changes.
+ * REST handles sends/history, one group-scoped WebSocket pushes committed messages, and the
+ * forward cursor closes reconnect gaps. Polling is only a degraded transport fallback.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { groupApi } from '../services/groupApi';
 import type { GroupMessage } from '../types/group';
 
-/** Flip to true once `GET .../messages?after=<cursor>` exists. */
-const USE_AFTER_CURSOR = false;
-
 const POLL_INTERVAL_MS = 4000;
 const BACKFILL_PAGE_SIZE = 50;
-/** Bounds the backward walk when we have no forward pager. 10 × 50 = 500 messages of catch-up. */
+/** Bounds one reconnect catch-up to 10 × 50 = 500 messages. */
 const MAX_BACKFILL_PAGES = 10;
 /** Consecutive socket failures before we stop trying and just poll. */
 const WS_FAILURE_THRESHOLD = 3;
@@ -66,10 +55,6 @@ export function compareCursor(a: string, b: string): number {
 
 /**
  * Every message newer than `cursor`, ascending. With no cursor, the newest page.
- *
- * Without a forward pager we walk backward from the head and keep what is newer than the cursor.
- * We can stop as soon as a page contains anything at or older than the cursor — that page closed
- * the gap. A page that is entirely newer means the gap is wider than one page, so keep walking.
  */
 export async function fetchMessagesSince(
     groupId: string,
@@ -80,39 +65,16 @@ export async function fetchMessagesSince(
         return groupApi.messages(groupId, sessionId, { limit: BACKFILL_PAGE_SIZE });
     }
 
-    if (USE_AFTER_CURSOR) {
-        const collected: GroupMessage[] = [];
-        let after = cursor;
-        for (let page = 0; page < MAX_BACKFILL_PAGES; page += 1) {
-            const batch = await groupApi.messages(groupId, sessionId, {
-                limit: BACKFILL_PAGE_SIZE,
-                after,
-            });
-            collected.push(...batch);
-            if (batch.length < BACKFILL_PAGE_SIZE) break;
-            after = batch[batch.length - 1].cursor;
-        }
-        return collected;
-    }
-
     const collected: GroupMessage[] = [];
-    let before: string | undefined;
+    let after = cursor;
     for (let page = 0; page < MAX_BACKFILL_PAGES; page += 1) {
         const batch = await groupApi.messages(groupId, sessionId, {
             limit: BACKFILL_PAGE_SIZE,
-            before,
+            after,
         });
-        if (batch.length === 0) break;
-
-        // Pages arrive newest-first, each ascending internally, so older pages prepend.
-        const newer = batch.filter((message) => compareCursor(message.cursor, cursor) > 0);
-        collected.unshift(...newer);
-
-        // This page reached back to the cursor, so nothing newer is left behind it.
-        if (newer.length < batch.length) break;
-        // A short page is the start of the session — there is nothing older to walk to.
+        collected.push(...batch);
         if (batch.length < BACKFILL_PAGE_SIZE) break;
-        before = batch[0].cursor;
+        after = batch[batch.length - 1].cursor;
     }
     return collected;
 }
@@ -195,7 +157,7 @@ export function useGroupRealtime({
 
             setStatus((current) => (current === 'polling' ? current : 'connecting'));
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const url = `${protocol}//${window.location.host}/ws/group/${groupId}?token=${token}`;
+            const url = `${protocol}//${window.location.host}/ws/group/${groupId}?token=${encodeURIComponent(token)}`;
 
             try {
                 socket = new WebSocket(url);

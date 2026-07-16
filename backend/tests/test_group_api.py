@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 import uuid
 
 from fastapi import HTTPException
@@ -259,3 +260,84 @@ async def test_domain_failure_is_returned_as_stable_http_error(monkeypatch) -> N
         "code": "group_access_denied",
         "message": "Membership is required",
     }
+
+
+@pytest.mark.asyncio
+async def test_create_message_commits_before_realtime_publish(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    session = _session(tenant_id, group.id, participant.id)
+    message_id = uuid.uuid4()
+    events: list[str] = []
+
+    class _MessageDB(_RecordingDB):
+        async def commit(self) -> None:
+            events.append("commit")
+
+    db = _MessageDB()
+    output = groups_api.GroupMessageOut(
+        id=message_id,
+        role="user",
+        content="hello",
+        participant_id=participant.id,
+        sender_name=participant.display_name,
+        mentions=[],
+        created_at=NOW,
+        cursor=f"{NOW.isoformat()}|{message_id}",
+    )
+    failure_id = uuid.uuid4()
+    failure_output = groups_api.GroupMessageOut(
+        id=failure_id,
+        role="system",
+        content="planning unavailable",
+        participant_id=None,
+        sender_name=None,
+        mentions=[],
+        created_at=NOW,
+        cursor=f"{NOW.isoformat()}|{failure_id}",
+    )
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_enqueue(_db, **_kwargs):
+        return SimpleNamespace(
+            message=object(),
+            new_public_messages=(object(), object()),
+            dispatch_kind="none",
+            run_handles=(),
+            created=True,
+            error_code=None,
+        )
+
+    async def fake_outputs(_db, _messages):
+        return [output] if len(_messages) == 1 else [output, failure_output]
+
+    async def fake_publish(**kwargs):
+        assert events[0] == "commit"
+        assert all(event.startswith("publish:") for event in events[1:])
+        assert kwargs["group_id"] == group.id
+        assert kwargs["session_id"] == session.id
+        events.append(f"publish:{kwargs['message']['cursor']}")
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_message_service, "enqueue_group_message", fake_enqueue)
+    monkeypatch.setattr(groups_api, "_message_outputs", fake_outputs)
+    monkeypatch.setattr(groups_api, "publish_group_message_created", fake_publish)
+
+    result = await groups_api.create_group_message(
+        group.id,
+        session.id,
+        groups_api.CreateGroupMessageIn(content="hello"),
+        current_user=user,
+        db=db,
+    )
+
+    assert result.message == output
+    assert events == [
+        "commit",
+        f"publish:{output.cursor}",
+        f"publish:{failure_output.cursor}",
+    ]

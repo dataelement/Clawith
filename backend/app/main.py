@@ -370,6 +370,7 @@ from app.api.agents import router as agents_router
 from app.api.tasks import router as tasks_router
 from app.api.files import router as files_router
 from app.api.websocket import router as ws_router
+from app.api.group_websocket import router as group_ws_router
 from app.api.feishu import router as feishu_router
 from app.api.sso import router as sso_router
 from app.api.organization import router as org_router
@@ -452,6 +453,7 @@ app.include_router(experience_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
+app.include_router(group_ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)

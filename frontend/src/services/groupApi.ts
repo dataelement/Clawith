@@ -89,9 +89,8 @@ export const groupApi = {
     /**
      * Backward pager: returns the `limit` messages immediately older than `before`, ascending.
      * Omit `before` for the newest page.
-     *
-     * `after` is the forward pager backfill wants, and the backend does not implement it yet — it
-     * is ignored server-side today. useGroupRealtime only sends it behind USE_AFTER_CURSOR.
+     * Forward pager: `after` returns the next `limit` messages in ascending position order.
+     * The two cursors are mutually exclusive.
      */
     messages: (
         groupId: string,

@@ -80,6 +80,7 @@ class GroupMessageIntake:
     dispatch_kind: Literal["none", "single", "planning"]
     run_handles: tuple[RunHandle, ...]
     created: bool
+    new_public_messages: tuple[ChatMessage, ...]
     error_code: str | None = None
 
 
@@ -541,27 +542,28 @@ async def _persist_planning_configuration_failure(
     scope: _SenderScope,
     trigger_message: ChatMessage,
     clock: datetime,
-) -> None:
+) -> tuple[ChatMessage, bool]:
     message_id = uuid.uuid5(trigger_message.id, "planning-configuration-failure")
     existing = await db.get(ChatMessage, message_id)
-    if existing is None:
-        created_at = clock + timedelta(microseconds=1)
-        db.add(
-            ChatMessage(
-                id=message_id,
-                agent_id=None,
-                user_id=None,
-                role="system",
-                content="任务规划未完成，请重试或改为单 Agent 处理。",
-                conversation_id=str(scope.session.id),
-                participant_id=None,
-                mentions=[],
-                created_at=created_at,
-            )
-        )
-        scope.session.last_message_at = created_at
-        scope.session.updated_at = created_at
-        await db.flush()
+    if existing is not None:
+        return existing, False
+    created_at = clock + timedelta(microseconds=1)
+    message = ChatMessage(
+        id=message_id,
+        agent_id=None,
+        user_id=None,
+        role="system",
+        content="任务规划未完成，请重试或改为单 Agent 处理。",
+        conversation_id=str(scope.session.id),
+        participant_id=None,
+        mentions=[],
+        created_at=created_at,
+    )
+    db.add(message)
+    scope.session.last_message_at = created_at
+    scope.session.updated_at = created_at
+    await db.flush()
+    return message, True
 
 
 async def enqueue_group_message(
@@ -611,6 +613,7 @@ async def enqueue_group_message(
             dispatch_kind="none",
             run_handles=(),
             created=created,
+            new_public_messages=(message,) if created else (),
         )
 
     runtime_settings = settings_override or get_settings()
@@ -636,7 +639,7 @@ async def enqueue_group_message(
             RuntimeAdapterError,
             RuntimePersistenceError,
         ) as exc:
-            await _persist_planning_configuration_failure(
+            failure_message, failure_created = await _persist_planning_configuration_failure(
                 db,
                 scope=scope,
                 trigger_message=message,
@@ -648,6 +651,10 @@ async def enqueue_group_message(
                 dispatch_kind="planning",
                 run_handles=(),
                 created=created,
+                new_public_messages=(
+                    *((message,) if created else ()),
+                    *((failure_message,) if failure_created else ()),
+                ),
                 error_code=(exc.code if hasattr(exc, "code") else "planning_model_unavailable"),
             )
         return GroupMessageIntake(
@@ -656,6 +663,7 @@ async def enqueue_group_message(
             dispatch_kind="planning",
             run_handles=(handle,),
             created=created,
+            new_public_messages=(message,) if created else (),
         )
 
     try:
@@ -676,6 +684,7 @@ async def enqueue_group_message(
         dispatch_kind="single",
         run_handles=(handle,),
         created=created,
+        new_public_messages=(message,) if created else (),
     )
 
 
@@ -688,8 +697,14 @@ async def list_group_messages(
     viewer_participant_id: uuid.UUID,
     limit: int,
     before: tuple[datetime, uuid.UUID] | None = None,
+    after: tuple[datetime, uuid.UUID] | None = None,
 ) -> list[ChatMessage]:
     """Read public messages by the shared `(created_at, id)` position contract."""
+    if before is not None and after is not None:
+        raise GroupMessageServiceError(
+            "group_message_cursor_conflict",
+            "Message pagination accepts either `before` or `after`, not both",
+        )
     await _load_sender_scope(
         db,
         tenant_id=tenant_id,
@@ -702,16 +717,23 @@ async def list_group_messages(
             "group_message_limit_invalid",
             "Message limit must be between 1 and 500",
         )
-    statement = (
-        select(ChatMessage)
-        .where(ChatMessage.conversation_id == str(session_id))
-        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
-        .limit(limit)
-    )
+    statement = select(ChatMessage).where(ChatMessage.conversation_id == str(session_id))
+    if after is not None:
+        statement = (
+            statement.where(
+                tuple_(ChatMessage.created_at, ChatMessage.id) > tuple_(after[0], after[1])
+            )
+            .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            .limit(limit)
+        )
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
     if before is not None:
         statement = statement.where(
             tuple_(ChatMessage.created_at, ChatMessage.id) < tuple_(before[0], before[1])
         )
+    statement = statement.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit)
     result = await db.execute(statement)
     return list(reversed(result.scalars().all()))
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Protocol, cast
+import uuid
 
+from loguru import logger
 from sqlalchemy import select
 
 from app.models.agent_run import AgentRun
@@ -17,9 +19,11 @@ from app.services.agent_runtime.command_worker import (
 )
 from app.services.agent_runtime.delivery import (
     DeliveryLifecycleStatus,
+    DeliveryReceipt,
     DeliveryRequest,
     deliver_runtime_message,
 )
+from app.services.group_realtime import publish_stored_group_message
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -249,6 +253,7 @@ class RuntimeCheckpointSideEffects:
         errors: list[Exception] = []
         delivery = delivery_from_checkpoint(run, product_checkpoint)
         if delivery is not None:
+            receipt: DeliveryReceipt | None = None
             try:
                 async with self._session_factory() as db:
                     async with db.begin():
@@ -265,9 +270,24 @@ class RuntimeCheckpointSideEffects:
                                 "post-checkpoint delivery Run does not exist",
                             )
                         if delivery_status != "not_required":
-                            await deliver_runtime_message(db, delivery)
+                            receipt = await deliver_runtime_message(db, delivery)
             except Exception as exc:
                 errors.append(exc)
+            if (
+                receipt is not None
+                and receipt.status == "delivered"
+                and isinstance(receipt.actual_session_id, uuid.UUID)
+                and isinstance(receipt.message_id, uuid.UUID)
+            ):
+                try:
+                    await publish_stored_group_message(
+                        self._session_factory,
+                        tenant_id=run.tenant_id,
+                        session_id=receipt.actual_session_id,
+                        message_id=receipt.message_id,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[GroupRealtime] Runtime publish lookup failed: {exc}")
 
         for checkpoint_handler in self._checkpoint_handlers:
             try:

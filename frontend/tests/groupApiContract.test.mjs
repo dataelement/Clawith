@@ -15,3 +15,9 @@ test('group invite reads backend candidates and posts only participant_id', () =
   assert.doesNotMatch(payload, /participant_type/);
   assert.doesNotMatch(payload, /ref_id/);
 });
+
+test('group message backfill sends the forward cursor to the backend', () => {
+  assert.match(source, /opts:\s*{\s*limit\?: number; before\?: string; after\?: string\s*}/);
+  assert.match(source, /after:\s*opts\.after/);
+  assert.doesNotMatch(source, /backend does not implement it yet/);
+});

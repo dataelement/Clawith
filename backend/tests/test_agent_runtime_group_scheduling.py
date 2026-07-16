@@ -14,7 +14,7 @@ from app.services.agent_runtime.command_worker import (
     RuntimeCommandRecord,
     RuntimeRunRecord,
 )
-from app.services.agent_runtime.delivery import DeliveryRequest
+from app.services.agent_runtime.delivery import DeliveryReceipt, DeliveryRequest
 from app.services.agent_runtime.group_acknowledgement import (
     RuntimeGroupStartAcknowledgementHandler,
 )
@@ -197,6 +197,67 @@ async def test_non_group_start_does_not_emit_group_ack() -> None:
         await handler.handle(run=run_record, command=command, checkpoint=None)
 
     deliver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_ack_realtime_publish_runs_after_delivery_commit() -> None:
+    run_record, command, run = _records()
+    events: list[str] = []
+
+    class _OrderedTransaction:
+        async def __aenter__(self):
+            events.append("begin")
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            events.append("commit")
+            return False
+
+    class _OrderedSession(_Session):
+        def begin(self):
+            return _OrderedTransaction()
+
+    session = _OrderedSession(run.delivery_target)
+    handler = RuntimeGroupStartAcknowledgementHandler(
+        session_factory=_SessionFactory(session),  # type: ignore[arg-type]
+    )
+    message_id = uuid.uuid4()
+    receipt = DeliveryReceipt(
+        tenant_id=run_record.tenant_id,
+        run_id=run_record.run_id,
+        idempotency_key=f"run:{run_record.run_id}:ack",
+        status="delivered",
+        delivery_kind="ack",
+        checkpoint_id=None,
+        message_id=message_id,
+        requested_session_id=uuid.UUID(run_record.session_id),
+        actual_session_id=uuid.UUID(run_record.session_id),
+        fallback_reason=None,
+        error_code=None,
+    )
+
+    async def fake_deliver(*_args, **_kwargs):
+        events.append("deliver")
+        return receipt
+
+    async def fake_publish(*_args, **_kwargs):
+        assert events == ["begin", "deliver", "commit"]
+        events.append("publish")
+        return True
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_acknowledgement.deliver_runtime_message",
+            new=fake_deliver,
+        ),
+        patch(
+            "app.services.agent_runtime.group_acknowledgement.publish_stored_group_message",
+            new=fake_publish,
+        ),
+    ):
+        await handler.handle(run=run_record, command=command, checkpoint=None)
+
+    assert events == ["begin", "deliver", "commit", "publish"]
 
 
 @pytest.mark.asyncio

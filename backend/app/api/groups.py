@@ -28,6 +28,7 @@ from app.services.agent_runtime.session_context_service import (
 from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
+from app.services.group_realtime import publish_group_message_created
 from app.services.participant_identity import get_or_create_user_participant
 
 
@@ -362,14 +363,18 @@ async def _member_outputs(
     return output
 
 
-def _parse_message_cursor(value: str | None) -> tuple[datetime, uuid.UUID] | None:
+def _parse_message_cursor(
+    value: str | None,
+    *,
+    parameter: str = "before",
+) -> tuple[datetime, uuid.UUID] | None:
     if value is None:
         return None
     timestamp_text, separator, message_id_text = value.rpartition("|")
     if not separator:
         raise HTTPException(
             status_code=400,
-            detail="Invalid `before` cursor. Use '<ISO 8601>|<message UUID>'.",
+            detail=f"Invalid `{parameter}` cursor. Use '<ISO 8601>|<message UUID>'.",
         )
     try:
         created_at = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
@@ -379,7 +384,7 @@ def _parse_message_cursor(value: str | None) -> tuple[datetime, uuid.UUID] | Non
     except (TypeError, ValueError):
         raise HTTPException(
             status_code=400,
-            detail="Invalid `before` cursor. Use '<ISO 8601>|<message UUID>'.",
+            detail=f"Invalid `{parameter}` cursor. Use '<ISO 8601>|<message UUID>'.",
         ) from None
     return created_at, message_id
 
@@ -838,6 +843,10 @@ async def list_group_messages(
         str | None,
         Query(description="Cursor '<created_at>|<id>' for the first excluded position"),
     ] = None,
+    after: Annotated[
+        str | None,
+        Query(description="Cursor '<created_at>|<id>' for the last seen position"),
+    ] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -851,7 +860,8 @@ async def list_group_messages(
             session_id=session_id,
             viewer_participant_id=participant.id,
             limit=limit,
-            before=_parse_message_cursor(before),
+            before=_parse_message_cursor(before, parameter="before"),
+            after=_parse_message_cursor(after, parameter="after"),
         )
     except GroupMessageServiceError as exc:
         raise _translate_message_error(exc) from exc
@@ -888,6 +898,16 @@ async def create_group_message(
     messages = await _message_outputs(db, [intake.message])
     if not messages:
         raise HTTPException(status_code=500, detail="Stored group message has no position")
+    realtime_messages = await _message_outputs(db, list(intake.new_public_messages))
+    # Realtime is a notification of durable state, never an uncommitted preview.
+    # get_db's final commit is then a harmless no-op for this endpoint.
+    await db.commit()
+    for realtime_message in realtime_messages:
+        await publish_group_message_created(
+            group_id=group_id,
+            session_id=session_id,
+            message=realtime_message.model_dump(mode="json"),
+        )
     return GroupMessageIntakeOut(
         message=messages[0],
         dispatch_kind=intake.dispatch_kind,

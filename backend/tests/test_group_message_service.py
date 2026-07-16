@@ -22,11 +22,13 @@ from app.services.agent_runtime.model_capabilities import (
     PlatformModelConfigurationError,
 )
 from app.services.group_message_service import (
+    GroupMessageServiceError,
     ResolvedGroupMention,
     _SenderScope,
     _dedupe_mentions,
     _resolve_mentions,
     enqueue_group_message,
+    list_group_messages,
 )
 
 
@@ -473,6 +475,7 @@ async def test_missing_planning_model_persists_one_visible_idempotent_failure() 
     public_message, failure_message = db.added
     assert isinstance(public_message, ChatMessage)
     assert isinstance(failure_message, ChatMessage)
+    assert intake.new_public_messages == (public_message, failure_message)
     assert failure_message.id == uuid.uuid5(
         public_message.id,
         "planning-configuration-failure",
@@ -535,3 +538,75 @@ async def test_invalid_or_human_mentions_remain_public_without_starting_runtime(
     assert intake.run_handles == ()
     start_run.assert_not_awaited()
     assert db.added[0].mentions == [human.payload(), invalid.payload()]
+
+
+@pytest.mark.asyncio
+async def test_message_forward_cursor_returns_newer_rows_in_position_order() -> None:
+    tenant_id, _, scope, _, _ = _records()
+    first = ChatMessage(
+        id=uuid.uuid4(),
+        role="user",
+        content="first newer message",
+        conversation_id=str(scope.session.id),
+        participant_id=scope.participant.id,
+        mentions=[],
+        created_at=NOW,
+    )
+    second = ChatMessage(
+        id=uuid.uuid4(),
+        role="assistant",
+        content="second newer message",
+        conversation_id=str(scope.session.id),
+        participant_id=scope.participant.id,
+        mentions=[],
+        created_at=NOW,
+    )
+    after = (NOW, uuid.uuid4())
+    db = _Session(results=(_ScalarCollection([first, second]),))
+
+    with patch(
+        "app.services.group_message_service._load_sender_scope",
+        new=AsyncMock(return_value=scope),
+    ):
+        messages = await list_group_messages(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            group_id=scope.group.id,
+            session_id=scope.session.id,
+            viewer_participant_id=scope.participant.id,
+            limit=50,
+            after=after,
+        )
+
+    assert messages == [first, second]
+    sql = str(db.statements[0])
+    assert "chat_messages.created_at, chat_messages.id) >" in sql
+    assert "chat_messages.created_at ASC, chat_messages.id ASC" in sql
+
+
+@pytest.mark.asyncio
+async def test_message_cursors_are_mutually_exclusive() -> None:
+    tenant_id, _, scope, _, _ = _records()
+    cursor = (NOW, uuid.uuid4())
+    db = _Session()
+
+    with (
+        patch(
+            "app.services.group_message_service._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        pytest.raises(GroupMessageServiceError) as exc_info,
+    ):
+        await list_group_messages(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            group_id=scope.group.id,
+            session_id=scope.session.id,
+            viewer_participant_id=scope.participant.id,
+            limit=50,
+            before=cursor,
+            after=cursor,
+        )
+
+    assert exc_info.value.code == "group_message_cursor_conflict"
+    assert db.statements == []

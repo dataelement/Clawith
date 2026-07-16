@@ -18,6 +18,7 @@ from app.services.agent_runtime.command_worker import (
     RuntimeCommandRecord,
     RuntimeRunRecord,
 )
+from app.services.agent_runtime.delivery import DeliveryReceipt
 from app.services.agent_runtime.state import RunInputSnapshots, RunRegistrySnapshot
 
 
@@ -179,6 +180,71 @@ async def test_completed_checkpoint_delivers_without_projection_round_trip() -> 
     request = deliver.await_args.args[1]
     assert request.content == "verified"
     assert request.checkpoint_id == "checkpoint-1"
+
+
+@pytest.mark.asyncio
+async def test_terminal_realtime_publish_runs_after_delivery_commit() -> None:
+    run, command, checkpoint = _records(lifecycle={"final_answer": "done"})
+    events: list[str] = []
+
+    class _OrderedTransaction:
+        async def __aenter__(self):
+            events.append("begin")
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            events.append("commit")
+            return False
+
+    class _OrderedSession(_Session):
+        def begin(self):
+            return _OrderedTransaction()
+
+    class _OrderedFactory:
+        def __call__(self):
+            return _OrderedSession("pending")
+
+    session_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    receipt = DeliveryReceipt(
+        tenant_id=run.tenant_id,
+        run_id=run.run_id,
+        idempotency_key=f"run:{run.run_id}:terminal:completed",
+        status="delivered",
+        delivery_kind="terminal",
+        checkpoint_id=checkpoint.checkpoint_id,
+        message_id=message_id,
+        requested_session_id=session_id,
+        actual_session_id=session_id,
+        fallback_reason=None,
+        error_code=None,
+    )
+
+    async def fake_deliver(*_args, **_kwargs):
+        events.append("deliver")
+        return receipt
+
+    async def fake_publish(*_args, **_kwargs):
+        assert events == ["begin", "deliver", "commit"]
+        events.append("publish")
+        return True
+
+    handler = RuntimeCheckpointSideEffects(
+        session_factory=_OrderedFactory(),  # type: ignore[arg-type]
+    )
+    with (
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.deliver_runtime_message",
+            new=fake_deliver,
+        ),
+        patch(
+            "app.services.agent_runtime.checkpoint_side_effects.publish_stored_group_message",
+            new=fake_publish,
+        ),
+    ):
+        await handler.handle(run=run, command=command, checkpoint=checkpoint)
+
+    assert events == ["begin", "deliver", "commit", "publish"]
 
 
 @pytest.mark.asyncio
