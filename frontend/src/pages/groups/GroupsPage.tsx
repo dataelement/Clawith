@@ -96,12 +96,21 @@ export default function GroupsPage() {
     const [deletingGroup, setDeletingGroup] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
 
-    const { data: groups = [], isFetched: groupsFetched, refetch: refetchGroups } = useQuery({
+    const {
+        data: groups = [],
+        isFetchedAfterMount: groupsFetchedAfterMount,
+        isRefetchError: groupsRefetchError,
+        refetch: refetchGroups,
+    } = useQuery({
         queryKey: ['groups'],
         queryFn: () => groupApi.list(),
+        refetchOnMount: 'always',
     });
+    // A cached group list is only a rendering hint, never an authorization fact. Wait for this
+    // mount's list response before using a URL group ID as the scope for any child request.
+    const groupsReady = groupsFetchedAfterMount && !groupsRefetchError;
 
-    const activeGroup = groups.find((group) => group.id === groupId);
+    const activeGroup = groupsReady ? groups.find((group) => group.id === groupId) : undefined;
 
     const { data: sessions = [], refetch: refetchSessions } = useQuery({
         queryKey: ['group-sessions', groupId],
@@ -120,7 +129,7 @@ export default function GroupsPage() {
     // active group's entry shares the ['group-sessions', groupId] key with the query above, so it is
     // fetched once and both observers read the same cache.
     const groupSessionQueries = useQueries({
-        queries: groups.map((group) => ({
+        queries: (groupsReady ? groups : []).map((group) => ({
             queryKey: ['group-sessions', group.id],
             queryFn: () => groupApi.sessions(group.id),
         })),
@@ -192,16 +201,16 @@ export default function GroupsPage() {
 
     // Land on a group, then on a session, so the pane is never pointing at nothing.
     useEffect(() => {
-        if (!groupId && groups.length > 0) {
+        if (groupsReady && !groupId && groups.length > 0) {
             navigate(`/groups/${groups[0].id}`, { replace: true });
         }
-    }, [groupId, groups, navigate]);
+    }, [groupId, groups, groupsReady, navigate]);
 
     useEffect(() => {
-        if (groupsFetched && groupId && !activeGroup) {
+        if (groupsReady && groupId && !activeGroup) {
             navigate('/groups', { replace: true });
         }
-    }, [activeGroup, groupId, groupsFetched, navigate]);
+    }, [activeGroup, groupId, groupsReady, navigate]);
 
     useEffect(() => {
         if (!groupId || sessionId || sessions.length === 0) return;

@@ -26,6 +26,12 @@ test('new group sessions may use the backend default title while group names sta
 });
 
 test('an inaccessible group route is not used as a message or member fetch scope', () => {
+  assert.match(groupsPage, /isFetchedAfterMount: groupsFetchedAfterMount/);
+  assert.match(groupsPage, /isRefetchError: groupsRefetchError/);
+  assert.match(groupsPage, /refetchOnMount: 'always'/);
+  assert.match(groupsPage, /const groupsReady = groupsFetchedAfterMount && !groupsRefetchError/);
+  assert.match(groupsPage, /const activeGroup = groupsReady \?/);
+  assert.match(groupsPage, /queries: \(groupsReady \? groups : \[\]\)\.map/);
   assert.match(groupsPage, /enabled: Boolean\(activeGroup\)/);
   assert.match(groupsPage, /if \(!activeGroup \|\| !activeSession\)/);
   assert.match(groupsPage, /navigate\('\/groups', \{ replace: true \}\)/);
