@@ -60,6 +60,12 @@ import SkillsTab from './tabs/SkillsTab';
 import ToolsTab from './tabs/ToolsTab';
 import AgentDirectory from './AgentDirectory';
 import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
+import {
+    failClosedSessionActiveRun,
+    sessionActiveRunFromResponse,
+    type SessionActiveRun,
+    waitingSessionActiveRunHint,
+} from './sessionRuntimeState';
 import { fetchAuth } from './utils/fetchAuth';
 
 const WORKSPACE_TOOLS = new Set([
@@ -2352,6 +2358,8 @@ export default function AgentDetailPage() {
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
+    const sessionActiveRunRef = useRef<Record<SessionRuntimeKey, SessionActiveRun | null>>({});
+    const [activeRun, setActiveRun] = useState<SessionActiveRun | null>(null);
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
@@ -2374,11 +2382,58 @@ export default function AgentDetailPage() {
         if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
         delete wsMapRef.current[key];
         delete sessionUiStateRef.current[key];
+        delete sessionActiveRunRef.current[key];
     };
 
     const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
         const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
         sessionUiStateRef.current[key] = { ...prev, ...next };
+    };
+
+    const applySessionActiveRun = (
+        agentId: string,
+        sessionId: string,
+        next: SessionActiveRun | null,
+    ) => {
+        const key = buildSessionRuntimeKey(agentId, sessionId);
+        sessionActiveRunRef.current[key] = next;
+        if (
+            currentAgentIdRef.current === agentId
+            && activeSessionIdRef.current === sessionId
+        ) {
+            setActiveRun(next);
+        }
+    };
+
+    const fetchSessionRuntimeState = async (agentId: string, sessionId: string) => {
+        try {
+            const tkn = localStorage.getItem('token');
+            const response = await fetch(
+                `/api/agents/${agentId}/sessions/${sessionId}/runtime-state`,
+                { headers: { Authorization: `Bearer ${tkn}` } },
+            );
+            if (!response.ok) {
+                applySessionActiveRun(
+                    agentId,
+                    sessionId,
+                    failClosedSessionActiveRun(
+                        sessionActiveRunRef.current[buildSessionRuntimeKey(agentId, sessionId)] || null,
+                    ),
+                );
+                return;
+            }
+            const payload = await response.json();
+            const next = sessionActiveRunFromResponse(payload);
+            applySessionActiveRun(agentId, sessionId, next);
+        } catch {
+            applySessionActiveRun(
+                agentId,
+                sessionId,
+                failClosedSessionActiveRun(
+                    sessionActiveRunRef.current[buildSessionRuntimeKey(agentId, sessionId)] || null,
+                ),
+            );
+        }
     };
 
     /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
@@ -2476,6 +2531,7 @@ export default function AgentDetailPage() {
         setWsConnected(false);
         setIsStreaming(false);
         setIsWaiting(false);
+        setActiveRun(null);
     };
 
     const onAdminTabMine = () => {
@@ -2548,6 +2604,7 @@ export default function AgentDetailPage() {
         if (!targetAgentId) return;
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, String(sess.id));
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
+        const cachedActiveRun = sessionActiveRunRef.current[runtimeKey] || null;
         const writable = isWritableSession(sess, scopeOverride);
         activeSessionIdRef.current = sess.id;
         isFirstLoad.current = true;
@@ -2565,10 +2622,12 @@ export default function AgentDetailPage() {
         setHistoryLoadingMore(false);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
+        setActiveRun(cachedActiveRun);
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
         if (writable) scheduleComposerFocus();
+        if (writable) void fetchSessionRuntimeState(targetAgentId, String(sess.id));
 
         // Abort any pending message load and increment sequence
         sessionMsgAbortRef.current?.abort();
@@ -2790,6 +2849,8 @@ export default function AgentDetailPage() {
         fileName: string;
         imageUrl?: string;
         modelId?: string | null;
+        resumeRunId?: string;
+        resumeCorrelationId?: string;
     };
     const [attachedFiles, setAttachedFiles] = useState<AttachedFileRef[]>([]);
     const dismissedWorkspaceRefPath = useRef<string | null>(null);
@@ -3026,6 +3087,7 @@ export default function AgentDetailPage() {
         setHistoryMsgs([]);
         setIsStreaming(false);
         setIsWaiting(false);
+        setActiveRun(null);
         setWsConnected(false);
         wsRef.current = null;
         setWorkspaceLockedPath(null);
@@ -3057,6 +3119,7 @@ export default function AgentDetailPage() {
         setWsConnected(false);
         setIsStreaming(false);
         setIsWaiting(false);
+        setActiveRun(null);
         setSessionsLoading(false);
         setAllSessionsLoading(false);
         Object.keys(reconnectDisabledRef.current).forEach((k) => {
@@ -3067,6 +3130,7 @@ export default function AgentDetailPage() {
             if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
         });
         wsMapRef.current = {};
+        sessionActiveRunRef.current = {};
         wsRef.current = null;
     }, [currentUser?.id, token]);
 
@@ -3109,6 +3173,7 @@ export default function AgentDetailPage() {
                 wsRef.current = ws;
                 setWsConnected(true);
             }
+            void fetchSessionRuntimeState(agentId, sessionId);
             if (pendingChatSendRef.current?.runtimeKey === key) {
                 const pending = pendingChatSendRef.current;
                 pendingChatSendRef.current = null;
@@ -3159,12 +3224,30 @@ export default function AgentDetailPage() {
                     isStreaming: endStreaming ? false : nextStreaming,
                 });
             }
+            if (d.type === 'runtime_status') {
+                // A queued Run is not the Session lane holder. Re-read the
+                // authoritative holder instead of promoting an event locally.
+                void fetchSessionRuntimeState(agentId, sessionId);
+                return;
+            }
+            if (d.type === 'done' && d.runtime_status === 'waiting_user' && d.run_id && d.correlation_id) {
+                applySessionActiveRun(agentId, sessionId, waitingSessionActiveRunHint({
+                    runId: String(d.run_id),
+                    sessionId,
+                    correlationId: String(d.correlation_id),
+                    current: sessionActiveRunRef.current[key] || null,
+                }));
+                void fetchSessionRuntimeState(agentId, sessionId);
+            }
             if (!isActiveRuntime) {
                 if (['done', 'error', 'quota_exceeded', 'trigger_notification'].includes(d.type)) {
                     fetchMySessions(true, agentId);
                     queryClient.invalidateQueries({ queryKey: ['agents'] });
                 }
-                if (['done', 'error', 'quota_exceeded'].includes(d.type)) {
+                if (
+                    ['done', 'error', 'quota_exceeded'].includes(d.type)
+                    && d.runtime_status !== 'waiting_user'
+                ) {
                     closeSessionSocket(key, true);
                 }
                 return;
@@ -3179,6 +3262,7 @@ export default function AgentDetailPage() {
             // Capture session_id from the 'connected' message for Take Control
             if (d.type === 'connected' && d.session_id) {
                 if (isActiveRuntime) setWsSessionId(d.session_id);
+                void fetchSessionRuntimeState(agentId, sessionId);
                 return;
             }
 
@@ -3341,6 +3425,18 @@ export default function AgentDetailPage() {
                     return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'done') {
+                if (['completed', 'failed', 'cancelled'].includes(String(d.runtime_status))) {
+                    const existingRun = sessionActiveRunRef.current[key];
+                    if (existingRun && d.run_id && existingRun.runId === String(d.run_id)) {
+                        applySessionActiveRun(agentId, sessionId, {
+                            ...existingRun,
+                            status: String(d.runtime_status),
+                            canResume: false,
+                            canCancel: false,
+                        });
+                    }
+                    void fetchSessionRuntimeState(agentId, sessionId);
+                }
                 // Add end marker to code output if there was any code activity
                 setLiveState(prev => {
                     if (prev.code?.output) {
@@ -3431,6 +3527,14 @@ export default function AgentDetailPage() {
         setIsWaiting(true);
         setIsStreaming(false);
         setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
+        if (payload.resumeRunId) {
+            const current = sessionActiveRunRef.current[runtimeKey];
+            if (current?.runId === payload.resumeRunId) {
+                const next = { ...current, canResume: false };
+                sessionActiveRunRef.current[runtimeKey] = next;
+                setActiveRun(next);
+            }
+        }
         setChatMessages(prev => [...prev, parseChatMsg({
             role: 'user',
             content: payload.userMsg,
@@ -3443,7 +3547,16 @@ export default function AgentDetailPage() {
             display_content: payload.userMsg,
             file_name: payload.fileName,
             model_id: payload.modelId,
+            ...(payload.resumeRunId ? { run_id: payload.resumeRunId } : {}),
+            ...(payload.resumeCorrelationId ? { correlation_id: payload.resumeCorrelationId } : {}),
         }));
+        const [runtimeAgentId, runtimeSessionId] = runtimeKey.split(':');
+        window.setTimeout(() => {
+            void fetchSessionRuntimeState(runtimeAgentId, runtimeSessionId);
+        }, 250);
+        window.setTimeout(() => {
+            void fetchSessionRuntimeState(runtimeAgentId, runtimeSessionId);
+        }, 1000);
     };
 
     useEffect(() => {
@@ -3460,6 +3573,21 @@ export default function AgentDetailPage() {
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
     }, [id, token, activeTab, activeSession?.id, chatScope, canViewAllAgentChatSessions]);
+
+    useEffect(() => {
+        if (
+            !id
+            || !activeSession?.id
+            || activeTab !== 'chat'
+            || !isWritableSession(activeSession)
+            || !activeRun
+        ) return;
+        const sessionId = String(activeSession.id);
+        const timer = window.setInterval(() => {
+            void fetchSessionRuntimeState(id, sessionId);
+        }, 1500);
+        return () => window.clearInterval(timer);
+    }, [id, activeTab, activeSession?.id, activeRun?.runId, activeRun?.status]);
 
     const handleWorkspacePathDeleted = useCallback((path: string) => {
         let removedName = '';
@@ -3946,6 +4074,15 @@ export default function AgentDetailPage() {
         if (showNoModelState) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
         const activeSocket = wsMapRef.current[activeRuntimeKey];
+        const currentRun = sessionActiveRunRef.current[activeRuntimeKey];
+        const resumesWaitingRun = currentRun?.status === 'waiting_user';
+        if (
+            resumesWaitingRun
+            && (!currentRun?.canResume || !currentRun.correlationId)
+        ) {
+            toast.warning(t('agent.chat.waitingReplyPending', 'Your previous reply is still being processed.'));
+            return;
+        }
         if (!chatInput.trim() && attachedFiles.length === 0) return;
 
         let userMsg = chatInput.trim();
@@ -4000,6 +4137,8 @@ export default function AgentDetailPage() {
             fileName: attachedFiles.map(f => f.name).join(', '),
             imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
             modelId: effectiveChatModelId,
+            resumeRunId: resumesWaitingRun ? currentRun?.runId : undefined,
+            resumeCorrelationId: resumesWaitingRun ? currentRun?.correlationId || undefined : undefined,
         };
 
         setChatInput('');
@@ -4153,7 +4292,7 @@ export default function AgentDetailPage() {
 
     // ── Drag-and-drop chat file upload ──
     const handleDroppedChatFiles = useCallback(async (files: File[]) => {
-        if (!wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10) return;
+        if (!wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10) return;
         const availableSlots = Math.max(0, 10 - attachedFiles.length);
         const filesToProcess = files.slice(0, availableSlots);
 
@@ -4182,11 +4321,11 @@ export default function AgentDetailPage() {
                 setChatUploadDrafts(prev => prev.filter(d => d.id !== draftId));
             }
         }
-    }, [id, wsConnected, chatUploadDrafts.length, isWaiting, isStreaming, attachedFiles.length, isWritableSession, t]);
+    }, [id, wsConnected, chatUploadDrafts.length, attachedFiles.length, isWritableSession, t]);
 
     const { isDragging: isChatDragging, dropZoneProps: chatDropProps } = useDropZone({
         onDrop: handleDroppedChatFiles,
-        disabled: !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10 || !activeSession || !isWritableSession(activeSession),
+        disabled: !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10 || !activeSession || !isWritableSession(activeSession),
     });
 
     // Expandable activity log
@@ -6748,7 +6887,12 @@ export default function AgentDetailPage() {
                                                             }}
                                                             onKeyDown={e => {
                                                                 // Enter sends the message; Shift+Enter inserts a newline
-                                                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                                                                if (
+                                                                    e.key === 'Enter'
+                                                                    && !e.shiftKey
+                                                                    && !e.nativeEvent.isComposing
+                                                                    && !(activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                                ) {
                                                                     e.preventDefault();
                                                                     sendChatMsg();
                                                                 }
@@ -6764,7 +6908,7 @@ export default function AgentDetailPage() {
                                                             type="button"
                                                             className="chat-composer-btn"
                                                             onClick={() => fileInputRef.current?.click()}
-                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || isWaiting || isStreaming || attachedFiles.length >= 10}
+                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10}
                                                             title={t('agent.workspace.uploadFile')}
                                                         >
                                                             <IconPaperclip size={16} stroke={1.75} />
@@ -6776,36 +6920,37 @@ export default function AgentDetailPage() {
                                                             disabled={showNoModelState || !wsConnected}
                                                         />
                                                         <div style={{ flex: 1 }} />
-                                                        {(isStreaming || isWaiting) ? (
+                                                        {activeRun?.canCancel && (
                                                             <button
                                                                 type="button"
                                                                 className="btn btn-stop-generation"
                                                                 onClick={() => {
-                                                                    if (!id || !activeSession?.id) return;
+                                                                    if (!id || !activeSession?.id || !activeRun?.runId) return;
                                                                     const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
                                                                     const activeSocket = wsMapRef.current[activeRuntimeKey];
                                                                     if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                                        activeSocket.send(JSON.stringify({ type: 'abort' }));
-                                                                        setIsStreaming(false);
-                                                                        setIsWaiting(false);
-                                                                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                                                                        activeSocket.send(JSON.stringify({ type: 'abort', run_id: activeRun.runId }));
                                                                     }
                                                                 }}
                                                                 title={t('chat.stop', 'Stop')}
                                                             >
                                                                 <span className="stop-icon" />
                                                             </button>
-                                                        ) : (
-                                                            <button
-                                                                type="button"
-                                                                className="btn btn-primary chat-composer-send"
-                                                                onClick={sendChatMsg}
-                                                                disabled={showNoModelState || !wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
-                                                                title={t('chat.send')}
-                                                            >
-                                                                <IconSend size={16} stroke={1.75} />
-                                                            </button>
                                                         )}
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-primary chat-composer-send"
+                                                            onClick={sendChatMsg}
+                                                            disabled={
+                                                                showNoModelState
+                                                                || !wsConnected
+                                                                || (!chatInput.trim() && attachedFiles.length === 0)
+                                                                || (activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                            }
+                                                            title={t('chat.send')}
+                                                        >
+                                                            <IconSend size={16} stroke={1.75} />
+                                                        </button>
                                                     </div>
                                                 </div>
                                             </div>

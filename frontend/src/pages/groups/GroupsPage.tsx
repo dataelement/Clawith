@@ -19,6 +19,7 @@ import { groupApi } from '../../services/groupApi';
 import { compareCursor, useGroupRealtime } from '../../hooks/useGroupRealtime';
 import { useAuthStore } from '../../stores';
 import { useToast } from '../../components/Toast/ToastProvider';
+import { createRandomUUID } from '../../utils/randomUUID';
 import PromptModal from '../../components/PromptModal';
 import ConfirmModal from '../../components/ConfirmModal';
 import MessageStream from './MessageStream';
@@ -280,7 +281,7 @@ export default function GroupsPage() {
             const intake = await groupApi.sendMessage(groupId, sessionId, {
                 content,
                 mentions: mentionParticipantIds.map((participant_id) => ({ participant_id })),
-                message_id: crypto.randomUUID(),
+                message_id: createRandomUUID(),
             });
             setMessages((previous) => mergeMessages(previous, [intake.message]));
 
