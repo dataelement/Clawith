@@ -55,6 +55,10 @@ services:
       # Required when deployed behind a reverse proxy (e.g. Nginx, Cloudflare).
       # If not set, the server infers the URL from the incoming request host.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Platform-scoped models used by native Group planning and threshold-only
+      # shared Session Context compaction.
+      MULTI_AGENT_PLANNING_MODEL_ID: ${MULTI_AGENT_PLANNING_MODEL_ID:-}
+      MULTI_AGENT_COMPACT_MODEL_ID: ${MULTI_AGENT_COMPACT_MODEL_ID:-}
       # Password reset token lifetime in minutes (default: 30)
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
     volumes:
