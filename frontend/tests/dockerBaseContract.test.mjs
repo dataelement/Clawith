@@ -30,6 +30,21 @@ test('backend receives the configured Group planning and compact model ids', () 
   );
 });
 
+test('backend receives the durable Runtime rollout policy', () => {
+  assert.match(
+    compose,
+    /AGENT_RUNTIME_V2_ENABLED: \$\{AGENT_RUNTIME_V2_ENABLED:-false\}/,
+  );
+  assert.match(
+    compose,
+    /AGENT_RUNTIME_V2_AGENT_IDS: \$\{AGENT_RUNTIME_V2_AGENT_IDS:-\}/,
+  );
+  assert.match(
+    compose,
+    /AGENT_RUNTIME_V2_SOURCE_TYPES: \$\{AGENT_RUNTIME_V2_SOURCE_TYPES:-task\}/,
+  );
+});
+
 test('compose can isolate sibling deployments on the same Docker host', () => {
   assert.match(
     compose,
