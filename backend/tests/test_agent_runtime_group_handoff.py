@@ -287,8 +287,12 @@ def _cycle_check() -> AgentCycleCheck:
 
 
 @pytest.mark.asyncio
-async def test_preflight_freezes_all_targets_scope_lineage_plan_and_cutoff() -> None:
+@pytest.mark.parametrize("delivery_status", ["pending", "delivered"])
+async def test_preflight_freezes_all_targets_scope_lineage_plan_and_cutoff(
+    delivery_status: str,
+) -> None:
     source_run, scope, context, state = _records()
+    source_run.delivery_status = delivery_status
     first = _target(tenant_id=source_run.tenant_id)
     second = _target(tenant_id=source_run.tenant_id, name="Final Approver")
     ensure = AsyncMock(return_value=_cycle_check())
@@ -347,6 +351,34 @@ async def test_preflight_freezes_all_targets_scope_lineage_plan_and_cutoff() -> 
 
     restored = GroupAgentHandoffIntent.from_payload(intent.payload())
     assert restored == intent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery_status", ["failed", "not_required"])
+async def test_preflight_rejects_non_delivery_group_sources(
+    delivery_status: str,
+) -> None:
+    source_run, _, context, state = _records()
+    source_run.delivery_status = delivery_status
+    target_id = uuid.uuid4()
+
+    with patch(
+        "app.services.agent_runtime.group_handoff._load_source_run",
+        new=AsyncMock(return_value=source_run),
+    ):
+        with pytest.raises(GroupAgentHandoffError) as raised:
+            await preflight_group_agent_handoff(
+                _DB(),  # type: ignore[arg-type]
+                state=state,
+                context=context,
+                content="Please continue",
+                mention_participant_ids=(str(target_id),),
+                settings=_settings(),
+                clock=lambda: NOW,
+            )
+
+    assert raised.value.code == "group_handoff_source_invalid"
+    assert raised.value.repairable is False
 
 
 @pytest.mark.asyncio
@@ -445,6 +477,8 @@ async def test_cycle_limit_fails_preflight_before_terminal() -> None:
 @pytest.mark.asyncio
 async def test_atomic_apply_creates_public_message_and_one_new_child_per_target() -> None:
     source_run, scope, context, state = _records()
+    # Group start ACK delivery precedes the terminal handoff in production.
+    source_run.delivery_status = "delivered"
     first = _target(tenant_id=source_run.tenant_id)
     second = _target(tenant_id=source_run.tenant_id, name="Final Approver")
     ensure = AsyncMock(return_value=_cycle_check())

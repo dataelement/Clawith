@@ -46,8 +46,10 @@ def group_finish_tool_definition() -> dict[str, Any]:
         "type": "array",
         "description": (
             "Optional stable participant UUIDs for Agent members to wake after this "
-            "final public group reply. Query group members when an ID is unknown; "
-            "never infer IDs from display names."
+            "final public group reply. Query group members when an ID is unknown, "
+            "then put the returned IDs in this field in the same finish call. "
+            "Textual @names in content do not wake Agents; never infer IDs from "
+            "display names."
         ),
         "items": {"type": "string", "format": "uuid"},
         "maxItems": MAX_GROUP_FINISH_MENTIONS,

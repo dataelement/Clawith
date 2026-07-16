@@ -21,6 +21,7 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
 )
 from app.services.llm.single_step import LLMCompletionStep
+from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.token_tracker import TokenUsage
 
 
@@ -495,7 +496,8 @@ async def test_current_input_uses_executable_content_and_trusted_runtime_instruc
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
+    assert result.finish_content == "Done"
     assert calls[0][0][-1].role == "user"
     assert calls[0][0][-1].content == "Executable question with workspace evidence"
     assert calls[0][0][-2].content == "Prior Thread answer"
@@ -508,6 +510,204 @@ async def test_current_input_uses_executable_content_and_trusted_runtime_instruc
     assert serialized.count("Begin the trusted onboarding flow.") == 1
     assert '"input_content"' not in calls[0][0][0].dynamic_content
     assert '"runtime_instruction"' not in calls[0][0][0].dynamic_content
+
+
+@pytest.mark.asyncio
+async def test_non_empty_plain_text_is_a_verified_finish_candidate() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="  Final answer without an explicit finish call.  ",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.finish_content == "Final answer without an explicit finish call."
+    assert result.repair_code is None
+    assert result.assistant_message is not None
+    assert result.assistant_message["content"] == result.finish_content
+    assert result.assistant_message["runtime_intent"] == "finish"
+
+
+@pytest.mark.asyncio
+async def test_empty_plain_text_still_uses_one_bounded_protocol_repair() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="   ",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "text"
+    assert result.repair_code == "missing_finish"
+    assert result.finish_content is None
+
+
+@pytest.mark.asyncio
+async def test_prior_run_protocol_repairs_and_replaced_drafts_are_not_reinjected() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    current_run_id = _context(state).run_id
+    prior_run_id = str(uuid.uuid4())
+    current_input = state["snapshots"].recent_session_messages[0]
+    builder = _ContextBuilder(
+        _build(
+            current_run={"run_id": current_run_id, "goal": "Answer the request"},
+            recent_session_messages_snapshot=(
+                {
+                    "id": "visible-prior-answer",
+                    "role": "assistant",
+                    "content": "Visible prior answer",
+                },
+                current_input,
+            ),
+            recent_thread_messages=(
+                {
+                    "id": "prior-input",
+                    "role": "user",
+                    "content": "Prior question",
+                    "runtime_input": "current",
+                    "runtime_run_id": prior_run_id,
+                },
+                {
+                    "id": "prior-draft",
+                    "role": "assistant",
+                    "content": "Replaced draft",
+                    "runtime_run_id": prior_run_id,
+                },
+                {
+                    "id": "prior-repair",
+                    "role": "user",
+                    "content": FINISH_PROTOCOL_REMINDER,
+                    "runtime_intent": "repair",
+                    "runtime_run_id": prior_run_id,
+                },
+                {
+                    "id": "prior-final",
+                    "role": "assistant",
+                    "content": "Visible prior answer",
+                    "runtime_intent": "finish",
+                    "runtime_run_id": prior_run_id,
+                },
+                {
+                    **current_input,
+                    "runtime_input": "current",
+                    "runtime_run_id": current_run_id,
+                },
+            ),
+        )
+    )
+    calls = []
+
+    async def complete(_model, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return LLMCompletionStep(
+            content="Current answer",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(model, agent, builder, complete).complete_once(
+        state,
+        _context(state),
+    )
+
+    assert result.intent == "finish"
+    contents = [str(message.content) for message in calls[0][0]]
+    assert contents.count("Visible prior answer") == 1
+    assert "Replaced draft" not in contents
+    assert FINISH_PROTOCOL_REMINDER not in contents
+
+
+@pytest.mark.asyncio
+async def test_current_run_protocol_repair_remains_visible_to_its_retry() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    current_run_id = _context(state).run_id
+    current_input = state["snapshots"].recent_session_messages[0]
+    builder = _ContextBuilder(
+        _build(
+            current_run={"run_id": current_run_id, "goal": "Answer the request"},
+            recent_thread_messages=(
+                {
+                    **current_input,
+                    "runtime_input": "current",
+                    "runtime_run_id": current_run_id,
+                },
+                {
+                    "id": "current-draft",
+                    "role": "assistant",
+                    "content": "Current draft",
+                    "runtime_intent": "repair_draft",
+                    "runtime_run_id": current_run_id,
+                },
+                {
+                    "id": "current-repair",
+                    "role": "user",
+                    "content": FINISH_PROTOCOL_REMINDER,
+                    "runtime_intent": "repair",
+                    "runtime_run_id": current_run_id,
+                },
+            ),
+        )
+    )
+    calls = []
+
+    async def complete(_model, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return LLMCompletionStep(
+            content="Current final",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    result = await _service(model, agent, builder, complete).complete_once(
+        state,
+        _context(state),
+    )
+
+    assert result.intent == "finish"
+    contents = [str(message.content) for message in calls[0][0]]
+    assert "Current draft" in contents
+    assert FINISH_PROTOCOL_REMINDER in contents
 
 
 @pytest.mark.asyncio
@@ -686,7 +886,7 @@ async def test_user_resume_envelope_is_rendered_as_plain_user_input() -> None:
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     assert calls[0][0][-1].role == "user"
     assert calls[0][0][-1].content == "Yes, continue"
 
@@ -810,7 +1010,7 @@ async def test_sessionless_background_run_gets_one_explicit_current_directive() 
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     assert calls[0][0][-1].role == "user"
     assert calls[0][0][-1].content == (
         "Current Run Directive:\nPrepare the weekly risk report"
@@ -894,7 +1094,7 @@ async def test_heartbeat_keeps_bounded_context_as_data_and_directive_once() -> N
         complete,
     ).complete_once(state, _context(state))
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     system_message = calls[0][0][0]
     runtime_data = _runtime_data_message(calls[0][0])
     assert '"heartbeat_context"' not in str(system_message.content)
@@ -966,7 +1166,7 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     tool_names = {tool["function"]["name"] for tool in calls[0][1]["tools"]}
     assert {
         "group_query_members",
@@ -980,7 +1180,17 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     }.issubset(tool_names)
     assert "read_file" in tool_names
     assert "send_message_to_agent" in tool_names
-    assert "Answer only from this group" in str(calls[0][0][0].content)
+    group_system_prompt = str(calls[0][0][0].content)
+    assert "Answer only from this group" in group_system_prompt
+    assert "only need private advice or facts" in group_system_prompt
+    assert "must publicly continue or own the next responsibility" in group_system_prompt
+    assert "user explicitly asks you to let that Agent continue" in group_system_prompt
+    assert "finish without a handoff" in group_system_prompt
+    assert "first call `group_query_members`" in group_system_prompt
+    assert "exactly one `finish` call" in group_system_prompt
+    assert "same call's `mention_participant_ids`" in group_system_prompt
+    assert "textual `@name` or display name" in group_system_prompt
+    assert "omit `mention_participant_ids`" in group_system_prompt
     assert "Dynamic context" not in str(calls[0][0][0].content)
     assert "Dynamic context" not in str(calls[0][0][0].dynamic_content)
     assert "Dynamic context" in str(_runtime_data_message(calls[0][0]).content)
@@ -1117,6 +1327,48 @@ async def test_non_group_finish_cannot_bypass_group_handoff_field() -> None:
 
     assert result.intent == "text"
     assert "Group Agent Run" in (result.repair_instruction or "")
+    preflight.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_plain_text_finishes_without_parsing_textual_mentions() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 1, "summary": "shared"},
+        session_context_version=1,
+        recent_session_messages=state["snapshots"].recent_session_messages,
+        related_run_summaries=(),
+        initial_input={"group_context": {"group": {"group_id": str(uuid.uuid4())}}},
+    )
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="Review complete. @Alice can continue.",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+        )
+
+    with patch(
+        "app.services.agent_runtime.model_step_service.preflight_group_agent_handoff",
+        new=AsyncMock(),
+    ) as preflight:
+        result = await _service(
+            model,
+            agent,
+            _ContextBuilder(_build(initial_input=state["snapshots"].initial_input)),
+            complete,
+        ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.finish_content == "Review complete. @Alice can continue."
+    assert result.finish_mention_participant_ids == ()
+    assert result.finish_delivery_intent is None
     preflight.assert_not_awaited()
 
 
@@ -1351,7 +1603,7 @@ async def test_group_prompt_has_one_source_for_trigger_plan_and_responsibility()
         _context(state),
     )
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     serialized = "\n".join(
         str(message.content) + "\n" + str(message.dynamic_content or "")
         for message in calls[0][0]
@@ -1417,7 +1669,7 @@ async def test_group_low_trust_context_never_enters_the_system_message() -> None
     )
     result = await service.complete_once(state, _context(state))
 
-    assert result.intent == "text"
+    assert result.intent == "finish"
     system_message = calls[0][0][0]
     system_text = f"{system_message.content}\n{system_message.dynamic_content or ''}"
     assert "Answer only from this group" in system_text

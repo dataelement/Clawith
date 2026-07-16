@@ -767,6 +767,12 @@ async def test_plain_text_finish_protocol_is_repaired_once_then_fails_explicitly
         "user",
         "assistant",
     ]
+    assert all(message["runtime_run_id"] == str(run_id) for message in messages)
+    assert [message["runtime_intent"] for message in messages] == [
+        "repair_draft",
+        "repair",
+        "repair_draft",
+    ]
     assert sum(
         "must either call another available tool" in str(message.get("content", ""))
         for message in messages

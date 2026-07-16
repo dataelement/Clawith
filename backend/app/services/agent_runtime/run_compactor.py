@@ -20,6 +20,9 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
     runtime_messages_as_json,
 )
+from app.services.agent_runtime.thread_visibility import (
+    model_visible_thread_messages,
+)
 from app.services.agent_runtime.tool_exchange import (
     Ledger,
     MessageBlock,
@@ -169,9 +172,16 @@ def _estimate_tokens(value: object) -> int:
     return max(1, math.ceil(len(serialized.encode("utf-8")) / 4))
 
 
-def _thread_messages(state: RuntimeGraphState) -> tuple[JsonObject, ...]:
+def _thread_messages(
+    state: RuntimeGraphState,
+    *,
+    current_run_id: str,
+) -> tuple[JsonObject, ...]:
     try:
-        return runtime_messages_as_json(state)
+        return model_visible_thread_messages(
+            runtime_messages_as_json(state),
+            current_run_id=current_run_id,
+        )
     except (TypeError, ValueError) as exc:
         raise RunCompactorError(
             "invalid_thread_messages",
@@ -210,7 +220,7 @@ def _protected_block(
     return bool(protected_message_ids.intersection(block.message_ids))
 
 
-def _protected_runtime_input_ids(
+def _protected_current_run_message_ids(
     messages: Sequence[JsonObject],
     *,
     current_input_id: str | None,
@@ -232,6 +242,14 @@ def _protected_runtime_input_ids(
         runtime_input = message.get("runtime_input")
         run_id = message.get("runtime_run_id")
         message_id = message.get("id")
+        if (
+            run_id == current_run_id
+            and message.get("runtime_intent") in {"repair", "repair_draft"}
+            and isinstance(message_id, str)
+            and message_id
+        ):
+            protected.add(message_id)
+            continue
         if (
             runtime_input == "current"
             and run_id == current_run_id
@@ -259,9 +277,9 @@ def _compactable_prefix(
     protected_message_ids: frozenset[str],
 ) -> tuple[tuple[MessageBlock, ...], tuple[MessageBlock, ...]]:
     # An unresolved Tool Exchange is a hard barrier: nothing after it may be
-    # summarized. Exact current/resume inputs are different. They remain raw
-    # model messages, but do not permanently pin all later completed work in a
-    # long logical Run outside the running summary.
+    # summarized. Exact inputs and active repair state remain raw, but do not
+    # permanently pin all later completed work in a long logical Run outside
+    # the running summary.
     barrier = next(
         (
             index
@@ -587,7 +605,7 @@ class RuntimeRunCompactorService:
         state: RuntimeGraphState,
         context: RuntimeContext,
     ) -> RunCompactResult:
-        messages = _thread_messages(state)
+        messages = _thread_messages(state, current_run_id=context.run_id)
         if not messages:
             return RunCompactResult()
         inputs = await self._input_loader(state, context)
@@ -603,7 +621,7 @@ class RuntimeRunCompactorService:
             if isinstance(raw_initial_message_id, str) and raw_initial_message_id
             else None
         )
-        protected_ids = _protected_runtime_input_ids(
+        protected_ids = _protected_current_run_message_ids(
             messages,
             current_input_id=initial_message_id,
             current_run_id=context.run_id,
@@ -641,6 +659,7 @@ class RuntimeRunCompactorService:
             for block in retained
             if _protected_block(block, protected_ids)
             for message in block.messages
+            if message.get("runtime_input") in {"current", "resume"}
         )
         summary = await self._compact_batches(
             model=inputs.model,

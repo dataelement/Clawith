@@ -548,7 +548,11 @@ class DeterministicRuntimeNodeExecutor:
             lifecycle.pop("finish_delivery_intent", None)
         new_messages: list[JsonObject] = []
         if result.assistant_message is not None:
-            new_messages.append(dict(result.assistant_message))
+            assistant_message = dict(result.assistant_message)
+            assistant_message["runtime_run_id"] = context.run_id
+            if result.intent == "text":
+                assistant_message["runtime_intent"] = "repair_draft"
+            new_messages.append(assistant_message)
 
         if result.intent == "tool_calls":
             if not result.tool_calls:
@@ -646,6 +650,8 @@ class DeterministicRuntimeNodeExecutor:
                                 result.repair_instruction
                                 or FINISH_PROTOCOL_REMINDER
                             ),
+                            "runtime_intent": "repair",
+                            "runtime_run_id": context.run_id,
                         }
                     )
                     lifecycle.update(
@@ -668,6 +674,8 @@ class DeterministicRuntimeNodeExecutor:
                             result.repair_instruction
                             or "Retry after resolving the reported business constraint."
                         ),
+                        "runtime_intent": "repair",
+                        "runtime_run_id": context.run_id,
                     }
                 )
                 lifecycle.update(
@@ -925,6 +933,8 @@ class DeterministicRuntimeNodeExecutor:
                             "role": "user",
                             "content": verification.reason
                             or "The finish candidate needs repair before completion.",
+                            "runtime_intent": "repair",
+                            "runtime_run_id": context.run_id,
                         })
                     ],
                 }

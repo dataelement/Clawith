@@ -395,7 +395,9 @@ def _source_run_matches(
         or source_run.system_role is not None
         or source_run.runtime_type != "langgraph"
         or source_run.runtime_thread_id != str(source_run.id)
-        or source_run.delivery_status != "pending"
+        # Group start acknowledgement may already be delivered while the Run
+        # remains active.  This projection is not a Runtime lifecycle state.
+        or source_run.delivery_status not in {"pending", "delivered"}
     ):
         raise GroupAgentHandoffError(
             "group_handoff_source_invalid",

@@ -23,6 +23,7 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
 )
 from app.services.llm.single_step import LLMCompletionStep
+from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.token_tracker import TokenUsage
 
 
@@ -341,6 +342,116 @@ async def test_prior_run_input_marker_does_not_pin_current_run_compact() -> None
     assert result.covered_through_message_id == "prior-run-input"
     assert result.recent_messages is not None
     assert [message["id"] for message in result.recent_messages] == ["current"]
+
+
+@pytest.mark.asyncio
+async def test_prior_run_plain_candidates_and_repairs_never_enter_compact_summary() -> None:
+    prior_run_id = str(uuid.uuid4())
+    messages = [
+        {
+            **_normal("prior-input", "prior input " * 300),
+            "runtime_input": "current",
+            "runtime_run_id": prior_run_id,
+        },
+        {
+            "id": "prior-draft",
+            "role": "assistant",
+            "content": "PRIVATE REPLACED DRAFT",
+            "runtime_run_id": prior_run_id,
+        },
+        {
+            "id": "prior-repair",
+            "role": "user",
+            "content": FINISH_PROTOCOL_REMINDER,
+            "runtime_intent": "repair",
+            "runtime_run_id": prior_run_id,
+        },
+        {
+            "id": "prior-finish-candidate",
+            "role": "assistant",
+            "content": "THREAD TERMINAL CANDIDATE",
+            "runtime_intent": "finish",
+            "runtime_run_id": prior_run_id,
+        },
+        {
+            **_normal("current", "EXACT CURRENT INPUT"),
+            "runtime_input": "current",
+        },
+    ]
+    state, context, tenant_id = _state(messages)
+    state["messages"][-1]["runtime_run_id"] = context.run_id  # type: ignore[index]
+    payloads: list[dict] = []
+
+    async def complete(_model, prompt, **_kwargs):
+        payloads.append(json.loads(prompt[1].content))
+        return _step()
+
+    result = await _service(
+        model=_model(tenant_id),
+        completion=complete,
+        effective_budget=1_000,
+        current_tokens=900,
+    ).compact_if_needed(state, context)
+
+    serialized_payload = json.dumps(payloads, ensure_ascii=False)
+    assert "PRIVATE REPLACED DRAFT" not in serialized_payload
+    assert "THREAD TERMINAL CANDIDATE" not in serialized_payload
+    assert FINISH_PROTOCOL_REMINDER not in serialized_payload
+    assert result.recent_messages is not None
+    recent_contents = [str(message.get("content", "")) for message in result.recent_messages]
+    assert "PRIVATE REPLACED DRAFT" not in recent_contents
+    assert "THREAD TERMINAL CANDIDATE" not in recent_contents
+    assert FINISH_PROTOCOL_REMINDER not in recent_contents
+
+
+@pytest.mark.asyncio
+async def test_current_run_repair_state_stays_raw_but_out_of_compact_prompt() -> None:
+    messages = [
+        _normal("old-safe", "old completed history " * 300),
+        {
+            **_normal("current", "EXACT CURRENT INPUT"),
+            "runtime_input": "current",
+        },
+        {
+            "id": "current-draft",
+            "role": "assistant",
+            "content": "CURRENT PRIVATE DRAFT",
+            "runtime_intent": "repair_draft",
+        },
+        {
+            "id": "current-repair",
+            "role": "user",
+            "content": FINISH_PROTOCOL_REMINDER,
+            "runtime_intent": "repair",
+        },
+    ]
+    state, context, tenant_id = _state(messages)
+    for message in state["messages"][1:]:  # type: ignore[index]
+        message["runtime_run_id"] = context.run_id
+    payloads: list[dict] = []
+
+    async def complete(_model, prompt, **_kwargs):
+        payloads.append(json.loads(prompt[1].content))
+        return _step()
+
+    result = await _service(
+        model=_model(tenant_id),
+        completion=complete,
+        effective_budget=1_000,
+        current_tokens=900,
+    ).compact_if_needed(state, context)
+
+    assert result.recent_messages is not None
+    assert [message["id"] for message in result.recent_messages] == [
+        "current",
+        "current-draft",
+        "current-repair",
+    ]
+    exact_inputs = payloads[0]["authoritative_exact_inputs"]
+    assert [message["id"] for message in exact_inputs] == ["current"]
+    serialized_payload = json.dumps(payloads, ensure_ascii=False)
+    assert "CURRENT PRIVATE DRAFT" not in serialized_payload
+    assert FINISH_PROTOCOL_REMINDER not in serialized_payload
 
 
 @pytest.mark.asyncio
