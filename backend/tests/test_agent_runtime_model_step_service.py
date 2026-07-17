@@ -1285,6 +1285,10 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "join the current group conversation" in group_system_prompt
     assert "It is not limited to a handoff" in group_system_prompt
     assert "call, check in with, ask, consult, involve" in group_system_prompt
+    assert "must produce a new public reply now" in group_system_prompt
+    assert "regardless of topic, wording, tone, or intent" in group_system_prompt
+    assert "Must this Agent answer this message in the group" in group_system_prompt
+    assert "include, but are not limited to" in group_system_prompt
     assert "Write only the business-facing words" in group_system_prompt
     assert "Never expose or explain Tool Schema" in group_system_prompt
     assert "literal `@display name`" in group_system_prompt
@@ -1304,9 +1308,12 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "omit `mention_participant_ids`" in group_system_prompt
     assert "using your own role and voice" in group_system_prompt
     assert "answer only the part addressed to you" in group_system_prompt
+    assert "normally finish without mentioning anyone" in group_system_prompt
+    assert "merely to reciprocate a greeting or acknowledgment" in group_system_prompt
+    assert "each has its own Run" in group_system_prompt
     assert "answer on behalf of other mentioned participants" in group_system_prompt
     assert "Do not repeat the source Agent's message" in group_system_prompt
-    assert "mention the same targets again unless" in group_system_prompt
+    assert "genuinely requires another public reply" in group_system_prompt
     assert "Dynamic context" not in str(calls[0][0][0].content)
     assert "Dynamic context" not in str(calls[0][0][0].dynamic_content)
     assert "Dynamic context" in str(_runtime_data_message(calls[0][0]).content)

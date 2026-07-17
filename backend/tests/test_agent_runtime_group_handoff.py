@@ -591,6 +591,8 @@ async def test_atomic_apply_creates_public_message_and_one_new_child_per_target(
     assert second.display_name in commands[1].goal
     assert all("Respond in the current group as yourself only" in command.goal for command in commands)
     assert all("Do not repeat or forward the source message" in command.goal for command in commands)
+    assert all("Reply once and normally finish without mentioning anyone" in command.goal for command in commands)
+    assert all("write its display name without @" in command.goal for command in commands)
     assert all(f"Source message:\n{message.content}" in command.goal for command in commands)
     assert all(command.payload["mode"] == "enforced" for command in commands)
     assert all(

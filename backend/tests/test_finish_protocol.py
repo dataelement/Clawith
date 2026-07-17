@@ -109,10 +109,14 @@ def test_finish_tool_schema_is_default_and_requires_content():
     assert mention_schema["uniqueItems"] is True
     assert "same finish call" in mention_schema["description"]
     assert "reply publicly in the same group session" in mention_schema["description"]
-    assert "check-ins, questions, collaboration, review, or handoff" in mention_schema[
+    assert "concrete question, request, or responsibility" in mention_schema[
         "description"
     ]
     assert "not limited to ownership transfer" in mention_schema["description"]
+    assert "requires a new reply now" in mention_schema["description"]
+    assert "regardless of topic, wording, tone, or intent" in mention_schema["description"]
+    assert "includes, but is not limited to" in mention_schema["description"]
+    assert "write the display name without @" in mention_schema["description"]
     assert "each target as the literal @display name" in mention_schema["description"]
     assert "concrete question or request" in mention_schema["description"]
     assert "never explain IDs, tools, routing, Runtime, or child Runs" in mention_schema[

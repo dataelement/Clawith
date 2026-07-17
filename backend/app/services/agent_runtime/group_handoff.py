@@ -714,7 +714,9 @@ def _handoff_child_command(
         f"You are {target_name}. Respond in the current group as yourself only to "
         "the request addressed to you in the source message below. Do not repeat "
         "or forward the source message, and do not answer on behalf of any other "
-        f"mentioned participant.\n\nSource message:\n{content}"
+        "mentioned participant. Reply once and normally finish without mentioning "
+        "anyone. If you refer to another Agent without requiring a new reply, write "
+        f"its display name without @.\n\nSource message:\n{content}"
     )
     payload: JsonObject = {
         "message_id": str(intent.trigger_message_id),
