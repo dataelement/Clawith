@@ -222,7 +222,7 @@ export default function MessageStream({
                     <div className="group-message-body">
                         <div className="group-message-meta">
                             <span className="group-message-sender">
-                                {t('groups.namedAgentRunning', '{{name}}运行中', { name: agent.name })}
+                                {agent.name}
                             </span>
                         </div>
                         <div className="group-message-bubble group-run-indicator-bubble">

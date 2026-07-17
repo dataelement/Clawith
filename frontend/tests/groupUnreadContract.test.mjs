@@ -54,6 +54,7 @@ test('active group runs render planning and named agent animations without tool 
   assert.match(messageStream, /runningAgents: Array<\{ id: string; name: string \}>/);
   assert.match(messageStream, /group-run-indicator/);
   assert.match(messageStream, /任务规划中/);
-  assert.match(messageStream, /\{\{name\}\}运行中/);
+  assert.match(messageStream, /\{agent\.name\}/);
+  assert.doesNotMatch(messageStream, /\{\{name\}\}运行中/);
   assert.doesNotMatch(messageStream, /tool_call|toolName|toolResult/);
 });
