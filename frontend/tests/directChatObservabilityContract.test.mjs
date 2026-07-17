@@ -20,3 +20,10 @@ test('replayed tool packets keep one row by stable tool call id', () => {
   assert.match(source, /toolCallId: message\.toolCallId/);
   assert.match(source, /toolCallId: m\.toolCallId/);
 });
+
+test('an authoritative active run keeps a thinking indicator visible after reload', () => {
+  assert.match(source, /\['queued', 'running'\]\.includes\(activeRun\.status\)/);
+  assert.match(source, /showDirectRunThinking/);
+  assert.match(source, /\{showDirectRunThinking && \(/);
+  assert.match(source, /lastChatMessage\.toolStatus === 'running'/);
+});

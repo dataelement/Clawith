@@ -2943,6 +2943,20 @@ export default function AgentDetailPage() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    // Runtime state is authoritative across reloads, while thinking/chunk events are
+    // transient. Keep a visible placeholder until replay supplies a richer progress
+    // row so refreshing an active Direct Chat never makes the Run look idle.
+    const lastChatMessage = chatMessages[chatMessages.length - 1] as (ChatMsg & { _streaming?: boolean }) | undefined;
+    const hasVisibleLiveProgress = Boolean(
+        (lastChatMessage?.role === 'assistant' && lastChatMessage._streaming)
+        || (lastChatMessage?.role === 'tool_call' && lastChatMessage.toolStatus === 'running'),
+    );
+    const showDirectRunThinking = isWaiting || Boolean(
+        activeRun
+        && ['queued', 'running'].includes(activeRun.status)
+        && !isStreaming
+        && !hasVisibleLiveProgress
+    );
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
     type AttachedFileRef = { name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' };
@@ -6975,7 +6989,7 @@ export default function AgentDetailPage() {
                                                     });
                                                 })()
                                                 }
-                                                {isWaiting && (
+                                                {showDirectRunThinking && (
                                                     <div className="chat-msg-row">
                                                         <div className="chat-msg-avatar">A</div>
                                                         <div className="chat-msg-bubble chat-msg-bubble--thinking">
