@@ -51,8 +51,11 @@ def group_finish_tool_definition() -> dict[str, Any]:
             "publicly in the same group session. Use this for check-ins, questions, "
             "collaboration, review, or handoff; it is not limited to ownership "
             "transfer. Query group members when an ID is unknown, then put the "
-            "returned IDs in this field in the same finish call. Textual @names in "
-            "content do not wake Agents; never infer IDs from display names."
+            "returned IDs in this field in the same finish call. In content, address "
+            "each target by display name and state the concrete question or request; "
+            "include only the public group message and never explain IDs, tools, "
+            "routing, Runtime, or child Runs. Textual @names in content do not wake "
+            "Agents; never infer IDs from display names."
         ),
         "items": {"type": "string", "format": "uuid"},
         "maxItems": MAX_GROUP_FINISH_MENTIONS,
