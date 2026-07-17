@@ -235,13 +235,25 @@ steps:
         CHECKPOINT_VERSION=$(cat /tmp/checkpoint_version)
         echo "checkpoint version=$CHECKPOINT_VERSION"
         [ "$CHECKPOINT_VERSION" -ge 0 ]
+        echo "debug 1: checkpoint check passed"
 
         BACKEND_ID=$(compose ps -q backend | tr -d '\r')
+        echo "debug 2: BACKEND_ID=$BACKEND_ID"
+
         EXPECTED_IMAGE_ID=$(docker image inspect "clawith-backend:$IMAGE_TAG" --format '{{.Id}}' | tr -d '\r')
+        echo "debug 3: EXPECTED_IMAGE_ID=$EXPECTED_IMAGE_ID"
+
         RUNNING_IMAGE_ID=$(docker inspect "$BACKEND_ID" --format '{{.Image}}' | tr -d '\r')
+        echo "debug 4: RUNNING_IMAGE_ID=$RUNNING_IMAGE_ID"
+
         [ "$RUNNING_IMAGE_ID" = "$EXPECTED_IMAGE_ID" ]
+        echo "debug 5: running and expected images match"
+
         docker image inspect "clawith-backend:$IMAGE_TAG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' > /tmp/backend_revision
+        echo "debug 6: revision inspect done"
+
         [ "$(cat /tmp/backend_revision)" = "$DRONE_COMMIT" ]
+        echo "debug 7: commit revisions match"
 
         UVICORN_COUNT=$(docker top "$BACKEND_ID" -eo args 2>/dev/null | grep -c '[u]vicorn app.main:app' || true)
         if [ "$UVICORN_COUNT" -gt 0 ]; then
