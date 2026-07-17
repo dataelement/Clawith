@@ -108,6 +108,11 @@ def test_finish_tool_schema_is_default_and_requires_content():
     assert mention_schema["maxItems"] == 100
     assert mention_schema["uniqueItems"] is True
     assert "same finish call" in mention_schema["description"]
+    assert "reply publicly in the same group session" in mention_schema["description"]
+    assert "check-ins, questions, collaboration, review, or handoff" in mention_schema[
+        "description"
+    ]
+    assert "not limited to ownership transfer" in mention_schema["description"]
     assert "Textual @names in content do not wake Agents" in mention_schema["description"]
     assert group_finish["function"]["parameters"]["required"] == ["content"]
 

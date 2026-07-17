@@ -1281,16 +1281,18 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "access only the Agent's own Workspace" in group_system_prompt
     assert "Every path in `group_context.workspace_index`" in group_system_prompt
     assert "not evidence that a Group Workspace path is missing" in group_system_prompt
-    assert "only need private advice or facts" in group_system_prompt
-    assert "must publicly continue or own the next responsibility" in group_system_prompt
-    assert "user explicitly asks you to let that Agent continue" in group_system_prompt
-    assert "finish without a handoff" in group_system_prompt
+    assert "join the current group conversation" in group_system_prompt
+    assert "It is not limited to a handoff" in group_system_prompt
+    assert "call, check in with, ask, consult, involve" in group_system_prompt
+    assert "There is no separate current-group send-message tool" in group_system_prompt
     assert "first call `group_query_members`" in group_system_prompt
     assert "exactly one `finish` call" in group_system_prompt
     assert "all intended target IDs" in group_system_prompt
-    assert "one child Run per ID" in group_system_prompt
-    assert "after `finish`, you cannot add another handoff target" in group_system_prompt
+    assert "one child Run per mentioned participant" in group_system_prompt
+    assert "cannot add another mention target" in group_system_prompt
     assert "every intended recipient" in group_system_prompt
+    assert "`send_message_to_agent` is private A2A" in group_system_prompt
+    assert "never a substitute for `finish.mention_participant_ids`" in group_system_prompt
     assert "textual `@name` or display name" in group_system_prompt
     assert "omit `mention_participant_ids`" in group_system_prompt
     assert "Dynamic context" not in str(calls[0][0][0].content)

@@ -40,17 +40,19 @@ FINISH_TOOL_DEFINITION: dict[str, Any] = {
 
 
 def group_finish_tool_definition() -> dict[str, Any]:
-    """Return the shared finish schema with the Group-only handoff field."""
+    """Return the shared finish schema with the Group-only mention field."""
     definition = deepcopy(FINISH_TOOL_DEFINITION)
     parameters = definition["function"]["parameters"]
     parameters["properties"]["mention_participant_ids"] = {
         "type": "array",
         "description": (
-            "Optional stable participant UUIDs for Agent members to wake after this "
-            "final public group reply. Query group members when an ID is unknown, "
-            "then put the returned IDs in this field in the same finish call. "
-            "Textual @names in content do not wake Agents; never infer IDs from "
-            "display names."
+            "Optional stable participant UUIDs for Agent members to @ in this final "
+            "public group reply. Each mentioned Agent is woken and must reply "
+            "publicly in the same group session. Use this for check-ins, questions, "
+            "collaboration, review, or handoff; it is not limited to ownership "
+            "transfer. Query group members when an ID is unknown, then put the "
+            "returned IDs in this field in the same finish call. Textual @names in "
+            "content do not wake Agents; never infer IDs from display names."
         ),
         "items": {"type": "string", "format": "uuid"},
         "maxItems": MAX_GROUP_FINISH_MENTIONS,
