@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     PROCESS_ROLE: str = "all"
 
     # Agent Runtime
-    AGENT_RUNTIME_V2_ENABLED: bool = False
+    AGENT_RUNTIME_V2_ENABLED: bool = True
     AGENT_RUNTIME_V2_AGENT_IDS: str = ""
     AGENT_RUNTIME_V2_SOURCE_TYPES: str = "task"
     AGENT_RUNTIME_GRAPH_NAME: str = "clawith_agent_runtime"

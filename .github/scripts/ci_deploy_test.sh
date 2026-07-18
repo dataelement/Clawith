@@ -47,9 +47,7 @@ compose up -d postgres redis
 wait_healthy "$(compose ps -q postgres)"
 wait_healthy "$(compose ps -q redis)"
 
-echo "执行目标版本 Alembic 和 LangGraph checkpoint setup"
-compose run --rm --no-deps --entrypoint /bin/bash backend -lc 'alembic upgrade head && python -m app.scripts.setup_langgraph_checkpoints'
-
+echo "从空数据库启动 Backend，由 entrypoint 执行 Alembic 和 LangGraph checkpoint setup"
 compose up -d backend
 wait_healthy "$(compose ps -q backend)"
 if ! compose logs --tail=300 backend | grep -q "durable Agent Runtime worker started"; then

@@ -52,6 +52,46 @@ def test_primary_asyncpg_url_is_the_checkpoint_fallback() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("asyncpg_value", "psycopg_value"),
+    [
+        ("disable", "disable"),
+        ("require", "require"),
+        ("false", "disable"),
+        ("true", "require"),
+    ],
+)
+def test_primary_asyncpg_ssl_query_is_normalized_for_psycopg(
+    asyncpg_value: str,
+    psycopg_value: str,
+) -> None:
+    url = checkpoint_database_url(
+        _settings(
+            DATABASE_URL=(
+                "postgresql+asyncpg://app:secret@db.example/clawith"
+                f"?ssl={asyncpg_value}"
+            )
+        )
+    )
+
+    parsed = conninfo_to_dict(url)
+
+    assert parsed["sslmode"] == psycopg_value
+    assert parsed["options"] == "-csearch_path=langgraph_checkpoint"
+
+
+def test_conflicting_asyncpg_ssl_and_psycopg_sslmode_fails_closed() -> None:
+    with pytest.raises(CheckpointerConfigurationError, match="conflicting ssl"):
+        checkpoint_database_url(
+            _settings(
+                DATABASE_URL=(
+                    "postgresql+asyncpg://app:secret@db.example/clawith"
+                    "?ssl=disable&sslmode=require"
+                )
+            )
+        )
+
+
 def test_checkpoint_url_preserves_existing_options_and_forces_isolated_schema() -> None:
     settings = _settings(
         LANGGRAPH_CHECKPOINT_DATABASE_URL=(

@@ -227,13 +227,20 @@ start_backend() {
 
     # Auto-run schema migrations via alembic
     echo -e "${YELLOW}🔄 Running schema migrations...${NC}"
-    .venv/bin/alembic upgrade head 2>/dev/null || true
+    .venv/bin/alembic upgrade head
+
+    # Auto-run LangGraph checkpoint migrations (idempotent and serialized)
+    echo -e "${YELLOW}🔄 Running LangGraph checkpoint migrations...${NC}"
+    .venv/bin/python -m app.scripts.setup_langgraph_checkpoints
 
     # Auto-run data migrations (idempotent)
     echo -e "${YELLOW}🔄 Running data migrations...${NC}"
     .venv/bin/python -m app.scripts.migrate_schedules_to_triggers || true
     start_detached "$BACKEND_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
         env PYTHONUNBUFFERED=1 \
+            AGENT_RUNTIME_V2_ENABLED=true \
+            AGENT_RUNTIME_V2_AGENT_IDS= \
+            AGENT_RUNTIME_V2_SOURCE_TYPES= \
             PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
             DATABASE_URL="$DATABASE_URL" \
             .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $BACKEND_PORT

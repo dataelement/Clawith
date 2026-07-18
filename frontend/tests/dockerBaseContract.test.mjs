@@ -10,6 +10,26 @@ const compose = readFileSync(
   new URL('../../docker-compose.yml', import.meta.url),
   'utf8',
 );
+const composeCi = readFileSync(
+  new URL('../../docker-compose.ci.yml', import.meta.url),
+  'utf8',
+);
+const deployCompose = readFileSync(
+  new URL('../../deploy/docker-compose.yml', import.meta.url),
+  'utf8',
+);
+const deployMultiCompose = readFileSync(
+  new URL('../../deploy/docker-compose-multi.yml', import.meta.url),
+  'utf8',
+);
+const rootEnvExample = readFileSync(
+  new URL('../../.env.example', import.meta.url),
+  'utf8',
+);
+const deployEnvExample = readFileSync(
+  new URL('../../deploy/.env.example', import.meta.url),
+  'utf8',
+);
 
 test('frontend pins the nginx build verified on the 3010 host', () => {
   assert.match(
@@ -30,19 +50,31 @@ test('backend receives the configured Group planning and compact model ids', () 
   );
 });
 
-test('backend receives the durable Runtime rollout policy', () => {
-  assert.match(
-    compose,
-    /AGENT_RUNTIME_V2_ENABLED: \$\{AGENT_RUNTIME_V2_ENABLED:-false\}/,
-  );
-  assert.match(
-    compose,
-    /AGENT_RUNTIME_V2_AGENT_IDS: \$\{AGENT_RUNTIME_V2_AGENT_IDS:-\}/,
-  );
-  assert.match(
-    compose,
-    /AGENT_RUNTIME_V2_SOURCE_TYPES: \$\{AGENT_RUNTIME_V2_SOURCE_TYPES:-task\}/,
-  );
+test('supported compose deployments always enable the durable Runtime', () => {
+  for (const [source, serviceCount] of [
+    [compose, 1],
+    [composeCi, 1],
+    [deployCompose, 1],
+    [deployMultiCompose, 2],
+  ]) {
+    assert.equal(
+      source.match(/AGENT_RUNTIME_V2_ENABLED: ["']true["']/g)?.length,
+      serviceCount,
+    );
+    assert.equal(
+      source.match(/AGENT_RUNTIME_V2_AGENT_IDS: (?:""|'')/g)?.length,
+      serviceCount,
+    );
+    assert.equal(
+      source.match(/AGENT_RUNTIME_V2_SOURCE_TYPES: (?:""|'')/g)?.length,
+      serviceCount,
+    );
+    assert.doesNotMatch(source, /AGENT_RUNTIME_V2_[A-Z_]+: \$\{/);
+  }
+
+  for (const source of [rootEnvExample, deployEnvExample]) {
+    assert.doesNotMatch(source, /^AGENT_RUNTIME_V2_[A-Z_]+=/m);
+  }
 });
 
 test('compose can isolate sibling deployments on the same Docker host', () => {

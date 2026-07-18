@@ -20,7 +20,7 @@ def _settings(**overrides: object) -> Settings:
 def test_runtime_settings_have_safe_confirmed_defaults() -> None:
     settings = _settings()
 
-    assert settings.AGENT_RUNTIME_V2_ENABLED is False
+    assert settings.AGENT_RUNTIME_V2_ENABLED is True
     assert settings.AGENT_RUNTIME_V2_AGENT_IDS == ""
     assert settings.AGENT_RUNTIME_V2_SOURCE_TYPES == "task"
     assert settings.AGENT_RUNTIME_GRAPH_NAME == "clawith_agent_runtime"

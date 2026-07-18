@@ -61,10 +61,34 @@ if role_contains "bootstrap"; then
         fi
     else
         echo "[entrypoint] Alembic migrations completed successfully."
+
+        echo "[entrypoint] Step 2: Installing LangGraph checkpoint tables..."
+        set +e
+        CHECKPOINT_OUTPUT=$(python -m app.scripts.setup_langgraph_checkpoints 2>&1)
+        CHECKPOINT_EXIT=$?
+        set -e
+
+        if [ $CHECKPOINT_EXIT -ne 0 ]; then
+            echo ""
+            echo "========================================================================"
+            echo "[entrypoint] ERROR: LangGraph checkpoint setup FAILED (exit code $CHECKPOINT_EXIT)"
+            echo "========================================================================"
+            echo ""
+            echo "$CHECKPOINT_OUTPUT"
+            echo ""
+            if [ "$ALLOW_MIGRATION_FAILURE" = "true" ]; then
+                echo "[entrypoint] Continuing because ALLOW_MIGRATION_FAILURE=true"
+            else
+                exit $CHECKPOINT_EXIT
+            fi
+        else
+            echo "[entrypoint] LangGraph checkpoint tables are ready."
+        fi
     fi
 else
     echo "[entrypoint] Step 1: Skipping alembic for PROCESS_ROLE=${PROCESS_ROLE}"
+    echo "[entrypoint] Step 2: Skipping LangGraph checkpoint setup for PROCESS_ROLE=${PROCESS_ROLE}"
 fi
 
-echo "[entrypoint] Step 2: Starting uvicorn..."
+echo "[entrypoint] Step 3: Starting uvicorn..."
 exec /bin/bash -lc "$START_COMMAND"

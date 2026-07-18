@@ -87,16 +87,46 @@ def _to_psycopg_url(database_url: str) -> str:
     parts = urlsplit(normalized)
     existing_options: list[str] = []
     other_query_parts: list[str] = []
+    explicit_sslmode: str | None = None
+    asyncpg_sslmode: str | None = None
     for query_part in parts.query.split("&"):
         if not query_part:
             continue
         encoded_key, separator, encoded_value = query_part.partition("=")
-        if unquote(encoded_key) == "options":
+        key = unquote(encoded_key)
+        if key == "options":
             existing_options.append(unquote(encoded_value) if separator else "")
+        elif key == "ssl":
+            if not separator or not encoded_value:
+                raise CheckpointerConfigurationError(
+                    "Checkpoint database ssl query parameter must not be blank"
+                )
+            value = unquote(encoded_value).strip().lower()
+            asyncpg_sslmode = {
+                "true": "require",
+                "1": "require",
+                "false": "disable",
+                "0": "disable",
+            }.get(value, value)
+        elif key == "sslmode":
+            if not separator or not encoded_value:
+                raise CheckpointerConfigurationError(
+                    "Checkpoint database sslmode query parameter must not be blank"
+                )
+            explicit_sslmode = unquote(encoded_value).strip().lower()
+            other_query_parts.append(query_part)
         else:
             # Preserve unrelated libpq parameters byte-for-byte. In PostgreSQL
             # connection URIs, unlike HTML form encoding, ``+`` is literal.
             other_query_parts.append(query_part)
+
+    if asyncpg_sslmode is not None:
+        if explicit_sslmode is not None and explicit_sslmode != asyncpg_sslmode:
+            raise CheckpointerConfigurationError(
+                "Checkpoint database URL contains conflicting ssl and sslmode values"
+            )
+        if explicit_sslmode is None:
+            other_query_parts.append(f"sslmode={quote(asyncpg_sslmode, safe='')}")
 
     search_path_option = f"-csearch_path={_CHECKPOINT_SCHEMA}"
     options = " ".join([option for option in existing_options if option] + [search_path_option])
