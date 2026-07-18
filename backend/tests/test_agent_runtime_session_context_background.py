@@ -187,6 +187,7 @@ async def test_background_scanner_only_selects_group_sessions() -> None:
     assert len(captured) == 1
     compiled = captured[0].compile()
     assert "session_type" in str(compiled)
+    assert "group_id" in str(compiled)
     assert "group" in compiled.params.values()
 
 

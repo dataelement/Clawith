@@ -431,6 +431,7 @@ class SessionContextCompactionScanner:
                     ChatSession.deleted_at.is_(None),
                     ChatSession.last_message_at.is_not(None),
                     ChatSession.session_type == "group",
+                    ChatSession.group_id.is_not(None),
                 )
                 .order_by(ChatSession.id)
                 .limit(self._settings.AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE)
