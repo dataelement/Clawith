@@ -8,7 +8,17 @@ change history needed for diff viewing and rollback.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,11 +29,30 @@ class WorkspaceFileRevision(Base):
     """A single meaningful workspace file revision."""
 
     __tablename__ = "workspace_file_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "scope_type IN ('agent', 'group')",
+            name="ck_workspace_file_revisions_scope_type",
+        ),
+        CheckConstraint(
+            "(scope_type = 'agent' AND agent_id IS NOT NULL AND scope_id = agent_id) "
+            "OR (scope_type = 'group' AND agent_id IS NULL)",
+            name="ck_workspace_file_revisions_scope_identity",
+        ),
+        Index(
+            "ix_workspace_file_revisions_scope_path",
+            "scope_type",
+            "scope_id",
+            "path",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="agent")
+    scope_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     path: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
     operation: Mapped[str] = mapped_column(String(40), nullable=False, default="write")
     actor_type: Mapped[str] = mapped_column(String(20), nullable=False)  # user | agent | system
@@ -44,13 +73,29 @@ class WorkspaceEditLock(Base):
 
     __tablename__ = "workspace_edit_locks"
     __table_args__ = (
-        UniqueConstraint("agent_id", "path", name="uq_workspace_edit_locks_agent_path"),
+        UniqueConstraint(
+            "scope_type",
+            "scope_id",
+            "path",
+            name="uq_workspace_edit_locks_scope_path",
+        ),
+        CheckConstraint(
+            "scope_type IN ('agent', 'group')",
+            name="ck_workspace_edit_locks_scope_type",
+        ),
+        CheckConstraint(
+            "(scope_type = 'agent' AND agent_id IS NOT NULL AND scope_id = agent_id) "
+            "OR (scope_type = 'group' AND agent_id IS NULL)",
+            name="ck_workspace_edit_locks_scope_identity",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    agent_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="agent")
+    scope_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     path: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)

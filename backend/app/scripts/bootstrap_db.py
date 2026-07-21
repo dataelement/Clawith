@@ -4,6 +4,7 @@ import asyncio
 
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.database import Base, engine
 
 # Import all models so Base.metadata is fully populated before create_all.
@@ -12,6 +13,8 @@ import app.models.agent  # noqa: F401
 import app.models.audit  # noqa: F401
 import app.models.channel_config  # noqa: F401
 import app.models.chat_session  # noqa: F401
+import app.models.experience  # noqa: F401
+import app.models.experience_reference  # noqa: F401
 import app.models.gateway_message  # noqa: F401
 import app.models.invitation_code  # noqa: F401
 import app.models.llm  # noqa: F401
@@ -25,8 +28,10 @@ import app.models.skill  # noqa: F401
 import app.models.system_settings  # noqa: F401
 import app.models.task  # noqa: F401
 import app.models.tenant  # noqa: F401
+import app.models.tenant_setting  # noqa: F401
 import app.models.tool  # noqa: F401
 import app.models.trigger  # noqa: F401
+import app.models.trigger_execution  # noqa: F401
 import app.models.user  # noqa: F401
 
 
@@ -82,9 +87,15 @@ PATCHES = [
 
 
 async def main() -> None:
+    settings = get_settings()
+    if not settings.DATABASE_AUTO_CREATE_TABLES:
+        print("[entrypoint] Legacy schema bootstrap disabled; schema is owned by Alembic", flush=True)
+        await engine.dispose()
+        return
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print("[entrypoint] Tables created/verified", flush=True)
+    print("[entrypoint] Legacy schema bootstrap enabled", flush=True)
 
     patch_timeout_sql = text("SET lock_timeout = '2000ms'")
     for sql in PATCHES:

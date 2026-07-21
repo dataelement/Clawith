@@ -149,7 +149,7 @@ async def receive_webhook(token: str, request: Request):
             payload_obj = None
             payload_str = repr(body[:2000])
 
-        _execution, created = await enqueue_webhook_execution(
+        execution, created = await enqueue_webhook_execution(
             db,
             trigger=target,
             body=body,
@@ -160,6 +160,16 @@ async def receive_webhook(token: str, request: Request):
         if not created:
             logger.info(f"Webhook duplicate ignored for trigger {target_name}")
             return JSONResponse({"ok": True})
+        if execution is not None and execution.status == "failed":
+            logger.error(
+                "Webhook Runtime intake failed for trigger {}: {}",
+                target_name,
+                execution.last_error,
+            )
+            return JSONResponse(
+                {"ok": False, "error": "runtime_unavailable"},
+                status_code=503,
+            )
 
         logger.info(f"Webhook queued for trigger {target_name} (agent {target_agent_id})")
 

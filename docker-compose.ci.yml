@@ -39,6 +39,11 @@ services:
       SECRET_KEY: ci-test-secret
       JWT_SECRET_KEY: ci-test-jwt-secret
       PROCESS_ROLE: all
+      AGENT_RUNTIME_COMMAND_CONCURRENCY: ${AGENT_RUNTIME_COMMAND_CONCURRENCY:-10}
+      AGENT_RUNTIME_V2_ENABLED: "true"
+      AGENT_RUNTIME_V2_AGENT_IDS: ""
+      AGENT_RUNTIME_V2_SOURCE_TYPES: ""
+      DOCKER_NETWORK: ${CLAWITH_DOCKER_NETWORK:-clawith_network}
       CORS_ORIGINS: '["*"]'
     networks:
       - default
@@ -62,4 +67,4 @@ services:
 
 networks:
   default:
-    name: clawith_network
+    name: ${CLAWITH_DOCKER_NETWORK:-clawith_network}

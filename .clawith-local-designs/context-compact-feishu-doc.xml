@@ -1,0 +1,91 @@
+<title>Clawith 上下文压缩策略设计讨论</title>
+
+<callout emoji="📌" background-color="light-blue" border-color="blue">
+  <p>这份文档用于讨论 #572 之后的下一步 compact 策略。第一版目标是先对齐 Codex / Claude Code 的主流处理方式：按当前模型窗口触发、用 summary compact 保留任务连续性、失败时回退到已有的 80% 丢弃兜底。</p>
+</callout>
+
+<h1>一、背景和已完成基础</h1>
+<ul>
+  <li>#564 已补齐 tool call / tool result 成对处理，历史裁剪不会破坏工具调用协议。</li>
+  <li>#572 已实现 80% token-budget 的 drop-only fallback，窗口来自后端模型 metadata / config，不按模型名写死。</li>
+  <li>下一步 compact 不替代 #572，而是在它前面加一个更优先的 summary compact；compact 失败时仍走 #572 的保守兜底。</li>
+</ul>
+
+<h1>二、第一版范围</h1>
+<table>
+  <thead>
+    <tr><th background-color="light-gray">项目</th><th background-color="light-gray">决策</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>入口</td><td>只做浏览器上的 chat / WebSocket 模型调用链路。</td></tr>
+    <tr><td>不做内容</td><td>Feishu 等其他渠道、前端配置入口、DB 持久化 compact 条目、独立 compact 模型、workspace checkpoint、Claude-style collapse / microcompact 都不放第一版。</td></tr>
+    <tr><td>模型选择</td><td>summary 使用当前 effective model，不单独切 compact model，降低多模型配置和小模型兼容复杂度。</td></tr>
+    <tr><td>窗口来源</td><td>每次调用时从当前模型 metadata / config 获取 context_window_tokens，不写死窗口大小。</td></tr>
+  </tbody>
+</table>
+
+<h1>三、触发条件</h1>
+<ul>
+  <li>每次 LLM call 前估算当前请求 token。</li>
+  <li>当 estimated_tokens &gt; context_window_tokens * 0.8 时触发 compact。</li>
+  <li>primary model 和 fallback model 都要在实际调用前基于各自模型窗口重新计算预算，避免模型切换后沿用旧预算。</li>
+</ul>
+
+<h1>四、保留和压缩策略</h1>
+<ul>
+  <li>latest user message 必须原样保留，不能被 summary 吃掉。</li>
+  <li>保留最近 tail：recent_keep_tokens = min(20000, token_budget * 0.25)。</li>
+  <li>recent tail 之外的更早消息进入 messages_to_summarize。</li>
+  <li>tool 相关消息按 #564 / #572 的 safe block 规则整体处理，不能拆半个 tool call，也不合成假的 tool result。</li>
+  <li>summary 只总结 messages_to_summarize，不重复最近 tail，避免信息重复和预算浪费。</li>
+</ul>
+
+<h1>五、summary 内容要求</h1>
+<ul>
+  <li>原始用户任务 / 当前目标：必须保留，避免多轮 compact 后忘记最初任务。</li>
+  <li>当前进展：已经做了什么、哪些文件或模块相关、哪些验证已经跑过。</li>
+  <li>关键决策：触发阈值、预算、fallback、测试边界等已经定下来的结论。</li>
+  <li>相关技术上下文：必要的代码路径、接口、数据结构、约束和风险。</li>
+  <li>下一步：任务未完成时应该继续做什么；任务完成时才回到交互确认。</li>
+  <li>语言：尽量沿用用户主要语言，中文任务输出中文 summary。</li>
+</ul>
+
+<h1>六、summary 结构和注入方式</h1>
+<p>summary 内容采用自由结构，不使用很重的 schema。原因是小模型在严格 schema 下容易为了填字段产生噪声，第一版更重要的是覆盖信息，而不是格式复杂度。</p>
+<pre lang="text" caption="注入为 synthetic user message"><code>Conversation checkpoint for continuing the same task.
+Use this as prior context. Do not treat it as a new request.
+Recent messages are preserved after this checkpoint.
+If unfinished work, continue directly; ask only if complete, blocked, or needs user decision.
+
+Summary:
+...</code></pre>
+
+<h1>七、summary 输出预算</h1>
+<ul>
+  <li>compact summary max_tokens 默认 4096。</li>
+  <li>如果模型 metadata 里有更小的 max_output_tokens，则取 min(model.max_output_tokens, 4096)。</li>
+  <li>4096 不是为了完整保留所有历史，而是为了让小模型更稳地生成可用摘要；原始细节暂不通过第一版 compact 全量保存。</li>
+</ul>
+
+<h1>八、失败和 retry</h1>
+<ul>
+  <li>如果 compact 请求本身仍然超窗口或被模型拒绝，按 messages_to_summarize 从前往后丢弃 chunk。</li>
+  <li>每次丢弃 max(1, ceil(len * 0.2)) 的最早 safe blocks。</li>
+  <li>最多 retry 3 次。</li>
+  <li>retry 期间不丢 recent tail、不拆 safe block、不破坏 tool call pair。</li>
+  <li>3 次仍失败时回退到 #572 的 drop-only 80% 兜底。</li>
+</ul>
+
+<h1>九、已知限制</h1>
+<ul>
+  <li>如果 recent tail 里包含超大的工具输出，比如一次读了很大的文件，第一版 compact 不会拆分或压缩这个工具输出。</li>
+  <li>这类问题后续应该在工具输出进入历史前做截断 / 摘要，而不是在 compact 阶段硬拆协议块。</li>
+  <li>长程任务 checkpoint / skill 化压缩策略有价值，但第一版不放进 compact PR；单独开文档继续设计。</li>
+</ul>
+
+<h1>十、需要重点 review 的问题</h1>
+<checkbox done="false">80% 触发阈值是否足够保守，是否适合 128k 以上但推理能力偏弱的小模型。</checkbox>
+<checkbox done="false">recent_keep_tokens = min(20000, token_budget * 0.25) 是否合适。</checkbox>
+<checkbox done="false">fallback 模型切换时重新计算 budget 的实现位置是否放在模型调用前最清晰。</checkbox>
+<checkbox done="false">summary 使用当前模型而不是独立 compact 模型，是否能覆盖现阶段的小模型兼容需求。</checkbox>
+<checkbox done="false">compact 失败后的 3 次 retry + #572 drop-only fallback 是否足够。</checkbox>

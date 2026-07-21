@@ -433,6 +433,10 @@ class LLMModelOut(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool
     supports_vision: bool = False
+    supports_tool_calling: bool | None = None
+    tool_calling_capability_source: str | None = None
+    tool_calling_checked_at: datetime | None = None
+    tool_calling_error: str | None = None
     max_output_tokens: int | None = None
     request_timeout: int | None = None
     created_at: datetime
@@ -598,3 +602,4 @@ class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+    message_id: uuid.UUID | None = None  # Optional idempotency key for Agent delivery.

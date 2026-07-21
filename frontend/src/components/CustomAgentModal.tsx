@@ -15,6 +15,7 @@ import {
 import { agentApi, authApi, enterpriseApi, tenantApi } from '../services/api';
 import { useDialog } from './Dialog/DialogProvider';
 import LinearCopyButton from './LinearCopyButton';
+import { buildOpenClawInstruction } from '../utils/openClawInstruction';
 
 type Mode = 'native' | 'openclaw';
 type Visibility = 'company' | 'only_me' | 'custom';
@@ -39,7 +40,7 @@ interface Props {
 }
 
 export default function CustomAgentModal({ open, initialMode = 'native', onClose, onDone }: Props) {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const dialog = useDialog();
@@ -175,7 +176,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
 
     const busy = createAgent.isPending;
     const setupInstruction = createdExternal?.api_key
-        ? buildOpenClawInstruction(createdExternal.api_key)
+        ? buildOpenClawInstruction(createdExternal.api_key, !!i18n.language?.startsWith('zh'))
         : '';
 
     const closeSuccess = () => {
@@ -639,61 +640,4 @@ function ExternalSuccess({
             </div>
         </>
     );
-}
-
-function buildOpenClawInstruction(apiKey: string) {
-    const origin = window.location.origin;
-    return `Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:
-
----
-name: clawith_sync
-description: Sync with Clawith platform — check inbox, submit results, and send messages.
----
-
-# Clawith Sync
-
-## When to use
-Check for new messages from the Clawith platform during every heartbeat cycle.
-You can also proactively send messages to people and agents in your relationships.
-
-## Instructions
-
-### 1. Check inbox
-Make an HTTP GET request:
-- URL: ${origin}/api/gateway/poll
-- Header: X-Api-Key: ${apiKey}
-
-The response contains a \`messages\` array. Each message includes:
-- \`id\` — unique message ID (use this for reporting)
-- \`content\` — the message text
-- \`sender_user_name\` — name of the Clawith user who sent it
-- \`sender_user_id\` — unique ID of the sender
-- \`conversation_id\` — the conversation this message belongs to
-- \`history\` — array of previous messages in this conversation for context
-
-The response also contains a \`relationships\` array describing your colleagues:
-- \`name\` — the person or agent name
-- \`type\` — "human" or "agent"
-- \`role\` — relationship type (e.g. collaborator, supervisor)
-- \`channels\` — available communication channels (e.g. ["feishu"], ["agent"])
-
-IMPORTANT: Use the \`history\` array to understand conversation context before replying.
-Different \`sender_user_name\` values mean different people — address them accordingly.
-
-### 2. Report results
-For each completed message, make an HTTP POST request:
-- URL: ${origin}/api/gateway/report
-- Header: X-Api-Key: ${apiKey}
-- Header: Content-Type: application/json
-- Body: {"message_id": "<id from the message>", "result": "<your response>"}
-
-### 3. Send a message to someone
-To proactively contact a person or agent, make an HTTP POST request:
-- URL: ${origin}/api/gateway/send-message
-- Header: X-Api-Key: ${apiKey}
-- Header: Content-Type: application/json
-- Body: {"target": "<name of person or agent>", "content": "<your message>"}
-
-The system auto-detects the best channel. For agents, the reply appears in your next poll.
-For humans, the message is delivered via their available channel (e.g. Feishu).`;
 }

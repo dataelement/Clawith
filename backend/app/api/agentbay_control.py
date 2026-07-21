@@ -148,13 +148,9 @@ class UnlockRequest(BaseModel):
 async def _get_client(agent_id: uuid.UUID, session_id: str, env_type: str = "browser"):
     """Retrieve the AgentBay client for the given agent + session.
 
-    Search order (most to least specific):
-    1. Exact match: (agent_id, session_id, env_type) — fastest, correct in normal flow.
-    2. Env-type preference, any session: search all cached sessions for this agent
-       by env_type preference. This handles the common case where the TC frontend's
-       session_id doesn't exactly match the session_id the agent used when it created
-       the AgentBay session (e.g., new chat thread opened mid-task).
-    3. Create new session: last resort — will show a blank desktop/browser.
+    Only an exact (agent, ChatSession, environment) cache entry may be reused.
+    A miss delegates to the exact-scoped factory; it never borrows another
+    conversation's or another environment's session.
 
     IMPORTANT: For browser sessions, this also calls _ensure_browser_initialized()
     because the browser SDK requires explicit initialization before screenshot/
@@ -166,82 +162,24 @@ async def _get_client(agent_id: uuid.UUID, session_id: str, env_type: str = "bro
 
     now = datetime.now()
 
-    # Build search order: requested env_type first, then the rest as fallback
-    all_types = ["browser", "computer", "code"]
-    search_order = [env_type] + [t for t in all_types if t != env_type]
+    cache_key = (agent_id, session_id, env_type)
+    cached = _agentbay_sessions.get(cache_key)
+    if cached is not None:
+        client, last_used = cached
+        if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
+            _agentbay_sessions[cache_key] = (client, now)
+            if env_type == "browser" and cache_key not in _browser_initialized:
+                try:
+                    await client._ensure_browser_initialized()
+                    _browser_initialized.add(cache_key)
+                except Exception as e:
+                    logger.warning(
+                        f"[TakeControl] Browser init on cached session failed: {e}"
+                    )
+            return client
 
-    # ── Phase 1: Exact (agent_id, session_id, env_type) match ──
-    for image_type in search_order:
-        cache_key = (agent_id, session_id, image_type)
-        if cache_key in _agentbay_sessions:
-            client, last_used = _agentbay_sessions[cache_key]
-            if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
-                _agentbay_sessions[cache_key] = (client, now)
-                logger.info(
-                    f"[TakeControl] Found existing {image_type} session (exact match) for "
-                    f"agent={agent_id}, session={session_id[:8]} "
-                    f"(requested env_type={env_type})"
-                )
-                if image_type in ("browser", "browser_latest") and cache_key not in _browser_initialized:
-                    try:
-                        await client._ensure_browser_initialized()
-                        _browser_initialized.add(cache_key)
-                    except Exception as e:
-                        logger.warning(f"[TakeControl] Browser init on cached session failed: {e}")
-                return client
-
-    # ── Phase 2: Fallback — search all sessions for this agent by env_type preference ──
-    # The TC frontend session_id may not match the session_id that the agent used
-    # when it created the AgentBay session (e.g., agent started in conversation A,
-    # user opens TC from conversation B). We still want to connect to the agent's
-    # ACTIVE session rather than spin up a blank new one.
-    best_client = None
-    best_image_type = None
-    best_cache_key = None
-    best_ts = None
-
-    # Scan all cached sessions; prefer env_type match and most-recently-used
-    for img_type in search_order:
-        for (ag_id, sess_id, it), (client, last_used) in list(_agentbay_sessions.items()):
-            if ag_id != agent_id or it != img_type:
-                continue
-            if now - last_used >= _AGENTBAY_SESSION_TIMEOUT:
-                continue
-            # Pick the most recently used session among candidates
-            if best_ts is None or last_used > best_ts:
-                best_client = client
-                best_image_type = it
-                best_cache_key = (ag_id, sess_id, it)
-                best_ts = last_used
-        if best_client:
-            break  # Found a match for preferred env_type — stop
-
-    if best_client:
-        # Refresh the timestamp so this session stays warm
-        _agentbay_sessions[best_cache_key] = (best_client, now)
-        logger.info(
-            f"[TakeControl] Found existing {best_image_type} session (agent-id fallback) for "
-            f"agent={agent_id} (requested session={session_id[:8]}, "
-            f"actual session={best_cache_key[1][:8]}, env_type={env_type})"
-        )
-        if best_image_type in ("browser", "browser_latest") and best_cache_key not in _browser_initialized:
-            try:
-                await best_client._ensure_browser_initialized()
-                _browser_initialized.add(best_cache_key)
-            except Exception as e:
-                logger.warning(f"[TakeControl] Browser init on fallback session failed: {e}")
-        return best_client
-
-    # ── Phase 3: No cached session found — create a new session ──
-    # This is a last resort: the agent has no active AgentBay session at all.
-    # The resulting session will show a blank browser/desktop until the agent
-    # starts using it via its tools.
     from app.services.agentbay_client import get_agentbay_client_for_agent
 
-    logger.warning(
-        f"[TakeControl] No cached AgentBay session found for agent={agent_id} "
-        f"(env_type={env_type}). Creating new session — will show blank screen."
-    )
     try:
         client = await get_agentbay_client_for_agent(
             agent_id, image_type=env_type, session_id=session_id

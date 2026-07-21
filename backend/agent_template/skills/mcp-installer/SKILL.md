@@ -68,7 +68,16 @@ import_mcp_server(
 ```
 
 #### Handle OAuth
-Some tools return an OAuth authorization URL. Tell the user to visit the link.
+If the import reports `mcp_auth_required`, the tool definitions were saved but
+are not usable yet. Tell an authorized user to open this Agent's **Tools** page,
+find the Smithery MCP group, and use **Authorize** or **Re-authorize** there.
+The Tools page checks the live connection and opens the Provider authorization
+page only after the user clicks. Never request, copy, or echo an OAuth URL in
+chat, and do not claim the connection is ready until the Tools page reports it
+as authorized.
+
+OAuth completion does not resume the finished import Run. After authorization,
+the user should start a new conversation turn or tool call.
 
 **Important:** Do NOT ask for individual tool tokens (GitHub PAT, Notion API key, etc.) when using Smithery; OAuth handles this automatically.
 
@@ -93,7 +102,9 @@ The system will connect to the URL, discover available tools, and register them.
 ## What NOT to Do
 - Don't ask for GitHub PAT, Notion key etc. when using Smithery; OAuth handles these
 - Don't ask for a Smithery API Key before trying `import_mcp_server` directly; a company/admin key may already exist
-- Don't tell users to go to Settings; handle everything in chat
+- Don't claim Smithery OAuth can be completed entirely in chat; authorization
+  belongs in the Agent's Tools page
+- Don't retry an import just to obtain or refresh an OAuth URL
 - Don't echo API keys back in your response
 - Don't skip the search step; always verify the server exists before importing
 - Don't import local-only tools; inform users they require local installation

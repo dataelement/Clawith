@@ -5,46 +5,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, exists, or_, select
 
-from app.dao import query_dao
 from app.config import get_settings
+from app.database import async_session
+from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
 from app.models.trigger_execution import TriggerExecution
 
 settings = get_settings()
-
-
-async def mark_trigger_executions_completed(execution_ids: list[uuid.UUID]) -> None:
-    if not execution_ids:
-        return
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
-            select(TriggerExecution).where(TriggerExecution.id.in_(execution_ids))
-        )
-        for execution in result.scalars().all():
-            execution.status = "completed"
-            execution.finished_at = datetime.now(timezone.utc)
-            execution.lease_owner = None
-            execution.lease_expires_at = None
-            execution.last_error = None
-        await query_dao.commit(db)
-
-
-async def mark_trigger_executions_failed(execution_ids: list[uuid.UUID], error_text: str) -> None:
-    if not execution_ids:
-        return
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
-            select(TriggerExecution).where(TriggerExecution.id.in_(execution_ids))
-        )
-        for execution in result.scalars().all():
-            execution.status = "failed"
-            execution.finished_at = datetime.now(timezone.utc)
-            execution.lease_owner = None
-            execution.lease_expires_at = None
-            execution.last_error = error_text
-        await query_dao.commit(db)
 
 
 async def claim_pending_trigger_executions(
@@ -56,17 +25,25 @@ async def claim_pending_trigger_executions(
     lease_until = now + timedelta(minutes=5)
     claimed_pairs: list[tuple[TriggerExecution, AgentTrigger]] = []
     sources = sources or ["webhook", "cron", "once", "interval", "poll", "on_message"]
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
+    async with async_session() as db:
+        result = await db.execute(
             select(TriggerExecution, AgentTrigger)
             .join(AgentTrigger, AgentTrigger.id == TriggerExecution.trigger_id)
             .where(
                 TriggerExecution.source.in_(sources),
-                AgentTrigger.is_enabled == True,
+                AgentTrigger.is_enabled.is_(True),
+                ~exists(
+                    select(AgentRun.id).where(
+                        AgentRun.source_type == "trigger",
+                        AgentRun.source_execution_id
+                        == cast(TriggerExecution.id, String),
+                    )
+                ),
                 or_(
                     TriggerExecution.status == "pending",
                     (TriggerExecution.status == "processing") & (
-                        (TriggerExecution.lease_expires_at == None) | (TriggerExecution.lease_expires_at < now)
+                        TriggerExecution.lease_expires_at.is_(None)
+                        | (TriggerExecution.lease_expires_at < now)
                     ),
                 ),
             )
@@ -82,7 +59,7 @@ async def claim_pending_trigger_executions(
             execution.lease_owner = settings.INSTANCE_ID
             execution.lease_expires_at = lease_until
             claimed_pairs.append((execution, trigger))
-        await query_dao.commit(db)
+        await db.commit()
         for execution, trigger in claimed_pairs:
             if execution in db:
                 db.expunge(execution)
@@ -92,8 +69,9 @@ async def claim_pending_trigger_executions(
 
 
 def build_execution_runtime_trigger(trigger: AgentTrigger, execution: TriggerExecution) -> AgentTrigger:
+    stored_config = trigger.config if isinstance(trigger.config, dict) else {}
     runtime_cfg = {
-        **(trigger.config or {}),
+        **stored_config,
         "_execution_id": str(execution.id),
     }
     if execution.payload:
@@ -122,8 +100,8 @@ def build_execution_runtime_trigger(trigger: AgentTrigger, execution: TriggerExe
 async def mark_base_triggers_fired(trigger_ids: list[uuid.UUID], now: datetime) -> None:
     if not trigger_ids:
         return
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
+    async with async_session() as db:
+        result = await db.execute(
             select(AgentTrigger).where(AgentTrigger.id.in_(trigger_ids))
         )
         for trigger in result.scalars().all():
@@ -133,4 +111,4 @@ async def mark_base_triggers_fired(trigger_ids: list[uuid.UUID], now: datetime) 
                 trigger.is_enabled = False
             if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
                 trigger.is_enabled = False
-        await query_dao.commit(db)
+        await db.commit()

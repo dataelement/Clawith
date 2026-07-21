@@ -5,44 +5,26 @@ from __future__ import annotations
 import hashlib
 import hmac
 import uuid
-from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
+from app.services.agent_runtime.channel_chat import (
+    channel_message_id,
+    enqueue_channel_chat_runtime,
+)
 
 
 router = APIRouter(tags=["whatsapp"])
 
-WHATSAPP_TEXT_LIMIT = 4096
 DEFAULT_WHATSAPP_API_VERSION = "v23.0"
-_processed_whatsapp_messages: set[str] = set()
-
-
-def _split_text(text: str, limit: int = WHATSAPP_TEXT_LIMIT) -> list[str]:
-    remaining = text or ""
-    chunks: list[str] = []
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
-        segment = remaining[:limit]
-        cut = max(segment.rfind("\n\n"), segment.rfind("\n"), segment.rfind(" "))
-        if cut <= 0:
-            cut = limit
-        chunks.append(remaining[:cut].rstrip())
-        remaining = remaining[cut:].lstrip()
-    return chunks or [""]
 
 
 def _verify_signature(app_secret: str, body: bytes, signature: str | None) -> bool:
@@ -66,35 +48,6 @@ def _extract_message_text(message: dict) -> str:
     return ""
 
 
-async def _send_whatsapp_messages(config: ChannelConfig, to_phone: str, text: str) -> None:
-    token = (config.app_secret or "").strip()
-    phone_number_id = (config.app_id or "").strip()
-    if not token or not phone_number_id:
-        raise RuntimeError("WhatsApp channel is not fully configured")
-
-    api_version = str((config.extra_config or {}).get("api_version") or DEFAULT_WHATSAPP_API_VERSION).strip()
-    url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        for chunk in _split_text(text):
-            resp = await client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "messaging_product": "whatsapp",
-                    "recipient_type": "individual",
-                    "to": to_phone,
-                    "type": "text",
-                    "text": {"preview_url": False, "body": chunk},
-                },
-            )
-            if resp.status_code >= 400:
-                raise RuntimeError(f"WhatsApp send failed: {resp.text[:300]}")
-
-
 @router.post("/agents/{agent_id}/whatsapp-channel", response_model=ChannelConfigOut, status_code=201)
 async def configure_whatsapp_channel(
     agent_id: uuid.UUID,
@@ -116,7 +69,7 @@ async def configure_whatsapp_channel(
         raise HTTPException(status_code=422, detail="access_token, phone_number_id, and verify_token are required")
 
     extra_config = {"api_version": api_version}
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -130,7 +83,7 @@ async def configure_whatsapp_channel(
         existing.encrypt_key = app_secret or None
         existing.extra_config = extra_config
         existing.is_configured = True
-        await query_dao.flush(db)
+        await db.flush()
         return ChannelConfigOut.model_validate(existing)
 
     config = ChannelConfig(
@@ -143,8 +96,8 @@ async def configure_whatsapp_channel(
         extra_config=extra_config,
         is_configured=True,
     )
-    query_dao.add(db, config)
-    await query_dao.flush(db)
+    db.add(config)
+    await db.flush()
     return ChannelConfigOut.model_validate(config)
 
 
@@ -155,7 +108,7 @@ async def get_whatsapp_channel(
     db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -185,7 +138,7 @@ async def delete_whatsapp_channel(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can remove channel")
 
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -194,7 +147,7 @@ async def delete_whatsapp_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WhatsApp not configured")
-    await query_dao.delete(db, config)
+    await db.delete(config)
 
 
 @router.get("/channel/whatsapp/{agent_id}/webhook")
@@ -205,7 +158,7 @@ async def whatsapp_verify_webhook(
     hub_challenge: str = Query("", alias="hub.challenge"),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -227,7 +180,7 @@ async def whatsapp_event_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
             ChannelConfig.channel_type == "whatsapp",
@@ -254,25 +207,17 @@ async def whatsapp_event_webhook(
 
             for message in messages:
                 message_id = str(message.get("id") or "").strip()
-                if message_id and message_id in _processed_whatsapp_messages:
-                    continue
-                if message_id:
-                    _processed_whatsapp_messages.add(message_id)
-                    if len(_processed_whatsapp_messages) > 2000:
-                        _processed_whatsapp_messages.clear()
-
                 user_text = _extract_message_text(message)
                 sender_phone = str(message.get("from") or "").strip()
                 if not user_text or not sender_phone:
                     continue
 
-                from app.api.feishu import _call_llm_with_config, _load_agent_and_model
-                from app.models.agent import Agent as AgentModel, DEFAULT_CONTEXT_WINDOW_SIZE
-                from app.models.audit import ChatMessage
+                from app.api.feishu import _load_agent_and_model
+                from app.models.agent import Agent as AgentModel
                 from app.services.channel_session import find_or_create_channel_session
                 from app.services.channel_user_service import channel_user_service
 
-                agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == agent_id))
+                agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_r.scalar_one_or_none()
                 if not agent_obj:
                     continue
@@ -293,54 +238,26 @@ async def whatsapp_event_webhook(
                     external_conv_id=conv_id,
                     source_channel="whatsapp",
                     first_message_title=user_text,
+                    created_by_user_id=platform_user_id,
                 )
-                session_conv_id = str(sess.id)
-                ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
-                history_r = await query_dao.execute(db, 
-                    select(ChatMessage)
-                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(ctx_size)
-                )
-                history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
-
-                query_dao.add(db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
-                sess.last_message_at = datetime.now(timezone.utc)
-
-                # Pre-load agent/model before releasing connection
-                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
-
-                await query_dao.commit(db)
-                await db.close()
-                # ── Phase 1 complete: release connection before slow LLM call ──
-
-                try:
-                    reply_text = await _call_llm_with_config(
-                        _agent_model, _llm_model, _fallback_model,
+                _, model, _ = await _load_agent_and_model(db, agent_id)
+                await enqueue_channel_chat_runtime(
+                    db,
+                    agent=agent_obj,
+                    user=platform_user,
+                    session=sess,
+                    model=model,
+                    content=user_text,
+                    source_channel="whatsapp",
+                    channel_delivery_target={"phone": sender_phone},
+                    message_id=channel_message_id(
                         agent_id,
-                        user_text,
-                        history=history,
-                        user_id=platform_user_id,
-                        session_id=session_conv_id,
-                    )
-                except Exception as exc:
-                    logger.exception(f"[WhatsApp] LLM failed for agent {agent_id}: {exc}")
-                    reply_text = "Sorry, I encountered an error processing your message."
+                        "whatsapp",
+                        message_id,
+                    ),
+                )
 
-                try:
-                    await _send_whatsapp_messages(config, sender_phone, reply_text)
-                    async with query_dao.session() as _save_db:
-                        query_dao.add(_save_db, ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-                        from app.models.chat_session import ChatSession
-                        _sess_r = await query_dao.execute(_save_db, 
-                            select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
-                        )
-                        _sess_fresh = _sess_r.scalar_one_or_none()
-                        if _sess_fresh:
-                            _sess_fresh.last_message_at = datetime.now(timezone.utc)
-                        await query_dao.commit(_save_db)
-                except Exception as exc:
-                    logger.exception(f"[WhatsApp] Send failed for agent {agent_id}: {exc}")
+                await db.commit()
 
 
     return {"ok": True}

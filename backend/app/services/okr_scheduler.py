@@ -15,14 +15,14 @@ Design decisions:
 
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dao import query_dao
+from app.database import async_session
 from app.models.agent import Agent
 from app.models.okr import (
     OKRKeyResult,
@@ -104,7 +104,7 @@ def _parse_focus_md(content: str) -> list[tuple[str, float, str]]:
 async def collect_all_focus_updates(
     tenant_id: uuid.UUID,
     okr_agent_id: uuid.UUID,
-) -> str:
+) -> dict:
     """Read every Agent's focus.md and sync KR progress to the database.
 
     This is the core of the Focus File mechanism. Each Agent can maintain a
@@ -116,114 +116,147 @@ async def collect_all_focus_updates(
 
     Only writes a new log if the value actually changed (idempotent).
     """
-    async with query_dao.session() as db:
+    operation_id = str(uuid.uuid4())
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    updated_refs: list[str] = []
+    commit_started = False
 
-        # Enumerate all agents in this tenant (except the OKR Agent itself)
-        agents_result = await query_dao.execute(db, 
-            select(Agent).where(
-                Agent.tenant_id == tenant_id,
-                Agent.id != okr_agent_id,
+    try:
+        async with async_session() as db:
+            agents_result = await db.execute(
+                select(Agent).where(
+                    Agent.tenant_id == tenant_id,
+                    Agent.id != okr_agent_id,
+                )
             )
-        )
-        agents = agents_result.scalars().all()
+            agents = agents_result.scalars().all()
+            storage = get_storage_backend()
 
-        if not agents:
-            return "No team members found. No focus files to collect."
+            for agent in agents:
+                focus_key = agent_storage_key(agent.id, "focus.md")
+                try:
+                    if not await storage.exists(focus_key):
+                        skipped_count += 1
+                        continue
+                    content = await storage.read_text(
+                        focus_key,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    updates = _parse_focus_md(content)
+                    if not updates:
+                        skipped_count += 1
+                        continue
 
-        updated_count = 0
-        skipped_count = 0
-        error_count = 0
-        lines: list[str] = []
-        storage = get_storage_backend()
-
-        for agent in agents:
-            focus_key = agent_storage_key(agent.id, "focus.md")
-            if not await storage.exists(focus_key):
-                skipped_count += 1
-                continue
-
-            try:
-                content = await storage.read_text(focus_key, encoding="utf-8", errors="replace")
-                updates = _parse_focus_md(content)
-
-                if not updates:
-                    skipped_count += 1
-                    continue
-
-                for kr_id_str, value, note in updates:
-                    try:
+                    agent_changed = False
+                    for kr_id_str, value, note in updates:
                         kr_uuid = uuid.UUID(kr_id_str)
-                    except ValueError:
-                        logger.warning(f"[OKRScheduler] Invalid KR UUID '{kr_id_str}' in {focus_key}")
-                        continue
-
-                    # Fetch the KR and verify it belongs to this tenant
-                    kr_result = await query_dao.execute(db, 
-                        select(OKRKeyResult, OKRObjective)
-                        .join(OKRObjective, OKRKeyResult.objective_id == OKRObjective.id)
-                        .where(
-                            OKRKeyResult.id == kr_uuid,
-                            OKRObjective.tenant_id == tenant_id,
+                        kr_result = await db.execute(
+                            select(OKRKeyResult, OKRObjective)
+                            .join(
+                                OKRObjective,
+                                OKRKeyResult.objective_id == OKRObjective.id,
+                            )
+                            .where(
+                                OKRKeyResult.id == kr_uuid,
+                                OKRObjective.tenant_id == tenant_id,
+                            )
                         )
-                    )
-                    row = kr_result.first()
-                    if not row:
-                        logger.warning(f"[OKRScheduler] KR {kr_uuid} not found or wrong tenant, skipping")
-                        continue
+                        row = kr_result.first()
+                        if row is None:
+                            skipped_count += 1
+                            continue
+                        key_result, _objective = row
+                        if abs(key_result.current_value - value) < 0.001:
+                            skipped_count += 1
+                            continue
 
-                    kr, _ = row
-
-                    # Skip if value hasn't changed (avoid duplicate log entries)
-                    if abs(kr.current_value - value) < 0.001:
-                        continue
-
-                    prev_value = kr.current_value
-                    kr.current_value = value
-                    kr.last_updated_at = datetime.utcnow()
-
-                    # Auto-compute status from progress ratio
-                    if kr.target_value:
-                        ratio = value / kr.target_value
-                        if ratio >= 1.0:
-                            kr.status = "completed"
-                        elif ratio >= 0.7:
-                            kr.status = "on_track"
-                        elif ratio >= 0.4:
-                            kr.status = "at_risk"
+                        previous_value = key_result.current_value
+                        key_result.current_value = value
+                        key_result.last_updated_at = datetime.now(timezone.utc)
+                        if key_result.target_value == 0:
+                            key_result.status = (
+                                "completed" if value >= 0 else "behind"
+                            )
                         else:
-                            kr.status = "behind"
+                            ratio = value / key_result.target_value
+                            if ratio >= 1.0:
+                                key_result.status = "completed"
+                            elif ratio >= 0.7:
+                                key_result.status = "on_track"
+                            elif ratio >= 0.4:
+                                key_result.status = "at_risk"
+                            else:
+                                key_result.status = "behind"
 
-                    # Write progress log entry
-                    log = OKRProgressLog(
-                        kr_id=kr_uuid,
-                        previous_value=prev_value,
-                        new_value=value,
-                        source="okr_agent",
-                        note=f"[focus.md] {note}" if note else "[focus.md] Auto-collected",
+                        progress_log_id = uuid.uuid4()
+                        db.add(
+                            OKRProgressLog(
+                                id=progress_log_id,
+                                kr_id=kr_uuid,
+                                previous_value=previous_value,
+                                new_value=value,
+                                source="okr_agent",
+                                note=(
+                                    f"[focus.md] {note}"
+                                    if note
+                                    else "[focus.md] Auto-collected"
+                                ),
+                            )
+                        )
+                        updated_count += 1
+                        agent_changed = True
+                        updated_refs.append(
+                            f"okr-progress-log://{progress_log_id}"
+                        )
+                    if not agent_changed and updates:
+                        logger.debug(
+                            "[OKRScheduler] No changed KR values for agent {}",
+                            agent.id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "[OKRScheduler] Failed to process focus.md for agent {}",
+                        agent.id,
                     )
-                    query_dao.add(db, log)
-                    updated_count += 1
+                    error_count += 1
 
-                    lines.append(
-                        f"  - {agent.name} / {kr.title}: {prev_value} → {value} ({kr.status})"
-                    )
+            if updated_count:
+                commit_started = True
+                await db.commit()
+    except Exception as exc:
+        if commit_started:
+            return {
+                "status": "unknown",
+                "error_code": "okr_collection_commit_outcome_unknown",
+                "operation_id": operation_id,
+                "updated_count": updated_count,
+                "skipped_count": skipped_count,
+                "error_count": error_count,
+                "updated_refs": updated_refs,
+            }
+        logger.exception("[OKRScheduler] Focus collection failed before commit")
+        return {
+            "status": "failed",
+            "error_code": "okr_collection_failed",
+            "operation_id": operation_id,
+            "updated_count": updated_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count + 1,
+            "updated_refs": updated_refs,
+            "error_class": type(exc).__name__,
+        }
 
-            except Exception as exc:
-                logger.exception(f"[OKRScheduler] Failed to process focus.md for agent {agent.id}")
-                error_count += 1
-
-        await query_dao.commit(db)
-
-    summary = (
-        f"Focus file collection complete.\n"
-        f"  KRs updated: {updated_count}\n"
-        f"  Agents without focus.md: {skipped_count}\n"
-        f"  Errors: {error_count}\n"
-    )
-    if lines:
-        summary += "\nChanges:\n" + "\n".join(lines)
-
-    return summary
+    return {
+        "status": "partial" if error_count else "succeeded",
+        "operation_id": operation_id,
+        "updated_count": updated_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+        "updated_refs": updated_refs,
+    }
 
 
 # ─── Report Generation ────────────────────────────────────────────────────────
@@ -268,7 +301,7 @@ async def _build_okr_snapshot(
     """
     ps, pe = _compute_period(frequency, length_days, target_date)
 
-    obj_result = await query_dao.execute(db, 
+    obj_result = await db.execute(
         select(OKRObjective).where(
             OKRObjective.tenant_id == tenant_id,
             OKRObjective.period_start >= ps,
@@ -281,7 +314,7 @@ async def _build_okr_snapshot(
     krs_by_obj: dict = {}
     if objectives:
         obj_ids = [o.id for o in objectives]
-        kr_result = await query_dao.execute(db, 
+        kr_result = await db.execute(
             select(OKRKeyResult)
             .where(OKRKeyResult.objective_id.in_(obj_ids))
             .order_by(OKRKeyResult.created_at)
@@ -328,7 +361,7 @@ def _format_report_body(
 
     # Health summary
     lines.append("## Health Summary\n")
-    lines.append(f"| Status | Count | % |\n|---|---|---|")
+    lines.append("| Status | Count | % |\n|---|---|---|")
     if total_krs:
         lines.append(f"| On Track / Completed | {on_track} | {on_track*100//total_krs}% |")
         lines.append(f"| At Risk | {at_risk} | {at_risk*100//total_krs}% |")
@@ -383,9 +416,11 @@ async def _store_report(
     period_date: date,
     content: str,
     db: AsyncSession,
-) -> None:
-    """Write a report to the WorkReport table."""
+) -> dict:
+    """Commit one report row and return its durable database receipt."""
+    operation_id = str(uuid.uuid4())
     report = WorkReport(
+        id=uuid.uuid4(),
         tenant_id=tenant_id,
         author_type="agent",
         author_id=okr_agent_id,
@@ -394,27 +429,170 @@ async def _store_report(
         content=content,
         source="okr_agent_collected",
     )
-    query_dao.add(db, report)
-    await query_dao.commit(db)
+    commit_started = False
+    try:
+        db.add(report)
+        commit_started = True
+        await db.commit()
+    except Exception as exc:
+        return {
+            "status": "unknown" if commit_started else "failed",
+            "error_code": (
+                "okr_report_commit_outcome_unknown"
+                if commit_started
+                else "okr_report_store_failed"
+            ),
+            "operation_id": operation_id,
+            "report_id": str(report.id),
+            "report_type": report_type,
+            "error_class": type(exc).__name__,
+        }
+    return {
+        "status": "succeeded",
+        "operation_id": operation_id,
+        "report_id": str(report.id),
+        "report_type": report_type,
+    }
 
 
-async def _safe_write_report(okr_agent_id: uuid.UUID, filename: str, content: str) -> None:
-    """Write report to OKR Agent's workspace/reports/ directory."""
+async def _safe_write_report(
+    okr_agent_id: uuid.UUID,
+    filename: str,
+    content: str,
+) -> dict:
+    """Project a committed report and return an explicit projection fact."""
+    workspace_path = f"workspace/reports/{filename}"
     try:
         await store_agent_bytes(
             okr_agent_id,
-            f"workspace/reports/{filename}",
+            workspace_path,
             content.encode("utf-8"),
             content_type="text/markdown; charset=utf-8",
         )
     except Exception as exc:
         logger.warning(f"[OKRScheduler] Could not write report file {filename}: {exc}")
+        return {
+            "status": "failed",
+            "workspace_path": workspace_path,
+            "error_code": "okr_report_projection_failed",
+            "error_class": type(exc).__name__,
+        }
+    return {
+        "status": "succeeded",
+        "workspace_path": workspace_path,
+    }
+
+
+async def _generate_report(
+    tenant_id: uuid.UUID,
+    okr_agent_id: uuid.UUID,
+    *,
+    report_type: str,
+) -> dict:
+    today = date.today()
+    if report_type == "daily":
+        target_date = today
+        period_date = today
+        filename = f"daily_{today.strftime('%Y%m%d')}.md"
+    elif report_type == "weekly":
+        target_date = today
+        period_date = today - timedelta(days=today.weekday())
+        filename = f"weekly_{period_date.strftime('%Y-W%V')}.md"
+    else:
+        target_date = today.replace(day=1) - timedelta(days=1)
+        period_date = target_date.replace(day=1)
+        filename = f"monthly_{target_date.strftime('%Y-%m')}.md"
+    workspace_path = f"workspace/reports/{filename}"
+
+    async with async_session() as db:
+        settings_result = await db.execute(
+            select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
+        )
+        okr_settings = settings_result.scalar_one_or_none()
+        if not okr_settings or not okr_settings.enabled:
+            return {
+                "status": "failed",
+                "db_status": "not_started",
+                "projection_status": "not_started",
+                "error_code": "okr_not_enabled",
+                "report_type": report_type,
+                "workspace_path": workspace_path,
+            }
+
+        objectives, krs_by_obj, period_start, period_end = (
+            await _build_okr_snapshot(
+                tenant_id,
+                db,
+                okr_settings.period_frequency,
+                okr_settings.period_length_days,
+                target_date=target_date,
+            )
+        )
+        if report_type == "monthly":
+            content = _format_monthly_report_body(
+                objectives,
+                krs_by_obj,
+                period_start,
+                period_end,
+            )
+        else:
+            content = _format_report_body(
+                objectives,
+                krs_by_obj,
+                period_start,
+                period_end,
+                report_type,
+            )
+
+        db_receipt = await _store_report(
+            tenant_id,
+            okr_agent_id,
+            report_type,
+            period_date,
+            content,
+            db,
+        )
+
+    receipt = {
+        **db_receipt,
+        "db_status": db_receipt.get("status", "succeeded"),
+        "report_type": report_type,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "workspace_path": workspace_path,
+        "projection_status": "not_started",
+        "content": content,
+    }
+    if receipt["db_status"] != "succeeded":
+        receipt["status"] = receipt["db_status"]
+        return receipt
+
+    try:
+        projection_receipt = await _safe_write_report(
+            okr_agent_id,
+            filename,
+            content,
+        )
+    except Exception as exc:
+        projection_receipt = {
+            "status": "failed",
+            "error_code": "okr_report_projection_failed",
+            "error_class": type(exc).__name__,
+        }
+    projection_status = projection_receipt.get("status", "failed")
+    receipt["projection_status"] = projection_status
+    receipt["status"] = (
+        "succeeded" if projection_status == "succeeded" else "partial"
+    )
+    if projection_status != "succeeded":
+        receipt["error_code"] = "okr_report_projection_failed"
+    return receipt
 
 
 async def generate_daily_report(
     tenant_id: uuid.UUID,
     okr_agent_id: uuid.UUID,
-) -> str:
+) -> dict:
     """Generate and store a daily OKR report.
 
     Reads the current period's objectives, builds a structured Markdown
@@ -423,70 +601,30 @@ async def generate_daily_report(
 
     Returns the report content as a string so the OKR Agent can post it.
     """
-    async with query_dao.session() as db:
-        # Load settings for period frequency
-        settings_result = await query_dao.execute(db, 
-            select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
-        )
-        okr_settings = settings_result.scalar_one_or_none()
-
-        if not okr_settings or not okr_settings.enabled:
-            return "OKR is not enabled for this tenant."
-
-        objectives, krs_by_obj, ps, pe = await _build_okr_snapshot(
-            tenant_id, db, okr_settings.period_frequency, okr_settings.period_length_days
-        )
-
-        content = _format_report_body(objectives, krs_by_obj, ps, pe, "daily")
-
-        today = date.today()
-        await _store_report(tenant_id, okr_agent_id, "daily", today, content, db)
-
-    # Write file to workspace
-    await _safe_write_report(okr_agent_id, f"daily_{today.strftime('%Y%m%d')}.md", content)
-
+    receipt = await _generate_report(
+        tenant_id,
+        okr_agent_id,
+        report_type="daily",
+    )
     logger.info(f"[OKRScheduler] Daily report generated for tenant {tenant_id}")
-    return content
+    return receipt
 
 
 async def generate_weekly_report(
     tenant_id: uuid.UUID,
     okr_agent_id: uuid.UUID,
-) -> str:
+) -> dict:
     """Generate and store a weekly OKR report.
 
     The 'week' reference date is the most recent Monday.
     """
-    async with query_dao.session() as db:
-        settings_result = await query_dao.execute(db, 
-            select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
-        )
-        okr_settings = settings_result.scalar_one_or_none()
-
-        if not okr_settings or not okr_settings.enabled:
-            return "OKR is not enabled for this tenant."
-
-        previous_month_ref = date.today().replace(day=1) - timedelta(days=1)
-        objectives, krs_by_obj, ps, pe = await _build_okr_snapshot(
-            tenant_id,
-            db,
-            okr_settings.period_frequency,
-            okr_settings.period_length_days,
-            target_date=previous_month_ref,
-        )
-
-        content = _format_report_body(objectives, krs_by_obj, ps, pe, "weekly")
-
-        today = date.today()
-        # Use Monday of this week as the canonical period_date
-        monday = today - timedelta(days=today.weekday())
-        await _store_report(tenant_id, okr_agent_id, "weekly", monday, content, db)
-
-    week_label = monday.strftime("%Y-W%V")
-    await _safe_write_report(okr_agent_id, f"weekly_{week_label}.md", content)
-
+    receipt = await _generate_report(
+        tenant_id,
+        okr_agent_id,
+        report_type="weekly",
+    )
     logger.info(f"[OKRScheduler] Weekly report generated for tenant {tenant_id}")
-    return content
+    return receipt
 
 
 # ─── OKR Settings Reader ──────────────────────────────────────────────────────
@@ -498,8 +636,8 @@ async def get_okr_settings_for_agent(tenant_id: uuid.UUID) -> dict:
     Called by the get_okr_settings agent tool. Returns a dict the Agent can
     read to determine report schedule, period length, etc.
     """
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
+    async with async_session() as db:
+        result = await db.execute(
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         s = result.scalar_one_or_none()
@@ -524,7 +662,7 @@ async def get_okr_settings_for_agent(tenant_id: uuid.UUID) -> dict:
 async def generate_monthly_report(
     tenant_id: uuid.UUID,
     okr_agent_id: uuid.UUID,
-) -> str:
+) -> dict:
     """Generate and store a monthly OKR progress report.
 
     Triggered on the 1st of every month at 08:00 by the monthly_okr_report
@@ -542,30 +680,13 @@ async def generate_monthly_report(
     Returns the Markdown content so the calling OKR Agent tool can send it
     to admins via send_platform_message.
     """
-    async with query_dao.session() as db:
-        settings_result = await query_dao.execute(db, 
-            select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
-        )
-        okr_settings = settings_result.scalar_one_or_none()
-
-        if not okr_settings or not okr_settings.enabled:
-            return "OKR is not enabled for this tenant."
-
-        objectives, krs_by_obj, ps, pe = await _build_okr_snapshot(
-            tenant_id, db, okr_settings.period_frequency, okr_settings.period_length_days
-        )
-
-        content = _format_monthly_report_body(objectives, krs_by_obj, ps, pe)
-
-        month_start = ps
-        await _store_report(tenant_id, okr_agent_id, "monthly", month_start, content, db)
-
-    # Write file to OKR Agent workspace
-    month_label = month_start.strftime("%Y-%m")
-    await _safe_write_report(okr_agent_id, f"monthly_{month_label}.md", content)
-
+    receipt = await _generate_report(
+        tenant_id,
+        okr_agent_id,
+        report_type="monthly",
+    )
     logger.info(f"[OKRScheduler] Monthly report generated for tenant {tenant_id}")
-    return content
+    return receipt
 
 
 def _format_monthly_report_body(
@@ -612,8 +733,8 @@ def _format_monthly_report_body(
     # ── Health summary ────────────────────────────────────────────────
     lines.append("## Monthly Health Summary\n")
     if total_krs:
-        lines.append(f"| Status | Count | Ratio |")
-        lines.append(f"|---|---|---|")
+        lines.append("| Status | Count | Ratio |")
+        lines.append("|---|---|---|")
         lines.append(f"| Completed   | {completed} | {completed*100//total_krs}% |")
         lines.append(f"| On Track    | {on_track}  | {on_track*100//total_krs}% |")
         lines.append(f"| At Risk     | {at_risk}   | {at_risk*100//total_krs}% |")

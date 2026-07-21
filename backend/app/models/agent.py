@@ -87,6 +87,8 @@ class Agent(Base):
     cache_creation_tokens_month: Mapped[int] = mapped_column(Integer, default=0)
     cache_creation_tokens_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
+    # Historical field name: this is the maximum number of model-decision turns
+    # allowed for one Agent Run, not the number of tools executed.
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
     # Trigger limits (per-agent, configurable from Settings UI)
@@ -103,10 +105,12 @@ class Agent(Base):
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Access model:
-    # - company: all platform users in the tenant can access; all tenant agents can interact.
+    # - company: all platform users and non-private tenant agents can access; Plaza is enabled.
     # - private: only the creator can use/manage; hidden from Plaza.
-    # - custom: explicit user access rows; agent-to-agent access is configured via Relationships.
+    # - custom: everyone can use it like company mode, but explicit user rows grant management; Plaza is disabled.
     access_mode: Mapped[str] = mapped_column(String(20), default="company", nullable=False)
+    # Legacy/default UI field. Runtime use access is determined by access_mode;
+    # custom user rows grant management and do not restrict who can use the agent.
     company_access_level: Mapped[str] = mapped_column(String(20), default="use", nullable=False)
 
     # Daily LLM call limit
@@ -186,12 +190,6 @@ class AgentTemplate(Base):
     default_autonomy_policy: Mapped[dict] = mapped_column(JSON, default={})
     # Talent Market card: 2-4 short capability bullets shown under the role
     capability_bullets: Mapped[list] = mapped_column(JSON, default=[])
-    # Founding onboarding ritual. Used as the system prompt when the very first
-    # human opens a chat with an agent created from this template — it guides
-    # the agent to collect project context, introduce itself, and suggest a
-    # first task. Every subsequent user meets the agent via a simpler built-in
-    # welcoming prompt (see app.services.onboarding), not this content.
-    bootstrap_content: Mapped[str | None] = mapped_column(Text, default=None)
     is_builtin: Mapped[bool] = mapped_column(default=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

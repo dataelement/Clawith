@@ -16,7 +16,6 @@ interface Template {
     category: string;
     is_builtin: boolean;
     capability_bullets?: string[];
-    has_bootstrap?: boolean;
 }
 
 interface Props {

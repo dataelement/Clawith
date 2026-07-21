@@ -15,6 +15,16 @@ import {
 import { useDialog } from '../../../components/Dialog/DialogProvider';
 import { useToast } from '../../../components/Toast/ToastProvider';
 import { useAuthStore } from '../../../stores';
+import {
+    closeMcpAuthorizationWindow,
+    getSmitheryAuthorizationButtonLabel,
+    getSmitheryAuthorizationTool,
+    navigateMcpAuthorizationWindow,
+    openMcpAuthorizationWindow,
+    requestMcpAuthorizationStatus,
+    shouldPreopenMcpAuthorizationWindow,
+    type McpAuthorizationState,
+} from '../mcpAuthorization';
 
 const getCategoryLabels = (t: any): Record<string, string> => ({
     file: t('agent.toolCategories.file'),
@@ -50,6 +60,8 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
     const [expandedCategories, setExpandedCategories] = useState<Set<string>>(() => new Set());
     const [toolSearch, setToolSearch] = useState('');
     const [toolStatusFilter, setToolStatusFilter] = useState<'all' | 'enabled' | 'disabled' | 'configured'>('all');
+    const [mcpAuthorizationStates, setMcpAuthorizationStates] = useState<Record<string, McpAuthorizationState>>({});
+    const [checkingMcpAuthorizationGroup, setCheckingMcpAuthorizationGroup] = useState<string | null>(null);
     // Global (company-level) config for the currently open modal — used to show
     // lock hints and prevent agent from overriding company-set fields.
     const [configGlobalData, setConfigGlobalData] = useState<Record<string, any>>({});
@@ -345,6 +357,47 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
         }
     };
 
+    const checkMcpAuthorization = async (groupKey: string, groupTools: any[]) => {
+        const authorizationTool = getSmitheryAuthorizationTool(groupTools);
+        if (!authorizationTool?.id || checkingMcpAuthorizationGroup) return;
+
+        const currentAuthorizationState = mcpAuthorizationStates[groupKey] || 'unknown';
+        // Authorize/Re-authorize opens while the click still carries a browser
+        // gesture. A pure Check never flashes an empty window; if it discovers
+        // auth is required, the reliable same-page fallback handles it.
+        const authorizationWindow = shouldPreopenMcpAuthorizationWindow(currentAuthorizationState)
+            ? openMcpAuthorizationWindow()
+            : null;
+        setCheckingMcpAuthorizationGroup(groupKey);
+        try {
+            const token = localStorage.getItem('token') || '';
+            const status = await requestMcpAuthorizationStatus(
+                agentId,
+                authorizationTool.id,
+                token,
+            );
+            setMcpAuthorizationStates(prev => ({ ...prev, [groupKey]: status.state }));
+            if (status.state === 'auth_required' && status.authorizationUrl) {
+                navigateMcpAuthorizationWindow(
+                    authorizationWindow,
+                    status.authorizationUrl,
+                );
+            } else if (status.state === 'connected') {
+                closeMcpAuthorizationWindow(authorizationWindow);
+                toast.success(t('agent.tools.authorizationConnected', 'This MCP connection is authorized.'));
+            } else {
+                closeMcpAuthorizationWindow(authorizationWindow);
+                toast.warning(t('agent.tools.authorizationUnavailable', 'Authorization status is temporarily unavailable.'));
+            }
+        } catch (error: any) {
+            closeMcpAuthorizationWindow(authorizationWindow);
+            setMcpAuthorizationStates(prev => ({ ...prev, [groupKey]: 'unavailable' }));
+            toast.error(t('agent.tools.authorizationCheckFailed', 'Could not check MCP authorization.'), { details: String(error?.message || error) });
+        } finally {
+            setCheckingMcpAuthorizationGroup(null);
+        }
+    };
+
     const renderToolRow = (tool: any, category: string) => {
         const hasConfig = tool.config_schema?.fields?.length > 0 || tool.type === 'mcp';
         const hasAgentOverride = tool.agent_config && Object.keys(tool.agent_config).length > 0;
@@ -449,6 +502,9 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                 const mixed = enabledCount > 0 && enabledCount < allCatTools.length;
                 const expanded = expandedCategories.has(category) || !!toolSearch.trim();
                 const visibleCount = (catTools as any[]).length;
+                const smitheryAuthorizationTool = getSmitheryAuthorizationTool(allCatTools);
+                const authorizationState = mcpAuthorizationStates[category] || 'unknown';
+                const checkingAuthorization = checkingMcpAuthorizationGroup === category;
                 return (
                     <div key={category} style={{
                         border: '1px solid var(--border-subtle)',
@@ -519,6 +575,29 @@ export default function ToolsManager({ agentId, canManage = false }: { agentId: 
                                 </div>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
+                                {canManage && smitheryAuthorizationTool && (
+                                    <>
+                                        {authorizationState === 'connected' && (
+                                            <span style={{ fontSize: '10px', background: 'rgba(34,197,94,0.14)', color: '#16a34a', borderRadius: '4px', padding: '2px 6px', fontWeight: 600 }}>
+                                                {t('agent.tools.authorized', 'Authorized')}
+                                            </span>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => void checkMcpAuthorization(category, allCatTools)}
+                                            disabled={checkingAuthorization}
+                                            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', cursor: checkingAuthorization ? 'wait' : 'pointer', color: 'var(--text-secondary)', opacity: checkingAuthorization ? 0.65 : 1 }}
+                                            title={t('agent.tools.checkAuthorization', 'Check MCP authorization')}
+                                        >
+                                            {checkingAuthorization
+                                                ? t('common.loading', 'Loading...')
+                                                : t(
+                                                    `agent.tools.${getSmitheryAuthorizationButtonLabel(authorizationState).replace('-', '')}`,
+                                                    getSmitheryAuthorizationButtonLabel(authorizationState),
+                                                )}
+                                        </button>
+                                    </>
+                                )}
                                 {CATEGORY_CONFIG_SCHEMAS[meta.configCategory] && canManage && (
                                     <button
                                         type="button"

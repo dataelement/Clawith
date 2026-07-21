@@ -5,10 +5,11 @@ import uuid
 from loguru import logger
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 
-from app.dao import query_dao
+from app.database import async_session
 from app.models.agent import Agent, AgentPermission
 from app.models.org import AgentAgentRelationship
 from app.models.skill import Skill
@@ -39,6 +40,65 @@ async def _append_seed_marker(line: str) -> None:
     updated = existing if existing.endswith("\n") or not existing else existing + "\n"
     updated += f"{line}\n"
     await storage.write_text(SEED_MARKER_KEY, updated, encoding="utf-8")
+
+
+async def _repair_default_agent_storage(
+    db: AsyncSession,
+    agent: Agent,
+    *,
+    soul_content: str,
+    skill_folders: list[str],
+    all_skills: dict[str, Skill],
+    overwrite_skill_files: bool = False,
+) -> bool:
+    """Restore missing storage for an existing default agent without overwriting user files."""
+    storage = get_storage_backend()
+    agent_prefix = agent_manager._agent_storage_prefix(agent.id)
+    skills_prefix = f"{agent_prefix}/skills"
+    agent_dir_exists = await storage.is_dir(agent_prefix)
+    skills_dir_exists = await storage.is_dir(skills_prefix)
+
+    if agent_dir_exists and skills_dir_exists:
+        return False
+
+    if not agent_dir_exists:
+        await agent_manager.initialize_agent_files(db, agent)
+        await store_agent_bytes(
+            agent.id,
+            "soul.md",
+            (soul_content.strip() + "\n").encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+
+    # Keep the directory visible even if the configured seed skills are absent
+    # from the database. Local and object storage both materialize the prefix on
+    # the first write.
+    if not skills_dir_exists:
+        await storage.write_text(f"{skills_prefix}/.gitkeep", "", encoding="utf-8")
+
+    folders_to_copy = set(skill_folders)
+    folders_to_copy.update(name for name, skill in all_skills.items() if skill.is_default)
+    for folder_name in folders_to_copy:
+        skill = all_skills.get(folder_name)
+        if not skill:
+            continue
+        for skill_file in skill.files:
+            target_key = f"{skills_prefix}/{skill.folder_name}/{skill_file.path}"
+            if not overwrite_skill_files and await storage.is_file(target_key):
+                continue
+            await store_agent_bytes(
+                agent.id,
+                f"skills/{skill.folder_name}/{skill_file.path}",
+                skill_file.content.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+
+    logger.warning(
+        "[AgentSeeder] Repaired missing default-agent storage: "
+        f"agent={agent.id} root_missing={not agent_dir_exists} "
+        f"skills_missing={not skills_dir_exists}"
+    )
+    return True
 
 
 # ── Soul definitions ────────────────────────────────────────────
@@ -166,7 +226,7 @@ When a daily or weekly report is triggered:
 3. Identify KRs with `behind` or `at_risk` status
 4. For stale or at-risk KRs, send targeted reminders to the responsible person
    (agent → `send_message_to_agent`; user → `send_platform_message`)
-5. Generate and post the report via `generate_okr_report` + `plaza_create_post`
+5. Generate the report via `generate_okr_report`, then use its bounded receipt/reference for the requested delivery path
 
 ## Communication Style
 - Professional and concise
@@ -202,16 +262,16 @@ MEESEEKS_SKILLS = [
 
 
 async def seed_default_agents():
-    """Create Morty & Meeseeks if they don't already exist.
+    """Create missing default agents and repair missing storage for existing ones.
 
-    Idempotency is guarded by a '.seeded' marker file in AGENT_DATA_DIR rather
-    than by agent name, so the seeder does NOT re-run if the user renames or
-    deletes the default agents.  Delete the marker manually to re-seed.
+    Database rows are the duplicate-creation guard. The storage marker is only
+    an operational hint because deployments can switch or lose storage while
+    preserving the database.
     """
-    async with query_dao.session() as db:
+    async with async_session() as db:
 
         # Get platform admin as creator
-        admin_result = await query_dao.execute(db, 
+        admin_result = await db.execute(
             select(User).where(User.role == "platform_admin").limit(1)
         )
         admin = admin_result.scalar_one_or_none()
@@ -222,7 +282,7 @@ async def seed_default_agents():
         # DB-backed idempotency is the source of truth. The storage marker can
         # disappear when deployments switch volumes/backends, so it is only a
         # fast-path hint and must never be the only duplicate guard.
-        existing_result = await query_dao.execute(db, 
+        existing_result = await db.execute(
             select(Agent)
             .where(
                 Agent.tenant_id == admin.tenant_id,
@@ -235,13 +295,6 @@ async def seed_default_agents():
         existing_by_name: dict[str, Agent] = {}
         for agent in existing_result.scalars().all():
             existing_by_name.setdefault(agent.name, agent)
-
-        if "Morty" in existing_by_name and "Meeseeks" in existing_by_name:
-            logger.info("[AgentSeeder] Default agents already exist in DB, skipping creation")
-            await _append_seed_marker(
-                f"morty={existing_by_name['Morty'].id}\nmeeseeks={existing_by_name['Meeseeks'].id}"
-            )
-            return
 
         created_agents: list[Agent] = []
         created_names: set[str] = set()
@@ -256,7 +309,7 @@ async def seed_default_agents():
                 tenant_id=admin.tenant_id,
                 status="idle",
             )
-            query_dao.add(db, morty)
+            db.add(morty)
             created_agents.append(morty)
             created_names.add("Morty")
         else:
@@ -272,71 +325,56 @@ async def seed_default_agents():
                 tenant_id=admin.tenant_id,
                 status="idle",
             )
-            query_dao.add(db, meeseeks)
+            db.add(meeseeks)
             created_agents.append(meeseeks)
             created_names.add("Meeseeks")
         else:
             meeseeks = existing_by_name["Meeseeks"]
 
-        await query_dao.flush(db)  # get IDs
+        await db.flush()  # get IDs
 
         # ── Participant identities ──
         from app.models.participant import Participant
         for agent in created_agents:
-            query_dao.add(db, Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
-        await query_dao.flush(db)
+            db.add(Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
+        await db.flush()
 
         # ── Permissions (company-wide, manage) ──
         for agent in created_agents:
-            query_dao.add(db, AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
-
-        for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
-            if agent.name not in created_names:
-                continue
-            await agent_manager.initialize_agent_files(db, agent)
-            await store_agent_bytes(
-                agent.id,
-                "soul.md",
-                (soul_content.strip() + "\n").encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
+            db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
 
         # ── Assign skills ──
-        all_skills_result = await query_dao.execute(db, 
+        all_skills_result = await db.execute(
             select(Skill).options(selectinload(Skill.files))
         )
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
-        for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
-            if agent.name not in created_names:
-                continue
-            # Always include default skills
-            folders_to_copy = set(skill_folders)
-            for fname, skill in all_skills.items():
-                if skill.is_default:
-                    folders_to_copy.add(fname)
-
-            for fname in folders_to_copy:
-                skill = all_skills.get(fname)
-                if not skill:
-                    continue
-                for sf in skill.files:
-                    await store_agent_bytes(
-                        agent.id,
-                        f"skills/{skill.folder_name}/{sf.path}",
-                        sf.content.encode("utf-8"),
-                        content_type="text/plain; charset=utf-8",
-                    )
+        await _repair_default_agent_storage(
+            db,
+            morty,
+            soul_content=MORTY_SOUL,
+            skill_folders=MORTY_SKILLS,
+            all_skills=all_skills,
+            overwrite_skill_files=morty.name in created_names,
+        )
+        await _repair_default_agent_storage(
+            db,
+            meeseeks,
+            soul_content=MEESEEKS_SOUL,
+            skill_folders=MEESEEKS_SKILLS,
+            all_skills=all_skills,
+            overwrite_skill_files=meeseeks.name in created_names,
+        )
 
         # ── Assign all default tools ──
-        default_tools_result = await query_dao.execute(db, 
-            select(Tool).where(Tool.is_default == True)
+        default_tools_result = await db.execute(
+            select(Tool).where(Tool.is_default)
         )
         default_tools = default_tools_result.scalars().all()
 
         for agent in created_agents:
             for tool in default_tools:
-                query_dao.add(db, AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
+                db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
 
         # ── Mutual relationships ──
         relationship_specs = [
@@ -352,14 +390,14 @@ async def seed_default_agents():
             ),
         ]
         for agent_id, target_agent_id, description in relationship_specs:
-            rel_result = await query_dao.execute(db, 
+            rel_result = await db.execute(
                 select(AgentAgentRelationship).where(
                     AgentAgentRelationship.agent_id == agent_id,
                     AgentAgentRelationship.target_agent_id == target_agent_id,
                 )
             )
             if not rel_result.scalar_one_or_none():
-                query_dao.add(db, AgentAgentRelationship(
+                db.add(AgentAgentRelationship(
                     agent_id=agent_id,
                     target_agent_id=target_agent_id,
                     relation="collaborator",
@@ -368,7 +406,7 @@ async def seed_default_agents():
 
 
 
-        await query_dao.commit(db)
+        await db.commit()
         logger.info(
             "[AgentSeeder] Default agent seeding complete: "
             f"Morty ({morty.id}), Meeseeks ({meeseeks.id}), created={len(created_agents)}"
@@ -403,11 +441,11 @@ async def seed_okr_agent():
         logger.info("[AgentSeeder] OKR Agent already seeded, skipping")
         return
 
-    async with query_dao.session() as db:
+    async with async_session() as db:
         # Abort if a non-stopped OKR Agent already exists in the DB.
         # We check is_system=True specifically so a user-created agent named
         # "OKR Agent" does not trigger this guard and block the real seeder.
-        existing = await query_dao.execute(db, 
+        existing = await db.execute(
             select(Agent)
             .where(
                 Agent.name == "OKR Agent",
@@ -423,7 +461,7 @@ async def seed_okr_agent():
             return
 
         # Get platform admin as creator
-        admin_result = await query_dao.execute(db, 
+        admin_result = await db.execute(
             select(User).where(User.role == "platform_admin").limit(1)
         )
         admin = admin_result.scalar_one_or_none()
@@ -455,38 +493,38 @@ async def seed_okr_agent():
         )
         
         try:
-            query_dao.add(db, okr_agent)
-            await query_dao.flush(db)
+            db.add(okr_agent)
+            await db.flush()
         except IntegrityError:
-            await query_dao.rollback(db)
+            await db.rollback()
             logger.info("[AgentSeeder] OKR Agent was created concurrently (or exists with same name), skipping")
             await _append_seed_marker("okr_agent=existing")
             return
 
         # ── Link OKR Agent ID to OKRSettings ──
         if admin.tenant_id:
-            settings_res = await query_dao.execute(db, select(OKRSettings).where(OKRSettings.tenant_id == admin.tenant_id))
+            settings_res = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == admin.tenant_id))
             okr_settings = settings_res.scalar_one_or_none()
             if not okr_settings:
                 okr_settings = OKRSettings(tenant_id=admin.tenant_id)
-                query_dao.add(db, okr_settings)
+                db.add(okr_settings)
             okr_settings.okr_agent_id = okr_agent.id
-            await query_dao.flush(db)
+            await db.flush()
 
         # ── Participant identity ──
         from app.models.participant import Participant
-        query_dao.add(db, Participant(
+        db.add(Participant(
             type="agent",
             ref_id=okr_agent.id,
             display_name=okr_agent.name,
             avatar_url=okr_agent.avatar_url,
         ))
-        await query_dao.flush(db)
+        await db.flush()
 
         # ── Permission: company-wide 'use' access.
         # Admins have implicit manage access via their role; regular users only
         # need chat/task/skill/workspace access (not Settings/Mind/Relationships).
-        query_dao.add(db, AgentPermission(agent_id=okr_agent.id, scope_type="company", access_level="use"))
+        db.add(AgentPermission(agent_id=okr_agent.id, scope_type="company", access_level="use"))
 
         # ── Workspace setup ──
         await agent_manager.initialize_agent_files(db, okr_agent)
@@ -512,12 +550,12 @@ async def seed_okr_agent():
 
         # ── Assign default tools + OKR-specific tools ──
         # Default tools: all tools where is_default=True
-        default_tools_result = await query_dao.execute(db, 
-            select(Tool).where(Tool.is_default == True)
+        default_tools_result = await db.execute(
+            select(Tool).where(Tool.is_default)
         )
         default_tools = default_tools_result.scalars().all()
         for tool in default_tools:
-            query_dao.add(db, AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
+            db.add(AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
 
         # OKR-specific tools: assigned explicitly (is_default=False)
         # All 10 OKR tools: 3 global read/self-report + 3 scheduler + 4 management (OKR Agent exclusive)
@@ -539,30 +577,30 @@ async def seed_okr_agent():
             "upsert_member_daily_report",
         ]
         for tool_name in okr_tool_names:
-            tool_result = await query_dao.execute(db, select(Tool).where(Tool.name == tool_name))
+            tool_result = await db.execute(select(Tool).where(Tool.name == tool_name))
             tool = tool_result.scalar_one_or_none()
             if tool:
                 # Check if not already added (e.g. if it becomes default in future)
-                existing_at = await query_dao.execute(db, 
+                existing_at = await db.execute(
                     select(AgentTool).where(
                         AgentTool.agent_id == okr_agent.id,
                         AgentTool.tool_id == tool.id,
                     )
                 )
                 if not existing_at.scalar_one_or_none():
-                    query_dao.add(db, AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
+                    db.add(AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
                     logger.info(f"[AgentSeeder] Assigned OKR tool '{tool_name}' to OKR Agent")
             else:
                 logger.warning(f"[AgentSeeder] OKR tool '{tool_name}' not found in DB — run tool seeder first")
 
-        await query_dao.commit(db)
+        await db.commit()
         logger.info(f"[AgentSeeder] Created OKR Agent ({okr_agent.id})")
 
         # ── System cron triggers for precise report scheduling ──
         # These triggers fire OKR Agent at exact times (supplement the 4-hour heartbeat).
         # is_system=True prevents users from deleting them (only enable/disable).
         await _seed_okr_triggers(db, okr_agent.id)
-        await query_dao.commit(db)
+        await db.commit()
 
     # Update seed marker
     await _append_seed_marker(f"okr_agent={okr_agent.id}")
@@ -653,7 +691,7 @@ async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
 
     for t in triggers_to_create:
         # Idempotent: skip if trigger with same name already exists
-        existing = await query_dao.execute(db, 
+        existing = await db.execute(
             select(AgentTrigger).where(
                 AgentTrigger.agent_id == agent_id,
                 AgentTrigger.name == t["name"],
@@ -674,7 +712,7 @@ async def _seed_okr_triggers(db, agent_id: uuid.UUID) -> None:
             focus_ref=system_focus_ref,
             is_enabled=True,
         )
-        query_dao.add(db, trigger)
+        db.add(trigger)
         logger.info(f"[AgentSeeder] Created system trigger '{t['name']}' for OKR Agent")
 
 
@@ -691,8 +729,8 @@ async def _ensure_okr_tool_rows_exist(required_tool_names: list[str]) -> dict[st
     seeding if any required OKR tool row is missing, then re-query the rows.
     """
     tool_rows: dict[str, Tool] = {}
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, select(Tool).where(Tool.name.in_(required_tool_names)))
+    async with async_session() as db:
+        result = await db.execute(select(Tool).where(Tool.name.in_(required_tool_names)))
         tool_rows = {tool.name: tool for tool in result.scalars().all()}
 
     missing = [name for name in required_tool_names if name not in tool_rows]
@@ -702,8 +740,8 @@ async def _ensure_okr_tool_rows_exist(required_tool_names: list[str]) -> dict[st
         )
         from app.services.tool_seeder import seed_builtin_tools
         await seed_builtin_tools()
-        async with query_dao.session() as db:
-            result = await query_dao.execute(db, select(Tool).where(Tool.name.in_(required_tool_names)))
+        async with async_session() as db:
+            result = await db.execute(select(Tool).where(Tool.name.in_(required_tool_names)))
             tool_rows = {tool.name: tool for tool in result.scalars().all()}
 
     return tool_rows
@@ -723,7 +761,7 @@ async def _sync_okr_triggers_with_settings(db, agent_id: uuid.UUID, settings: OK
     except Exception:
         logger.warning(f"[AgentSeeder] Invalid OKR daily_report_time {settings.daily_report_time}; using 18:00")
 
-    result = await query_dao.execute(db, 
+    result = await db.execute(
         select(AgentTrigger).where(
             AgentTrigger.agent_id == agent_id,
             AgentTrigger.name.in_([
@@ -794,8 +832,8 @@ async def patch_existing_okr_agent() -> None:
     own system OKR Agent. Earlier logic only patched the latest one globally,
     which left older tenant-specific OKR Agents missing newly added tools.
     """
-    async with query_dao.session() as db:
-        result = await query_dao.execute(db, 
+    async with async_session() as db:
+        result = await db.execute(
             select(Agent)
             .where(Agent.name == "OKR Agent", Agent.is_system == True, Agent.status != "stopped")  # noqa: E712
             .order_by(Agent.created_at.desc())
@@ -803,7 +841,7 @@ async def patch_existing_okr_agent() -> None:
         agents = result.scalars().all()
         if not agents:
             # Fallback for deployments that don't have is_system=True yet (before the migration)
-            result = await query_dao.execute(db, 
+            result = await db.execute(
                 select(Agent)
                 .where(Agent.name == "OKR Agent", Agent.status != "stopped")
                 .order_by(Agent.created_at.desc())
@@ -827,11 +865,11 @@ async def patch_existing_okr_agent() -> None:
 
             okr_settings = None
             if agent.tenant_id:
-                settings_res = await query_dao.execute(db, select(OKRSettings).where(OKRSettings.tenant_id == agent.tenant_id))
+                settings_res = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == agent.tenant_id))
                 okr_settings = settings_res.scalar_one_or_none()
                 if not okr_settings:
                     okr_settings = OKRSettings(tenant_id=agent.tenant_id)
-                    query_dao.add(db, okr_settings)
+                    db.add(okr_settings)
                 if okr_settings.okr_agent_id != agent.id:
                     okr_settings.okr_agent_id = agent.id
                     changed = True
@@ -842,18 +880,18 @@ async def patch_existing_okr_agent() -> None:
                 changed = True
                 logger.info(f"[AgentSeeder] Patched OKR Agent {agent.id}: set is_system=True")
 
-            await query_dao.flush(db)
+            await db.flush()
 
             for tool_name in all_okr_tools:
                 tool = tools_by_name.get(tool_name)
                 if not tool:
                     logger.warning(f"[AgentSeeder] OKR tool '{tool_name}' not found — run tool seeder first")
                     continue
-                at_res = await query_dao.execute(db, 
+                at_res = await db.execute(
                     select(AgentTool).where(AgentTool.agent_id == agent.id, AgentTool.tool_id == tool.id)
                 )
                 if not at_res.scalar_one_or_none():
-                    query_dao.add(db, AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
+                    db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
                     changed = True
                     logger.info(f"[AgentSeeder] Patched OKR Agent {agent.id}: assigned tool '{tool_name}'")
 
@@ -867,7 +905,7 @@ async def patch_existing_okr_agent() -> None:
                 changed_any = True
 
         if changed_any:
-            await query_dao.commit(db)
+            await db.commit()
             logger.info("[AgentSeeder] OKR Agent patch complete")
 
 
@@ -882,9 +920,9 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
         tenant_id:  The tenant to create the OKR Agent for.
         creator_id: The user (org admin) who enabled OKR — becomes the agent creator.
     """
-    async with query_dao.session() as db:
+    async with async_session() as db:
         # ── Idempotency check: abort if OKR Agent already exists for this tenant ──
-        existing = await query_dao.execute(db, 
+        existing = await db.execute(
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
                 Agent.name == "OKR Agent",
@@ -916,36 +954,36 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
             is_system=True,
             heartbeat_enabled=False,
         )
-        query_dao.add(db, okr_agent)
-        await query_dao.flush(db)
+        db.add(okr_agent)
+        await db.flush()
 
         # ── Participant identity record ──
         from app.models.participant import Participant  # noqa: F401
-        query_dao.add(db, Participant(
+        db.add(Participant(
             type="agent",
             ref_id=okr_agent.id,
             display_name=okr_agent.name,
             avatar_url=okr_agent.avatar_url,
         ))
-        await query_dao.flush(db)
+        await db.flush()
 
         # ── Permission: company-wide 'use' access ──
-        query_dao.add(db, AgentPermission(
+        db.add(AgentPermission(
             agent_id=okr_agent.id,
             scope_type="company",
             access_level="use",
         ))
 
         # ── Link OKR Agent ID to OKRSettings ──
-        settings_res = await query_dao.execute(db, 
+        settings_res = await db.execute(
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         okr_settings = settings_res.scalar_one_or_none()
         if not okr_settings:
             okr_settings = OKRSettings(tenant_id=tenant_id)
-            query_dao.add(db, okr_settings)
+            db.add(okr_settings)
         okr_settings.okr_agent_id = okr_agent.id
-        await query_dao.flush(db)
+        await db.flush()
 
         # ── Workspace setup ──
         await agent_manager.initialize_agent_files(db, okr_agent)
@@ -970,11 +1008,11 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
 
 
         # ── Assign default tools ──
-        default_tools_result = await query_dao.execute(db, 
+        default_tools_result = await db.execute(
             select(Tool).where(Tool.is_default == True)  # noqa: E712
         )
         for tool in default_tools_result.scalars().all():
-            query_dao.add(db, AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
+            db.add(AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
 
         # ── Assign OKR-specific tools ──
         okr_tool_names = [
@@ -987,14 +1025,14 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
         for tool_name in okr_tool_names:
             tool = tools_by_name.get(tool_name)
             if tool:
-                existing_at = await query_dao.execute(db, 
+                existing_at = await db.execute(
                     select(AgentTool).where(
                         AgentTool.agent_id == okr_agent.id,
                         AgentTool.tool_id == tool.id,
                     )
                 )
                 if not existing_at.scalar_one_or_none():
-                    query_dao.add(db, AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
+                    db.add(AgentTool(agent_id=okr_agent.id, tool_id=tool.id, enabled=True))
             else:
                 logger.warning(
                     f"[AgentSeeder] OKR tool '{tool_name}' not found — run tool seeder first"
@@ -1005,6 +1043,6 @@ async def seed_okr_agent_for_tenant(tenant_id: uuid.UUID, creator_id: uuid.UUID)
         await _sync_okr_triggers_with_settings(db, okr_agent.id, okr_settings)
         from app.services.okr_agent_hook import sync_okr_agent_platform_members
         await sync_okr_agent_platform_members(db, tenant_id)
-        await query_dao.commit(db)
+        await db.commit()
         logger.info(f"[AgentSeeder] Created OKR Agent for tenant {tenant_id} ({okr_agent.id})")
         logger.info(f"[AgentSeeder] OKR triggers created for tenant {tenant_id}")

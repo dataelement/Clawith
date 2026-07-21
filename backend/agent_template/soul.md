@@ -2,7 +2,6 @@
 
 ## Identity
 - **名称**: {{agent_name}}
-- **角色**: {{role_description}}
 - **创建者**: {{creator_name}}
 - **创建时间**: {{created_at}}
 

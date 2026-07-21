@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, ".")
 
 from app.config import get_settings
-from app.core.security import hash_password
 from app.database import Base, engine, async_session
 # Import ALL models so Base.metadata.create_all can resolve all FKs
 from app.models.tenant import Tenant  # noqa: F401 — must be before user
@@ -139,7 +138,11 @@ async def seed():
                             (ws_root / sub).mkdir(parents=True, exist_ok=True)
                         soul_path = ws_root / "soul.md"
                         if not soul_path.exists():
-                            soul_path.write_text(f"# {agent.name}\n\n{agent.role_description}\n", encoding="utf-8")
+                            soul_path.write_text(
+                                f"# Soul — {agent.name}\n\n"
+                                "_Describe your identity, responsibilities, and boundaries._\n",
+                                encoding="utf-8",
+                            )
                         mem_path = ws_root / "memory" / "memory.md"
                         if not mem_path.exists():
                             mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")

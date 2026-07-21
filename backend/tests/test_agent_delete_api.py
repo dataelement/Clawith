@@ -69,6 +69,10 @@ class TaskCleanupDB(RecordingDB):
     def __init__(self):
         super().__init__(
             required_cleanup=[
+                "UPDATE chat_messages SET agent_id = NULL WHERE agent_id = :aid",
+                "UPDATE chat_sessions SET agent_id = NULL, is_primary = false, deleted_at = COALESCE(deleted_at, now()) WHERE agent_id = :aid",
+                "UPDATE chat_sessions SET peer_agent_id = NULL, is_primary = false, deleted_at = COALESCE(deleted_at, now()) WHERE peer_agent_id = :aid",
+                "UPDATE group_members SET removed_at = COALESCE(removed_at, now()) WHERE participant_id IN (SELECT id FROM participants WHERE type = 'agent' AND ref_id = :aid)",
                 "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE agent_id = :aid)",
                 "DELETE FROM tasks WHERE agent_id = :aid",
                 "DELETE FROM published_pages WHERE agent_id = :aid",
@@ -167,6 +171,8 @@ async def test_delete_agent_cleans_remaining_foreign_key_rows(monkeypatch):
     assert db.executed_sql.index("DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE agent_id = :aid)") < (
         db.executed_sql.index("DELETE FROM tasks WHERE agent_id = :aid")
     )
+    assert "DELETE FROM chat_messages WHERE agent_id = :aid" not in db.executed_sql
+    assert "DELETE FROM participants WHERE type = 'agent' AND ref_id = :aid" not in db.executed_sql
 
 
 @pytest.mark.asyncio

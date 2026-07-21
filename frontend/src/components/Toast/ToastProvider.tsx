@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { IconAlertTriangle, IconCheck, IconInfoCircle, IconX } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 
@@ -49,13 +49,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         setItems((list) => [...list, { id, type, message, details: options.details, duration }]);
     }, []);
 
-    const value: ToastContextValue = {
+    const value: ToastContextValue = useMemo(() => ({
         show,
         info: (m, o) => show('info', m, o),
         success: (m, o) => show('success', m, o),
         warning: (m, o) => show('warning', m, o),
         error: (m, o) => show('error', m, o),
-    };
+    }), [show]);
 
     return (
         <ToastContext.Provider value={value}>

@@ -57,5 +57,5 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 EXPOSE 8000
-# entrypoint.sh runs `alembic upgrade head` then `uvicorn`
+# entrypoint.sh bootstraps Alembic and LangGraph checkpoints before `uvicorn`
 ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]

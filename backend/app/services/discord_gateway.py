@@ -9,14 +9,13 @@ Requires:  pip install discord.py>=2.3.0
 """
 
 import asyncio
-import os
 import uuid
 from typing import Dict, Optional
 
 from loguru import logger
 from sqlalchemy import select
 
-from app.dao import query_dao
+from app.database import async_session
 from app.models.channel_config import ChannelConfig
 
 try:
@@ -114,9 +113,6 @@ class DiscordGatewayManager:
                 for chunk in chunks:
                     await message.reply(chunk, mention_author=False)
 
-        # Run the bot in a background task
-        proxy = os.environ.get("DISCORD_PROXY") or os.environ.get("HTTPS_PROXY") or None
-
         async def _run_bot():
             try:
                 # discord.py supports proxy via the `proxy` kwarg on Client.start
@@ -142,14 +138,16 @@ class DiscordGatewayManager:
         message: "discord.Message",
         user_text: str,
     ) -> Optional[str]:
-        """Process an incoming Discord message through the agent LLM."""
+        """Attach an incoming Discord message to the durable Agent Runtime."""
         try:
-            from app.models.audit import ChatMessage
+            from app.api.feishu import _load_agent_and_model
             from app.models.agent import Agent as AgentModel
-            from app.api.feishu import _call_llm_with_config, _load_agent_and_model
+            from app.services.agent_runtime.channel_chat import (
+                channel_message_id,
+                enqueue_channel_chat_runtime,
+            )
             from app.services.channel_session import find_or_create_channel_session
-            from datetime import datetime, timezone
-            import uuid as _uuid
+            from app.services.channel_user_service import channel_user_service
 
             sender_id = str(message.author.id)
             channel_id = str(message.channel.id)
@@ -159,25 +157,18 @@ class DiscordGatewayManager:
                 else f"discord_{channel_id}_{sender_id}"
             )
 
-            async with query_dao.session() as db:
+            async with async_session() as db:
                 # Load agent
-                agent_r = await query_dao.execute(db, 
+                agent_r = await db.execute(
                     select(AgentModel).where(AgentModel.id == agent_id)
                 )
                 agent_obj = agent_r.scalar_one_or_none()
                 if not agent_obj:
                     return "Agent not found."
-                creator_id = agent_obj.creator_id
-                from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-                ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
-                # Find or create platform user for this Discord sender via unified service
-                from app.services.channel_user_service import channel_user_service
-                
                 _discord_display_name = message.author.display_name or message.author.name
                 _display = _discord_display_name or f"Discord User {sender_id[:8]}"
                 _extra_info = {"name": _display}
-                
                 _platform_user = await channel_user_service.resolve_channel_user(
                     db=db,
                     agent=agent_obj,
@@ -185,14 +176,17 @@ class DiscordGatewayManager:
                     external_user_id=sender_id,
                     extra_info=_extra_info,
                 )
-                
-                # Update display_name if we now have a better name
-                if _discord_display_name and _platform_user.display_name and _platform_user.display_name.startswith("Discord User ") and _platform_user.display_name != _discord_display_name:
+
+                if (
+                    _discord_display_name
+                    and _platform_user.display_name
+                    and _platform_user.display_name.startswith("Discord User ")
+                    and _platform_user.display_name != _discord_display_name
+                ):
                     _platform_user.display_name = _discord_display_name
-                    await query_dao.flush(db)
+                    await db.flush()
                 platform_user_id = _platform_user.id
 
-                # Find or create session
                 sess = await find_or_create_channel_session(
                     db=db,
                     agent_id=agent_id,
@@ -200,68 +194,30 @@ class DiscordGatewayManager:
                     external_conv_id=conv_id,
                     source_channel="discord",
                     first_message_title=user_text,
+                    created_by_user_id=platform_user_id,
                 )
-                session_conv_id = str(sess.id)
-
-                # Load history
-                history_r = await query_dao.execute(db, 
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.agent_id == agent_id,
-                        ChatMessage.conversation_id == session_conv_id,
-                    )
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(ctx_size)
-                )
-                from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
-                history = _conv(reversed(history_r.scalars().all()))
-
-                # Save user message
-                query_dao.add(db, ChatMessage(
-                    agent_id=agent_id,
-                    user_id=platform_user_id,
-                    role="user",
+                _, model, _ = await _load_agent_and_model(db, agent_id)
+                await enqueue_channel_chat_runtime(
+                    db,
+                    agent=agent_obj,
+                    user=_platform_user,
+                    session=sess,
+                    model=model,
                     content=user_text,
-                    conversation_id=session_conv_id,
-                ))
-                sess.last_message_at = datetime.now(timezone.utc)
-
-                # Pre-load agent/model before releasing connection
-                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
-
-                await query_dao.commit(db)
-                # ── Phase 1 complete: release connection before slow LLM call ──
-
-            # ── Phase 2: LLM call (no DB session) ──
-            reply_text = await _call_llm_with_config(
-                _agent_model, _llm_model, _fallback_model,
-                agent_id,
-                user_text,
-                history=history,
-                user_id=platform_user_id,
-                session_id=session_conv_id,
-            )
-            logger.info(f"[Discord GW] LLM reply for {agent_id}: {reply_text[:80]}")
-
-            # ── Phase 3: Save reply (new short transaction) ──
-            async with query_dao.session() as _save_db:
-                query_dao.add(_save_db, ChatMessage(
-                    agent_id=agent_id,
-                    user_id=platform_user_id,
-                    role="assistant",
-                    content=reply_text,
-                    conversation_id=session_conv_id,
-                ))
-                from app.models.chat_session import ChatSession
-                _sess_r = await query_dao.execute(_save_db, 
-                    select(ChatSession).where(ChatSession.id == _uuid.UUID(session_conv_id))
+                    source_channel="discord",
+                    channel_delivery_target={
+                        "channel_id": channel_id,
+                        "reply_to_message_id": str(message.id),
+                    },
+                    message_id=channel_message_id(
+                        agent_id,
+                        "discord",
+                        str(message.id),
+                    ),
                 )
-                _sess_fresh = _sess_r.scalar_one_or_none()
-                if _sess_fresh:
-                    _sess_fresh.last_message_at = datetime.now(timezone.utc)
-                await query_dao.commit(_save_db)
 
-            return reply_text
+                await db.commit()
+            return None
 
         except Exception as e:
             logger.exception(
@@ -290,10 +246,10 @@ class DiscordGatewayManager:
             logger.info("[Discord GW] discord.py not installed, skipping Discord Gateway init")
             return
         logger.info("[Discord GW] Initializing all active Discord Gateway channels...")
-        async with query_dao.session() as db:
-            result = await query_dao.execute(db, 
+        async with async_session() as db:
+            result = await db.execute(
                 select(ChannelConfig).where(
-                    ChannelConfig.is_configured == True,
+                    ChannelConfig.is_configured.is_(True),
                     ChannelConfig.channel_type == "discord",
                 )
             )

@@ -4,8 +4,10 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import socket
+from typing import Self
 import uuid
 
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 from app.services.sandbox.config import SandboxConfig, SandboxType
@@ -86,6 +88,7 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://clawith:clawith@localhost:5432/clawith"
+    DATABASE_AUTO_CREATE_TABLES: bool = False
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
 
@@ -123,6 +126,45 @@ class Settings(BaseSettings):
     BCRYPT_WORKERS: int = 4
     LOGIN_SLOW_LOG_THRESHOLD_MS: int = 1000
 
+    # Agent Runtime
+    AGENT_RUNTIME_V2_ENABLED: bool = True
+    AGENT_RUNTIME_V2_AGENT_IDS: str = ""
+    AGENT_RUNTIME_V2_SOURCE_TYPES: str = "task"
+    AGENT_RUNTIME_GRAPH_NAME: str = "clawith_agent_runtime"
+    AGENT_RUNTIME_GRAPH_VERSION: str = "v1"
+    LANGGRAPH_CHECKPOINT_DATABASE_URL: str | None = None
+    LANGGRAPH_AES_KEY: str | None = None
+    # Maximum number of Agent Run commands executed concurrently by one
+    # Runtime worker process. Thread/lane locks still serialize conflicting
+    # Runs; this is the shared capacity across all eligible Agents.
+    AGENT_RUNTIME_COMMAND_CONCURRENCY: int = Field(default=10, gt=0, le=100)
+    AGENT_RUNTIME_COMMAND_CLAIM_TTL_SECONDS: int = Field(default=60, gt=0)
+    AGENT_RUNTIME_COMMAND_CLAIM_RENEW_SECONDS: int = Field(default=20, gt=0)
+    AGENT_RUNTIME_COMMAND_MAX_ATTEMPTS: int = Field(default=5, gt=0)
+    AGENT_RUNTIME_ASYNC_TOOL_POLL_SCAN_SECONDS: float = Field(default=0.25, gt=0)
+    AGENT_RUNTIME_CHANNEL_DELIVERY_CLAIM_TTL_SECONDS: int = Field(default=120, gt=0)
+    AGENT_RUNTIME_CHANNEL_DELIVERY_MAX_ATTEMPTS: int = Field(default=8, gt=0)
+    AGENT_RUNTIME_CHANNEL_DELIVERY_SCAN_SECONDS: float = Field(default=0.5, gt=0)
+    AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO: float = Field(default=0.85, gt=0, le=1)
+    AGENT_RUNTIME_SESSION_RECENT_MESSAGES: int = Field(default=20, gt=0)
+    AGENT_RUNTIME_SESSION_COMPACT_MESSAGE_THRESHOLD: int | None = Field(default=None, gt=0)
+    AGENT_RUNTIME_SESSION_COMPACT_SCAN_SECONDS: float = Field(default=5.0, gt=0)
+    AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE: int = Field(default=50, gt=0, le=500)
+    AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD: int | None = Field(default=None, gt=0)
+    AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES: int | None = Field(default=None, gt=0)
+    AGENT_RUNTIME_VERIFY_REPAIR_COMPACT_ROUNDS: int | None = Field(default=None, gt=0)
+    AGENT_RUNTIME_MODEL_CAPABILITY_REFRESH_SECONDS: int = Field(default=86400, gt=0)
+    AGENT_RUNTIME_FALLBACK_CONTEXT_WINDOW_TOKENS: int = Field(default=131072, gt=0)
+    MULTI_AGENT_COMPACT_MODEL_ID: uuid.UUID | None = None
+    MULTI_AGENT_PLANNING_MODEL_ID: uuid.UUID | None = None
+    GROUP_CONTEXT_ANNOUNCEMENT_MAX_CHARS: int = Field(default=12000, gt=0)
+    GROUP_CONTEXT_MEMORY_MAX_CHARS: int = Field(default=12000, gt=0)
+    GROUP_CONTEXT_WORKSPACE_MAX_ENTRIES: int = Field(default=100, gt=0)
+    AGENT_RUNTIME_CHECKPOINT_RETENTION_DAYS: int = Field(default=30, gt=0)
+    AGENT_RUNTIME_EVENT_PAYLOAD_MAX_BYTES: int = Field(default=16384, gt=0)
+    AGENT_RUNTIME_TOOL_RESULT_INLINE_MAX_BYTES: int = Field(default=8192, gt=0)
+    MAX_AGENT_CYCLE_COUNT: int = Field(default=5, gt=0)
+
     # Docker (for Agent containers)
     DOCKER_NETWORK: str = "clawith_network"
     OPENCLAW_IMAGE: str = "openclaw:local"
@@ -155,6 +197,41 @@ class Settings(BaseSettings):
     SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING: bool = _default_allow_unsafe_bwrap_fallback()
     SANDBOX_DEFAULT_TIMEOUT: int = 30
     SANDBOX_MAX_TIMEOUT: int = 60
+
+    @field_validator(
+        "LANGGRAPH_CHECKPOINT_DATABASE_URL",
+        "LANGGRAPH_AES_KEY",
+        "MULTI_AGENT_COMPACT_MODEL_ID",
+        "MULTI_AGENT_PLANNING_MODEL_ID",
+        "AGENT_RUNTIME_SESSION_COMPACT_MESSAGE_THRESHOLD",
+        "AGENT_RUNTIME_RUN_COMPACT_MESSAGE_THRESHOLD",
+        "AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES",
+        "AGENT_RUNTIME_VERIFY_REPAIR_COMPACT_ROUNDS",
+        mode="before",
+    )
+    @classmethod
+    def _blank_optional_runtime_values(cls, value: object) -> object | None:
+        """Treat blank optional environment variables as unset."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("AGENT_RUNTIME_GRAPH_NAME", "AGENT_RUNTIME_GRAPH_VERSION")
+    @classmethod
+    def _nonempty_runtime_identifiers(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Runtime graph name and version must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def _claim_renewal_precedes_expiry(self) -> Self:
+        if self.AGENT_RUNTIME_COMMAND_CLAIM_RENEW_SECONDS >= self.AGENT_RUNTIME_COMMAND_CLAIM_TTL_SECONDS:
+            raise ValueError(
+                "AGENT_RUNTIME_COMMAND_CLAIM_RENEW_SECONDS must be less than "
+                "AGENT_RUNTIME_COMMAND_CLAIM_TTL_SECONDS"
+            )
+        return self
 
     model_config = {
         "env_file": [".env", "../.env"],

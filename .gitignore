@@ -38,3 +38,9 @@ _agents/
 docs/
 .agents/rules/deploy.md
 backend/tests/test_agent_api_live.py
+.omx/
+
+# Local Toolathlon benchmark harness (never commit or deploy)
+backend/app/scripts/toolathlon_benchmark.py
+backend/app/services/agent_runtime/benchmark/
+backend/tests/test_agent_runtime_benchmark.py
