@@ -21,6 +21,11 @@ from app.services.agent_runtime.state import (
     RuntimeStateUpdate,
     runtime_messages_as_json,
 )
+from app.services.llm.caller import (
+    WRITE_FILE_PROTOCOL_FAILURE_MESSAGE,
+    WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY,
+    WRITE_FILE_PROTOCOL_REPAIR_LIMIT,
+)
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.llm.multimodal_content import parse_multimodal_content
 
@@ -70,6 +75,7 @@ class ModelStepResult:
     finish_delivery_intent: JsonObject | None = None
     repair_instruction: str | None = None
     repair_code: str | None = None
+    repair_tool_name: str | None = None
     error: JsonObject | None = None
 
 
@@ -666,11 +672,34 @@ class DeterministicRuntimeNodeExecutor:
                         "model repair_code must not be blank",
                     )
                 repairs = _model_protocol_repairs(state["lifecycle"])
-                if repairs.get(repair_code, 0) >= 1:
+                is_write_file_repair = (
+                    repair_code == "invalid_tool_call"
+                    and result.repair_tool_name == "write_file"
+                )
+                repair_limit = (
+                    WRITE_FILE_PROTOCOL_REPAIR_LIMIT
+                    if is_write_file_repair
+                    else 1
+                )
+                repair_counter_key = (
+                    WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY
+                    if is_write_file_repair
+                    else repair_code
+                )
+                if repairs.get(repair_counter_key, 0) >= repair_limit:
                     violation_code = (
                         "finish_protocol_violation"
                         if repair_code == "missing_finish"
                         else "model_tool_protocol_violation"
+                    )
+                    error_message = (
+                        WRITE_FILE_PROTOCOL_FAILURE_MESSAGE
+                        if is_write_file_repair
+                        else (
+                            f"The model repeated the {repair_code!r} protocol "
+                            f"error after {repair_limit} bounded repair attempt(s). "
+                            "Native tool calling is not working for this Run."
+                        )
                     )
                     lifecycle.update(
                         {
@@ -680,16 +709,14 @@ class DeterministicRuntimeNodeExecutor:
                             "pending_tool_calls": [],
                             "error": _error(
                                 violation_code,
-                                (
-                                    f"The model repeated the {repair_code!r} protocol "
-                                    "error after one bounded repair. Native tool "
-                                    "calling is not working for this Run."
-                                ),
+                                error_message,
                             ),
                         }
                     )
                 else:
-                    repairs[repair_code] = repairs.get(repair_code, 0) + 1
+                    repairs[repair_counter_key] = (
+                        repairs.get(repair_counter_key, 0) + 1
+                    )
                     new_messages.append(
                         {
                             "id": _runtime_message_id(

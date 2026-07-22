@@ -456,6 +456,36 @@ async def test_normal_tool_proposal_is_stable_and_does_not_execute_in_model_step
 
 
 @pytest.mark.asyncio
+async def test_invalid_write_file_arguments_request_three_protocol_repairs() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction="Retry write_file with valid JSON.",
+            usage=TokenUsage(total_tokens=10),
+            retry_tool_name="write_file",
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "text"
+    assert result.repair_code == "invalid_tool_call"
+    assert result.repair_tool_name == "write_file"
+
+
+@pytest.mark.asyncio
 async def test_new_run_treats_unreceived_calls_from_cancelled_prior_run_as_not_started() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

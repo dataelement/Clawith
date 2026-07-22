@@ -61,13 +61,34 @@ TOOLS_REQUIRING_ARGS = frozenset({
     "send_message_to_agent", "send_feishu_message", "send_email"
 })
 
+WRITE_FILE_PROTOCOL_REPAIR_LIMIT = 3
+WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY = "invalid_tool_call:write_file"
+WRITE_FILE_PROTOCOL_REPAIR_INSTRUCTION = (
+    "Your previous `write_file` call was not executed because `function.arguments` "
+    "was invalid JSON or was truncated. Retry `write_file` with "
+    "`function.arguments` as one valid JSON object string. Do not repeat the same "
+    "oversized whole-file content; reduce the content in this call and continue with "
+    "later normal tool calls if needed. Do not explain; only retry with a valid tool call."
+)
+WRITE_FILE_PROTOCOL_FAILURE_MESSAGE = (
+    "本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
+    "请回复「重新生成」，我会基于当前对话重新尝试。"
+)
 
-def _sanitize_tool_calls_for_context(tool_calls: list[dict]) -> tuple[list[dict] | None, str | None]:
-    """Return OpenAI-compatible tool calls, or a retry instruction if args are invalid."""
+
+def _sanitize_tool_calls_for_context(
+    tool_calls: list[dict],
+) -> tuple[list[dict] | None, str | None, str | None]:
+    """Return normalized calls plus bounded-repair details for invalid arguments."""
     sanitized: list[dict] = []
     for tc in tool_calls:
         fn = tc.get("function") or {}
-        tool_name = fn.get("name") or ""
+        raw_tool_name = fn.get("name")
+        tool_name = (
+            raw_tool_name.strip()
+            if isinstance(raw_tool_name, str) and raw_tool_name.strip()
+            else ""
+        )
         raw_args = fn.get("arguments", "{}")
 
         if raw_args is None or raw_args == "":
@@ -82,22 +103,26 @@ def _sanitize_tool_calls_for_context(tool_calls: list[dict]) -> tuple[list[dict]
                     exc.msg,
                     exc.pos,
                 )
+                if tool_name == "write_file":
+                    return None, WRITE_FILE_PROTOCOL_REPAIR_INSTRUCTION, tool_name
                 return None, (
                     "Your previous tool call arguments were not valid JSON. "
                     f"The affected tool was `{tool_name or 'unknown'}`. "
                     "Retry the tool call now with `function.arguments` as one valid JSON object string. "
                     "Escape all quotes and newlines inside long HTML, CSS, JavaScript, or markdown content. "
                     "Do not explain; only retry with a valid tool call."
-                )
+                ), tool_name or None
             args_str = raw_args
         elif isinstance(raw_args, (dict, list)):
             args_str = json.dumps(raw_args, ensure_ascii=False)
         else:
+            if tool_name == "write_file":
+                return None, WRITE_FILE_PROTOCOL_REPAIR_INSTRUCTION, tool_name
             return None, (
                 "Your previous tool call arguments had an unsupported type. "
                 f"The affected tool was `{tool_name or 'unknown'}`. "
                 "Retry the tool call with `function.arguments` as one valid JSON object string."
-            )
+            ), tool_name or None
 
         new_tc = {
             "id": tc.get("id", ""),
@@ -111,7 +136,7 @@ def _sanitize_tool_calls_for_context(tool_calls: list[dict]) -> tuple[list[dict]
             new_tc["_gemini_extra"] = tc["_gemini_extra"]
         sanitized.append(new_tc)
 
-    return sanitized, None
+    return sanitized, None, None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -552,9 +577,14 @@ async def call_llm(
     max_tokens = get_max_tokens(model.provider, model.model, getattr(model, 'max_output_tokens', None))
     _accumulated_usage = TokenUsage()
     _unsaved_usage = TokenUsage()
-    _protocol_repairs: set[str] = set()
+    _protocol_repairs: dict[str, int] = {}
 
-    async def _protocol_violation(repair_code: str) -> str:
+    async def _protocol_violation(
+        repair_code: str,
+        *,
+        repair_tool_name: str | None = None,
+        repair_limit: int = 1,
+    ) -> str:
         if agent_id and _unsaved_usage.total_tokens > 0:
             await record_token_usage(agent_id, _unsaved_usage)
         await client.close()
@@ -563,10 +593,13 @@ async def call_llm(
             if repair_code == "missing_finish"
             else f"{repair_code}_protocol_violation"
         )
+        if repair_tool_name == "write_file":
+            return f"[Error] {error_code}: {WRITE_FILE_PROTOCOL_FAILURE_MESSAGE}"
+        repair_label = "repair" if repair_limit == 1 else "repairs"
         return (
             f"[Error] {error_code}: The model repeated the {repair_code!r} "
-            "tool protocol error after one bounded repair. Native tool calling "
-            "is not working for this request."
+            f"tool protocol error after {repair_limit} bounded {repair_label}. "
+            "Native tool calling is not working for this request."
         )
 
     # Tool-calling loop
@@ -648,19 +681,36 @@ async def call_llm(
         if not response.tool_calls:
             if response.content:
                 api_messages.append(LLMMessage(role="assistant", content=response.content))
-            if "missing_finish" in _protocol_repairs:
+            if _protocol_repairs.get("missing_finish", 0) >= 1:
                 return await _protocol_violation("missing_finish")
             api_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
-            _protocol_repairs.add("missing_finish")
+            _protocol_repairs["missing_finish"] = 1
             continue
 
         # Execute tool calls
         logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s)")
-        sanitized_tool_calls, retry_instruction = _sanitize_tool_calls_for_context(response.tool_calls)
+        sanitized_tool_calls, retry_instruction, retry_tool_name = (
+            _sanitize_tool_calls_for_context(response.tool_calls)
+        )
         if retry_instruction:
-            if "invalid_tool_call" in _protocol_repairs:
-                return await _protocol_violation("invalid_tool_call")
-            _protocol_repairs.add("invalid_tool_call")
+            repair_limit = (
+                WRITE_FILE_PROTOCOL_REPAIR_LIMIT
+                if retry_tool_name == "write_file"
+                else 1
+            )
+            repair_counter_key = (
+                WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY
+                if retry_tool_name == "write_file"
+                else "invalid_tool_call"
+            )
+            repair_count = _protocol_repairs.get(repair_counter_key, 0)
+            if repair_count >= repair_limit:
+                return await _protocol_violation(
+                    "invalid_tool_call",
+                    repair_tool_name=retry_tool_name,
+                    repair_limit=repair_limit,
+                )
+            _protocol_repairs[repair_counter_key] = repair_count + 1
             api_messages.append(LLMMessage(role="user", content=retry_instruction))
             continue
 
@@ -672,9 +722,9 @@ async def call_llm(
                 await client.close()
                 return finish_call.content
 
-            if "invalid_finish" in _protocol_repairs:
+            if _protocol_repairs.get("invalid_finish", 0) >= 1:
                 return await _protocol_violation("invalid_finish")
-            _protocol_repairs.add("invalid_finish")
+            _protocol_repairs["invalid_finish"] = 1
 
             api_messages.append(LLMMessage(
                 role="assistant",

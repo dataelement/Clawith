@@ -1156,6 +1156,64 @@ async def test_repeated_model_tool_protocol_repair_code_fails_explicitly(
 
 
 @pytest.mark.asyncio
+async def test_write_file_protocol_repair_uses_three_attempts_then_guides_user() -> None:
+    run_id = uuid.uuid4()
+    repair = ModelStepResult(
+        intent="text",
+        assistant_message={"role": "assistant", "content": "bad write_file call"},
+        repair_instruction="Retry write_file with valid JSON.",
+        repair_code="invalid_tool_call",
+        repair_tool_name="write_file",
+    )
+    model = ModelService(repair, repair, repair, repair)
+    executor = _executor(model)
+
+    result = await _invoke(run_id, executor, model_turn_limit=50)
+
+    lifecycle = result["lifecycle"]
+    assert lifecycle["status"] == "failed"
+    assert lifecycle["reason"] == "model_tool_protocol_violation"
+    assert lifecycle["error"] == {
+        "code": "model_tool_protocol_violation",
+        "message": (
+            "本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
+            "请回复「重新生成」，我会基于当前对话重新尝试。"
+        ),
+    }
+    assert lifecycle["model_protocol_repairs"] == {
+        "invalid_tool_call:write_file": 3,
+    }
+    assert lifecycle["model_step_count"] == 4
+    assert model.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_write_file_protocol_can_recover_on_the_third_repair() -> None:
+    run_id = uuid.uuid4()
+    repair = ModelStepResult(
+        intent="text",
+        repair_instruction="Retry write_file with valid JSON.",
+        repair_code="invalid_tool_call",
+        repair_tool_name="write_file",
+    )
+    model = ModelService(
+        repair,
+        repair,
+        repair,
+        ModelStepResult(intent="finish", finish_content="Recovered"),
+    )
+    executor = _executor(model)
+
+    result = await _invoke(run_id, executor, model_turn_limit=50)
+
+    assert result["lifecycle"]["status"] == "completed"
+    assert result["lifecycle"]["model_protocol_repairs"] == {
+        "invalid_tool_call:write_file": 3,
+    }
+    assert model.calls == 4
+
+
+@pytest.mark.asyncio
 async def test_business_repairs_are_not_counted_as_model_tool_protocol_failures() -> None:
     run_id = uuid.uuid4()
     model = ModelService(

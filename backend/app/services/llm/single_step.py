@@ -30,6 +30,7 @@ class LLMCompletionStep:
     reasoning_content: str | None
     retry_instruction: str | None
     usage: TokenUsage
+    retry_tool_name: str | None = None
 
 
 async def complete_llm_once(
@@ -73,14 +74,18 @@ async def complete_llm_once(
 
     sanitized_tool_calls: list[dict] | None = []
     retry_instruction = None
+    retry_tool_name = None
     if response.tool_calls:
-        sanitized_tool_calls, retry_instruction = _sanitize_tool_calls_for_context(response.tool_calls)
+        sanitized_tool_calls, retry_instruction, retry_tool_name = (
+            _sanitize_tool_calls_for_context(response.tool_calls)
+        )
     return LLMCompletionStep(
         content=response.content,
         tool_calls=tuple(sanitized_tool_calls or ()),
         reasoning_content=response.reasoning_content,
         retry_instruction=retry_instruction,
         usage=usage,
+        retry_tool_name=retry_tool_name,
     )
 
 

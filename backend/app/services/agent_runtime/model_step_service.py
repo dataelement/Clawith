@@ -728,12 +728,14 @@ def _repair(
     instruction: str,
     *,
     repair_code: str | None = None,
+    repair_tool_name: str | None = None,
 ) -> ModelStepResult:
     return ModelStepResult(
         intent="text",
         assistant_message=_assistant_message(state, context, step),
         repair_instruction=instruction,
         repair_code=repair_code,
+        repair_tool_name=repair_tool_name,
     )
 
 
@@ -747,12 +749,14 @@ def _parse_step(
     allow_group_handoff: bool,
 ) -> ModelStepResult:
     if step.retry_instruction:
+        retry_tool_name = step.retry_tool_name
         return _repair(
             state,
             context,
             step,
             step.retry_instruction,
             repair_code="invalid_tool_call",
+            repair_tool_name=retry_tool_name,
         )
     if not step.tool_calls:
         content = (step.content or "").strip()
