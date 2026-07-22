@@ -94,6 +94,7 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("POST", "/api/groups") in routes
     assert ("GET", "/api/groups/{group_id}/members") in routes
     assert ("GET", "/api/groups/{group_id}/member-candidates") in routes
+    assert ("GET", "/api/groups/member-candidates") in routes
     assert ("POST", "/api/groups/{group_id}/sessions") in routes
     assert ("DELETE", "/api/groups/{group_id}/sessions/{session_id}") in routes
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/read") in routes
@@ -113,6 +114,13 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("PUT", "/api/groups/{group_id}/workspace/file") in routes
     assert ("DELETE", "/api/groups/{group_id}/workspace/file") in routes
     assert ("PATCH", "/api/groups/{group_id}/members/{member_id}") not in routes
+
+
+def test_tenant_member_candidates_is_matched_before_the_group_id_route() -> None:
+    """A literal path after "/{group_id}" would be parsed as a group id and 422."""
+    paths = [getattr(route, "path", None) for route in groups_api.router.routes]
+
+    assert paths.index("/api/groups/member-candidates") < paths.index("/api/groups/{group_id}")
 
 
 def test_group_invite_write_contract_only_accepts_participant_id() -> None:
@@ -255,6 +263,7 @@ async def test_create_group_stages_domain_change_and_audit_in_one_transaction(mo
             "creator_participant_id": participant.id,
             "name": "Runtime Group",
             "description": None,
+            "member_participant_ids": [],
         }
     ]
     assert len(db.added) == 1
@@ -262,7 +271,43 @@ async def test_create_group_stages_domain_change_and_audit_in_one_transaction(mo
     assert isinstance(audit, AuditLog)
     assert audit.action == "group:create"
     assert audit.user_id == user.id
-    assert audit.details == {"tenant_id": str(tenant_id), "group_id": str(group.id)}
+    assert audit.details == {
+        "tenant_id": str(tenant_id),
+        "group_id": str(group.id),
+        "member_participant_ids": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_group_forwards_initial_members_and_audits_them(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    invited = [uuid.uuid4(), uuid.uuid4()]
+    db = _RecordingDB()
+    calls = []
+
+    async def fake_participant(_db, current_user):
+        return participant
+
+    async def fake_create(_db, **kwargs):
+        calls.append(kwargs)
+        return group
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_chat_service, "create_group", fake_create)
+
+    result = await groups_api.create_group(
+        groups_api.CreateGroupIn(name="Runtime Group", member_participant_ids=invited),
+        current_user=user,
+        db=db,
+    )
+
+    assert result is group
+    assert calls[0]["member_participant_ids"] == invited
+    audit = db.added[0]
+    assert audit.details["member_participant_ids"] == [str(value) for value in invited]
 
 
 @pytest.mark.asyncio

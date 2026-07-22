@@ -31,6 +31,7 @@ import MessageComposer from './MessageComposer';
 import GroupSidePanel from './GroupSidePanel';
 import GroupSettingsModal from './GroupSettingsModal';
 import InviteMemberModal from './InviteMemberModal';
+import CreateGroupModal from './CreateGroupModal';
 import InlineEdit from './InlineEdit';
 import type { GroupMessage, GroupSession } from '../../types/group';
 import './groups.css';
@@ -91,6 +92,7 @@ export default function GroupsPage() {
     const [showPanel, setShowPanel] = useState(() => readFlag('groups.showPanel', false));
     const [showInvite, setShowInvite] = useState(false);
     const [creatingGroup, setCreatingGroup] = useState(false);
+    const [creatingGroupPending, setCreatingGroupPending] = useState(false);
     // The group a "new session" prompt targets, or null when closed.
     const [creatingSession, setCreatingSession] = useState<string | null>(null);
     // The session whose title is being renamed inline, or null.
@@ -489,15 +491,21 @@ export default function GroupsPage() {
         }
     };
 
-    const createGroup = async (name: string) => {
-        setCreatingGroup(false);
-        if (!name.trim()) return;
+    const createGroup = async (name: string, memberParticipantIds: string[]) => {
+        if (!name.trim() || creatingGroupPending) return;
+        setCreatingGroupPending(true);
         try {
-            const group = await groupApi.create({ name: name.trim() });
+            const group = await groupApi.create({
+                name: name.trim(),
+                member_participant_ids: memberParticipantIds,
+            });
+            setCreatingGroup(false);
             await refetchGroups();
             navigate(`/groups/${group.id}`);
         } catch (error: any) {
             toast.error(error?.message ?? t('groups.createFailed', '建群失败'));
+        } finally {
+            setCreatingGroupPending(false);
         }
     };
 
@@ -841,13 +849,14 @@ export default function GroupsPage() {
                 />
             )}
 
-            <PromptModal
-                open={creatingGroup}
-                title={t('groups.create', '创建群聊')}
-                placeholder={t('groups.namePlaceholder', '群名称')}
-                onConfirm={(value) => void createGroup(value)}
-                onCancel={() => setCreatingGroup(false)}
-            />
+            {creatingGroup && (
+                <CreateGroupModal
+                    creating={creatingGroupPending}
+                    onCreate={(name, memberParticipantIds) =>
+                        void createGroup(name, memberParticipantIds)}
+                    onCancel={() => setCreatingGroup(false)}
+                />
+            )}
 
             <PromptModal
                 open={Boolean(creatingSession)}

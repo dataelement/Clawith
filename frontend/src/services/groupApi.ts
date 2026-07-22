@@ -40,7 +40,7 @@ export const groupApi = {
 
     get: (groupId: string) => fetchJson<Group>(`/groups/${groupId}`),
 
-    create: (data: { name: string; description?: string }) =>
+    create: (data: { name: string; description?: string; member_participant_ids?: string[] }) =>
         fetchJson<Group>('/groups', { method: 'POST', body: JSON.stringify(data) }),
 
     update: (groupId: string, data: { name?: string; description?: string }) =>
@@ -49,6 +49,11 @@ export const groupApi = {
     remove: (groupId: string) => fetchJson<void>(`/groups/${groupId}`, { method: 'DELETE' }),
 
     members: (groupId: string) => fetchJson<GroupMember[]>(`/groups/${groupId}/members`),
+
+    tenantMemberCandidates: (participantType: ParticipantType) =>
+        fetchJson<GroupMemberCandidate[]>(
+            `/groups/member-candidates${qs({ participant_type: participantType })}`,
+        ),
 
     memberCandidates: (groupId: string, participantType: ParticipantType) =>
         fetchJson<GroupMemberCandidate[]>(

@@ -973,6 +973,56 @@
     padding: 0 var(--space-4);
 }
 
+/* ─── Create group modal (name + members in one step) ── */
+
+.group-create-name {
+    padding: 0 var(--space-5);
+}
+
+.group-candidate.selectable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-candidate.picked {
+    background: var(--bg-hover);
+}
+
+.group-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-inverse, #fff);
+}
+
+.group-check.on {
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
+}
+
+.group-create-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 0 var(--space-5);
+}
+
+.group-create-count {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+}
+
+.group-create-actions {
+    display: flex;
+    gap: var(--space-2);
+}
+
 /* ─── Panel top bar (group-scoped label + gear) ───────── */
 
 .group-panel-topbar {

@@ -46,6 +46,7 @@ router = APIRouter(prefix="/api/groups", tags=["groups"])
 class CreateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
+    member_participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
 
 
 class PatchGroupIn(BaseModel):
@@ -494,6 +495,7 @@ async def create_group(
             creator_participant_id=participant.id,
             name=body.name,
             description=body.description,
+            member_participant_ids=body.member_participant_ids,
         )
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
@@ -503,6 +505,11 @@ async def create_group(
         action="group:create",
         tenant_id=tenant_id,
         group_id=group.id,
+        details={
+            "member_participant_ids": [
+                str(participant_id) for participant_id in body.member_participant_ids
+            ]
+        },
     )
     return group
 
@@ -519,6 +526,32 @@ async def list_groups(
         tenant_id=tenant_id,
         participant_id=participant.id,
     )
+
+
+# Registered before "/{group_id}" so the literal path is not parsed as a group id.
+@router.get("/member-candidates", response_model=list[GroupMemberCandidateOut])
+async def list_tenant_member_candidates(
+    participant_type: Annotated[Literal["user", "agent"], Query()],
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Candidates for the create-group flow, before any group exists."""
+    tenant_id = _tenant_id(current_user)
+    try:
+        candidates = await group_chat_service.list_tenant_member_candidates(
+            db,
+            tenant_id=tenant_id,
+            actor_user=current_user,
+            participant_type=participant_type,
+            limit=limit,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    return [
+        GroupMemberCandidateOut.model_validate(candidate, from_attributes=True)
+        for candidate in candidates
+    ]
 
 
 @router.get("/{group_id}", response_model=GroupOut)
