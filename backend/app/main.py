@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
     import sys
     import os
     from contextlib import AsyncExitStack
+    from app.services.scheduler import start_scheduler
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
@@ -305,7 +306,10 @@ async def lifespan(app: FastAPI):
 
         task_specs = []
         if _role_enabled("all", "worker"):
-            task_specs.append(("trigger_daemon", start_trigger_daemon()))
+            task_specs.extend([
+                ("trigger_daemon", start_trigger_daemon()),
+                ("agent_schedule_scheduler", start_scheduler()),
+            ])
         if _role_enabled("all", "connector"):
             task_specs.extend([
                 ("feishu_ws", feishu_ws_manager.start_all()),

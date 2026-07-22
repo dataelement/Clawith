@@ -64,7 +64,7 @@ async def _tick():
                 agent = agent_result.scalar_one_or_none()
                 if (
                     agent is None
-                    or agent.status != "running"
+                    or agent.status not in {"creating", "running", "idle"}
                     or is_agent_expired(agent)
                 ):
                     logger.info(
