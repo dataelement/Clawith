@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconChevronDown, IconCheck } from '@tabler/icons-react';
 import { enterpriseApi } from '../services/api';
+import { runtimeReadyModels } from '../pages/agent-detail/modelSelection.mjs';
 
 interface Model {
     id: string;
@@ -11,6 +12,7 @@ interface Model {
     model: string;
     label?: string;
     enabled?: boolean;
+    supports_tool_calling?: boolean | null;
 }
 
 interface Props {
@@ -44,10 +46,10 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
         queryFn: enterpriseApi.llmModels,
     });
 
-    const enabled = (models as Model[]).filter(m => m.enabled !== false);
-    const selected = enabled.find(m => m.id === value)
-        || enabled.find(m => tenantDefaultId && m.id === tenantDefaultId)
-        || enabled[0]
+    const runtimeReady = runtimeReadyModels(models as Model[]);
+    const selected = runtimeReady.find(m => m.id === value)
+        || runtimeReady.find(m => tenantDefaultId && m.id === tenantDefaultId)
+        || runtimeReady[0]
         || null;
 
     // Click-outside to close. Includes the popover so clicking inside doesn't
@@ -106,7 +108,7 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
         };
     }, [open]);
 
-    if (enabled.length === 0) return null;
+    if (runtimeReady.length === 0) return null;
 
     const labelFor = (m: Model) => m.label || `${m.provider} · ${m.model}`;
 
@@ -168,7 +170,7 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                         zIndex: 10001, padding: '4px',
                     }}
                 >
-                    {enabled.map(m => {
+                    {runtimeReady.map(m => {
                         const isSelected = selected?.id === m.id;
                         const isDefault = tenantDefaultId && m.id === tenantDefaultId;
                         return (

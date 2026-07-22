@@ -384,7 +384,11 @@ class WebSocketChatHandler:
 
     async def _load_models(self, db: AsyncSession):
         """Loads primary and fallback models for the agent."""
-        candidates = await active_agent_model_candidates(db, self.agent)
+        candidates = await active_agent_model_candidates(
+            db,
+            self.agent,
+            require_tool_calling=True,
+        )
         self.llm_model = candidates[0] if candidates else None
         self.fallback_llm_model = candidates[1] if len(candidates) > 1 else None
 
@@ -1290,7 +1294,11 @@ class WebSocketChatHandler:
             )
             _agent_cur = _agent_r.scalar_one_or_none()
             if _agent_cur:
-                candidates = await active_agent_model_candidates(_mdb, _agent_cur)
+                candidates = await active_agent_model_candidates(
+                    _mdb,
+                    _agent_cur,
+                    require_tool_calling=True,
+                )
                 self.llm_model = candidates[0] if candidates else None
                 self.fallback_llm_model = candidates[1] if len(candidates) > 1 else None
             else:
@@ -1306,6 +1314,7 @@ class WebSocketChatHandler:
                         _mdb,
                         model_id=_ovr_uuid,
                         tenant_id=self.user.tenant_id if self.user is not None else None,
+                        require_tool_calling=True,
                     )
                     if _ovr and self.user is not None:
                         effective_llm_model = _ovr

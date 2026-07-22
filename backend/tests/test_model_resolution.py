@@ -120,6 +120,38 @@ async def test_tool_calling_requirement_filters_incapable_candidate():
 
 
 @pytest.mark.asyncio
+async def test_candidates_fall_back_to_verified_tenant_models_when_saved_ids_are_deleted():
+    from app.services.llm.model_resolution import active_agent_model_candidates
+
+    tenant_id = uuid.uuid4()
+    deleted_id = uuid.uuid4()
+    replacement_id = uuid.uuid4()
+    agent = SimpleNamespace(
+        tenant_id=tenant_id,
+        primary_model_id=deleted_id,
+        fallback_model_id=None,
+    )
+    replacement = make_model(replacement_id, tenant_id)
+    db = SequenceDB([
+        DummyResult([deleted_id]),
+        DummyResult(),
+        DummyResult([replacement]),
+    ])
+
+    candidates = await active_agent_model_candidates(
+        db,
+        agent,
+        require_tool_calling=True,
+    )
+
+    assert candidates == (replacement,)
+    fallback_sql = str(db.statements[2])
+    assert "llm_models.tenant_id" in fallback_sql
+    assert "llm_models.deleted_at IS NULL" in fallback_sql
+    assert "llm_models.supports_tool_calling IS true" in fallback_sql
+
+
+@pytest.mark.asyncio
 async def test_deleted_agent_has_no_model_candidates():
     from app.services.llm.model_resolution import active_agent_model_candidates
 

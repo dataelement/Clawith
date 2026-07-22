@@ -61,7 +61,13 @@ async def active_agent_model_candidates(
     *,
     require_tool_calling: bool = False,
 ) -> tuple[LLMModel, ...]:
-    """Resolve primary, fallback, then tenant default without rewriting stored IDs."""
+    """Resolve configured models, then recover from stale logical-delete pointers.
+
+    Primary, fallback, and tenant-default IDs retain their configured priority.
+    Logical deletion deliberately preserves those IDs for auditability, so when
+    every configured pointer is inactive we fall back to the tenant's newest
+    active models instead of treating the company as having no model at all.
+    """
     if getattr(agent, "deleted_at", None) is not None:
         return ()
 
@@ -83,23 +89,44 @@ async def active_agent_model_candidates(
             if model_id is not None
         )
     )
-    if not candidate_ids:
-        return ()
-
-    result = await db.execute(
-        select(LLMModel).where(
-            LLMModel.id.in_(candidate_ids),
-            LLMModel.deleted_at.is_(None),
-            LLMModel.enabled.is_(True),
-            or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == agent.tenant_id),
+    resolved: tuple[LLMModel, ...] = ()
+    if candidate_ids:
+        result = await db.execute(
+            select(LLMModel).where(
+                LLMModel.id.in_(candidate_ids),
+                LLMModel.deleted_at.is_(None),
+                LLMModel.enabled.is_(True),
+                or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == agent.tenant_id),
+            )
         )
+        models_by_id = {model.id: model for model in result.scalars().all()}
+        resolved = tuple(
+            model
+            for model_id in candidate_ids
+            if (model := models_by_id.get(model_id)) is not None
+            and _is_usable(
+                model,
+                tenant_id=agent.tenant_id,
+                require_tool_calling=require_tool_calling,
+            )
+        )
+    if resolved or agent.tenant_id is None:
+        return resolved
+
+    fallback_query = select(LLMModel).where(
+        LLMModel.tenant_id == agent.tenant_id,
+        LLMModel.deleted_at.is_(None),
+        LLMModel.enabled.is_(True),
     )
-    models_by_id = {model.id: model for model in result.scalars().all()}
+    if require_tool_calling:
+        fallback_query = fallback_query.where(LLMModel.supports_tool_calling.is_(True))
+    fallback_result = await db.execute(
+        fallback_query.order_by(LLMModel.created_at.desc()).limit(2)
+    )
     return tuple(
         model
-        for model_id in candidate_ids
-        if (model := models_by_id.get(model_id)) is not None
-        and _is_usable(
+        for model in fallback_result.scalars().all()
+        if _is_usable(
             model,
             tenant_id=agent.tenant_id,
             require_tool_calling=require_tool_calling,

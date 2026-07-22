@@ -18,6 +18,7 @@ import type { WorkspaceActivity, WorkspaceLiveDraft } from '../../components/Wor
 import { activityApi, agentApi, channelApi, enterpriseApi, experienceApi, fileApi, focusApi, scheduleApi, skillApi, taskApi, tenantApi, triggerApi, uploadFileWithProgress } from '../../services/api';
 import type { FocusApiItem } from '../../services/api';
 import ModelSwitcher from '../../components/ModelSwitcher';
+import { resolveEffectiveChatModelId, runtimeReadyModels } from './modelSelection.mjs';
 import { useAppStore } from '../../stores';
 import { useAuthStore } from '../../stores';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -4676,17 +4677,23 @@ export default function AgentDetailPage() {
         () => (llmModels as any[]).filter((m: any) => m.enabled),
         [llmModels],
     );
-    const effectiveChatModelId = overrideModelId
-        || agent?.primary_model_id
-        || myTenant?.default_model_id
-        || enabledLlmModels[0]?.id
-        || null;
+    const runtimeReadyLlmModels = useMemo(
+        () => runtimeReadyModels(llmModels as any[]),
+        [llmModels],
+    );
+    const effectiveChatModelId = resolveEffectiveChatModelId({
+        models: llmModels as any[],
+        overrideModelId,
+        agentPrimaryModelId: agent?.primary_model_id,
+        tenantDefaultModelId: myTenant?.default_model_id,
+    });
 
     const supportsVision = !!effectiveChatModelId && llmModels.some(
         (m: any) => m.id === effectiveChatModelId && m.supports_vision
     );
     const enabledModelCount = enabledLlmModels.length;
-    const effectiveModelReady = !!effectiveChatModelId && enabledLlmModels.some((m: any) => m.id === effectiveChatModelId);
+    const runtimeReadyModelCount = runtimeReadyLlmModels.length;
+    const effectiveModelReady = !!effectiveChatModelId;
 
     // Onboarding kickoff: wait until a usable model is available before
     // sending the invisible trigger. Otherwise the empty session would be
@@ -4793,16 +4800,25 @@ export default function AgentDetailPage() {
         try { return new Date(d).toLocaleDateString(tsLocale, { year: 'numeric', month: 'short', day: 'numeric' }); } catch { return d; }
     };
     const primaryModel = llmModels.find((m: any) => m.id === agent.primary_model_id);
-    const showNoModelState = !llmModelsLoading && (agent as any).agent_type !== 'openclaw' && (enabledModelCount === 0 || !effectiveModelReady);
+    const showNoModelState = !llmModelsLoading && (agent as any).agent_type !== 'openclaw' && runtimeReadyModelCount === 0;
+    const hasUnreadyModels = enabledModelCount > 0 && runtimeReadyModelCount === 0;
     const canConfigureModels = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin' || !!(currentUser as any)?.is_platform_admin;
     const renderNoModelGuide = (variant: 'empty' | 'floating' = 'empty') => (
         <div className={`chat-no-model-state${variant === 'floating' ? ' chat-no-model-state--floating' : ''}`}>
             <div className="chat-no-model-state__icon"><IconAlertTriangle size={20} stroke={1.8} /></div>
-            <div className="chat-no-model-state__title">{t('agent.chat.noModelTitle', 'No company model configured')}</div>
+            <div className="chat-no-model-state__title">
+                {hasUnreadyModels
+                    ? t('agent.chat.noReadyModelTitle', 'No runtime-ready company model')
+                    : t('agent.chat.noModelTitle', 'No company model configured')}
+            </div>
             <div className="chat-no-model-state__text">
-                {canConfigureModels
-                    ? t('agent.chat.noModelAdmin', 'Configure a company model before chatting with this assistant.')
-                    : t('agent.chat.noModelMember', 'This company has not configured a model yet. Please contact an administrator.')}
+                {hasUnreadyModels
+                    ? (canConfigureModels
+                        ? t('agent.chat.noReadyModelAdmin', 'A model is saved, but none has passed the Agent compatibility test. Test a model before chatting.')
+                        : t('agent.chat.noReadyModelMember', 'No company model has passed the Agent compatibility test. Please contact an administrator.'))
+                    : (canConfigureModels
+                        ? t('agent.chat.noModelAdmin', 'Configure a company model before chatting with this assistant.')
+                        : t('agent.chat.noModelMember', 'This company has not configured a model yet. Please contact an administrator.'))}
             </div>
             {canConfigureModels && (
                 <button className="btn btn-primary" onClick={() => navigate('/enterprise#llm')}>
@@ -7202,7 +7218,7 @@ export default function AgentDetailPage() {
                                                             <IconPaperclip size={16} stroke={1.75} />
                                                         </button>
                                                         <ModelSwitcher
-                                                            value={overrideModelId}
+                                                            value={effectiveChatModelId}
                                                             onChange={handleModelChange}
                                                             tenantDefaultId={myTenant?.default_model_id || null}
                                                             disabled={showNoModelState || !wsConnected}

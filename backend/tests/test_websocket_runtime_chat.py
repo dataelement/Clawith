@@ -152,6 +152,33 @@ def _handler(websocket: _WebSocket) -> WebSocketChatHandler:
 
 
 @pytest.mark.asyncio
+async def test_direct_chat_loads_only_tool_calling_verified_models() -> None:
+    handler = _handler(_WebSocket())
+    assert handler.user is not None
+    handler.agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
+    primary = SimpleNamespace(id=uuid.uuid4())
+    fallback = SimpleNamespace(id=uuid.uuid4())
+    db = _Session()
+
+    with patch(
+        "app.api.websocket.active_agent_model_candidates",
+        new=AsyncMock(return_value=(primary, fallback)),
+    ) as resolve_candidates:
+        await handler._load_models(db)  # type: ignore[arg-type]
+
+    resolve_candidates.assert_awaited_once_with(
+        db,
+        handler.agent,
+        require_tool_calling=True,
+    )
+    assert handler.llm_model is primary
+    assert handler.fallback_llm_model is fallback
+
+
+@pytest.mark.asyncio
 async def test_explicit_session_scope_mismatch_fails_closed_without_primary_fallback() -> None:
     websocket = _WebSocket()
     handler = _handler(websocket)
