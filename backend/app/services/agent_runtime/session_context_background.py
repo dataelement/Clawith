@@ -36,6 +36,7 @@ from app.services.agent_runtime.session_context_service import (
     SessionContextService,
     SessionContextSnapshot,
 )
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.agent_runtime.state import JsonObject
 from app.services.llm.utils import get_max_tokens
 
@@ -91,18 +92,6 @@ def _model_threshold(model: LLMModel, settings: Settings) -> int:
         safety_margin_tokens=256,
         compact_threshold_ratio=settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO,
     ).compact_threshold
-
-
-def _usable_model(
-    model: LLMModel | None,
-    *,
-    tenant_id: uuid.UUID,
-) -> bool:
-    return bool(
-        model is not None
-        and model.enabled
-        and model.tenant_id in {None, tenant_id}
-    )
 
 
 class SessionCompactPolicyResolver:
@@ -172,30 +161,24 @@ class SessionCompactPolicyResolver:
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
-                Agent.primary_model_id.is_not(None),
+                Agent.deleted_at.is_(None),
             )
         )
         agents = list(agent_result.scalars().all())
-        model_ids = {agent.primary_model_id for agent in agents if agent.primary_model_id}
-        if not model_ids:
+        if not agents:
             raise SessionContextBackgroundError(
                 "session_compact_budget_unavailable",
                 "Group has no valid Agent models for shared compact budgeting",
             )
-        model_result = await db.execute(
-            select(LLMModel).where(LLMModel.id.in_(model_ids))
-        )
-        models = {
-            model.id: model
-            for model in model_result.scalars().all()
-            if _usable_model(model, tenant_id=tenant_id)
-        }
-        missing = model_ids - models.keys()
-        if missing:
-            raise SessionContextBackgroundError(
-                "session_compact_budget_unavailable",
-                "At least one active group Agent model is not usable",
-            )
+        models: dict[uuid.UUID, LLMModel] = {}
+        for agent in agents:
+            model = await resolve_active_agent_model(db, agent)
+            if model is None:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "At least one active group Agent has no usable model",
+                )
+            models[model.id] = model
         try:
             thresholds = {
                 model.id: _model_threshold(model, self._settings)

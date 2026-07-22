@@ -296,6 +296,7 @@ class AgentOut(BaseModel):
     onboarded_for_me: bool = True
     created_at: datetime
     last_active_at: datetime | None = None
+    deleted_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -440,6 +441,7 @@ class LLMModelOut(BaseModel):
     max_output_tokens: int | None = None
     request_timeout: int | None = None
     created_at: datetime
+    deleted_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

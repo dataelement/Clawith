@@ -50,9 +50,22 @@ class _DB:
 
 
 def _session_factory(model: LLMModel, agent: Agent):
+    calls = 0
+
     @asynccontextmanager
     async def factory():
-        yield _DB(model, agent)
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield _DB(model, agent)
+            return
+
+        class _NoFallbackDB:
+            async def execute(self, statement):
+                del statement
+                return _Result()
+
+        yield _NoFallbackDB()
 
     return factory
 
@@ -73,9 +86,12 @@ def _failover_session_factory(
             return
 
         class _FallbackDB:
+            def __init__(self) -> None:
+                self.results = iter((_Result(), _Result([fallback])))
+
             async def execute(self, statement):
                 del statement
-                return _Result([fallback])
+                return next(self.results)
 
         yield _FallbackDB()
 

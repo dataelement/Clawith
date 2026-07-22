@@ -121,7 +121,10 @@ async def test_group_compact_trigger_uses_the_smallest_active_agent_budget() -> 
         _Result([session]),
         _Result([group_id]),
         _Result(agents),
-        _Result([large, small]),
+        _Result(),
+        _Result([small]),
+        _Result(),
+        _Result([large]),
     )
 
     policy = await background.SessionCompactPolicyResolver(

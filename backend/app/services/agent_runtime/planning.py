@@ -8,8 +8,6 @@ import json
 from typing import Protocol, cast
 import uuid
 
-from sqlalchemy import select
-
 from app.models.llm import LLMModel
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.model_capabilities import (
@@ -32,6 +30,7 @@ from app.services.agent_runtime.state import (
 )
 from app.services.llm.client import LLMMessage
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
+from app.services.llm.model_resolution import load_active_model
 from app.services.llm.utils import get_max_tokens
 
 
@@ -295,9 +294,12 @@ class PlanningModelService:
                 "Planning Run has an invalid pinned model",
             ) from exc
         async with self._session_factory() as db:
-            result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
-            model = result.scalar_one_or_none()
-        if model is None or not model.enabled or model.tenant_id not in {None, tenant_id}:
+            model = await load_active_model(
+                db,
+                model_id=model_id,
+                tenant_id=tenant_id,
+            )
+        if model is None:
             raise PlanningContractError(
                 "planning_model_unavailable",
                 "Pinned Planning model is not enabled for this Group tenant",

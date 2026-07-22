@@ -550,8 +550,8 @@
       "danger": {
         "title": "Danger Zone",
         "deleteAgent": "Delete Digital Employee",
-        "deleteWarning": "This action is irreversible. All data for this digital employee will be permanently deleted.",
-        "confirmDelete": "Confirm Delete",
+        "deleteWarning": "The digital employee will be disabled immediately. Chats, runs, tasks, audit history, and workspace files will be retained.",
+        "confirmDelete": "Disable Digital Employee",
         "typeToConfirm": "Type the agent name to confirm"
       },
       "expiry": {
@@ -1101,7 +1101,10 @@
       "vision": "Vision",
       "temperature": "Temperature",
       "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)",
-      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0"
+      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0",
+      "deleteConfirm": "Disable {{name}}? Existing agents and history keep their model references; new calls will use another available model.",
+      "deleteDone": "Model disabled",
+      "deleteFailed": "Failed to delete model"
     },
     "tools": {
       "title": "Global Tool Management",
@@ -2145,6 +2148,7 @@
     "noMessages": "No messages yet. Send one, or @ an agent to start.",
     "unknownSender": "Unknown member",
     "agentBadge": "Agent",
+    "deletedBadge": "Deleted",
     "polling": "polling",
     "offline": "disconnected",
     "announcement": "Announcement",

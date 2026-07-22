@@ -132,6 +132,7 @@ async def _valid_participant(
                 Agent.tenant_id == tenant_id,
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
+                Agent.deleted_at.is_(None),
             )
         )
 
@@ -618,6 +619,7 @@ async def invite_group_member(
             select(Agent).where(
                 Agent.id == target.ref_id,
                 Agent.tenant_id == tenant_id,
+                Agent.deleted_at.is_(None),
             )
         )
         target_agent = target_agent_result.scalar_one_or_none()

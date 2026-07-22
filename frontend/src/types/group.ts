@@ -23,6 +23,7 @@ export interface GroupMember {
     role: GroupRole;
     role_description: string | null;
     title: string | null;
+    is_deleted: boolean;
     joined_at: string;
 }
 

@@ -566,15 +566,26 @@ async def test_onboarding_trigger_uses_runtime_and_advances_after_completion() -
 @pytest.mark.asyncio
 async def test_web_intake_pins_onboarding_metadata_without_a_visible_user_message() -> None:
     handler = _handler(_WebSocket())
-    model = SimpleNamespace(id=uuid.uuid4())
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=handler.user.tenant_id,
+        enabled=True,
+        supports_tool_calling=True,
+    )
     session = SimpleNamespace(title="Session 1")
-    agent = SimpleNamespace(id=handler.agent_id)
+    agent = SimpleNamespace(
+        id=handler.agent_id,
+        tenant_id=handler.user.tenant_id,
+    )
     intake = ChatRuntimeIntake(
         handle=_handle(handler.user.tenant_id),
         message_id=uuid.uuid4(),
         resumed=False,
     )
-    db = _Session({User: handler.user, ChatSession: session, LLMModel: model})
+    db = _Session(
+        {User: handler.user, ChatSession: session, LLMModel: model},
+        model,
+    )
     onboarding = SimpleNamespace(
         prompt="Trusted greeting prompt",
         target_phase="greeted",

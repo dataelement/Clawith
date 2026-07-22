@@ -79,6 +79,7 @@ class GroupMemberOut(BaseModel):
     role: str
     role_description: str | None = None
     title: str | None = None
+    is_deleted: bool = False
     joined_at: datetime
 
 
@@ -411,6 +412,7 @@ async def _member_outputs(
                 role=membership.role,
                 role_description=agent.role_description if agent is not None else None,
                 title=user.title if user is not None else None,
+                is_deleted=bool(agent is not None and agent.deleted_at is not None),
                 joined_at=membership.joined_at,
             )
         )

@@ -196,7 +196,11 @@ async def toggle_company(
     # When disabling: pause all running agents
     if not new_state:
         agents = await db.execute(
-            select(Agent).where(Agent.tenant_id == company_id, Agent.status == "running")
+            select(Agent).where(
+                Agent.tenant_id == company_id,
+                Agent.status == "running",
+                Agent.deleted_at.is_(None),
+            )
         )
         for agent in agents.scalars().all():
             agent.status = "paused"

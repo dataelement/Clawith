@@ -22,8 +22,8 @@ from app.database import async_session
 from app.models.agent import Agent
 from app.models.experience import ExperienceEntry
 from app.models.experience_reference import ExperienceReference
-from app.models.llm import LLMModel
 from app.models.user import User
+from app.services.llm.model_resolution import resolve_active_agent_model
 
 router = APIRouter(prefix="/api/experience", tags=["experience"])
 
@@ -420,11 +420,7 @@ async def _distill_fields(db, agent, content: str) -> dict:
     """
     fields: dict = {}
     try:
-        model_id = agent.primary_model_id or agent.fallback_model_id
-        model = (
-            (await db.execute(select(LLMModel).where(LLMModel.id == model_id))).scalar_one_or_none()
-            if model_id else None
-        )
+        model = await resolve_active_agent_model(db, agent)
         if model:
             from app.services.llm import get_model_api_key
             from app.services.llm.client import chat_complete
@@ -468,7 +464,14 @@ async def distill_content(payload: DraftFromContent, current_user: User = Depend
         raise HTTPException(400, "Content cannot be empty")
     eff = _effective_tenant_id(current_user)
     async with async_session() as db:
-        agent = (await db.execute(select(Agent).where(Agent.id == payload.agent_id))).scalar_one_or_none()
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == payload.agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
         if not agent or (eff and str(agent.tenant_id) != eff):
             raise HTTPException(404, "Agent not found")
         return DistillResult(**await _distill_fields(db, agent, payload.content))
@@ -482,7 +485,14 @@ async def create_draft_from_content(payload: DraftFromContent, current_user: Use
         raise HTTPException(400, "Content cannot be empty")
     eff = _effective_tenant_id(current_user)
     async with async_session() as db:
-        agent = (await db.execute(select(Agent).where(Agent.id == payload.agent_id))).scalar_one_or_none()
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == payload.agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
         if not agent or (eff and str(agent.tenant_id) != eff):
             raise HTTPException(404, "Agent not found")
         f = await _distill_fields(db, agent, payload.content)

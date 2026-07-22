@@ -17,6 +17,7 @@ from app.models.chat_session import ChatSession
 from app.models.group import Group, GroupMember
 from app.models.llm import LLMModel
 from app.models.participant import Participant
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.agent_runtime.adapter import (
     RuntimeAdapterError,
@@ -203,6 +204,7 @@ async def _load_sender_scope(
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
+                Agent.deleted_at.is_(None),
             )
         )
         if agent_result.scalar_one_or_none() is None:
@@ -295,15 +297,31 @@ async def _resolve_mentions(
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
+                Agent.deleted_at.is_(None),
             )
         )
         agents = {agent.id: agent for agent in agent_result.scalars().all()}
-        model_ids = {agent.primary_model_id for agent in agents.values() if agent.primary_model_id}
+        default_result = await db.execute(
+            select(Tenant.default_model_id).where(Tenant.id == tenant_id)
+        )
+        default_model_id = default_result.scalar_one_or_none()
+        model_ids = {
+            model_id
+            for agent in agents.values()
+            for model_id in (
+                agent.primary_model_id,
+                agent.fallback_model_id,
+                default_model_id,
+            )
+            if model_id is not None
+        }
         if model_ids:
             model_result = await db.execute(
                 select(LLMModel).where(
                     LLMModel.id.in_(model_ids),
+                    LLMModel.deleted_at.is_(None),
                     LLMModel.enabled.is_(True),
+                    LLMModel.supports_tool_calling.is_(True),
                 )
             )
             models = {
@@ -344,7 +362,18 @@ async def _resolve_mentions(
         if agent is None:
             output.append(_invalid_mention(participant_id, reason="agent_unavailable"))
             continue
-        model = models.get(agent.primary_model_id) if agent.primary_model_id is not None else None
+        model = next(
+            (
+                models[model_id]
+                for model_id in (
+                    agent.primary_model_id,
+                    agent.fallback_model_id,
+                    default_model_id,
+                )
+                if model_id in models
+            ),
+            None,
+        )
         if model is None:
             output.append(_invalid_mention(participant_id, reason="agent_model_unavailable"))
             continue

@@ -89,7 +89,12 @@ async def check_agent_expired(agent_id: uuid.UUID) -> None:
     from app.models.agent import Agent
 
     async with async_session() as db:
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             return
@@ -118,7 +123,12 @@ async def check_agent_llm_quota(agent_id: uuid.UUID) -> None:
     from app.models.agent import Agent
 
     async with async_session() as db:
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             return
@@ -144,7 +154,12 @@ async def increment_agent_llm_usage(agent_id: uuid.UUID) -> None:
     from app.models.agent import Agent
 
     async with async_session() as db:
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             return
@@ -179,6 +194,7 @@ async def check_agent_creation_quota(user_id: uuid.UUID) -> None:
             select(sa_func.count()).select_from(Agent).where(
                 Agent.creator_id == user_id,
                 Agent.is_expired == False,
+                Agent.deleted_at.is_(None),
             )
         )
         current_count = count_result.scalar() or 0
@@ -219,6 +235,7 @@ async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
                 Agent.heartbeat_interval_minutes < floor_val,
+                Agent.deleted_at.is_(None),
             )
         )
         agents = agents_result.scalars().all()

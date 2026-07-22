@@ -202,7 +202,12 @@ async def create_personal_assistant(
     """Create the user's private assistant and advance onboarding."""
     row = await _ensure_row(db, current_user, "join")
     if row.personal_assistant_agent_id:
-        result = await db.execute(select(Agent).where(Agent.id == row.personal_assistant_agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == row.personal_assistant_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         existing = result.scalar_one_or_none()
         if existing:
             row.current_step = "opening"

@@ -167,7 +167,10 @@ async def broadcast_notification(
 
     # Notify all agents in tenant
     agents_result = await db.execute(
-        select(Agent).where(Agent.tenant_id == tenant_id)
+        select(Agent).where(
+            Agent.tenant_id == tenant_id,
+            Agent.deleted_at.is_(None),
+        )
     )
     for agent in agents_result.scalars().all():
         await send_notification(

@@ -47,6 +47,7 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
         select(Agent).where(
             Agent.api_key_hash == api_key,
             Agent.agent_type == "openclaw",
+            Agent.deleted_at.is_(None),
         )
     )
     agent = result.scalar_one_or_none()
@@ -58,6 +59,7 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
             select(Agent).where(
                 Agent.api_key_hash == key_hash,
                 Agent.agent_type == "openclaw",
+                Agent.deleted_at.is_(None),
             )
         )
         agent = result.scalar_one_or_none()
@@ -202,6 +204,7 @@ async def poll_messages(
             Agent.id != agent.id,
             Agent.access_mode == "company",
             Agent.status.in_(["running", "idle"]),
+            Agent.deleted_at.is_(None),
         )
         .order_by(Agent.name.asc(), Agent.created_at.asc())
     )
@@ -306,7 +309,10 @@ async def report_result(
 
         if runtime_completion is None:
             sender_result = await db.execute(
-                select(Agent).where(Agent.id == msg.sender_agent_id)
+                select(Agent).where(
+                    Agent.id == msg.sender_agent_id,
+                    Agent.deleted_at.is_(None),
+                )
             )
             sender_agent = sender_result.scalar_one_or_none()
             if sender_agent is not None and sender_agent.agent_type == "openclaw":
@@ -392,6 +398,7 @@ async def send_message(
                 Agent.tenant_id == agent.tenant_id,
                 Agent.id != agent.id,
                 Agent.access_mode == "company",
+                Agent.deleted_at.is_(None),
             )
         )
         company_candidate = company_result.scalars().first()

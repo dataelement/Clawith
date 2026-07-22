@@ -130,6 +130,7 @@ def _records():
         api_key_encrypted="secret",
         label="Test",
         enabled=True,
+        supports_tool_calling=True,
     )
     agent = Agent(
         id=uuid.uuid4(),
@@ -226,6 +227,7 @@ async def test_mention_resolution_only_exposes_active_group_members() -> None:
             _ScalarCollection(memberships),
             _ScalarCollection([user]),
             _ScalarCollection([mention.agent]),
+            _ScalarCollection(),
             _ScalarCollection([mention.model]),
         )
     )

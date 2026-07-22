@@ -13,7 +13,8 @@ import pytest
 from app.api import groups as groups_api
 from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
-from app.models.group import Group
+from app.models.group import Group, GroupMember
+from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.participant import Participant
 from app.models.user import User
@@ -117,6 +118,60 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
 
 def test_group_invite_write_contract_only_accepts_participant_id() -> None:
     assert set(groups_api.InviteGroupMemberIn.model_fields) == {"participant_id"}
+
+
+@pytest.mark.asyncio
+async def test_member_history_marks_deleted_agent_without_hiding_identity() -> None:
+    tenant_id = uuid.uuid4()
+    agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Retired Analyst",
+        role_description="Historical role",
+        status="stopped",
+        deleted_at=NOW,
+    )
+    participant = Participant(
+        id=uuid.uuid4(),
+        type="agent",
+        ref_id=agent.id,
+        display_name=agent.name,
+    )
+    membership = GroupMember(
+        id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        participant_id=participant.id,
+        role="member",
+        joined_at=NOW,
+        session_read_state={},
+    )
+
+    class _Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class _DB:
+        def __init__(self):
+            self.results = iter((_Result([participant]), _Result([agent])))
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    output = await groups_api._member_outputs(  # type: ignore[attr-defined]
+        _DB(),  # type: ignore[arg-type]
+        [membership],
+    )
+
+    assert output[0].display_name == "Retired Analyst"
+    assert output[0].role_description == "Historical role"
+    assert output[0].is_deleted is True
 
 
 @pytest.mark.asyncio

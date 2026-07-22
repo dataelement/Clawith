@@ -31,6 +31,7 @@ from app.services.agent_runtime.session_context_service import (
 )
 from app.services.agent_runtime.state import JsonObject, JsonValue
 from app.services.llm.client import LLMMessage
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
 from app.services.llm.utils import get_max_tokens
 
@@ -278,18 +279,6 @@ class LLMSessionContextCompactor:
         self._completion = completion
         self._model_resolver = model_resolver or self._resolve_models
 
-    @staticmethod
-    def _usable_model(
-        model: LLMModel | None,
-        *,
-        tenant_id: uuid.UUID,
-    ) -> LLMModel | None:
-        if model is None or not model.enabled:
-            return None
-        if model.tenant_id not in {None, tenant_id}:
-            return None
-        return model
-
     async def _resolve_models(
         self,
         request: SessionCompactRequest,
@@ -328,25 +317,20 @@ class LLMSessionContextCompactor:
                 select(Agent).where(
                     Agent.id == session.agent_id,
                     Agent.tenant_id == request.tenant_id,
+                    Agent.deleted_at.is_(None),
                 )
             )
             agent = agent_result.scalar_one_or_none()
-            if agent is None or agent.primary_model_id is None:
+            if agent is None:
                 raise SessionContextCompactorError(
                     "session_compact_model_unavailable",
-                    "Session Agent has no current primary model",
+                    "Session Agent is unavailable",
                 )
-            primary_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id)
-            )
-            primary = self._usable_model(
-                primary_result.scalar_one_or_none(),
-                tenant_id=request.tenant_id,
-            )
+            primary = await resolve_active_agent_model(db, agent)
             if primary is None:
                 raise SessionContextCompactorError(
                     "session_compact_model_unavailable",
-                    "Session Agent primary model is not usable",
+                    "Session Agent has no usable model",
                 )
             return CompactModelSelection(
                 primary=primary,

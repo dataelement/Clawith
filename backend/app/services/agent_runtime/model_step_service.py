@@ -66,6 +66,7 @@ from app.services.llm.finish import (
     parse_tool_arguments,
 )
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.utils import get_max_tokens
 
 
@@ -947,12 +948,18 @@ class RuntimeModelStepService:
             ) from exc
         prior_incomplete = _prior_incomplete_tool_calls(state, current_run_id=run_id)
         async with self._session_factory() as db:
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+            model_result = await db.execute(
+                select(LLMModel).where(
+                    LLMModel.id == model_id,
+                    LLMModel.deleted_at.is_(None),
+                )
+            )
             model = model_result.scalar_one_or_none()
             agent_result = await db.execute(
                 select(Agent).where(
                     Agent.id == agent_id,
                     Agent.tenant_id == tenant_id,
+                    Agent.deleted_at.is_(None),
                 )
             )
             agent = agent_result.scalar_one_or_none()
@@ -982,6 +989,17 @@ class RuntimeModelStepService:
                         )
                     )
                     executions.extend(prior_execution_result.scalars().all())
+            if agent is not None and (
+                model is None
+                or not model.enabled
+                or model.tenant_id not in {None, tenant_id}
+            ):
+                candidates = await active_agent_model_candidates(
+                    db,
+                    agent,
+                    require_tool_calling=True,
+                )
+                model = candidates[0] if candidates else None
         if (
             model is None
             or not model.enabled
@@ -1025,20 +1043,13 @@ class RuntimeModelStepService:
         agent: Agent,
         primary_model: LLMModel,
     ) -> LLMModel | None:
-        fallback_id = agent.fallback_model_id
-        if fallback_id is None or fallback_id == primary_model.id:
-            return None
         async with self._session_factory() as db:
-            result = await db.execute(select(LLMModel).where(LLMModel.id == fallback_id))
-            fallback = result.scalar_one_or_none()
-        if (
-            fallback is None
-            or not fallback.enabled
-            or fallback.tenant_id not in {None, tenant_id}
-            or fallback.supports_tool_calling is not True
-        ):
-            return None
-        return fallback
+            candidates = await active_agent_model_candidates(
+                db,
+                agent,
+                require_tool_calling=True,
+            )
+        return next((model for model in candidates if model.id != primary_model.id), None)
 
     async def compact_inputs(
         self,

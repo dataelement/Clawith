@@ -28,6 +28,7 @@ from app.models.okr import CompanyReport, MemberDailyReport, OKRSettings
 from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
 from app.models.user import User
 from app.services.llm.client import chat_complete
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.utils import get_model_api_key, get_max_tokens
 
 
@@ -122,28 +123,20 @@ async def _resolve_report_models(tenant_id: uuid.UUID) -> ResolvedReportModels:
         if not settings or not settings.okr_agent_id:
             return ResolvedReportModels(primary=None, fallback=None, okr_agent_id=None)
 
-        agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == settings.okr_agent_id,
+                Agent.tenant_id == tenant_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = agent_result.scalar_one_or_none()
         if not agent:
             return ResolvedReportModels(primary=None, fallback=None, okr_agent_id=settings.okr_agent_id)
 
-        primary: LLMModel | None = None
-        fallback: LLMModel | None = None
-
-        if agent.primary_model_id:
-            primary_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id)
-            )
-            primary = primary_result.scalar_one_or_none()
-
-        if agent.fallback_model_id:
-            fallback_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.fallback_model_id)
-            )
-            fallback = fallback_result.scalar_one_or_none()
-
-        if not primary and fallback:
-            primary, fallback = fallback, None
+        candidates = await active_agent_model_candidates(db, agent)
+        primary = candidates[0] if candidates else None
+        fallback = candidates[1] if len(candidates) > 1 else None
 
         return ResolvedReportModels(
             primary=primary,
@@ -166,6 +159,7 @@ async def list_company_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
                 Agent.tenant_id == tenant_id,
                 Agent.is_system == False,  # noqa: E712
                 Agent.status.notin_(["stopped", "error"]),
+                Agent.deleted_at.is_(None),
             )
         )
 
@@ -222,6 +216,7 @@ async def list_tracked_okr_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
                 AgentAgentRelationship.agent_id == settings.okr_agent_id,
                 Agent.is_system == False,  # noqa: E712
                 Agent.status.notin_(["stopped", "error"]),
+                Agent.deleted_at.is_(None),
             )
         )
 

@@ -93,6 +93,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
 
     const invalidateModelCaches = () => {
         qc.invalidateQueries({ queryKey: ['llm-models'] });
+        qc.invalidateQueries({ queryKey: ['runtime-model-settings'] });
         qc.invalidateQueries({ queryKey: ['tenant', 'me'] });
         qc.invalidateQueries({ queryKey: ['tenant-default-model'] });
         qc.invalidateQueries({ queryKey: ['agents'] });
@@ -188,29 +189,35 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         },
     });
     const deleteModel = useMutation({
-        mutationFn: async ({ id }: { id: string; force?: boolean }) => {
-            const url = `/enterprise/llm-models/${id}`;
-            const res = await fetch(`/api${url}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-            });
-            if (res.status === 409) {
-                const data = await res.json();
-                const agents = data.detail?.agents || [];
-                const msg = `该模型正在被 ${agents.length} 个数字员工使用：\n\n${agents.join(', ')}\n\n仍要删除吗？（对应的模型配置会被清空）`;
-                if (await dialog.confirm(msg, { title: t('common.dialog.deleteModel'), danger: true, confirmLabel: t('common.confirmActions.forceDelete') })) {
-                    const r2 = await fetch(`/api/enterprise/llm-models/${id}?force=true`, {
-                        method: 'DELETE',
-                        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-                    });
-                    if (!r2.ok && r2.status !== 204) throw new Error('Delete failed');
-                }
-                return;
-            }
-            if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+        mutationFn: (id: string) => fetchJson<void>(`/enterprise/llm-models/${id}`, {
+            method: 'DELETE',
+        }),
+        onSuccess: () => {
+            invalidateModelCaches();
+            toast.success(t('enterprise.llm.deleteDone', 'Model disabled'));
         },
-        onSuccess: () => invalidateModelCaches(),
+        onError: (error: any) => {
+            toast.error(t('enterprise.llm.deleteFailed', 'Failed to delete model'), {
+                details: String(error?.message || error),
+            });
+        },
     });
+
+    const confirmDeleteModel = async (model: LLMModel) => {
+        const confirmed = await dialog.confirm(
+            t(
+                'enterprise.llm.deleteConfirm',
+                'Disable {{name}}? Existing agents and history keep their model references; new calls will use another available model.',
+                { name: model.label || model.model },
+            ),
+            {
+                title: t('common.dialog.deleteModel'),
+                danger: true,
+                confirmLabel: t('common.delete'),
+            },
+        );
+        if (confirmed) deleteModel.mutate(model.id);
+    };
 
     const openCreateForm = () => {
         setEditingModelId(null);
@@ -613,7 +620,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                     }} style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                         <IconEdit size={13} stroke={1.8} /> {t('enterprise.tools.edit')}
                                     </button>
-                                    <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
+                                    <button className="btn btn-ghost" onClick={() => void confirmDeleteModel(m)} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                 </div>
                             </div>
                         )}

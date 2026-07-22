@@ -425,7 +425,7 @@ async def test_resume_accepts_a_shared_thread_identity_and_cancel_is_scoped_to_r
     )
     resume = _stored_command(run, "resume")
     cancel = _stored_command(run, "cancel")
-    db = _session(run, run)
+    db = _session(run, run.agent_id, run)
 
     with (
         patch(
@@ -456,6 +456,30 @@ async def test_resume_accepts_a_shared_thread_identity_and_cancel_is_scoped_to_r
 
     assert resumed.thread_id == run.runtime_thread_id
     assert cancelled.run_id == run.id
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_run_for_deleted_agent() -> None:
+    tenant_id = uuid.uuid4()
+    run = _run(tenant_id=tenant_id, agent_id=uuid.uuid4())
+    db = _session(run, None)
+
+    with patch(
+        "app.services.agent_runtime.adapter.enqueue_resume",
+        new=AsyncMock(),
+    ) as enqueue:
+        with pytest.raises(RuntimeAdapterError) as raised:
+            await RuntimeCommandIntake(db, settings=_settings(enabled=True)).resume_run(
+                ResumeRunCommand(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    idempotency_key="resume:deleted-agent",
+                    payload={},
+                )
+            )
+
+    assert raised.value.code == "agent_unavailable"
+    enqueue.assert_not_awaited()
 
 
 def test_command_intake_has_no_query_or_stream_facade() -> None:

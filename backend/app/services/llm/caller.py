@@ -29,6 +29,7 @@ from app.services.token_tracker import (
     extract_token_usage,
     estimate_token_usage_from_chars,
 )
+from app.services.llm.model_resolution import active_agent_model_candidates
 
 from .client import LLMError
 from .failover import classify_error, FailoverErrorType
@@ -890,11 +891,15 @@ async def call_agent_llm(
 ) -> str:
     """Call the agent's LLM with automatic failover support."""
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
     from app.core.permissions import is_agent_expired
 
     # Load agent
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
     agent: Agent | None = agent_result.scalar_one_or_none()
     if not agent:
         return "⚠️ 数字员工未找到"
@@ -902,26 +907,12 @@ async def call_agent_llm(
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
-    # Load primary model
-    primary_model: LLMModel | None = None
-    if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
-        primary_model = model_result.scalar_one_or_none()
-
-    # Load fallback model
-    fallback_model: LLMModel | None = None
-    if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
-        fallback_model = fb_result.scalar_one_or_none()
-
-    # Config-level fallback: primary missing -> use fallback
-    if not primary_model and fallback_model:
-        primary_model = fallback_model
-        fallback_model = None
-        logger.warning(f"[call_agent_llm] Primary model unavailable, using fallback: {primary_model.model}")
+    candidates = await active_agent_model_candidates(db, agent)
+    primary_model = candidates[0] if candidates else None
+    fallback_model = candidates[1] if len(candidates) > 1 else None
 
     if not primary_model:
-        return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
+        return f"⚠️ {agent.name} 没有可用的 LLM 模型，请在管理后台设置。"
 
     # Build conversation messages
     messages: list[dict] = []

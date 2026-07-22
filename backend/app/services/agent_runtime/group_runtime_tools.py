@@ -377,6 +377,7 @@ async def _query_members(
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
+                Agent.deleted_at.is_(None),
             )
         )
         agents = {value.id: value for value in agent_result.scalars().all()}

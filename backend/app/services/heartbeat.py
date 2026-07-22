@@ -206,6 +206,7 @@ async def _heartbeat_tick():
                 select(Agent).where(
                     Agent.heartbeat_enabled.is_(True),
                     Agent.status.in_(["running", "idle"]),
+                    Agent.deleted_at.is_(None),
                 )
             )
             agents = result.scalars().all()
@@ -391,7 +392,12 @@ async def run_agent_oneshot(
         from app.database import async_session
         from app.models.agent import Agent
         async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            result = await db.execute(
+                select(Agent).where(
+                    Agent.id == agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning(f"[Oneshot] Agent {agent_id} not found — aborting")

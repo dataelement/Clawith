@@ -129,6 +129,7 @@ async def collect_all_focus_updates(
                 select(Agent).where(
                     Agent.tenant_id == tenant_id,
                     Agent.id != okr_agent_id,
+                    Agent.deleted_at.is_(None),
                 )
             )
             agents = agents_result.scalars().all()

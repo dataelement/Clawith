@@ -87,7 +87,12 @@ class EnterpriseSyncService:
 
     async def sync_to_all_agents(self, db: AsyncSession) -> int:
         """Sync enterprise info to all running agents. Returns count."""
-        result = await db.execute(select(Agent).where(Agent.status == "running"))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.status == "running",
+                Agent.deleted_at.is_(None),
+            )
+        )
         agents = result.scalars().all()
 
         for agent in agents:

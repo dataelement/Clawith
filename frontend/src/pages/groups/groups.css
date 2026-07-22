@@ -417,7 +417,8 @@
 }
 
 .group-badge-agent,
-.group-badge-manager {
+.group-badge-manager,
+.group-badge-deleted {
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     background: var(--accent-subtle);
@@ -430,6 +431,12 @@
     margin-left: var(--space-2);
     background: var(--bg-tertiary);
     color: var(--text-tertiary);
+}
+
+.group-badge-deleted {
+    margin-left: var(--space-2);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
 }
 
 .group-message-bubble {

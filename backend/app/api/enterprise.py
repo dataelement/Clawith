@@ -145,7 +145,10 @@ async def _resolve_llm_test_target(
         raise ValueError("model_id must be a valid UUID") from exc
     async with async_session() as session:
         result = await session.execute(
-            select(LLMModel).where(LLMModel.id == model_id)
+            select(LLMModel).where(
+                LLMModel.id == model_id,
+                LLMModel.deleted_at.is_(None),
+            )
         )
         existing = result.scalar_one_or_none()
     if existing is None:
@@ -186,7 +189,10 @@ async def _record_llm_tool_capability(
     async with async_session() as session:
         result = await session.execute(
             select(LLMModel)
-            .where(LLMModel.id == target.model_id)
+            .where(
+                LLMModel.id == target.model_id,
+                LLMModel.deleted_at.is_(None),
+            )
             .with_for_update()
         )
         existing = result.scalar_one_or_none()
@@ -339,7 +345,11 @@ async def list_llm_models(
             raise HTTPException(status_code=403, detail="Cannot access other tenant's models")
 
     tid = tenant_id or str(current_user.tenant_id) if current_user.tenant_id else None
-    query = select(LLMModel).order_by(LLMModel.created_at.desc())
+    query = (
+        select(LLMModel)
+        .where(LLMModel.deleted_at.is_(None))
+        .order_by(LLMModel.created_at.desc())
+    )
     if tid:
         query = query.where(LLMModel.tenant_id == uuid.UUID(tid))
     result = await db.execute(query)
@@ -398,7 +408,12 @@ async def set_default_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark this model as the tenant's default for new agents."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_id,
+            LLMModel.deleted_at.is_(None),
+        )
+    )
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -443,44 +458,35 @@ async def set_default_llm_model(
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_llm_model(
     model_id: uuid.UUID,
-    force: bool = False,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove an LLM model from the pool."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    """Logically delete an LLM model while retaining every historical reference."""
+    query = select(LLMModel).where(LLMModel.id == model_id)
+    if not _is_platform_admin_user(current_user):
+        query = query.where(LLMModel.tenant_id == current_user.tenant_id)
+    result = await db.execute(query)
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # Check if any agents reference this model
-    from sqlalchemy import or_
-    ref_result = await db.execute(
-        select(Agent.name).where(
-            or_(Agent.primary_model_id == model_id, Agent.fallback_model_id == model_id)
+    if model.deleted_at is None:
+        model.deleted_at = datetime.now(UTC)
+        model.enabled = False
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="llm_model_deleted",
+                details={
+                    "resource_id": str(model.id),
+                    "tenant_id": str(model.tenant_id) if model.tenant_id else None,
+                    "label": model.label,
+                    "provider": model.provider,
+                    "model": model.model,
+                },
+            )
         )
-    )
-    agent_names = [row[0] for row in ref_result.all()]
-
-    if agent_names and not force:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"This model is used by {len(agent_names)} agent(s)",
-                "agents": agent_names,
-            },
-        )
-
-    # Nullify FK references in agents before deleting
-    if agent_names:
-        await db.execute(
-            update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None)
-        )
-        await db.execute(
-            update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None)
-        )
-    await db.delete(model)
-    await db.commit()
+        await db.commit()
 
 
 @router.put("/llm-models/{model_id}", response_model=LLMModelOut)
@@ -491,7 +497,12 @@ async def update_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing LLM model in the pool (admin)."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_id,
+            LLMModel.deleted_at.is_(None),
+        )
+    )
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -924,6 +935,7 @@ async def _runtime_model_settings_payload(db: AsyncSession, *, tenant_id: uuid.U
         .where(
             or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id),
             LLMModel.enabled.is_(True),
+            LLMModel.deleted_at.is_(None),
             LLMModel.supports_tool_calling.is_(True),
         )
         .order_by(LLMModel.created_at.desc())
@@ -973,7 +985,12 @@ async def update_runtime_model_settings(
     resolved_tenant_id = _runtime_settings_tenant_id(current_user, tenant_id)
 
     requested_ids = {data.planning_model_id, data.compact_model_id}
-    result = await db.execute(select(LLMModel).where(LLMModel.id.in_(requested_ids)))
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id.in_(requested_ids),
+            LLMModel.deleted_at.is_(None),
+        )
+    )
     models = {model.id: model for model in result.scalars().all()}
     for model_id in requested_ids:
         model = models.get(model_id)

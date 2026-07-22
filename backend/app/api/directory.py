@@ -284,6 +284,7 @@ async def get_custom_directory_agent_candidates(
         Agent.tenant_id == agent.tenant_id,
         Agent.id != agent.id,
         Agent.access_mode != "private",
+        Agent.deleted_at.is_(None),
         ~exists().where(
             AgentAgentRelationship.agent_id == agent_id,
             AgentAgentRelationship.target_agent_id == Agent.id,
@@ -329,6 +330,7 @@ async def add_custom_directory_agent(
             Agent.tenant_id == agent.tenant_id,
             Agent.id != agent.id,
             Agent.access_mode != "private",
+            Agent.deleted_at.is_(None),
         )
     )).scalar_one_or_none()
     if not target:
