@@ -191,6 +191,7 @@ def test_mentions_are_deduplicated_in_client_order() -> None:
 @pytest.mark.asyncio
 async def test_mention_resolution_only_exposes_active_group_members() -> None:
     tenant_id, user, scope, target, mention = _records()
+    mention.model.supports_tool_calling = False
     human_target = Participant(
         id=uuid.uuid4(),
         type="user",
@@ -241,6 +242,8 @@ async def test_mention_resolution_only_exposes_active_group_members() -> None:
 
     assert resolved[0].valid is True and resolved[0].triggers_agent is True
     assert resolved[0].agent is mention.agent
+    assert resolved[0].model is mention.model
+    assert "llm_models.supports_tool_calling IS true" not in str(db.statements[-1])
     assert resolved[1].valid is True and resolved[1].triggers_agent is False
     assert resolved[1].participant_type == "user"
     assert resolved[2].valid is False

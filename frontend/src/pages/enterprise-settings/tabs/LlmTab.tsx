@@ -5,6 +5,7 @@ import { IconEdit } from '@tabler/icons-react';
 import { useDialog } from '../../../components/Dialog/DialogProvider';
 import { useToast } from '../../../components/Toast/ToastProvider';
 import { useAuthStore } from '../../../stores';
+import { notifyModelCacheInvalidated } from '../../../services/modelCacheEvents';
 import { fetchJson } from '../utils/fetchJson';
 
 interface LLMModel {
@@ -40,8 +41,8 @@ interface RuntimeModelSettings {
     tenant_id: string;
     planning_model_id: string | null;
     compact_model_id: string | null;
-    planning_source: 'database' | 'environment';
-    compact_source: 'database' | 'environment';
+    planning_source: 'database' | 'environment' | 'unavailable';
+    compact_source: 'database' | 'environment' | 'unavailable';
     candidates: Array<Pick<LLMModel, 'id' | 'label' | 'provider' | 'model'>>;
 }
 
@@ -98,6 +99,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         qc.invalidateQueries({ queryKey: ['tenant-default-model'] });
         qc.invalidateQueries({ queryKey: ['agents'] });
         qc.invalidateQueries({ queryKey: ['agent'] });
+        notifyModelCacheInvalidated();
     };
 
     const { data: models = [] } = useQuery({

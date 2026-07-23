@@ -730,13 +730,38 @@ def _repair(
     repair_code: str | None = None,
     repair_tool_name: str | None = None,
 ) -> ModelStepResult:
+    assistant_message = _assistant_message(state, context, step)
+    if (
+        not str(assistant_message.get("content") or "").strip()
+        and not assistant_message.get("tool_calls")
+    ):
+        # Invalid/truncated tool calls cannot be replayed in provider history.
+        # Persist only the user-role repair instruction; an empty assistant
+        # message is rejected by providers such as Cohere.
+        assistant_message = None
     return ModelStepResult(
         intent="text",
-        assistant_message=_assistant_message(state, context, step),
+        assistant_message=assistant_message,
         repair_instruction=instruction,
         repair_code=repair_code,
         repair_tool_name=repair_tool_name,
     )
+
+
+def _safe_provider_failure_message(error: Exception) -> str:
+    """Return bounded user-facing provider diagnostics; raw bodies stay in logs."""
+    match = re.search(
+        r"(?<!\d)(400|401|403|408|422|429|500|502|503|504)(?!\d)",
+        str(error),
+    )
+    status = match.group(1) if match else "unknown"
+    if status in {"401", "403"}:
+        return f"Model provider authentication or authorization failed (HTTP {status})."
+    if status in {"400", "422"}:
+        return f"Model provider rejected the request (HTTP {status})."
+    if status != "unknown":
+        return f"Model provider request failed (HTTP {status})."
+    return "Model provider request failed."
 
 
 def _parse_step(
@@ -1028,11 +1053,7 @@ class RuntimeModelStepService:
                 or not model.enabled
                 or model.tenant_id not in {None, tenant_id}
             ):
-                candidates = await active_agent_model_candidates(
-                    db,
-                    agent,
-                    require_tool_calling=True,
-                )
+                candidates = await active_agent_model_candidates(db, agent)
                 model = candidates[0] if candidates else None
         if (
             model is None
@@ -1047,7 +1068,6 @@ class RuntimeModelStepService:
                 "model_unavailable",
                 "pinned Runtime model is disabled or outside the tenant scope",
             )
-        ModelCapabilityResolver.require_native_tool_calling(model)
         if agent is None or agent.status not in _ACTIVE_AGENT_STATUSES or agent.is_expired:
             raise ContextBuildError(
                 "agent_unavailable",
@@ -1078,11 +1098,7 @@ class RuntimeModelStepService:
         primary_model: LLMModel,
     ) -> LLMModel | None:
         async with self._session_factory() as db:
-            candidates = await active_agent_model_candidates(
-                db,
-                agent,
-                require_tool_calling=True,
-            )
+            candidates = await active_agent_model_candidates(db, agent)
         return next((model for model in candidates if model.id != primary_model.id), None)
 
     async def compact_inputs(
@@ -1530,7 +1546,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_call_failed",
-                        str(primary_error) or type(primary_error).__name__,
+                        _safe_provider_failure_message(primary_error),
                     ) from primary_error
                 tenant_id = uuid.UUID(context.tenant_id)
                 fallback = await self._fallback_model(
@@ -1620,7 +1636,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_failover_failed",
-                        str(fallback_error) or type(fallback_error).__name__,
+                        _safe_provider_failure_message(fallback_error),
                     ) from fallback_error
                 actual_model = fallback
                 failed_over_from = model
@@ -1724,7 +1740,7 @@ class RuntimeModelStepService:
             )
             return _error(
                 "model_call_failed",
-                str(exc) or type(exc).__name__,
+                "The model call failed.",
             )
 
 

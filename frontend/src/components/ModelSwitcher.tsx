@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconChevronDown, IconCheck } from '@tabler/icons-react';
 import { enterpriseApi } from '../services/api';
+import { subscribeModelCacheInvalidation } from '../services/modelCacheEvents';
 
 interface Model {
     id: string;
@@ -11,6 +12,7 @@ interface Model {
     model: string;
     label?: string;
     enabled?: boolean;
+    supports_tool_calling?: boolean | null;
 }
 
 interface Props {
@@ -39,10 +41,17 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
         { top: number; bottom: number; left: number; width: number; placement: 'above' | 'below'; maxHeight: number } | null
     >(null);
 
-    const { data: models = [] } = useQuery({
+    const { data: models = [], refetch: refetchModels } = useQuery({
         queryKey: ['llm-models'],
         queryFn: enterpriseApi.llmModels,
     });
+
+    useEffect(
+        () => subscribeModelCacheInvalidation(() => {
+            void refetchModels();
+        }),
+        [refetchModels],
+    );
 
     const enabled = (models as Model[]).filter(m => m.enabled !== false);
     const selected = enabled.find(m => m.id === value)

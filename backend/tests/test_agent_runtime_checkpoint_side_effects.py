@@ -46,8 +46,9 @@ class _StoredRun:
 
 
 class _Session:
-    def __init__(self, value: object) -> None:
+    def __init__(self, value: object, *, terminal_event: object | None = None) -> None:
         self.value = value
+        self.terminal_event = terminal_event
         self.flush_count = 0
         self.statements = []
 
@@ -62,6 +63,8 @@ class _Session:
 
     async def execute(self, statement) -> _ScalarResult:
         self.statements.append(statement)
+        if "FROM agent_run_events" in str(statement):
+            return _ScalarResult(self.terminal_event)
         return _ScalarResult(self.value)
 
     async def flush(self) -> None:
@@ -512,6 +515,30 @@ async def test_cancel_before_start_releases_lane_without_fabricating_checkpoint(
     assert stored.lane_held is False
     assert stored.lane_claimed_at is None
     assert sessions.sessions[0].flush_count == 1
+    event = sessions.sessions[0].statements[-1].compile(
+        dialect=postgresql.dialect()
+    ).params
+    assert event["event_type"] == "run_cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_rejected_start_does_not_append_second_terminal_event() -> None:
+    run, command, _ = _records(command_type="cancel")
+    stored = _StoredRun()
+    session = _Session(stored, terminal_event=uuid.uuid4())
+    handler = RuntimeCheckpointSideEffects(
+        session_factory=_SessionFactory(),  # type: ignore[arg-type]
+    )
+    handler._session_factory = lambda: session  # type: ignore[method-assign]
+
+    await handler.handle(run=run, command=command, checkpoint=None)
+
+    assert stored.lane_held is False
+    assert stored.lane_claimed_at is None
+    assert not any(
+        "INSERT INTO agent_run_events" in str(statement)
+        for statement in session.statements
+    )
 
 
 def test_waiting_delivery_uses_correlation_id_and_prompt() -> None:

@@ -370,23 +370,24 @@ def _failover_service(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("supports_tool_calling", "error_code"),
-    [
-        (None, "model_tool_calling_unverified"),
-        (False, "model_tool_calling_unsupported"),
-    ],
-)
-async def test_agent_model_step_fails_closed_before_provider_call(
+@pytest.mark.parametrize("supports_tool_calling", [None, False])
+async def test_agent_model_step_calls_saved_model_without_verified_tool_calling(
     supports_tool_calling: bool | None,
-    error_code: str,
 ) -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     model.supports_tool_calling = supports_tool_calling
     agent = _agent(tenant_id)
     state = _state(tenant_id, model, agent)
-    completion = AsyncMock()
+    completion = AsyncMock(
+        return_value=LLMCompletionStep(
+            content="Completed with the saved model.",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=20),
+        )
+    )
 
     result = await _service(
         model,
@@ -395,9 +396,9 @@ async def test_agent_model_step_fails_closed_before_provider_call(
         completion,
     ).complete_once(state, _context(state))
 
-    assert result.intent == "error"
-    assert result.error["code"] == error_code
-    completion.assert_not_awaited()
+    assert result.intent == "finish"
+    assert result.finish_content == "Completed with the saved model."
+    completion.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -483,6 +484,7 @@ async def test_invalid_write_file_arguments_request_three_protocol_repairs() -> 
     assert result.intent == "text"
     assert result.repair_code == "invalid_tool_call"
     assert result.repair_tool_name == "write_file"
+    assert result.assistant_message is None
 
 
 @pytest.mark.asyncio
@@ -2197,8 +2199,7 @@ async def test_mixed_finish_and_tool_calls_are_repaired_before_any_tool_runs() -
     assert result.tool_calls == ()
     assert result.repair_instruction is not None
     assert "only tool call" in result.repair_instruction
-    assert result.assistant_message is not None
-    assert "tool_calls" not in result.assistant_message
+    assert result.assistant_message is None
 
 
 @pytest.mark.asyncio
@@ -2400,7 +2401,37 @@ async def test_non_retryable_primary_error_never_calls_configured_fallback() -> 
     assert result.intent == "error"
     assert result.error is not None
     assert result.error["code"] == "model_call_failed"
+    assert result.error["message"] == "Model provider request failed."
+    assert "invalid API key" not in result.error["message"]
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_validation_error_is_redacted_from_runtime_delivery() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError(
+            'HTTP 400: {"error":{"metadata":{"provider_name":"Cohere"},'
+            '"user_id":"private-user-id","message":"invalid request"}}'
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "error"
+    assert result.error == {
+        "code": "model_call_failed",
+        "message": "Model provider rejected the request (HTTP 400).",
+    }
 
 
 @pytest.mark.asyncio

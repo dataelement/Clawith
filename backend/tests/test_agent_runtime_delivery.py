@@ -209,12 +209,6 @@ def test_delivery_request_uses_the_documented_stable_keys() -> None:
     run_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
 
-    ack = DeliveryRequest(
-        tenant_id=tenant_id,
-        run_id=run_id,
-        kind="ack",
-        content="Accepted",
-    )
     waiting = DeliveryRequest(
         tenant_id=tenant_id,
         run_id=run_id,
@@ -233,9 +227,28 @@ def test_delivery_request_uses_the_documented_stable_keys() -> None:
         lifecycle_status="completed",
     )
 
-    assert ack.idempotency_key == f"run:{run_id}:ack"
     assert waiting.idempotency_key == f"run:{run_id}:waiting:interrupt-7"
     assert terminal.idempotency_key == f"run:{run_id}:terminal:completed"
+
+
+@pytest.mark.asyncio
+async def test_new_ack_delivery_requests_are_rejected() -> None:
+    run_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    db = _RecordingDB()
+
+    with pytest.raises(DeliveryServiceError) as exc_info:
+        await deliver_runtime_message(
+            db,
+            DeliveryRequest(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                kind="ack",
+                content="Accepted",
+            ),
+        )
+
+    assert exc_info.value.code == "invalid_delivery_request"
 
 
 @pytest.mark.asyncio

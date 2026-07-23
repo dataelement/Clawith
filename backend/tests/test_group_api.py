@@ -380,6 +380,10 @@ async def test_workspace_download_returns_exact_bytes_after_group_authorization(
     assert response.body == b"\x89PNG\r\n"
     assert response.media_type == "image/png"
     assert response.headers["content-disposition"].startswith("inline;")
+    audit = next(value for value in db.added if isinstance(value, AuditLog))
+    assert audit.action == "group:workspace_download"
+    assert audit.details["path"] == "images/chart.png"
+    assert audit.details["inline"] is True
     assert calls == [
         {
             "tenant_id": tenant_id,
@@ -388,6 +392,40 @@ async def test_workspace_download_returns_exact_bytes_after_group_authorization(
             "path": "images/chart.png",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_download_uses_portable_webp_content_type(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    db = _RecordingDB()
+
+    async def fake_download_user(**_kwargs):
+        return user
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_read(_db, **_kwargs):
+        return SimpleNamespace(path="images/chart.webp", content=b"RIFFpayloadWEBP")
+
+    monkeypatch.setattr(groups_api, "_download_user", fake_download_user)
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_file_service, "read_workspace_binary_file", fake_read)
+
+    response = await groups_api.download_group_workspace_file(
+        group.id,
+        path="images/chart.webp",
+        token="download-token",
+        inline=True,
+        credentials=None,
+        db=db,
+    )
+
+    assert response.media_type == "image/webp"
+    assert response.headers["content-disposition"].startswith("inline;")
 
 
 @pytest.mark.asyncio

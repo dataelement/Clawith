@@ -16,7 +16,19 @@ from app.services.storage_runtime.utils import (
     tenant_storage_prefix,
 )
 
+__all__ = [
+    "agent_storage_prefix",
+    "ensure_local_path",
+    "get_storage_backend",
+    "guess_content_type",
+    "normalize_storage_key",
+    "tenant_storage_prefix",
+]
+
 _storage_backend: StorageBackend | None = None
+_CONTENT_TYPE_OVERRIDES = {
+    ".webp": "image/webp",
+}
 
 
 def get_storage_backend() -> StorageBackend:
@@ -57,4 +69,9 @@ async def ensure_local_path(key: str) -> Path:
 
 
 def guess_content_type(filename: str) -> str:
-    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    suffix = Path(filename).suffix.lower()
+    return (
+        _CONTENT_TYPE_OVERRIDES.get(suffix)
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )

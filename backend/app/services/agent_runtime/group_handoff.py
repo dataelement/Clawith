@@ -395,8 +395,8 @@ def _source_run_matches(
         or source_run.system_role is not None
         or source_run.runtime_type != "langgraph"
         or source_run.runtime_thread_id != str(source_run.id)
-        # Group start acknowledgement may already be delivered while the Run
-        # remains active.  This projection is not a Runtime lifecycle state.
+        # Historical Runs may already have delivered the retired start ACK;
+        # current Runs remain pending until waiting or terminal delivery.
         or source_run.delivery_status not in {"pending", "delivered"}
     ):
         raise GroupAgentHandoffError(

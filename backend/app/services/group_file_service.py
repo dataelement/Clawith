@@ -8,6 +8,8 @@ physical ``groups/{group_id}/...`` namespace directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+from urllib.parse import unquote
 import uuid
 
 from sqlalchemy import select
@@ -41,6 +43,9 @@ class GroupFileServiceError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+_FORBIDDEN_WORKSPACE_EXTENSIONS = frozenset({".exe"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +128,18 @@ def _memory_key(group_id: uuid.UUID, agent_id: uuid.UUID) -> str:
 
 def _normalize_workspace_relative(path: str, *, allow_empty: bool) -> str:
     raw = (path or "").replace("\\", "/").strip()
-    if raw.startswith("/") or ".." in raw.split("/"):
+    decoded = raw
+    for _ in range(2):
+        next_decoded = unquote(decoded).replace("\\", "/")
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    if (
+        raw.startswith("/")
+        or ".." in raw.split("/")
+        or decoded.startswith("/")
+        or ".." in decoded.split("/")
+    ):
         raise GroupFileServiceError(
             "group_workspace_path_invalid",
             "Group workspace paths must be relative and cannot contain '..'",
@@ -135,6 +151,29 @@ def _normalize_workspace_relative(path: str, *, allow_empty: bool) -> str:
             "A group workspace file path is required",
         )
     return normalized
+
+
+def _validate_workspace_write(path: str, content: bytes | None = None) -> None:
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix in _FORBIDDEN_WORKSPACE_EXTENSIONS:
+        raise GroupFileServiceError(
+            "group_workspace_file_type_forbidden",
+            f"Files with the {suffix} extension are not allowed in Group workspace",
+        )
+    if content is None or suffix in BINARY_REVISION_EXTENSIONS:
+        return
+    if b"\x00" in content:
+        raise GroupFileServiceError(
+            "group_file_content_invalid",
+            "Group text files cannot contain NUL bytes",
+        )
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GroupFileServiceError(
+            "group_file_content_invalid",
+            "Group text files must contain valid UTF-8",
+        ) from exc
 
 
 def _workspace_key(group_id: uuid.UUID, path: str, *, allow_empty: bool) -> tuple[str, str]:
@@ -270,6 +309,8 @@ async def _prepare_runtime_workspace_operation(
         actor_participant_id=actor_participant_id,
     )
     normalized, key = _workspace_key(group_id, path, allow_empty=False)
+    if operation == "write":
+        _validate_workspace_write(normalized)
     storage = get_storage_backend()
     current = await storage.get_version(key)
     if current.is_dir:
@@ -997,6 +1038,7 @@ async def write_workspace_file(
         actor_participant_id=actor_participant_id,
     )
     normalized, key = _workspace_key(group_id, path, allow_empty=False)
+    _validate_workspace_write(normalized)
     return await _write_text(
         db,
         group_id=group_id,
@@ -1032,6 +1074,7 @@ async def write_workspace_binary_file(
         actor_participant_id=actor_participant_id,
     )
     normalized, key = _workspace_key(group_id, path, allow_empty=False)
+    _validate_workspace_write(normalized, content)
     if require_absent and expected_version_token is not None:
         raise GroupFileServiceError(
             "group_file_write_condition_invalid",

@@ -16,13 +16,10 @@ def _is_usable(
     model: LLMModel,
     *,
     tenant_id: uuid.UUID | None,
-    require_tool_calling: bool,
 ) -> bool:
     if getattr(model, "deleted_at", None) is not None or not model.enabled:
         return False
     if model.tenant_id not in {None, tenant_id}:
-        return False
-    if require_tool_calling and model.supports_tool_calling is not True:
         return False
     return True
 
@@ -32,7 +29,6 @@ async def load_active_model(
     *,
     model_id: uuid.UUID | None,
     tenant_id: uuid.UUID | None,
-    require_tool_calling: bool = False,
 ) -> LLMModel | None:
     """Load one enabled, non-deleted model valid for the requested tenant."""
     if model_id is None:
@@ -49,7 +45,6 @@ async def load_active_model(
     if model is None or not _is_usable(
         model,
         tenant_id=tenant_id,
-        require_tool_calling=require_tool_calling,
     ):
         return None
     return model
@@ -58,8 +53,6 @@ async def load_active_model(
 async def active_agent_model_candidates(
     db: AsyncSession,
     agent: Agent,
-    *,
-    require_tool_calling: bool = False,
 ) -> tuple[LLMModel, ...]:
     """Resolve primary, fallback, then tenant default without rewriting stored IDs."""
     if getattr(agent, "deleted_at", None) is not None:
@@ -102,7 +95,6 @@ async def active_agent_model_candidates(
         and _is_usable(
             model,
             tenant_id=agent.tenant_id,
-            require_tool_calling=require_tool_calling,
         )
     )
 
@@ -110,14 +102,8 @@ async def active_agent_model_candidates(
 async def resolve_active_agent_model(
     db: AsyncSession,
     agent: Agent,
-    *,
-    require_tool_calling: bool = False,
 ) -> LLMModel | None:
-    candidates = await active_agent_model_candidates(
-        db,
-        agent,
-        require_tool_calling=require_tool_calling,
-    )
+    candidates = await active_agent_model_candidates(db, agent)
     return candidates[0] if candidates else None
 
 

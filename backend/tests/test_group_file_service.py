@@ -184,6 +184,41 @@ async def test_group_workspace_rejects_traversal_and_stale_writes(
         )
     assert path_error.value.code == "group_workspace_path_invalid"
 
+    with pytest.raises(group_file_service.GroupFileServiceError) as encoded_path:
+        await group_file_service.write_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="%2e%2e/system/announcement.md",
+            content="escape",
+        )
+    assert encoded_path.value.code == "group_workspace_path_invalid"
+
+    with pytest.raises(group_file_service.GroupFileServiceError) as executable:
+        await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="payload.exe",
+            content=b"MZ",
+            content_type="application/octet-stream",
+        )
+    assert executable.value.code == "group_workspace_file_type_forbidden"
+
+    with pytest.raises(group_file_service.GroupFileServiceError) as invalid_text:
+        await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="invalid.txt",
+            content=b"\xff\xfe",
+            content_type="text/plain",
+        )
+    assert invalid_text.value.code == "group_file_content_invalid"
+
     current = await group_file_service.write_workspace_file(
         db,
         tenant_id=tenant_id,

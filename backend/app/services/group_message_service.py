@@ -331,7 +331,6 @@ async def _resolve_mentions(
                     LLMModel.id.in_(model_ids),
                     LLMModel.deleted_at.is_(None),
                     LLMModel.enabled.is_(True),
-                    LLMModel.supports_tool_calling.is_(True),
                 )
             )
             models = {

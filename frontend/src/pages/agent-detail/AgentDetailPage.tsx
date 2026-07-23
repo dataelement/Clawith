@@ -3189,8 +3189,18 @@ export default function AgentDetailPage() {
             const qMatch = msg.content.match(/\nQuestion: ([\s\S]+)$/);
             parsed = { ...msg, fileName, content: qMatch ? qMatch[1].trim() : '' };
         }
-        // If file is an image and no imageUrl yet, build download URL for preview
-        if (parsed.fileName && !parsed.imageUrl && id) {
+        // A multi-image message stores all names in the legacy file_name field.
+        // Never turn that comma-joined label into one invalid download path;
+        // ChatMessageItem renders each persisted image_data marker instead.
+        const inlineImageMarkerCount = (
+            parsed.content.match(/\[image_data:data:image\//g) || []
+        ).length;
+        if (
+            parsed.fileName
+            && !parsed.imageUrl
+            && inlineImageMarkerCount <= 1
+            && id
+        ) {
             const ext = parsed.fileName.split('.').pop()?.toLowerCase() || '';
             if (IMAGE_EXTS.includes(ext)) {
                 parsed.imageUrl = `/api/agents/${id}/files/download?path=workspace/uploads/${encodeURIComponent(parsed.fileName)}&token=${token}`;
@@ -4676,9 +4686,14 @@ export default function AgentDetailPage() {
         () => (llmModels as any[]).filter((m: any) => m.enabled),
         [llmModels],
     );
-    const effectiveChatModelId = overrideModelId
-        || agent?.primary_model_id
-        || myTenant?.default_model_id
+    const effectiveChatModelId = [
+        overrideModelId,
+        agent?.primary_model_id,
+        myTenant?.default_model_id,
+    ].find(
+        (candidate): candidate is string => Boolean(candidate)
+            && enabledLlmModels.some((model: any) => model.id === candidate),
+    )
         || enabledLlmModels[0]?.id
         || null;
 
