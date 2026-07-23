@@ -88,6 +88,14 @@ test('group composer and stream use session-wide active runs', () => {
   assert.match(groupsPage, /runningAgents=\{runningAgents\}/);
 });
 
+test('planning-to-entry transition keeps polling and preserves the typing indicator', () => {
+  assert.match(groupsPage, /ACTIVE_RUN_TRANSITION_GRACE_MS/);
+  assert.match(groupsPage, /planningTransitionUntilRef/);
+  assert.match(groupsPage, /setAwaitingPlannedRuns\(true\)/);
+  assert.match(groupsPage, /Date\.now\(\) < planningTransitionUntilRef\.current \? 250 : false/);
+  assert.match(groupsPage, /planningRunVisible \|\| \(awaitingPlannedRuns && !agentRunVisible\)/);
+});
+
 test('planning and running agents keep the single transient typing indicator', () => {
   assert.match(messageStream, /\{isPlanning && \(/);
   assert.match(messageStream, /groups\.taskPlanning/);

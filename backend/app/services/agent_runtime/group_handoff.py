@@ -517,6 +517,17 @@ async def _validate_targets(
             "Group mention resolution did not preserve the frozen participant order",
             repairable=True,
         )
+    self_targets = [
+        mention.participant_id
+        for mention in resolved
+        if mention.agent is not None and mention.agent.id == source_agent_id
+    ]
+    if self_targets:
+        raise GroupAgentHandoffError(
+            "group_handoff_self_target",
+            "An Agent cannot create a public handoff to itself",
+            repairable=True,
+        )
     for mention in resolved:
         assert mention.agent is not None
         if not _target_budget_available(mention.agent, now=clock):
