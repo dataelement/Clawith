@@ -543,10 +543,8 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
     steps:
-      - name: Checkout released source
+      - name: Checkout deployment tooling
         uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.resolve_deploy_tag.outputs.tag }}
 
       - name: Validate deployment configuration
         shell: bash
