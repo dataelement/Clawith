@@ -274,6 +274,9 @@ async def test_planning_model_uses_the_pinned_platform_model_without_tools() -> 
     assert "Use the simplest plan" in planning_prompt
     assert "greeting or check-in" in planning_prompt
     assert "Never create a handoff from an Agent to itself" in planning_prompt
+    assert "Each assigned Agent must author its own public group reply" in planning_prompt
+    assert "Never route a planned group transition through private A2A" in planning_prompt
+    assert "must say exactly which different Agent to wake publicly next" in planning_prompt
 
 
 @pytest.mark.asyncio

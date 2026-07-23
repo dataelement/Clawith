@@ -1430,6 +1430,10 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "every intended recipient" in group_system_prompt
     assert "`send_message_to_agent` is private A2A" in group_system_prompt
     assert "never a substitute for `finish.mention_participant_ids`" in group_system_prompt
+    assert "A planned group transition must remain in this group session" in group_system_prompt
+    assert "under any `msg_type`" in group_system_prompt
+    assert "Do not perform another Agent's assigned responsibility" in group_system_prompt
+    assert "A private A2A result is not that Agent's public group reply" in group_system_prompt
     assert "textual `@name` or display name" in group_system_prompt
     assert "omit `mention_participant_ids`" in group_system_prompt
     assert "using your own role and voice" in group_system_prompt

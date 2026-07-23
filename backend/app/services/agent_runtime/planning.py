@@ -87,6 +87,8 @@ Use the simplest plan that satisfies the human's actual request. Do not invent a
 For a greeting or check-in, start the addressed Agents in parallel and tell each one to reply briefly as itself. Do not ask one Agent to report another Agent's status, unify their greetings, or exchange public handoffs.
 entry_steps starts only the first Agent or first parallel Agents. It may be a subset of candidates. Do not describe a DAG, step IDs, dependencies, progress, or later scheduling fields. Later collaboration proceeds through public Agent handoffs.
 Create a public handoff only when a different Agent must provide a new reply for the task to proceed. Never create a handoff from an Agent to itself.
+Each assigned Agent must author its own public group reply. Never route a planned group transition through private A2A, never ask an entry Agent to wait for a private result, and never ask one Agent to perform or claim another Agent's assigned work.
+For every sequential transition, plan_prompt and the responsible entry instruction must say exactly which different Agent to wake publicly next, what concrete result to pass in the public group message, and what that Agent must reply with in the group.
 plan_prompt must be complete enough for every later participating Agent to receive unchanged. Preserve the human's explicit constraints, but do not repeat platform rules or invent mandatory constraints."""
 
 
