@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 import pytest
@@ -183,6 +184,41 @@ async def test_group_workspace_rejects_traversal_and_stale_writes(
         )
     assert path_error.value.code == "group_workspace_path_invalid"
 
+    with pytest.raises(group_file_service.GroupFileServiceError) as encoded_path:
+        await group_file_service.write_workspace_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="%2e%2e/system/announcement.md",
+            content="escape",
+        )
+    assert encoded_path.value.code == "group_workspace_path_invalid"
+
+    with pytest.raises(group_file_service.GroupFileServiceError) as executable:
+        await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="payload.exe",
+            content=b"MZ",
+            content_type="application/octet-stream",
+        )
+    assert executable.value.code == "group_workspace_file_type_forbidden"
+
+    with pytest.raises(group_file_service.GroupFileServiceError) as invalid_text:
+        await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="invalid.txt",
+            content=b"\xff\xfe",
+            content_type="text/plain",
+        )
+    assert invalid_text.value.code == "group_file_content_invalid"
+
     current = await group_file_service.write_workspace_file(
         db,
         tenant_id=tenant_id,
@@ -241,6 +277,65 @@ async def test_group_workspace_create_can_require_the_path_to_be_absent(
 
     assert conflict.value.code == "group_file_conflict"
     assert await storage.read_text(f"groups/{group_id}/workspace/notes.md") == "existing"
+
+
+@pytest.mark.asyncio
+async def test_group_workspace_binary_file_preserves_bytes_version_and_revision(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    actor = _participant("user")
+    db = _RecordingDB()
+    storage = _stub_storage_and_authorization(monkeypatch, tmp_path, actor)
+    content = b"%PDF-1.7\n\x00binary-payload"
+
+    written = await group_file_service.write_workspace_binary_file(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        actor_participant_id=actor.id,
+        path="reports/final.pdf",
+        content=content,
+        content_type="application/pdf",
+        require_absent=True,
+    )
+
+    assert written.path == "reports/final.pdf"
+    assert written.content == content
+    assert written.version_token
+    assert await storage.read_bytes(
+        f"groups/{group_id}/workspace/reports/final.pdf"
+    ) == content
+    revision = next(value for value in db.added if isinstance(value, WorkspaceFileRevision))
+    assert revision.path == "workspace/reports/final.pdf"
+    assert revision.before_content is None
+    assert revision.after_content is None
+    assert revision.content_hash == hashlib.sha256(content).hexdigest()
+
+    read_back = await group_file_service.read_workspace_binary_file(
+        db,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        actor_participant_id=actor.id,
+        path="reports/final.pdf",
+    )
+    assert read_back.content == content
+    assert read_back.version_token == written.version_token
+
+    with pytest.raises(group_file_service.GroupFileServiceError) as conflict:
+        await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=actor.id,
+            path="reports/final.pdf",
+            content=b"replacement",
+            content_type="application/pdf",
+            require_absent=True,
+        )
+    assert conflict.value.code == "group_file_conflict"
 
 
 @pytest.mark.asyncio

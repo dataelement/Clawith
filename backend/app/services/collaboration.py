@@ -1,6 +1,5 @@
 """Agent collaboration service — Agent-to-Agent communication."""
 
-import json
 import uuid
 from datetime import datetime, timezone
 
@@ -30,9 +29,19 @@ class CollaborationService:
         from app.models.task import Task
 
         # Verify both agents exist and are running
-        from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
+        from_result = await db.execute(
+            select(Agent).where(
+                Agent.id == from_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         from_agent = from_result.scalar_one_or_none()
-        to_result = await db.execute(select(Agent).where(Agent.id == to_agent_id))
+        to_result = await db.execute(
+            select(Agent).where(
+                Agent.id == to_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         to_agent = to_result.scalar_one_or_none()
 
         if not from_agent or not to_agent:
@@ -77,7 +86,12 @@ class CollaborationService:
 
         Returns agents from the same enterprise (same creator's org).
         """
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             return []
@@ -87,6 +101,7 @@ class CollaborationService:
             select(Agent).where(
                 Agent.id != agent_id,
                 Agent.status.in_(["running", "stopped"]),
+                Agent.deleted_at.is_(None),
             ).order_by(Agent.name)
         )
         agents = collaborators_result.scalars().all()
@@ -109,15 +124,29 @@ class CollaborationService:
 
         msg_type: 'notify' (fire-and-forget) or 'consult' (expects reply)
         """
-        from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
+        from_result = await db.execute(
+            select(Agent).where(
+                Agent.id == from_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         from_agent = from_result.scalar_one_or_none()
+        to_result = await db.execute(
+            select(Agent).where(
+                Agent.id == to_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
+        to_agent = to_result.scalar_one_or_none()
+        if from_agent is None or to_agent is None:
+            raise ValueError("Agent not found")
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         rel_path = f"workspace/inbox/{timestamp}_{str(from_agent_id)[:8]}.md"
         await store_agent_bytes(
             to_agent_id,
             rel_path,
-            f"# 来自 {from_agent.name if from_agent else 'Unknown'} 的消息\n"
+            f"# 来自 {from_agent.name} 的消息\n"
             f"- 类型: {msg_type}\n"
             f"- 时间: {datetime.now(timezone.utc).isoformat()}\n\n"
             f"{message}\n".encode("utf-8"),

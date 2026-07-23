@@ -175,6 +175,11 @@ export default function MessageStream({
                                         {t('groups.agentBadge', '智能体')}
                                     </span>
                                 )}
+                                {member?.is_deleted && (
+                                    <span className="group-badge-deleted">
+                                        {t('groups.deletedBadge', '已删除')}
+                                    </span>
+                                )}
                                 <span className="group-message-time">
                                     {timeFormat.format(new Date(message.created_at))}
                                 </span>

@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import and_, or_, select
 
+from app.core.logging_config import set_trace_id
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
 from app.models.agent_tool_execution import AgentToolExecution
@@ -340,6 +341,9 @@ class RuntimeProductReconciler:
         if candidate is None:
             return ProductReconcileResult(status="idle")
         run, command = candidate
+        # Product retries must retain the same trace as the original durable
+        # Command, including after a process restart or a new daemon iteration.
+        set_trace_id(command.id.hex[:12])
         run_record = runtime_run_record(run)
         command_record = runtime_command_record(command)
         checkpoint = None

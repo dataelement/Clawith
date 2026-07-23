@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.api import chat_sessions as chat_sessions_api
+from app.models.agent_run_event import AgentRunEvent
 from app.services.chat_session_service import DirectSessionDeletion
 
 
@@ -533,7 +534,11 @@ async def test_direct_owner_message_read_advances_unread_watermark(monkeypatch):
         participant_id=None,
         thinking=None,
     )
-    db = RecordingDB(DummyResult([session]), DummyResult([message]))
+    db = RecordingDB(
+        DummyResult([session]),
+        DummyResult([message]),
+        DummyResult([]),
+    )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "use"
@@ -550,6 +555,72 @@ async def test_direct_owner_message_read_advances_unread_watermark(monkeypatch):
     assert db.committed is True
     assert session.last_read_at_by_user is not None
     assert session.updated_at == session.last_read_at_by_user
+
+
+@pytest.mark.asyncio
+async def test_failed_runtime_message_history_restores_durable_diagnostics(monkeypatch):
+    current_user = _actor()
+    agent = _agent(current_user)
+    session = _session(agent, current_user.id)
+    run_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    created_at = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+    message = SimpleNamespace(
+        id=message_id,
+        role="assistant",
+        content="任务执行未完成。",
+        created_at=created_at,
+        participant_id=None,
+        thinking=None,
+    )
+    event = AgentRunEvent(
+        id=uuid.uuid4(),
+        tenant_id=current_user.tenant_id,
+        run_id=run_id,
+        agent_id=agent.id,
+        event_type="delivery_succeeded",
+        summary="Runtime delivery succeeded",
+        payload={
+            "lifecycle_status": "failed",
+            "message_id": str(message_id),
+            "failure_code": "provider_rate_limited",
+            "failure_message": "Provider rejected the request.",
+            "trace_id": "failure-worker-trace",
+        },
+        artifact_refs=[],
+        idempotency_key="terminal-failed",
+    )
+    db = RecordingDB(
+        DummyResult([session]),
+        DummyResult([message]),
+        DummyResult([event]),
+    )
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+
+    messages = await chat_sessions_api.get_session_messages(
+        agent_id=agent.id,
+        session_id=session.id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert messages[0]["runtime_error"] == {
+        "code": "provider_rate_limited",
+        "message": "Provider rejected the request.",
+        "trace_id": "failure-worker-trace",
+        "run_id": str(run_id),
+        "agent_id": str(agent.id),
+        "stage": "execution",
+    }
+    error_sql = _sql(db.statements[2])
+    assert f"agent_run_events.tenant_id = '{current_user.tenant_id}'" in error_sql
+    assert f"agent_run_events.agent_id = '{agent.id}'" in error_sql
+    assert f"agent_runs.session_id = '{session.id}'" in error_sql
+    assert "delivery_succeeded" in error_sql
 
 
 @pytest.mark.asyncio

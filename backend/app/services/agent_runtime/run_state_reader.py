@@ -18,6 +18,7 @@ from app.services.agent_runtime.command_worker import (
     CheckpointObservation,
     RuntimeRunRecord,
     classify_checkpoint,
+    command_rejection_message,
 )
 from app.services.agent_runtime.contracts import (
     DeliveryStatus,
@@ -191,6 +192,7 @@ class RunStateReader:
         control_status: LifecycleStatus | None,
         fallback_status: LifecycleStatus | None,
         control_error_code: str | None = None,
+        control_error_message: str | None = None,
     ) -> RunView:
         lifecycle: Mapping[str, object] = {}
         if observation is not None:
@@ -238,7 +240,11 @@ class RunStateReader:
             waiting_correlation_id=_text(waiting_map.get("correlation_id")),
             result_summary=_summary(lifecycle.get("result_summary")),
             error_code=_text(error_map.get("code")) or _text(control_error_code),
-            last_error=_text(error_map.get("message")) or _text(lifecycle.get("reason")),
+            last_error=(
+                _text(error_map.get("message"))
+                or _text(lifecycle.get("reason"))
+                or _text(control_error_message)
+            ),
             verification_result=verification_result,
             delivery_status=cast(DeliveryStatus, run.delivery_status),
             applied_checkpoint_id=(
@@ -366,6 +372,9 @@ class RunStateReader:
                 control_status="failed",
                 fallback_status="failed",
                 control_error_code=rejected_start.error_code,
+                control_error_message=command_rejection_message(
+                    rejected_start.error_code
+                ),
             )
 
         return self._view(

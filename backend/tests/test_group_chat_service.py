@@ -205,6 +205,95 @@ async def test_create_group_stages_the_human_creator_as_manager() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_group_stages_initial_members_in_the_same_transaction() -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    creator = _participant("user", user_id)
+    agent_id = uuid.uuid4()
+    invited_agent = _participant("agent", agent_id)
+    target_agent = _agent(tenant_id, agent_id)
+    invited_user_id = uuid.uuid4()
+    invited_user = _participant("user", invited_user_id)
+    creator_user = User(
+        id=user_id,
+        tenant_id=tenant_id,
+        display_name="Group Creator",
+        role="member",
+        is_active=True,
+    )
+    db = _RecordingDB(
+        _Result([creator]),
+        _Result([user_id]),
+        # Agent target: participant, tenant agent, inviter user, visibility agent.
+        _Result([invited_agent]),
+        _Result([target_agent]),
+        _Result([creator_user]),
+        _Result([target_agent]),
+        # User target: participant, then the active tenant user behind it.
+        _Result([invited_user]),
+        _Result([invited_user_id]),
+    )
+
+    group = await group_chat_service.create_group(
+        db,
+        tenant_id=tenant_id,
+        creator_participant_id=creator.id,
+        name="Product launch",
+        member_participant_ids=[invited_agent.id, invited_user.id, creator.id],
+    )
+
+    memberships = [value for value in db.added if isinstance(value, GroupMember)]
+    assert [membership.participant_id for membership in memberships] == [
+        creator.id,
+        invited_agent.id,
+        invited_user.id,
+    ]
+    assert [membership.role for membership in memberships] == ["manager", "member", "member"]
+    assert all(membership.group_id == group.id for membership in memberships)
+    # One flush: the group and every initial member commit or roll back together.
+    assert db.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_group_rejects_an_invisible_agent_before_staging_the_group() -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    creator = _participant("user", user_id)
+    agent_id = uuid.uuid4()
+    invited_agent = _participant("agent", agent_id)
+    target_agent = _agent(tenant_id, agent_id, access_mode="custom")
+    creator_user = User(
+        id=user_id,
+        tenant_id=tenant_id,
+        display_name="Group Creator",
+        role="member",
+        is_active=True,
+    )
+    db = _RecordingDB(
+        _Result([creator]),
+        _Result([user_id]),
+        _Result([invited_agent]),
+        _Result([target_agent]),
+        _Result([creator_user]),
+        _Result([target_agent]),
+        _Result(),
+    )
+
+    with pytest.raises(group_chat_service.GroupChatServiceError) as excinfo:
+        await group_chat_service.create_group(
+            db,
+            tenant_id=tenant_id,
+            creator_participant_id=creator.id,
+            name="Product launch",
+            member_participant_ids=[invited_agent.id],
+        )
+
+    assert excinfo.value.code == "group_participant_invalid"
+    assert db.added == []
+    assert db.flush_count == 0
+
+
+@pytest.mark.asyncio
 async def test_ordinary_human_member_can_invite_a_company_agent() -> None:
     tenant_id = uuid.uuid4()
     actor_user_id = uuid.uuid4()

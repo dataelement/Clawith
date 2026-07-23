@@ -66,13 +66,14 @@ def _context(
     model_id: uuid.UUID | None = None,
     run_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
+    goal: str = "Research the topic, then write the answer",
 ) -> RuntimeContext:
     return RuntimeContext(
         tenant_id=str(tenant_id or uuid.uuid4()),
         run_id=str(run_id or uuid.uuid4()),
         command_id=str(uuid.uuid4()),
         executor=cast(RuntimeNodeExecutor, object()),
-        goal="Research the topic, then write the answer",
+        goal=goal,
         run_kind="orchestration",
         source_type="chat",
         model_id=str(model_id or uuid.uuid4()),
@@ -270,6 +271,129 @@ async def test_planning_model_uses_the_pinned_platform_model_without_tools() -> 
     assert "digital employee in Clawith" not in planning_prompt
     assert "call `finish`" not in planning_prompt
     assert "call `wait`" not in planning_prompt
+    assert "Use the simplest plan" in planning_prompt
+    assert "silently rewrite user_goal into clear directives" in planning_prompt
+    assert "Bind an instruction after an @mentioned Agent to that Agent" in planning_prompt
+    assert '"@A write a poem @B then translate it"' in planning_prompt
+    assert "never resolve ambiguity by moving work to a different Agent" in planning_prompt
+    assert "repeat this normalization from the original user_goal" in planning_prompt
+    assert "Do not merely repair JSON syntax" in planning_prompt
+    assert "greeting or check-in" in planning_prompt
+    assert "Never create a handoff from an Agent to itself" in planning_prompt
+    assert "Each assigned Agent must author its own public group reply" in planning_prompt
+    assert "Never route a planned group transition through private A2A" in planning_prompt
+    assert "must say exactly which different Agent to wake publicly next" in planning_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "@Agent 1 @Agent 2 在嘛",
+        "@Agent 1 @Agent 2 你们好！",
+        "@Agent 1 @Agent 2 hello?",
+    ],
+)
+async def test_simple_multi_agent_check_in_returns_a_fast_plan_without_calling_the_model(
+    goal: str,
+) -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    model = LLMModel(
+        id=uuid.uuid4(),
+        tenant_id=None,
+        provider="openai",
+        model="planning-model",
+        api_key_encrypted="encrypted",
+        label="Planning",
+        enabled=True,
+        max_output_tokens=2048,
+        max_input_tokens=64_000,
+    )
+    calls = []
+
+    async def complete(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("simple check-ins must not call the Planning model")
+
+    result = await PlanningModelService(
+        session_factory=_session_factory(model),  # type: ignore[arg-type]
+        completion=complete,
+    ).complete_once(
+        _state((first, second)),
+        _context(model_id=model.id, goal=goal),
+    )
+
+    assert result.error_code is None
+    assert result.plan == {
+        "version": 2,
+        "mode": "advisory",
+        "goal": "Each mentioned Agent replies briefly to the user's greeting or check-in as itself.",
+        "plan_prompt": (
+            "This is a simple greeting or check-in. Every entry Agent replies once, "
+            "briefly, and only as itself. Do not report another Agent's status, do not "
+            "ask another Agent to reply, and do not create a public handoff."
+        ),
+        "entry_steps": [
+            {
+                "agent_id": str(first),
+                "instruction": (
+                    "Reply briefly to the user's greeting or check-in as Agent 1 only. "
+                    "Do not report another Agent's status and do not mention or hand off "
+                    "to another Agent."
+                ),
+            },
+            {
+                "agent_id": str(second),
+                "instruction": (
+                    "Reply briefly to the user's greeting or check-in as Agent 2 only. "
+                    "Do not report another Agent's status and do not mention or hand off "
+                    "to another Agent."
+                ),
+            },
+        ],
+    }
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_greeting_with_a_real_task_still_uses_the_planning_model() -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    model = LLMModel(
+        id=uuid.uuid4(),
+        tenant_id=None,
+        provider="openai",
+        model="planning-model",
+        api_key_encrypted="encrypted",
+        label="Planning",
+        enabled=True,
+        max_output_tokens=2048,
+        max_input_tokens=64_000,
+    )
+    calls = []
+
+    async def complete(model_arg, messages, **kwargs):
+        calls.append((model_arg, messages, kwargs))
+        return LLMCompletionStep(
+            content=json.dumps(_plan(first)),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    result = await PlanningModelService(
+        session_factory=_session_factory(model),  # type: ignore[arg-type]
+        completion=complete,
+    ).complete_once(
+        _state((first, second)),
+        _context(
+            model_id=model.id,
+            goal="@Agent 1 @Agent 2 你好，请分析本周交付风险",
+        ),
+    )
+
+    assert result.plan == _plan(first)
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

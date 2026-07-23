@@ -31,6 +31,10 @@ from app.services.agent_runtime.run_state_reader import (
     RunStateReadError,
     RunStateReader,
 )
+from app.services.llm.multimodal_content import (
+    MultimodalContentError,
+    parse_multimodal_content,
+)
 from app.services.participant_identity import get_or_create_user_participant
 
 
@@ -530,6 +534,10 @@ async def enqueue_chat_runtime(
         model=model,
         source_channel=normalized_channel,
     )
+    try:
+        runtime_content = parse_multimodal_content(content)
+    except MultimodalContentError as exc:
+        raise ChatRuntimeIntakeError(exc.code, str(exc)) from exc
     if (resume_run_id is None) != (resume_correlation_id is None):
         raise ChatRuntimeIntakeError(
             "incomplete_chat_resume",
@@ -633,7 +641,7 @@ async def enqueue_chat_runtime(
                     "correlation_id": correlation_id,
                     "payload": {
                         "message_id": str(resolved_message_id),
-                        "content": content,
+                        "content": runtime_content,
                     },
                 },
                 actor_user_id=user.id,
@@ -696,7 +704,7 @@ async def enqueue_chat_runtime(
             idempotency_key=f"start:{source_execution_id}",
             payload={
                 "message_id": str(resolved_message_id),
-                "input_content": content,
+                "input_content": runtime_content,
                 "source_channel": normalized_channel,
                 "user_id": str(user.id),
                 "application_tools_enabled": application_tools_enabled,

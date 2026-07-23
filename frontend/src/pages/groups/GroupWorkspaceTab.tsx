@@ -6,6 +6,7 @@ import {
     GROUP_WORKSPACE_UPLOAD_ACCEPT,
     GroupWorkspaceUploadError,
     groupWorkspaceUploadPath,
+    isGroupWorkspaceTextUpload,
     readGroupWorkspaceTextUpload,
 } from './groupWorkspaceUpload';
 import { createVersionedFileAdapter } from './versionedFileAdapter';
@@ -47,14 +48,29 @@ export default function GroupWorkspaceTab({ groupId }: { groupId: string }) {
             read: versioned.read,
             write: versioned.write,
             delete: versioned.delete,
+            downloadUrl: (path, options) =>
+                groupApi.downloadWorkspaceUrl(groupId, path, options),
             upload: async (file, currentPath, onProgress) => {
                 try {
                     const path = groupWorkspaceUploadPath(currentPath, file.name);
+                    const snapshot = versioned.snapshot(path);
+
+                    if (!isGroupWorkspaceTextUpload(file.name)) {
+                        const saved = await groupApi.uploadWorkspaceFile(
+                            groupId,
+                            path,
+                            file,
+                            snapshot.versionToken,
+                            !snapshot.known,
+                            onProgress,
+                        );
+                        versioned.remember(path, saved.version_token);
+                        return saved;
+                    }
+
                     onProgress?.(10);
                     const content = await readGroupWorkspaceTextUpload(file);
                     onProgress?.(40);
-
-                    const snapshot = versioned.snapshot(path);
 
                     const saved = await groupApi.saveWorkspaceFile(
                         groupId,
@@ -71,7 +87,7 @@ export default function GroupWorkspaceTab({ groupId }: { groupId: string }) {
                         const message = error.code === 'invalid_name'
                             ? t('groups.workspaceUploadInvalidName', '文件名不能包含路径分隔符')
                             : error.code === 'unsupported_type'
-                                ? t('groups.workspaceUploadTextOnly', '群文件区当前只支持 UTF-8 文本文件')
+                                ? t('groups.workspaceUploadUnsupported', '群文件区不支持这种文件格式')
                                 : t('groups.workspaceUploadInvalidUtf8', '文件不是有效的 UTF-8 文本，未上传')
                         throw new Error(message);
                     }

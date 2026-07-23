@@ -225,6 +225,7 @@ async def _record_scoped_revision(
     actor_id: uuid.UUID | None,
     before_content: str | None,
     after_content: str | None,
+    content_hash_override: str | None = None,
     session_id: str | None = None,
     merge_user_autosave: bool = False,
 ) -> WorkspaceFileRevision | None:
@@ -245,7 +246,11 @@ async def _record_scoped_revision(
     after_content = after_content.replace("\x00", "") if after_content is not None else None
     before = before_content or ""
     after = after_content or ""
-    if before == after and operation not in {"delete", "move_source", "move_destination"}:
+    if (
+        before == after
+        and content_hash_override is None
+        and operation not in {"delete", "move_source", "move_destination"}
+    ):
         return None
 
     group_key = None
@@ -274,7 +279,7 @@ async def _record_scoped_revision(
         existing = existing_result.scalar_one_or_none()
         if existing:
             existing.after_content = after
-            existing.content_hash = content_hash(after)
+            existing.content_hash = content_hash_override or content_hash(after)
             existing.session_id = session_id or existing.session_id
             await db.flush()
             return existing
@@ -290,7 +295,7 @@ async def _record_scoped_revision(
         session_id=session_id,
         before_content=before_content,
         after_content=after_content,
-        content_hash=content_hash(after_content),
+        content_hash=content_hash_override or content_hash(after_content),
         group_key=group_key,
     )
     db.add(revision)
@@ -338,6 +343,7 @@ async def record_group_revision(
     actor_id: uuid.UUID | None,
     before_content: str | None,
     after_content: str | None,
+    content_hash_override: str | None = None,
     session_id: str | None = None,
 ) -> WorkspaceFileRevision | None:
     """Record a group-scoped file revision without creating a second history table."""
@@ -352,6 +358,7 @@ async def record_group_revision(
         actor_id=actor_id,
         before_content=before_content,
         after_content=after_content,
+        content_hash_override=content_hash_override,
         session_id=session_id,
     )
 

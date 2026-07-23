@@ -1,12 +1,11 @@
 """FastAPI middleware for request tracing and logging."""
 
-import uuid
 import time
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.logging_config import set_trace_id, get_trace_id
+from app.core.error_contract import normalize_trace_id
 from loguru import logger
 
 
@@ -14,9 +13,8 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
     """Middleware to inject trace ID into request context and log requests."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Generate or extract trace ID from header
-        trace_id = request.headers.get("X-Trace-Id") or str(uuid.uuid4())[:12]
-        set_trace_id(trace_id)
+        # Reuse only bounded, header-safe client trace IDs.
+        trace_id = normalize_trace_id(request.headers.get("X-Trace-Id"))
 
         # Add trace ID to request state for access in endpoints
         request.state.trace_id = trace_id

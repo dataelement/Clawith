@@ -37,6 +37,13 @@ from app.services.agent_runtime.state import (
 )
 
 
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+    "x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+)
+
+
 def _settings(
     *,
     graph_name: str = "driver_graph",
@@ -348,6 +355,46 @@ async def test_start_checkpoints_carry_namespaced_command_metadata_without_regis
     assert observed.tasks == ()
     assert observed.interrupts == ()
     assert "last_applied_command_ids" not in observed.state["lifecycle"]
+
+
+@pytest.mark.asyncio
+async def test_start_compatibly_structures_legacy_image_marker_in_thread() -> None:
+    run = _run(uuid.uuid4())
+    marker = f"[image_data:{_TINY_PNG_DATA_URL}] Inspect it"
+    graph = build_agent_runtime_graph(
+        checkpointer=InMemorySaver(),
+        settings=_settings(),
+    )
+    driver = LangGraphRuntimeDriver(
+        graph_registry=RuntimeGraphRegistry([graph]),
+        snapshot_factory=StaticRuntimeInputSnapshotFactory(
+            _snapshots(
+                initial_input={
+                    "message_id": "image-message",
+                    "input_content": marker,
+                }
+            )
+        ),
+        node_executor=cast(RuntimeNodeExecutor, CompletingExecutor()),
+    )
+
+    await driver.execute(
+        connection=_connection(),
+        run=run,
+        command=_command(run, "start"),
+        checkpoint=None,
+    )
+    observed = await driver.read_latest(connection=_connection(), run=run)
+
+    assert observed is not None
+    messages = runtime_messages_as_json(observed.state)
+    assert messages[-1]["content"] == [
+        {
+            "type": "image_url",
+            "image_url": {"url": _TINY_PNG_DATA_URL},
+        },
+        {"type": "text", "text": "Inspect it"},
+    ]
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,6 @@ from app.config import Settings, get_settings
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
-from app.models.llm import LLMModel
 from app.services.agent_runtime.config import RuntimeGateDecision, RuntimeRolloutPolicy
 from app.services.agent_runtime.contracts import (
     CancelRunCommand,
@@ -21,16 +20,13 @@ from app.services.agent_runtime.contracts import (
     StartRunCommand,
 )
 from app.services.agent_runtime.graph import RuntimeGraphIdentity
-from app.services.agent_runtime.model_capabilities import (
-    ModelCapabilityError,
-    ModelCapabilityResolver,
-)
 from app.services.agent_runtime.persistence import (
     RunRegistration,
     enqueue_cancel,
     enqueue_resume,
     register_run_with_start,
 )
+from app.services.llm.model_resolution import load_active_model, resolve_active_agent_model
 
 
 class RuntimeAdapterError(RuntimeError):
@@ -97,7 +93,10 @@ class RuntimeCommandIntake:
             raise RuntimeAdapterError("run_scope_mismatch", "loaded Run is outside the requested tenant")
         return run
 
-    async def _configured_model_turn_limit(self, command: StartRunCommand) -> int | None:
+    async def _configured_model_turn_limit(
+        self,
+        command: StartRunCommand,
+    ) -> tuple[int | None, Agent | None]:
         """Resolve the immutable Run budget without a Runtime-side fallback."""
         requested = command.requested_model_turn_limit
         if requested is not None and (
@@ -116,7 +115,7 @@ class RuntimeCommandIntake:
                     "invalid_requested_model_turn_limit",
                     "Planning Runs use their own bounded attempt policy",
                 )
-            return None
+            return None, None
 
         if command.agent_id is None:
             raise RuntimeAdapterError(
@@ -127,6 +126,7 @@ class RuntimeCommandIntake:
             select(Agent).where(
                 Agent.tenant_id == command.tenant_id,
                 Agent.id == command.agent_id,
+                Agent.deleted_at.is_(None),
             )
         )
         agent = result.scalar_one_or_none()
@@ -145,34 +145,29 @@ class RuntimeCommandIntake:
                 "invalid_agent_model_turn_limit",
                 "Agent max_tool_rounds must be a positive model turn limit",
             )
-        return configured if requested is None else min(configured, requested)
+        return (configured if requested is None else min(configured, requested)), agent
 
-    async def _require_agent_runtime_model(self, command: StartRunCommand) -> None:
-        """Reject new tool-driven Agent Runs before any durable Run is created."""
+    async def _require_agent_runtime_model(
+        self,
+        command: StartRunCommand,
+        agent: Agent | None,
+    ) -> uuid.UUID | None:
+        """Pin an active tenant-valid model before a durable Run is created."""
         if command.run_kind == "orchestration":
-            return
-        if command.model_id is None:
-            raise RuntimeAdapterError(
-                "model_required",
-                "Agent Runtime requires a pinned model before the Run can start",
-            )
-        result = await self._db.execute(
-            select(LLMModel).where(LLMModel.id == command.model_id)
+            return command.model_id
+        model = await load_active_model(
+            self._db,
+            model_id=command.model_id,
+            tenant_id=command.tenant_id,
         )
-        model = result.scalar_one_or_none()
-        if (
-            model is None
-            or not model.enabled
-            or model.tenant_id not in {None, command.tenant_id}
-        ):
+        if model is None and agent is not None:
+            model = await resolve_active_agent_model(self._db, agent)
+        if model is None:
             raise RuntimeAdapterError(
                 "model_unavailable",
-                "Agent Runtime model is disabled or outside the command tenant",
+                "Agent Runtime has no active model in the command tenant",
             )
-        try:
-            ModelCapabilityResolver.require_native_tool_calling(model)
-        except ModelCapabilityError as exc:
-            raise RuntimeAdapterError(exc.code, str(exc)) from exc
+        return model.id
 
     @staticmethod
     def _start_payload(command: StartRunCommand) -> dict:
@@ -277,9 +272,10 @@ class RuntimeCommandIntake:
             )
             model_turn_limit = existing.model_turn_limit
         self._require_v2(decision)
+        resolved_model_id = existing.model_id if existing is not None else command.model_id
         if existing is None:
-            model_turn_limit = await self._configured_model_turn_limit(command)
-            await self._require_agent_runtime_model(command)
+            model_turn_limit, agent = await self._configured_model_turn_limit(command)
+            resolved_model_id = await self._require_agent_runtime_model(command, agent)
         elif existing.run_kind == "orchestration":
             if model_turn_limit is not None:
                 raise RuntimeAdapterError(
@@ -315,7 +311,7 @@ class RuntimeCommandIntake:
                 goal=command.goal,
                 run_kind=command.run_kind,
                 system_role=command.system_role,
-                model_id=command.model_id,
+                model_id=resolved_model_id,
                 model_turn_limit=model_turn_limit,
                 runtime_thread_id=command.runtime_thread_id,
                 runtime_type=runtime_type,
@@ -342,6 +338,19 @@ class RuntimeCommandIntake:
         """Persist a resume for an existing LangGraph Run without committing."""
         run = await self._get_run(tenant_id=command.tenant_id, run_id=command.run_id)
         self._require_existing_v2(run)
+        if run.agent_id is not None:
+            agent_result = await self._db.execute(
+                select(Agent.id).where(
+                    Agent.id == run.agent_id,
+                    Agent.tenant_id == command.tenant_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
+            if agent_result.scalar_one_or_none() is None:
+                raise RuntimeAdapterError(
+                    "agent_unavailable",
+                    "Deleted Agent Run cannot be resumed",
+                )
         enqueued = await enqueue_resume(
             self._db,
             tenant_id=command.tenant_id,

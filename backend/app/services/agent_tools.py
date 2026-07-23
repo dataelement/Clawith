@@ -20017,7 +20017,12 @@ async def _get_agent_owner_info(agent_id: uuid.UUID) -> tuple[str, str]:
     from sqlalchemy import select as _select
 
     async with async_session() as db:
-        result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            _select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
     if not agent:
         return "agent", str(agent_id)
@@ -20418,7 +20423,12 @@ async def _get_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
 
         async with async_session() as db:
             # Look up the agent's tenant
-            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent_result = await db.execute(
+                _select(Agent).where(
+                    Agent.id == agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 return "Agent not found."
@@ -20585,7 +20595,12 @@ async def _get_my_okr(agent_id: uuid.UUID | None, arguments: dict) -> str:
         from sqlalchemy import select as _select
 
         async with async_session() as db:
-            agent_result = await db.execute(_select(Agent).where(Agent.id == agent_id))
+            agent_result = await db.execute(
+                _select(Agent).where(
+                    Agent.id == agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
             agent = agent_result.scalar_one_or_none()
             if not agent:
                 return "Agent not found."

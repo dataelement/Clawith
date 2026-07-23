@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.config import get_settings
+from app.core.error_contract import register_error_handlers
 from app.core.events import close_redis
 from app.core.logging_config import configure_logging, intercept_standard_logging
 from app.core.middleware import TraceIdMiddleware
@@ -137,6 +138,7 @@ async def lifespan(app: FastAPI):
     import sys
     import os
     from contextlib import AsyncExitStack
+    from app.services.scheduler import start_scheduler
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
@@ -304,7 +306,10 @@ async def lifespan(app: FastAPI):
 
         task_specs = []
         if _role_enabled("all", "worker"):
-            task_specs.append(("trigger_daemon", start_trigger_daemon()))
+            task_specs.extend([
+                ("trigger_daemon", start_trigger_daemon()),
+                ("agent_schedule_scheduler", start_scheduler()),
+            ])
         if _role_enabled("all", "connector"):
             task_specs.extend([
                 ("feishu_ws", feishu_ws_manager.start_all()),
@@ -349,6 +354,7 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan,
 )
+register_error_handlers(app)
 
 # Add TraceIdMiddleware first so it's executed for all requests
 app.add_middleware(TraceIdMiddleware)

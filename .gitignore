@@ -36,6 +36,8 @@ _agents/
 
 # Internal docs
 docs/
+/RELEASE_NOTES.md
+/.coaligneignore
 .agents/rules/deploy.md
 backend/tests/test_agent_api_live.py
 .omx/

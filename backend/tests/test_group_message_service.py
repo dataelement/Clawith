@@ -130,6 +130,7 @@ def _records():
         api_key_encrypted="secret",
         label="Test",
         enabled=True,
+        supports_tool_calling=True,
     )
     agent = Agent(
         id=uuid.uuid4(),
@@ -190,6 +191,7 @@ def test_mentions_are_deduplicated_in_client_order() -> None:
 @pytest.mark.asyncio
 async def test_mention_resolution_only_exposes_active_group_members() -> None:
     tenant_id, user, scope, target, mention = _records()
+    mention.model.supports_tool_calling = False
     human_target = Participant(
         id=uuid.uuid4(),
         type="user",
@@ -226,6 +228,7 @@ async def test_mention_resolution_only_exposes_active_group_members() -> None:
             _ScalarCollection(memberships),
             _ScalarCollection([user]),
             _ScalarCollection([mention.agent]),
+            _ScalarCollection(),
             _ScalarCollection([mention.model]),
         )
     )
@@ -239,6 +242,8 @@ async def test_mention_resolution_only_exposes_active_group_members() -> None:
 
     assert resolved[0].valid is True and resolved[0].triggers_agent is True
     assert resolved[0].agent is mention.agent
+    assert resolved[0].model is mention.model
+    assert "llm_models.supports_tool_calling IS true" not in str(db.statements[-1])
     assert resolved[1].valid is True and resolved[1].triggers_agent is False
     assert resolved[1].participant_type == "user"
     assert resolved[2].valid is False
@@ -470,6 +475,9 @@ async def test_missing_planning_model_persists_one_visible_idempotent_failure() 
     assert intake.dispatch_kind == "planning"
     assert intake.run_handles == ()
     assert intake.error_code == "planning_model_unavailable"
+    assert intake.error_message == (
+        "多 Agent 规划模型未配置或当前不可用，请联系管理员检查运行时模型设置。"
+    )
     start_run.assert_not_awaited()
     assert len(db.added) == 2
     public_message, failure_message = db.added
@@ -482,7 +490,12 @@ async def test_missing_planning_model_persists_one_visible_idempotent_failure() 
     )
     assert failure_message.role == "system"
     assert failure_message.participant_id is None
-    assert failure_message.content == "任务规划未完成，请重试或改为单 Agent 处理。"
+    assert failure_message.content == (
+        "任务规划未完成。\n"
+        "错误：多 Agent 规划模型未配置或当前不可用，请联系管理员检查运行时模型设置。\n"
+        "错误码：planning_model_unavailable"
+    )
+    assert "MULTI_AGENT_PLANNING_MODEL_ID" not in failure_message.content
     assert failure_message.created_at == NOW.replace(microsecond=1)
 
 

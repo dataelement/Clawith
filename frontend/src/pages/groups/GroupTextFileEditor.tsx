@@ -40,15 +40,17 @@ export default function GroupTextFileEditor({
         retry: false,
     });
 
-    // A fresh load only replaces the textarea when the user has no unsaved edits in it.
-    useEffect(() => {
-        if (data && !dirty) setDraft(data.content);
-    }, [data, dirty]);
-
+    // Clear edits for the previous query before hydrating this editor. This effect must stay before
+    // the data effect: useQuery may synchronously return cached content when the tab remounts.
     useEffect(() => {
         setDraft('');
         setDirty(false);
     }, [JSON.stringify(queryKey)]);
+
+    // A fresh load only replaces the textarea when the user has no unsaved edits in it.
+    useEffect(() => {
+        if (data && !dirty) setDraft(data.content);
+    }, [data, dirty]);
 
     const commit = async () => {
         setBusy(true);

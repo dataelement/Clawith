@@ -89,7 +89,10 @@ async def _notify_mentions(db, content: str, author_id: uuid.UUID, author_name: 
         return
 
     # Find matching agents in the same tenant
-    agent_q = select(Agent).where(Agent.id != author_id)
+    agent_q = select(Agent).where(
+        Agent.id != author_id,
+        Agent.deleted_at.is_(None),
+    )
     if tenant_id:
         agent_q = agent_q.where(Agent.tenant_id == tenant_id)
     agents_result = await db.execute(agent_q)

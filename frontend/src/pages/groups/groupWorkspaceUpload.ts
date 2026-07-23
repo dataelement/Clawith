@@ -1,9 +1,14 @@
-export const GROUP_WORKSPACE_TEXT_EXTENSIONS = [
-    '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.js', '.ts', '.py',
-    '.html', '.css', '.sh', '.log', '.gitkeep', '.env',
-] as const;
+import {
+    WORKSPACE_BINARY_UPLOAD_EXTENSIONS,
+    WORKSPACE_TEXT_UPLOAD_EXTENSIONS,
+    WORKSPACE_UPLOAD_ACCEPT,
+    WORKSPACE_UPLOAD_EXTENSIONS,
+} from '../../utils/workspaceFileFormats.ts';
 
-export const GROUP_WORKSPACE_UPLOAD_ACCEPT = GROUP_WORKSPACE_TEXT_EXTENSIONS.join(',');
+export const GROUP_WORKSPACE_TEXT_EXTENSIONS = WORKSPACE_TEXT_UPLOAD_EXTENSIONS;
+export const GROUP_WORKSPACE_BINARY_EXTENSIONS = WORKSPACE_BINARY_UPLOAD_EXTENSIONS;
+export const GROUP_WORKSPACE_UPLOAD_EXTENSIONS = WORKSPACE_UPLOAD_EXTENSIONS;
+export const GROUP_WORKSPACE_UPLOAD_ACCEPT = WORKSPACE_UPLOAD_ACCEPT;
 
 export type GroupWorkspaceUploadErrorCode =
     | 'invalid_name'
@@ -20,7 +25,7 @@ export class GroupWorkspaceUploadError extends Error {
     }
 }
 
-function isSupportedTextName(name: string): boolean {
+export function isGroupWorkspaceTextUpload(name: string): boolean {
     const lower = name.toLowerCase();
     const base = lower.split('/').pop() || '';
     return GROUP_WORKSPACE_TEXT_EXTENSIONS.some((extension) => lower.endsWith(extension))
@@ -28,11 +33,17 @@ function isSupportedTextName(name: string): boolean {
         || base.startsWith('.');
 }
 
+function isSupportedUploadName(name: string): boolean {
+    const lower = name.toLowerCase();
+    return isGroupWorkspaceTextUpload(name)
+        || GROUP_WORKSPACE_BINARY_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
 export function groupWorkspaceUploadPath(directory: string, fileName: string): string {
     if (!fileName || fileName === '.' || fileName === '..' || /[\\/]/.test(fileName)) {
         throw new GroupWorkspaceUploadError('invalid_name');
     }
-    if (!isSupportedTextName(fileName)) {
+    if (!isSupportedUploadName(fileName)) {
         throw new GroupWorkspaceUploadError('unsupported_type');
     }
     return directory ? `${directory.replace(/\/$/, '')}/${fileName}` : fileName;

@@ -77,28 +77,6 @@ class ModelCapabilityResolver:
     """Resolve model semantics without performing provider I/O."""
 
     @staticmethod
-    def require_native_tool_calling(model: LLMModel) -> None:
-        """Require a concrete model row to be safe for an Agent tool Runtime."""
-        model_label = getattr(model, "label", None) or model.model
-        if model.supports_tool_calling is True:
-            return
-        if model.supports_tool_calling is False:
-            raise ModelCapabilityError(
-                "model_tool_calling_unsupported",
-                (
-                    f"Model {model_label!r} did not produce a valid "
-                    "native tool call during its capability test."
-                ),
-            )
-        raise ModelCapabilityError(
-            "model_tool_calling_unverified",
-            (
-                f"Model {model_label!r} has not passed the native "
-                "tool-calling capability test required by Agent Runtime."
-            ),
-        )
-
-    @staticmethod
     def capabilities(
         model: LLMModel,
         *,
@@ -235,7 +213,12 @@ async def resolve_platform_model(
     if model_id is None:
         raise PlatformModelConfigurationError(setting_name, "is not configured")
 
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_id,
+            LLMModel.deleted_at.is_(None),
+        )
+    )
     model = result.scalar_one_or_none()
     if model is None:
         raise PlatformModelConfigurationError(setting_name, f"model {model_id} does not exist")
@@ -260,7 +243,12 @@ async def resolve_group_model(
     if model_id is None:
         raise PlatformModelConfigurationError(setting_name, "is not configured")
 
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == model_id,
+            LLMModel.deleted_at.is_(None),
+        )
+    )
     model = result.scalar_one_or_none()
     if model is None:
         raise PlatformModelConfigurationError(setting_name, f"model {model_id} does not exist")

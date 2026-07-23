@@ -12,7 +12,9 @@ import uuid
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging_config import get_trace_id
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.audit import ChatMessage
@@ -245,6 +247,8 @@ def _event_payload(checkpoint: CheckpointObservation) -> dict:
             error_code = _text_field(error.get("code"))
             if error_code is not None:
                 payload["error_code"] = error_code
+        if status == "failed" and (trace_id := get_trace_id()):
+            payload["trace_id"] = trace_id
     return payload
 
 
@@ -463,6 +467,21 @@ async def _record_lifecycle_events(
     agent_id = uuid.UUID(run.agent_id) if run.agent_id is not None else None
     events: list[tuple[str, str, dict, str, str | None]] = []
     if checkpoint is None:
+        terminal_result = await db.execute(
+            select(AgentRunEvent.id)
+            .where(
+                AgentRunEvent.tenant_id == run.tenant_id,
+                AgentRunEvent.run_id == run.run_id,
+                AgentRunEvent.event_type.in_(
+                    ("run_completed", "run_failed", "run_cancelled")
+                ),
+            )
+            .limit(1)
+        )
+        if terminal_result.scalar_one_or_none() is not None:
+            # A later cancel command may release control resources, but it must
+            # not append a second, contradictory terminal outcome.
+            return
         events.append(
             (
                 "run_cancelled",
@@ -545,6 +564,92 @@ class RuntimeCheckpointSideEffects:
         self._session_factory = session_factory
         self._checkpoint_handlers = tuple(checkpoint_handlers)
         self._terminal_handlers = tuple(terminal_handlers)
+
+    async def handle_rejection(
+        self,
+        *,
+        db: AsyncSession,
+        run: RuntimeRunRecord,
+        command: RuntimeCommandRecord,
+        error_code: str,
+        error_message: str,
+    ) -> tuple[uuid.UUID, uuid.UUID] | None:
+        """Project a rejected start as the same terminal boundary users already consume."""
+        if command.command_type != "start":
+            raise RuntimeCheckpointSideEffectError(
+                "invalid_rejected_command",
+                "only a rejected start command can terminate a not-started Run",
+            )
+        if command.tenant_id != run.tenant_id or command.run_id != run.run_id:
+            raise RuntimeCheckpointSideEffectError(
+                "command_scope_mismatch",
+                "rejected command does not belong to the Run",
+            )
+        # Chat has a durable message projection for checkpoint-free terminal
+        # failures. Other source types need their own terminal product contract
+        # before a rejected start can be projected safely.
+        if run.source_type != "chat":
+            return None
+
+        checkpoint_id = f"command-rejected:{command.id}"
+        event_key = f"command:{command.id}:run_failed"
+        await db.execute(
+            insert(AgentRunEvent)
+            .values(
+                id=uuid.uuid5(run.run_id, f"lifecycle-event:{event_key}"),
+                tenant_id=run.tenant_id,
+                run_id=run.run_id,
+                agent_id=(uuid.UUID(run.agent_id) if run.agent_id is not None else None),
+                event_type="run_failed",
+                summary="Runtime start command rejected",
+                payload={
+                    "status": "failed",
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "stage": "execution",
+                    "command_id": str(command.id),
+                    "trace_id": get_trace_id(),
+                },
+                artifact_refs=[],
+                idempotency_key=event_key,
+                source_checkpoint_id=checkpoint_id,
+                created_at=datetime.now(UTC),
+            )
+            .on_conflict_do_nothing()
+        )
+        status_result = await db.execute(
+            select(AgentRun.delivery_status).where(
+                AgentRun.tenant_id == run.tenant_id,
+                AgentRun.id == run.run_id,
+            )
+        )
+        delivery_status = status_result.scalar_one_or_none()
+        if delivery_status is None:
+            raise RuntimeCheckpointSideEffectError(
+                "run_not_found",
+                "rejected command Run does not exist",
+            )
+        if delivery_status != "not_required":
+            receipt = await deliver_runtime_message(
+                db,
+                DeliveryRequest(
+                    tenant_id=run.tenant_id,
+                    run_id=run.run_id,
+                    kind="terminal",
+                    content="",
+                    checkpoint_id=checkpoint_id,
+                    lifecycle_status="failed",
+                    failure_code=error_code,
+                    failure_message=error_message,
+                ),
+            )
+            if (
+                receipt.status == "delivered"
+                and receipt.actual_session_id is not None
+                and receipt.message_id is not None
+            ):
+                return receipt.actual_session_id, receipt.message_id
+        return None
 
     async def handle(
         self,

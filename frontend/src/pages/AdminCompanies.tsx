@@ -1,27 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { adminApi } from '../services/api';
+import { adminApi, fetchJson } from '../services/api';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor } from '../utils/theme';
 import { IconFilter, IconShieldCheck } from '@tabler/icons-react';
 import PlatformDashboard from './PlatformDashboard';
 import LinearCopyButton from '../components/LinearCopyButton';
 import { useDialog } from '../components/Dialog/DialogProvider';
-// Helper for authenticated JSON fetch
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-    const token = localStorage.getItem('token');
-    const res = await fetch(`/api${url}`, {
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        ...options,
-    });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || res.statusText);
-    }
-    return res.json();
-}
-
-
 // Format large token numbers with K/M/B suffixes
 function formatTokens(n: number | null | undefined): string {
     if (n == null) return '-';
@@ -266,17 +251,10 @@ function PlatformTab() {
     const saveNotificationBar = async (nextEnabled = nbEnabled, nextText = nbText) => {
         setNbSaving(true);
         try {
-            const token = localStorage.getItem('token');
-            const res = await fetch('/api/enterprise/system-settings/notification_bar', {
+            const payload = await fetchJson<any>('/enterprise/system-settings/notification_bar', {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                 body: JSON.stringify({ value: { enabled: nextEnabled, text: nextText } }),
             });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({ detail: res.statusText }));
-                throw new Error(err.detail || res.statusText);
-            }
-            const payload = await res.json();
             setNbEnabled(nextEnabled);
             setNbText(nextText);
             window.dispatchEvent(new CustomEvent('notification-bar-updated', {

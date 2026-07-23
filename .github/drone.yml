@@ -81,6 +81,9 @@ steps:
       https_proxy:
         from_secret: PROXY
     commands:
+      # Docker Hub mirror does not cover Alpine packages. Use a fast APK mirror
+      # before installing the Git client required by the image build step.
+      - sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.aliyun.com/alpine|g' /etc/apk/repositories
       - apk add --no-cache git
       - |
         set -eu

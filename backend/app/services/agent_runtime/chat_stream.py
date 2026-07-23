@@ -89,6 +89,25 @@ def _text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _error_context(
+    *,
+    code: str,
+    message: str,
+    handle: RunHandle,
+    agent_id: uuid.UUID,
+    stage: str,
+    trace_id: str | None,
+) -> dict[str, str | None]:
+    return {
+        "code": code,
+        "message": message,
+        "run_id": str(handle.run_id),
+        "agent_id": str(agent_id),
+        "stage": stage,
+        "trace_id": trace_id,
+    }
+
+
 async def stream_web_chat_run(
     *,
     handle: RunHandle,
@@ -99,12 +118,15 @@ async def stream_web_chat_run(
     user_id: uuid.UUID,
     after: RuntimeEventCursor | None = None,
     event_source: RuntimeEventSource | None = None,
+    trace_id: str | None = None,
 ) -> ChatRuntimeStreamOutcome:
     """Stream one start/resume attachment until terminal or waiting-user delivery."""
     source = event_source or DatabaseRuntimeEventStream(session_factory=session_factory)
     terminal_status: ChatStreamStatus | None = None
     waiting_correlation_id: str | None = None
     latest_cursor = after
+    terminal_error_code: str | None = None
+    terminal_trace_id: str | None = None
 
     async for event in source.stream_run(handle, after=after):
         latest_cursor = _cursor(event)
@@ -162,6 +184,8 @@ async def stream_web_chat_run(
             terminal_status = "completed"
         elif event.event_type == "run_failed":
             terminal_status = "failed"
+            terminal_error_code = _text(payload.get("error_code")) or "runtime_failed"
+            terminal_trace_id = _text(payload.get("trace_id"))
         elif event.event_type == "run_cancelled":
             terminal_status = "cancelled"
 
@@ -210,14 +234,30 @@ async def stream_web_chat_run(
 
         if event.event_type == "delivery_failed":
             content = "Runtime result could not be delivered to this chat."
+            error_code = _text(payload.get("error_code")) or "runtime_delivery_failed"
+            delivery_trace_id = _text(payload.get("trace_id"))
+            error = _error_context(
+                code=error_code,
+                message=content,
+                handle=handle,
+                agent_id=agent_id,
+                stage="delivery",
+                trace_id=delivery_trace_id or terminal_trace_id or trace_id,
+            )
             await send_packet(
                 {
                     "type": "done",
                     "role": "assistant",
                     "content": content,
+                    "message": content,
+                    "code": error_code,
                     "run_id": str(handle.run_id),
+                    "agent_id": str(agent_id),
+                    "stage": "delivery",
+                    "trace_id": delivery_trace_id or terminal_trace_id or trace_id,
+                    "error": error,
                     "runtime_status": status,
-                    "delivery_error": payload.get("error_code"),
+                    "delivery_error": error_code,
                 }
             )
             return ChatRuntimeStreamOutcome(
@@ -250,6 +290,35 @@ async def stream_web_chat_run(
             "run_id": str(handle.run_id),
             "runtime_status": status,
         }
+        if status == "failed":
+            error_code = (
+                terminal_error_code
+                or _text(payload.get("failure_code"))
+                or "runtime_failed"
+            )
+            failure_trace_id = (
+                terminal_trace_id
+                or _text(payload.get("trace_id"))
+                or trace_id
+            )
+            error = _error_context(
+                code=error_code,
+                message=message.content,
+                handle=handle,
+                agent_id=agent_id,
+                stage="execution",
+                trace_id=failure_trace_id,
+            )
+            packet.update(
+                {
+                    "message": message.content,
+                    "code": error_code,
+                    "agent_id": str(agent_id),
+                    "stage": "execution",
+                    "trace_id": failure_trace_id,
+                    "error": error,
+                }
+            )
         if waiting_correlation_id is not None:
             packet["correlation_id"] = waiting_correlation_id
         await send_packet(packet)

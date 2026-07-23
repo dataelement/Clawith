@@ -23,6 +23,7 @@ export interface GroupMember {
     role: GroupRole;
     role_description: string | null;
     title: string | null;
+    is_deleted: boolean;
     joined_at: string;
 }
 
@@ -69,12 +70,24 @@ export interface GroupMessage {
 /** `none` = no agent mentioned, `single` = one agent, `planning` = multi-agent task planning. */
 export type DispatchKind = 'none' | 'single' | 'planning';
 
+export interface GroupError {
+    code: string;
+    message: string;
+    trace_id: string;
+    run_id: string | null;
+    agent_id: string | null;
+    stage: 'planning' | 'execution' | 'delivery' | null;
+    details: unknown;
+    retryable: boolean | null;
+}
+
 export interface GroupMessageIntake {
     message: GroupMessage;
     dispatch_kind: DispatchKind;
     run_ids: string[];
     created: boolean;
     error_code: string | null;
+    error?: GroupError | null;
 }
 
 export interface GroupRunState {

@@ -31,6 +31,7 @@ import MessageComposer from './MessageComposer';
 import GroupSidePanel from './GroupSidePanel';
 import GroupSettingsModal from './GroupSettingsModal';
 import InviteMemberModal from './InviteMemberModal';
+import CreateGroupModal from './CreateGroupModal';
 import InlineEdit from './InlineEdit';
 import type { GroupMessage, GroupSession } from '../../types/group';
 import './groups.css';
@@ -40,6 +41,7 @@ import './groups.css';
 type RenameTarget = { groupId: string; sessionId: string; current: string };
 
 const HISTORY_PAGE_SIZE = 30;
+const ACTIVE_RUN_TRANSITION_GRACE_MS = 5000;
 
 const readFlag = (key: string, fallback: boolean) => {
     const stored = localStorage.getItem(key);
@@ -80,6 +82,7 @@ export default function GroupsPage() {
     const [hasMore, setHasMore] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
     const [cancellingRuns, setCancellingRuns] = useState(false);
+    const [awaitingPlannedRuns, setAwaitingPlannedRuns] = useState(false);
     // One nav rail now: a tree of groups with their sessions nested underneath. It collapses to a
     // stub, and the side panel stays out of the way until asked for.
     const [groupsCollapsed, setGroupsCollapsed] = useState(
@@ -91,6 +94,7 @@ export default function GroupsPage() {
     const [showPanel, setShowPanel] = useState(() => readFlag('groups.showPanel', false));
     const [showInvite, setShowInvite] = useState(false);
     const [creatingGroup, setCreatingGroup] = useState(false);
+    const [creatingGroupPending, setCreatingGroupPending] = useState(false);
     // The group a "new session" prompt targets, or null when closed.
     const [creatingSession, setCreatingSession] = useState<string | null>(null);
     // The session whose title is being renamed inline, or null.
@@ -103,6 +107,7 @@ export default function GroupsPage() {
     const latestRealtimeMessageBySessionRef = useRef<Map<string, GroupMessage>>(new Map());
     const readRequestsRef = useRef<Set<string>>(new Set());
     const lastReadMessageBySessionRef = useRef<Map<string, string>>(new Map());
+    const planningTransitionUntilRef = useRef(0);
 
     const {
         data: groups = [],
@@ -174,16 +179,28 @@ export default function GroupsPage() {
         queryFn: () => groupApi.activeRuns(groupId!, sessionId!),
         enabled: Boolean(activeGroup && activeSession),
         retry: false,
-        refetchInterval: (query) => (
-            query.state.data?.some((run) => run.can_cancel) ? 1000 : false
-        ),
+        refetchInterval: (query) => {
+            const runs = query.state.data ?? [];
+            const hasPlanningRun = runs.some(
+                (run) => run.can_cancel && run.system_role === 'group_planning',
+            );
+            if (hasPlanningRun) {
+                planningTransitionUntilRef.current = Date.now() + ACTIVE_RUN_TRANSITION_GRACE_MS;
+            }
+            if (runs.some((run) => run.can_cancel)) return 1000;
+            return Date.now() < planningTransitionUntilRef.current ? 250 : false;
+        },
     });
     const activeRunIds = activeRunStates
         .filter((run) => run.can_cancel)
         .map((run) => run.run_id);
-    const isPlanning = activeRunStates.some(
+    const planningRunVisible = activeRunStates.some(
         (run) => run.can_cancel && run.system_role === 'group_planning',
     );
+    const agentRunVisible = activeRunStates.some(
+        (run) => run.can_cancel && Boolean(run.agent_id),
+    );
+    const isPlanning = planningRunVisible || (awaitingPlannedRuns && !agentRunVisible);
     const runningAgents = useMemo(() => {
         const membersByAgentId = new Map(
             members
@@ -208,6 +225,31 @@ export default function GroupsPage() {
         [members, currentUser?.id],
     );
     const isManager = me?.role === 'manager';
+
+    useEffect(() => {
+        planningTransitionUntilRef.current = 0;
+        setAwaitingPlannedRuns(false);
+    }, [groupId, sessionId]);
+
+    useEffect(() => {
+        if (planningRunVisible) {
+            planningTransitionUntilRef.current = Date.now() + ACTIVE_RUN_TRANSITION_GRACE_MS;
+            setAwaitingPlannedRuns(true);
+            return;
+        }
+        if (agentRunVisible) {
+            setAwaitingPlannedRuns(false);
+            return;
+        }
+        if (!awaitingPlannedRuns) return;
+        const remaining = planningTransitionUntilRef.current - Date.now();
+        if (remaining <= 0) {
+            setAwaitingPlannedRuns(false);
+            return;
+        }
+        const timer = setTimeout(() => setAwaitingPlannedRuns(false), remaining);
+        return () => clearTimeout(timer);
+    }, [agentRunVisible, awaitingPlannedRuns, planningRunVisible]);
 
     // Header facts line: the group's makeup, which does not change as the session switches.
     const memberCounts = useMemo(() => ({
@@ -459,13 +501,22 @@ export default function GroupsPage() {
                 message_id: createRandomUUID(),
             });
             setMessages((previous) => mergeMessages(previous, [intake.message]));
+            if (intake.dispatch_kind === 'planning') {
+                planningTransitionUntilRef.current = Date.now() + ACTIVE_RUN_TRANSITION_GRACE_MS;
+                setAwaitingPlannedRuns(true);
+            }
             if (intake.run_ids.length > 0) void refetchActiveRuns();
 
             // Planning can fail before any agent starts — say so instead of leaving a silent gap.
-            if (intake.error_code) {
-                toast.warning(t('groups.dispatchWarning', '智能体唤醒未完成：{{code}}', {
-                    code: intake.error_code,
-                }));
+            if (intake.error || intake.error_code) {
+                const code = intake.error?.code ?? intake.error_code;
+                const message = intake.error?.message
+                    ?? t('groups.dispatchWarning', '智能体唤醒未完成');
+                const diagnostics = [
+                    code ? `Code: ${code}` : null,
+                    intake.error?.trace_id ? `Trace: ${intake.error.trace_id}` : null,
+                ].filter(Boolean).join(' · ');
+                toast.warning(diagnostics ? `${message} (${diagnostics})` : message);
             }
         } catch (error: any) {
             toast.error(error?.message ?? t('groups.sendFailed', '发送失败'));
@@ -489,15 +540,21 @@ export default function GroupsPage() {
         }
     };
 
-    const createGroup = async (name: string) => {
-        setCreatingGroup(false);
-        if (!name.trim()) return;
+    const createGroup = async (name: string, memberParticipantIds: string[]) => {
+        if (!name.trim() || creatingGroupPending) return;
+        setCreatingGroupPending(true);
         try {
-            const group = await groupApi.create({ name: name.trim() });
+            const group = await groupApi.create({
+                name: name.trim(),
+                member_participant_ids: memberParticipantIds,
+            });
+            setCreatingGroup(false);
             await refetchGroups();
             navigate(`/groups/${group.id}`);
         } catch (error: any) {
             toast.error(error?.message ?? t('groups.createFailed', '建群失败'));
+        } finally {
+            setCreatingGroupPending(false);
         }
     };
 
@@ -841,13 +898,14 @@ export default function GroupsPage() {
                 />
             )}
 
-            <PromptModal
-                open={creatingGroup}
-                title={t('groups.create', '创建群聊')}
-                placeholder={t('groups.namePlaceholder', '群名称')}
-                onConfirm={(value) => void createGroup(value)}
-                onCancel={() => setCreatingGroup(false)}
-            />
+            {creatingGroup && (
+                <CreateGroupModal
+                    creating={creatingGroupPending}
+                    onCreate={(name, memberParticipantIds) =>
+                        void createGroup(name, memberParticipantIds)}
+                    onCancel={() => setCreatingGroup(false)}
+                />
+            )}
 
             <PromptModal
                 open={Boolean(creatingSession)}

@@ -1,6 +1,6 @@
 /** Group chat API client — /api/groups. */
 
-import { fetchJson } from './api';
+import { fetchJson, uploadFileWithProgress } from './api';
 import type {
     Group,
     GroupMember,
@@ -40,7 +40,7 @@ export const groupApi = {
 
     get: (groupId: string) => fetchJson<Group>(`/groups/${groupId}`),
 
-    create: (data: { name: string; description?: string }) =>
+    create: (data: { name: string; description?: string; member_participant_ids?: string[] }) =>
         fetchJson<Group>('/groups', { method: 'POST', body: JSON.stringify(data) }),
 
     update: (groupId: string, data: { name?: string; description?: string }) =>
@@ -49,6 +49,11 @@ export const groupApi = {
     remove: (groupId: string) => fetchJson<void>(`/groups/${groupId}`, { method: 'DELETE' }),
 
     members: (groupId: string) => fetchJson<GroupMember[]>(`/groups/${groupId}/members`),
+
+    tenantMemberCandidates: (participantType: ParticipantType) =>
+        fetchJson<GroupMemberCandidate[]>(
+            `/groups/member-candidates${qs({ participant_type: participantType })}`,
+        ),
 
     memberCandidates: (groupId: string, participantType: ParticipantType) =>
         fetchJson<GroupMemberCandidate[]>(
@@ -189,6 +194,40 @@ export const groupApi = {
                 require_absent: requireAbsent,
             }),
         }),
+
+    uploadWorkspaceFile: (
+        groupId: string,
+        path: string,
+        file: File,
+        expectedVersionToken?: string | null,
+        requireAbsent = false,
+        onProgress?: (percent: number) => void,
+    ) => uploadFileWithProgress(
+        `/groups/${groupId}/workspace/upload${qs({
+            path,
+            expected_version_token: expectedVersionToken ?? undefined,
+            require_absent: requireAbsent ? 'true' : undefined,
+        })}`,
+        file,
+        onProgress,
+    ).promise as Promise<{
+        path: string;
+        size: number;
+        version_token: string;
+        modified_at?: string | null;
+        revision_id?: string | null;
+    }>,
+
+    downloadWorkspaceUrl: (
+        groupId: string,
+        path: string,
+        options?: { inline?: boolean },
+    ) => {
+        const token = localStorage.getItem('token');
+        const params = new URLSearchParams({ path, token: token || '' });
+        if (options?.inline) params.set('inline', 'true');
+        return `/api/groups/${groupId}/workspace/download?${params.toString()}`;
+    },
 
     deleteWorkspaceFile: (
         groupId: string,

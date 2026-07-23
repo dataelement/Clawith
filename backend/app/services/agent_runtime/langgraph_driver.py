@@ -32,6 +32,7 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
     RuntimeNodeExecutor,
 )
+from app.services.llm.multimodal_content import parse_multimodal_content
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -262,12 +263,13 @@ def _initial_thread_message(
     """Create the one exact current input appended for this logical Run."""
     initial_input = snapshots.initial_input
     content = initial_input.get("input_content")
-    if not isinstance(content, str) or not content:
+    if not isinstance(content, (str, list)) or not content:
         content = initial_input.get("content")
-    if not isinstance(content, str) or not content:
+    if not isinstance(content, (str, list)) or not content:
         content = initial_input.get("message")
-    if not isinstance(content, str) or not content:
+    if not isinstance(content, (str, list)) or not content:
         content = f"Current Run Directive:\n{run.goal}"
+    content = parse_multimodal_content(content)
     message_id = initial_input.get("message_id")
     if not isinstance(message_id, str) or not message_id:
         message_id = str(

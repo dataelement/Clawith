@@ -7,6 +7,7 @@ import { useAuthStore } from '../stores';
 import LinearCopyButton from '../components/LinearCopyButton';
 import { useDialog } from '../components/Dialog/DialogProvider';
 import { IconEdit } from '@tabler/icons-react';
+import { fetchJson } from '../services/api';
 
 interface UserInfo {
     id: string;
@@ -24,18 +25,6 @@ interface UserInfo {
     feishu_open_id?: string;
     created_at?: string;
     source?: string;
-}
-
-const API_PREFIX = '/api';
-
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-    const token = localStorage.getItem('token');
-    const res = await fetch(`${API_PREFIX}${url}`, {
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        ...options,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
 }
 
 const PERIOD_OPTIONS = [

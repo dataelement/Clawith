@@ -6,6 +6,7 @@ import {
   runtimeCompletionNeedsMessageRefresh,
   sessionActiveRunFromResponse,
   sessionRuntimeStateResponseIsValid,
+  mergeTerminalAssistantMessage,
   terminalAssistantMessageAlreadyPresent,
   waitingSessionActiveRunHint,
 } from '../src/pages/agent-detail/sessionRuntimeState.ts';
@@ -71,6 +72,32 @@ test('websocket terminal packet does not duplicate a canonical refreshed answer'
       'final answer',
     ),
     true,
+  );
+});
+
+test('poll-before-websocket ordering merges runtime diagnostics into the canonical message', () => {
+  const canonical = {
+    id: 'message-1',
+    role: 'assistant',
+    content: 'request failed',
+  };
+  const runtimeError = {
+    message: 'request failed',
+    code: 'provider_rate_limited',
+    traceId: 'worker-trace',
+    runId: 'run-1',
+  };
+
+  assert.deepEqual(
+    mergeTerminalAssistantMessage(
+      [canonical],
+      { ...canonical, runtimeError },
+    ),
+    [{ ...canonical, runtimeError }],
+  );
+  assert.equal(
+    mergeTerminalAssistantMessage([], { ...canonical, runtimeError }).length,
+    1,
   );
 });
 

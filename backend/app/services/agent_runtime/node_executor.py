@@ -21,7 +21,13 @@ from app.services.agent_runtime.state import (
     RuntimeStateUpdate,
     runtime_messages_as_json,
 )
+from app.services.llm.caller import (
+    WRITE_FILE_PROTOCOL_FAILURE_MESSAGE,
+    WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY,
+    WRITE_FILE_PROTOCOL_REPAIR_LIMIT,
+)
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
+from app.services.llm.multimodal_content import parse_multimodal_content
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -69,6 +75,7 @@ class ModelStepResult:
     finish_delivery_intent: JsonObject | None = None
     repair_instruction: str | None = None
     repair_code: str | None = None
+    repair_tool_name: str | None = None
     error: JsonObject | None = None
 
 
@@ -377,13 +384,13 @@ def _message_for_channel(message: JsonObject) -> JsonObject:
     return cast(JsonObject, normalized)
 
 
-def _resume_message_content(resume_value: Mapping[str, JsonValue]) -> str:
+def _resume_message_content(resume_value: Mapping[str, JsonValue]) -> str | list:
     resume_type = resume_value.get("resume_type")
     payload = resume_value.get("payload")
     if resume_type == "user_input" and isinstance(payload, Mapping):
         content = payload.get("content")
-        if isinstance(content, str):
-            return content
+        if isinstance(content, (str, list)):
+            return parse_multimodal_content(content)
     return json.dumps(
         resume_value,
         ensure_ascii=False,
@@ -513,10 +520,25 @@ class DeterministicRuntimeNodeExecutor:
                 "invalid_compact_status",
                 "Thread Compact may run only immediately before a business model call",
             )
-        result = await self._run_compactor.compact_if_needed(
-            state,
-            context,
-        )
+        try:
+            result = await self._run_compactor.compact_if_needed(
+                state,
+                context,
+            )
+        except Exception as exc:
+            if not getattr(exc, "is_deterministic_compact_error", False):
+                raise
+            code = getattr(exc, "code", "thread_compact_failed")
+            safe_code = code if isinstance(code, str) and code else "thread_compact_failed"
+            lifecycle.update(
+                {
+                    "status": "failed",
+                    "next_route": "terminal",
+                    "reason": safe_code,
+                    "error": _error(safe_code, str(exc)),
+                }
+            )
+            return {"lifecycle": cast(RuntimeLifecycle, lifecycle)}
         update: RuntimeStateUpdate = {}
         if result.compacted:
             if (
@@ -650,11 +672,34 @@ class DeterministicRuntimeNodeExecutor:
                         "model repair_code must not be blank",
                     )
                 repairs = _model_protocol_repairs(state["lifecycle"])
-                if repairs.get(repair_code, 0) >= 1:
+                is_write_file_repair = (
+                    repair_code == "invalid_tool_call"
+                    and result.repair_tool_name == "write_file"
+                )
+                repair_limit = (
+                    WRITE_FILE_PROTOCOL_REPAIR_LIMIT
+                    if is_write_file_repair
+                    else 1
+                )
+                repair_counter_key = (
+                    WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY
+                    if is_write_file_repair
+                    else repair_code
+                )
+                if repairs.get(repair_counter_key, 0) >= repair_limit:
                     violation_code = (
                         "finish_protocol_violation"
                         if repair_code == "missing_finish"
                         else "model_tool_protocol_violation"
+                    )
+                    error_message = (
+                        WRITE_FILE_PROTOCOL_FAILURE_MESSAGE
+                        if is_write_file_repair
+                        else (
+                            f"The model repeated the {repair_code!r} protocol "
+                            f"error after {repair_limit} bounded repair attempt(s). "
+                            "Native tool calling is not working for this Run."
+                        )
                     )
                     lifecycle.update(
                         {
@@ -664,16 +709,14 @@ class DeterministicRuntimeNodeExecutor:
                             "pending_tool_calls": [],
                             "error": _error(
                                 violation_code,
-                                (
-                                    f"The model repeated the {repair_code!r} protocol "
-                                    "error after one bounded repair. Native tool "
-                                    "calling is not working for this Run."
-                                ),
+                                error_message,
                             ),
                         }
                     )
                 else:
-                    repairs[repair_code] = repairs.get(repair_code, 0) + 1
+                    repairs[repair_counter_key] = (
+                        repairs.get(repair_counter_key, 0) + 1
+                    )
                     new_messages.append(
                         {
                             "id": _runtime_message_id(

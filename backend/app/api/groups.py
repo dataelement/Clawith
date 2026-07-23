@@ -5,13 +5,17 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user
+from app.core.security import decode_access_token, get_current_user
+from app.core.error_contract import build_error_object, get_request_trace_id
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
@@ -38,6 +42,7 @@ from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
 from app.services.group_realtime import publish_group_message_created
 from app.services.participant_identity import get_or_create_user_participant
+from app.services.storage import guess_content_type
 
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -46,6 +51,7 @@ router = APIRouter(prefix="/api/groups", tags=["groups"])
 class CreateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
+    member_participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
 
 
 class PatchGroupIn(BaseModel):
@@ -79,6 +85,7 @@ class GroupMemberOut(BaseModel):
     role: str
     role_description: str | None = None
     title: str | None = None
+    is_deleted: bool = False
     joined_at: datetime
 
 
@@ -143,12 +150,24 @@ class GroupMessageOut(BaseModel):
     cursor: str
 
 
+class GroupErrorOut(BaseModel):
+    code: str
+    message: str
+    trace_id: str
+    run_id: uuid.UUID | None = None
+    agent_id: uuid.UUID | None = None
+    stage: Literal["planning", "execution", "delivery"] | None = None
+    details: Any | None = None
+    retryable: bool | None = None
+
+
 class GroupMessageIntakeOut(BaseModel):
     message: GroupMessageOut
     dispatch_kind: str
     run_ids: list[uuid.UUID]
     created: bool
     error_code: str | None = None
+    error: GroupErrorOut | None = None
 
 
 class GroupRunStateOut(BaseModel):
@@ -186,6 +205,14 @@ class GroupWorkspaceEntryOut(BaseModel):
     size: int
     modified_at: str
     version_token: str | None = None
+
+
+class GroupWorkspaceUploadOut(BaseModel):
+    path: str
+    size: int
+    version_token: str
+    modified_at: str | None = None
+    revision_id: uuid.UUID | None = None
 
 
 class GroupSessionSummaryOut(BaseModel):
@@ -411,6 +438,7 @@ async def _member_outputs(
                 role=membership.role,
                 role_description=agent.role_description if agent is not None else None,
                 title=user.title if user is not None else None,
+                is_deleted=bool(agent is not None and agent.deleted_at is not None),
                 joined_at=membership.joined_at,
             )
         )
@@ -494,6 +522,7 @@ async def create_group(
             creator_participant_id=participant.id,
             name=body.name,
             description=body.description,
+            member_participant_ids=body.member_participant_ids,
         )
     except GroupChatServiceError as exc:
         raise _translate_domain_error(exc) from exc
@@ -503,6 +532,11 @@ async def create_group(
         action="group:create",
         tenant_id=tenant_id,
         group_id=group.id,
+        details={
+            "member_participant_ids": [
+                str(participant_id) for participant_id in body.member_participant_ids
+            ]
+        },
     )
     return group
 
@@ -519,6 +553,32 @@ async def list_groups(
         tenant_id=tenant_id,
         participant_id=participant.id,
     )
+
+
+# Registered before "/{group_id}" so the literal path is not parsed as a group id.
+@router.get("/member-candidates", response_model=list[GroupMemberCandidateOut])
+async def list_tenant_member_candidates(
+    participant_type: Annotated[Literal["user", "agent"], Query()],
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Candidates for the create-group flow, before any group exists."""
+    tenant_id = _tenant_id(current_user)
+    try:
+        candidates = await group_chat_service.list_tenant_member_candidates(
+            db,
+            tenant_id=tenant_id,
+            actor_user=current_user,
+            participant_type=participant_type,
+            limit=limit,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    return [
+        GroupMemberCandidateOut.model_validate(candidate, from_attributes=True)
+        for candidate in candidates
+    ]
 
 
 @router.get("/{group_id}", response_model=GroupOut)
@@ -931,6 +991,7 @@ async def create_group_message(
     group_id: uuid.UUID,
     session_id: uuid.UUID,
     body: CreateGroupMessageIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -962,12 +1023,23 @@ async def create_group_message(
             session_id=session_id,
             message=realtime_message.model_dump(mode="json"),
         )
+    error = None
+    if intake.error_code is not None:
+        error = GroupErrorOut(
+            **build_error_object(
+                code=intake.error_code,
+                message=intake.error_message or "多 Agent 任务规划暂时不可用",
+                trace_id=get_request_trace_id(request),
+            ),
+            stage="planning",
+        )
     return GroupMessageIntakeOut(
         message=messages[0],
         dispatch_kind=intake.dispatch_kind,
         run_ids=[handle.run_id for handle in intake.run_handles],
         created=intake.created,
         error_code=intake.error_code,
+        error=error,
     )
 
 
@@ -1401,6 +1473,138 @@ async def put_group_workspace_file(
         },
     )
     return _text_file_out(value)
+
+
+@router.post("/{group_id}/workspace/upload", response_model=GroupWorkspaceUploadOut)
+async def upload_group_workspace_file(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    file: UploadFile = File(...),
+    expected_version_token: Annotated[str | None, Query()] = None,
+    require_absent: Annotated[bool, Query()] = False,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload one group workspace file without converting binary bytes to text."""
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.write_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+            content=await file.read(),
+            content_type=guess_content_type(path),
+            expected_version_token=expected_version_token,
+            require_absent=require_absent,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_write",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={
+            "path": value.path,
+            "revision_id": str(value.revision_id) if value.revision_id else None,
+        },
+    )
+    return GroupWorkspaceUploadOut(
+        path=value.path,
+        size=len(value.content),
+        version_token=value.version_token,
+        modified_at=value.modified_at,
+        revision_id=value.revision_id,
+    )
+
+
+async def _download_user(
+    *,
+    token: str,
+    credentials: HTTPAuthorizationCredentials | None,
+    db: AsyncSession,
+) -> User:
+    jwt_token = credentials.credentials if credentials is not None else token
+    if not jwt_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+    payload = decode_access_token(jwt_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    try:
+        parsed_user_id = uuid.UUID(user_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+    result = await db.execute(select(User).where(User.id == parsed_user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+    return user
+
+
+@router.get("/{group_id}/workspace/download")
+async def download_group_workspace_file(
+    group_id: uuid.UUID,
+    path: Annotated[str, Query(min_length=1, max_length=500)],
+    token: str = "",
+    inline: bool = False,
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download a group workspace file with membership authorization."""
+    current_user = await _download_user(token=token, credentials=credentials, db=db)
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        value = await group_file_service.read_workspace_binary_file(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            actor_participant_id=participant.id,
+            path=path,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    except GroupFileServiceError as exc:
+        raise _translate_file_error(exc) from exc
+    filename = value.path.rsplit("/", 1)[-1]
+    media_type = guess_content_type(filename)
+    inline_media_types = {
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/svg+xml",
+        "image/webp",
+    }
+    allow_inline = inline and media_type in inline_media_types
+    disposition = "inline" if allow_inline else "attachment"
+    headers = {
+        "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if allow_inline and media_type == "image/svg+xml":
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_download",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={"path": value.path, "inline": allow_inline},
+    )
+    return Response(content=value.content, media_type=media_type, headers=headers)
 
 
 @router.delete("/{group_id}/workspace/file", status_code=status.HTTP_204_NO_CONTENT)

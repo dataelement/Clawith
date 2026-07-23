@@ -87,31 +87,6 @@ def test_llm_capability_columns_and_checks_are_declared() -> None:
         assert source in capability_source_check
 
 
-@pytest.mark.parametrize(
-    ("supports_tool_calling", "error_code"),
-    [
-        (None, "model_tool_calling_unverified"),
-        (False, "model_tool_calling_unsupported"),
-    ],
-)
-def test_agent_runtime_requires_verified_native_tool_calling(
-    supports_tool_calling: bool | None,
-    error_code: str,
-) -> None:
-    model = _model(supports_tool_calling=supports_tool_calling)
-
-    with pytest.raises(ModelCapabilityError) as exc_info:
-        ModelCapabilityResolver.require_native_tool_calling(model)
-
-    assert exc_info.value.code == error_code
-
-
-def test_verified_native_tool_calling_is_accepted() -> None:
-    ModelCapabilityResolver.require_native_tool_calling(
-        _model(supports_tool_calling=True)
-    )
-
-
 def test_matching_overrides_win_without_changing_limit_semantics() -> None:
     model = _model(
         context_window_tokens=100_000,
@@ -284,8 +259,13 @@ async def test_platform_model_resolution_rejects_unusable_models(
 async def test_global_runtime_model_resolvers_accept_only_enabled_platform_models() -> None:
     tenant_id = uuid.uuid4()
     compact_id = uuid.uuid4()
-    planning_id = uuid.uuid4()
-    model = _model(tenant_id=None, enabled=True)
+    planning_id = compact_id
+    model = _model(
+        id=compact_id,
+        tenant_id=None,
+        enabled=True,
+        supports_tool_calling=True,
+    )
     settings = Settings(
         _env_file=None,
         MULTI_AGENT_COMPACT_MODEL_ID=compact_id,
@@ -295,7 +275,9 @@ async def test_global_runtime_model_resolvers_accept_only_enabled_platform_model
 
     assert await resolve_multi_agent_compact_model(session, settings, tenant_id=tenant_id) is model  # type: ignore[arg-type]
     assert await resolve_multi_agent_planning_model(session, settings, tenant_id=tenant_id) is model  # type: ignore[arg-type]
-    assert len(session.statements) == 4
+    # Each resolver reads settings, validates the configured ID is currently
+    # runnable, then loads the selected model.
+    assert len(session.statements) == 6
     assert settings.AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO == 0.85
     assert settings.AGENT_RUNTIME_MODEL_CAPABILITY_REFRESH_SECONDS == 86400
     assert settings.MULTI_AGENT_COMPACT_MODEL_ID == compact_id

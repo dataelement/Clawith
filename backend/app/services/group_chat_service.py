@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -132,6 +133,7 @@ async def _valid_participant(
                 Agent.tenant_id == tenant_id,
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
+                Agent.deleted_at.is_(None),
             )
         )
 
@@ -162,6 +164,65 @@ async def _active_membership(
     if membership is None:
         raise GroupChatServiceError("group_access_denied", "Active group membership is required")
     return membership
+
+
+async def _human_actor_user(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor: Participant,
+) -> User:
+    """Resolve the active tenant user behind a validated human participant."""
+    result = await db.execute(
+        select(User).where(
+            User.id == actor.ref_id,
+            User.tenant_id == tenant_id,
+            User.is_active.is_(True),
+        )
+    )
+    actor_user = result.scalar_one_or_none()
+    if actor_user is None:
+        raise GroupChatServiceError(
+            "group_human_member_required",
+            "An active human group member is required",
+        )
+    return actor_user
+
+
+async def _invitable_participant(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor: Participant,
+    participant_id: uuid.UUID,
+) -> Participant:
+    """Validate an invite target, including Agent visibility for the inviter."""
+    target = await _valid_participant(
+        db,
+        tenant_id=tenant_id,
+        participant_id=participant_id,
+        human_only=False,
+        error_code="group_participant_invalid",
+    )
+    if target.type != "agent":
+        return target
+
+    # Resolved only for Agent targets, where inviter visibility must be checked.
+    actor_user = await _human_actor_user(db, tenant_id=tenant_id, actor=actor)
+    target_agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == target.ref_id,
+            Agent.tenant_id == tenant_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    target_agent = target_agent_result.scalar_one_or_none()
+    if target_agent is None or not await can_use_agent(db, actor_user, target_agent):
+        raise GroupChatServiceError(
+            "group_participant_invalid",
+            "Agent is not visible to the inviting member",
+        )
+    return target
 
 
 async def _human_actor(
@@ -321,6 +382,7 @@ async def create_group(
     creator_participant_id: uuid.UUID,
     name: str,
     description: str | None = None,
+    member_participant_ids: Sequence[uuid.UUID] = (),
 ) -> Group:
     """Create a group and its initial manager without owning the transaction."""
     normalized_name = _required_text(
@@ -329,13 +391,29 @@ async def create_group(
         field="name",
         max_length=200,
     )
-    await _valid_participant(
+    creator = await _valid_participant(
         db,
         tenant_id=tenant_id,
         participant_id=creator_participant_id,
         human_only=True,
         error_code="group_creator_invalid",
     )
+
+    invited_ids: list[uuid.UUID] = []
+    seen_ids = {creator_participant_id}
+    for participant_id in member_participant_ids:
+        if participant_id in seen_ids:
+            continue
+        seen_ids.add(participant_id)
+        invited_ids.append(participant_id)
+
+    for participant_id in invited_ids:
+        await _invitable_participant(
+            db,
+            tenant_id=tenant_id,
+            actor=creator,
+            participant_id=participant_id,
+        )
 
     now = _now()
     group = Group(
@@ -359,6 +437,18 @@ async def create_group(
     )
     db.add(group)
     db.add(creator_membership)
+    for participant_id in invited_ids:
+        db.add(
+            GroupMember(
+                id=uuid.uuid4(),
+                group_id=group.id,
+                participant_id=participant_id,
+                role="member",
+                joined_at=now,
+                removed_at=None,
+                session_read_state={},
+            )
+        )
     await db.flush()
     return group
 
@@ -518,6 +608,57 @@ async def list_group_member_candidates(
     )
     active_ref_ids = set(active_refs_result.scalars().all())
 
+    return await _member_candidates(
+        db,
+        tenant_id=tenant_id,
+        actor_user=actor_user,
+        participant_type=participant_type,
+        limit=limit,
+        excluded_ref_ids=active_ref_ids,
+    )
+
+
+async def list_tenant_member_candidates(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user: User,
+    participant_type: str,
+    limit: int,
+) -> tuple[GroupMemberCandidate, ...]:
+    """List inviteable identities before a group exists, for the create flow."""
+    if participant_type not in {"user", "agent"}:
+        raise GroupChatServiceError(
+            "group_participant_type_invalid",
+            "Participant type must be 'user' or 'agent'",
+        )
+    if actor_user.tenant_id != tenant_id or not actor_user.is_active:
+        raise GroupChatServiceError(
+            "group_human_member_required",
+            "An active human group member is required",
+        )
+
+    # The creator joins as manager on create, so never offer them as a candidate.
+    return await _member_candidates(
+        db,
+        tenant_id=tenant_id,
+        actor_user=actor_user,
+        participant_type=participant_type,
+        limit=limit,
+        excluded_ref_ids={actor_user.id} if participant_type == "user" else set(),
+    )
+
+
+async def _member_candidates(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user: User,
+    participant_type: str,
+    limit: int,
+    excluded_ref_ids: set[uuid.UUID],
+) -> tuple[GroupMemberCandidate, ...]:
+    active_ref_ids = excluded_ref_ids
     candidates: list[GroupMemberCandidate] = []
     if participant_type == "user":
         statement = select(User).where(
@@ -598,38 +739,12 @@ async def invite_group_member(
         participant_id=actor_participant_id,
         manager_only=False,
     )
-    target = await _valid_participant(
+    await _invitable_participant(
         db,
         tenant_id=tenant_id,
+        actor=actor,
         participant_id=participant_id,
-        human_only=False,
-        error_code="group_participant_invalid",
     )
-    if target.type == "agent":
-        actor_user_result = await db.execute(
-            select(User).where(
-                User.id == actor.ref_id,
-                User.tenant_id == tenant_id,
-                User.is_active.is_(True),
-            )
-        )
-        actor_user = actor_user_result.scalar_one_or_none()
-        target_agent_result = await db.execute(
-            select(Agent).where(
-                Agent.id == target.ref_id,
-                Agent.tenant_id == tenant_id,
-            )
-        )
-        target_agent = target_agent_result.scalar_one_or_none()
-        if (
-            actor_user is None
-            or target_agent is None
-            or not await can_use_agent(db, actor_user, target_agent)
-        ):
-            raise GroupChatServiceError(
-                "group_participant_invalid",
-                "Agent is not visible to the inviting member",
-            )
 
     existing_result = await db.execute(
         select(GroupMember)

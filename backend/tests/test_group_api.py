@@ -13,7 +13,8 @@ import pytest
 from app.api import groups as groups_api
 from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
-from app.models.group import Group
+from app.models.group import Group, GroupMember
+from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.participant import Participant
 from app.models.user import User
@@ -94,6 +95,7 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("POST", "/api/groups") in routes
     assert ("GET", "/api/groups/{group_id}/members") in routes
     assert ("GET", "/api/groups/{group_id}/member-candidates") in routes
+    assert ("GET", "/api/groups/member-candidates") in routes
     assert ("POST", "/api/groups/{group_id}/sessions") in routes
     assert ("DELETE", "/api/groups/{group_id}/sessions/{session_id}") in routes
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/read") in routes
@@ -112,11 +114,74 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("GET", "/api/groups/{group_id}/workspace/file") in routes
     assert ("PUT", "/api/groups/{group_id}/workspace/file") in routes
     assert ("DELETE", "/api/groups/{group_id}/workspace/file") in routes
+    assert ("POST", "/api/groups/{group_id}/workspace/upload") in routes
+    assert ("GET", "/api/groups/{group_id}/workspace/download") in routes
     assert ("PATCH", "/api/groups/{group_id}/members/{member_id}") not in routes
+
+
+def test_tenant_member_candidates_is_matched_before_the_group_id_route() -> None:
+    """A literal path after "/{group_id}" would be parsed as a group id and 422."""
+    paths = [getattr(route, "path", None) for route in groups_api.router.routes]
+
+    assert paths.index("/api/groups/member-candidates") < paths.index("/api/groups/{group_id}")
 
 
 def test_group_invite_write_contract_only_accepts_participant_id() -> None:
     assert set(groups_api.InviteGroupMemberIn.model_fields) == {"participant_id"}
+
+
+@pytest.mark.asyncio
+async def test_member_history_marks_deleted_agent_without_hiding_identity() -> None:
+    tenant_id = uuid.uuid4()
+    agent = Agent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        creator_id=uuid.uuid4(),
+        name="Retired Analyst",
+        role_description="Historical role",
+        status="stopped",
+        deleted_at=NOW,
+    )
+    participant = Participant(
+        id=uuid.uuid4(),
+        type="agent",
+        ref_id=agent.id,
+        display_name=agent.name,
+    )
+    membership = GroupMember(
+        id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        participant_id=participant.id,
+        role="member",
+        joined_at=NOW,
+        session_read_state={},
+    )
+
+    class _Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class _DB:
+        def __init__(self):
+            self.results = iter((_Result([participant]), _Result([agent])))
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    output = await groups_api._member_outputs(  # type: ignore[attr-defined]
+        _DB(),  # type: ignore[arg-type]
+        [membership],
+    )
+
+    assert output[0].display_name == "Retired Analyst"
+    assert output[0].role_description == "Historical role"
+    assert output[0].is_deleted is True
 
 
 @pytest.mark.asyncio
@@ -222,6 +287,148 @@ async def test_workspace_put_forwards_create_only_condition(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_workspace_binary_upload_preserves_conditions_and_stages_audit(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    db = _RecordingDB()
+    calls = []
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_write(_db, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            path=kwargs["path"],
+            content=kwargs["content"],
+            version_token="binary-v1",
+            modified_at="now",
+            revision_id=uuid.uuid4(),
+        )
+
+    class _Upload:
+        async def read(self):
+            return b"%PDF-1.7\n\x00payload"
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_file_service, "write_workspace_binary_file", fake_write)
+
+    result = await groups_api.upload_group_workspace_file(
+        group.id,
+        path="reports/final.pdf",
+        file=_Upload(),
+        expected_version_token="binary-v0",
+        require_absent=False,
+        current_user=user,
+        db=db,
+    )
+
+    assert result.path == "reports/final.pdf"
+    assert result.size == len(b"%PDF-1.7\n\x00payload")
+    assert calls == [
+        {
+            "tenant_id": tenant_id,
+            "group_id": group.id,
+            "actor_participant_id": participant.id,
+            "path": "reports/final.pdf",
+            "content": b"%PDF-1.7\n\x00payload",
+            "content_type": "application/pdf",
+            "expected_version_token": "binary-v0",
+            "require_absent": False,
+        }
+    ]
+    audit = next(value for value in db.added if isinstance(value, AuditLog))
+    assert audit.action == "group:workspace_write"
+    assert audit.details["path"] == "reports/final.pdf"
+
+
+@pytest.mark.asyncio
+async def test_workspace_download_returns_exact_bytes_after_group_authorization(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    db = _RecordingDB()
+    calls = []
+
+    async def fake_download_user(**kwargs):
+        assert kwargs["token"] == "download-token"
+        return user
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_read(_db, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(path="images/chart.png", content=b"\x89PNG\r\n")
+
+    monkeypatch.setattr(groups_api, "_download_user", fake_download_user)
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_file_service, "read_workspace_binary_file", fake_read)
+
+    response = await groups_api.download_group_workspace_file(
+        group.id,
+        path="images/chart.png",
+        token="download-token",
+        inline=True,
+        credentials=None,
+        db=db,
+    )
+
+    assert response.body == b"\x89PNG\r\n"
+    assert response.media_type == "image/png"
+    assert response.headers["content-disposition"].startswith("inline;")
+    audit = next(value for value in db.added if isinstance(value, AuditLog))
+    assert audit.action == "group:workspace_download"
+    assert audit.details["path"] == "images/chart.png"
+    assert audit.details["inline"] is True
+    assert calls == [
+        {
+            "tenant_id": tenant_id,
+            "group_id": group.id,
+            "actor_participant_id": participant.id,
+            "path": "images/chart.png",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_download_uses_portable_webp_content_type(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    db = _RecordingDB()
+
+    async def fake_download_user(**_kwargs):
+        return user
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_read(_db, **_kwargs):
+        return SimpleNamespace(path="images/chart.webp", content=b"RIFFpayloadWEBP")
+
+    monkeypatch.setattr(groups_api, "_download_user", fake_download_user)
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_file_service, "read_workspace_binary_file", fake_read)
+
+    response = await groups_api.download_group_workspace_file(
+        group.id,
+        path="images/chart.webp",
+        token="download-token",
+        inline=True,
+        credentials=None,
+        db=db,
+    )
+
+    assert response.media_type == "image/webp"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+@pytest.mark.asyncio
 async def test_create_group_stages_domain_change_and_audit_in_one_transaction(monkeypatch) -> None:
     tenant_id = uuid.uuid4()
     user = _user(tenant_id)
@@ -255,6 +462,7 @@ async def test_create_group_stages_domain_change_and_audit_in_one_transaction(mo
             "creator_participant_id": participant.id,
             "name": "Runtime Group",
             "description": None,
+            "member_participant_ids": [],
         }
     ]
     assert len(db.added) == 1
@@ -262,7 +470,43 @@ async def test_create_group_stages_domain_change_and_audit_in_one_transaction(mo
     assert isinstance(audit, AuditLog)
     assert audit.action == "group:create"
     assert audit.user_id == user.id
-    assert audit.details == {"tenant_id": str(tenant_id), "group_id": str(group.id)}
+    assert audit.details == {
+        "tenant_id": str(tenant_id),
+        "group_id": str(group.id),
+        "member_participant_ids": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_group_forwards_initial_members_and_audits_them(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    invited = [uuid.uuid4(), uuid.uuid4()]
+    db = _RecordingDB()
+    calls = []
+
+    async def fake_participant(_db, current_user):
+        return participant
+
+    async def fake_create(_db, **kwargs):
+        calls.append(kwargs)
+        return group
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api.group_chat_service, "create_group", fake_create)
+
+    result = await groups_api.create_group(
+        groups_api.CreateGroupIn(name="Runtime Group", member_participant_ids=invited),
+        current_user=user,
+        db=db,
+    )
+
+    assert result is group
+    assert calls[0]["member_participant_ids"] == invited
+    audit = db.added[0]
+    assert audit.details["member_participant_ids"] == [str(value) for value in invited]
 
 
 @pytest.mark.asyncio
@@ -416,7 +660,8 @@ async def test_create_message_commits_before_realtime_publish(monkeypatch) -> No
             dispatch_kind="none",
             run_handles=(),
             created=True,
-            error_code=None,
+            error_code="planning_model_unavailable",
+            error_message="Planning model is not configured",
         )
 
     async def fake_outputs(_db, _messages):
@@ -438,11 +683,20 @@ async def test_create_message_commits_before_realtime_publish(monkeypatch) -> No
         group.id,
         session.id,
         groups_api.CreateGroupMessageIn(content="hello"),
+        request=SimpleNamespace(state=SimpleNamespace(trace_id="group-trace-123")),
         current_user=user,
         db=db,
     )
 
     assert result.message == output
+    assert result.error_code == "planning_model_unavailable"
+    assert result.error is not None
+    assert result.error.model_dump(exclude_none=True) == {
+        "code": "planning_model_unavailable",
+        "message": "Planning model is not configured",
+        "trace_id": "group-trace-123",
+        "stage": "planning",
+    }
     assert events == [
         "commit",
         f"publish:{output.cursor}",

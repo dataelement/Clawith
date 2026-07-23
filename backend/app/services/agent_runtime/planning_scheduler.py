@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 import uuid
 
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from app.services.agent_runtime.command_worker import (
     RuntimeSessionFactory,
 )
 from app.services.agent_runtime.contracts import StartRunCommand
+from app.services.agent_runtime.delivery import DeliveryRequest, deliver_runtime_message
 from app.services.agent_runtime.planning import checkpoint_plan
 from app.services.group_message_service import (
     GroupMessageServiceError,
@@ -25,9 +27,11 @@ from app.services.group_message_service import (
     _load_sender_scope,
     _resolve_mentions,
 )
+from app.services.group_realtime import publish_stored_group_message
 
 
 _PLANNING_ROLE = "group_planning"
+logger = logging.getLogger(__name__)
 
 
 class PlanningSchedulingError(RuntimeError):
@@ -278,7 +282,6 @@ def _validate_entry_targets(
             or target.agent is None
             or target.agent.id != agent_id
             or target.model is None
-            or target.agent.primary_model_id != target.model.id
         ):
             raise PlanningSchedulingError(
                 "planning_entry_unavailable",
@@ -379,6 +382,68 @@ class PlanningCheckpointScheduler:
             return
         if checkpoint.state["lifecycle"]["status"] != "completed":
             return
+        try:
+            await self._schedule_completed(run=run, checkpoint=checkpoint)
+        except PlanningSchedulingError as exc:
+            await self._deliver_terminal_failure(
+                run=run,
+                checkpoint=checkpoint,
+                error=exc,
+            )
+
+    async def _deliver_terminal_failure(
+        self,
+        *,
+        run: RuntimeRunRecord,
+        checkpoint: CheckpointObservation,
+        error: PlanningSchedulingError,
+    ) -> None:
+        """Project a deterministic scheduling rejection instead of retrying forever."""
+        logger.warning(
+            "Planning entry scheduling failed permanently: run_id=%s code=%s error=%s",
+            run.run_id,
+            error.code,
+            error,
+        )
+        async with self._session_factory() as db:
+            async with db.begin():
+                receipt = await deliver_runtime_message(
+                    db,
+                    DeliveryRequest(
+                        tenant_id=run.tenant_id,
+                        run_id=run.run_id,
+                        kind="terminal",
+                        content="",
+                        checkpoint_id=checkpoint.checkpoint_id,
+                        lifecycle_status="failed",
+                        failure_code=error.code,
+                        failure_message=str(error),
+                    ),
+                )
+        if (
+            receipt.status == "delivered"
+            and receipt.actual_session_id is not None
+            and receipt.message_id is not None
+        ):
+            try:
+                await publish_stored_group_message(
+                    self._session_factory,
+                    tenant_id=run.tenant_id,
+                    session_id=receipt.actual_session_id,
+                    message_id=receipt.message_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Planning failure realtime publish lookup failed: %s",
+                    exc,
+                )
+
+    async def _schedule_completed(
+        self,
+        *,
+        run: RuntimeRunRecord,
+        checkpoint: CheckpointObservation,
+    ) -> None:
 
         plan = checkpoint_plan(checkpoint.state)
         raw_entries = plan["entry_steps"]

@@ -18,6 +18,10 @@ const groupUnread = readFileSync(
   new URL('../src/hooks/useGroupUnread.ts', import.meta.url),
   'utf8',
 );
+const messageStream = readFileSync(
+  new URL('../src/pages/groups/MessageStream.tsx', import.meta.url),
+  'utf8',
+);
 
 test('new group sessions may use the backend default title while group names stay required', () => {
   assert.match(promptModal, /allowEmpty\?: boolean/);
@@ -82,4 +86,33 @@ test('group composer and stream use session-wide active runs', () => {
   assert.match(groupsPage, /name: member\.display_name/);
   assert.match(groupsPage, /isPlanning=\{isPlanning\}/);
   assert.match(groupsPage, /runningAgents=\{runningAgents\}/);
+});
+
+test('planning-to-entry transition keeps polling and preserves the typing indicator', () => {
+  assert.match(groupsPage, /ACTIVE_RUN_TRANSITION_GRACE_MS/);
+  assert.match(groupsPage, /planningTransitionUntilRef/);
+  assert.match(groupsPage, /setAwaitingPlannedRuns\(true\)/);
+  assert.match(groupsPage, /Date\.now\(\) < planningTransitionUntilRef\.current \? 250 : false/);
+  assert.match(groupsPage, /planningRunVisible \|\| \(awaitingPlannedRuns && !agentRunVisible\)/);
+});
+
+test('planning and running agents keep the single transient typing indicator', () => {
+  assert.match(messageStream, /\{isPlanning && \(/);
+  assert.match(messageStream, /groups\.taskPlanning/);
+  assert.match(messageStream, /\{runningAgents\.map\(\(agent\) => \(/);
+  assert.match(messageStream, /\{agent\.name\}/);
+  assert.equal(
+    (messageStream.match(/group-run-indicator-bubble/g) ?? []).length,
+    2,
+  );
+  assert.equal(
+    (messageStream.match(/<span \/><span \/><span \/>/g) ?? []).length,
+    2,
+  );
+});
+
+test('group planning failures preserve the backend message and diagnostics', () => {
+  assert.match(groupsPage, /intake\.error\?\.message/);
+  assert.match(groupsPage, /intake\.error\?\.trace_id/);
+  assert.match(groupsPage, /intake\.error\?\.code \?\? intake\.error_code/);
 });

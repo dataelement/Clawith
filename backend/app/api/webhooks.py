@@ -91,8 +91,15 @@ async def receive_webhook(token: str, request: Request):
             return JSONResponse({"ok": True})
 
         # Per-agent rate limit check
-        agent_result = await db.execute(select(Agent).where(Agent.id == target.agent_id))
+        agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == target.agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent_obj = agent_result.scalar_one_or_none()
+        if agent_obj is None:
+            return JSONResponse({"ok": True})
         agent_rate_limit = (agent_obj.webhook_rate_limit if agent_obj else None) or RATE_LIMIT
 
         # Retrieve all needed scalar fields and expunge from db session to prevent MissingGreenlet errors.

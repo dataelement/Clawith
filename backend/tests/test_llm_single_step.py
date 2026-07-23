@@ -16,6 +16,13 @@ from app.services.llm.client import (
 from app.services.llm import single_step
 
 
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+    "x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+)
+
+
 class _Client:
     def __init__(self, response: LLMResponse | Exception) -> None:
         self.response = response
@@ -204,6 +211,9 @@ async def test_complete_once_returns_a_bounded_repair_instruction_for_invalid_ar
     assert result.tool_calls == ()
     assert result.retry_instruction is not None
     assert "valid JSON" in result.retry_instruction
+    assert "not executed" in result.retry_instruction
+    assert "same oversized whole-file content" in result.retry_instruction
+    assert result.retry_tool_name == "write_file"
     assert client.closed is True
 
 
@@ -222,3 +232,32 @@ async def test_complete_once_closes_the_provider_client_when_the_request_fails(
 
     assert client.closed is True
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_once_sends_standard_multimodal_content_to_vision_provider(
+    monkeypatch,
+) -> None:
+    client = _Client(LLMResponse(content="described"))
+    _patch_client(monkeypatch, client)
+    original = LLMMessage(
+        role="user",
+        content=f"[image_data:{_TINY_PNG_DATA_URL}] Describe it",
+    )
+
+    result = await single_step.complete_llm_once(
+        _model(),
+        [original],
+        supports_vision=True,
+    )
+
+    sent = client.calls[0]["messages"][0]
+    assert sent.content == [
+        {
+            "type": "image_url",
+            "image_url": {"url": _TINY_PNG_DATA_URL},
+        },
+        {"type": "text", "text": "Describe it"},
+    ]
+    assert isinstance(original.content, str)
+    assert result.content == "described"

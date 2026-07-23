@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 
+from app.core.logging_config import get_trace_id
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
 from app.services.agent_runtime.command_worker import (
@@ -204,6 +205,26 @@ class _PreCommandHandler:
             raise self.error
 
 
+class _RejectionHandler:
+    def __init__(self, delivery: tuple[uuid.UUID, uuid.UUID] | None = None) -> None:
+        self.calls = []
+        self.delivery = delivery
+
+    async def handle_rejection(
+        self,
+        *,
+        db,
+        run,
+        command,
+        error_code,
+        error_message,
+    ) -> tuple[uuid.UUID, uuid.UUID] | None:
+        self.calls.append(
+            (db, run, command, error_code, error_message)
+        )
+        return self.delivery
+
+
 def _run(*, tenant_id: uuid.UUID | None = None) -> AgentRun:
     run_id = uuid.uuid4()
     return AgentRun(
@@ -305,6 +326,7 @@ def _worker(
     executor: _Executor,
     post_checkpoint_handler: _PostCheckpointHandler | None = None,
     pre_command_handler: _PreCommandHandler | None = None,
+    rejection_handler: _RejectionHandler | None = None,
     acquired: bool = True,
     claim_renew_seconds: float = 10,
 ) -> RuntimeCommandWorker:
@@ -315,6 +337,7 @@ def _worker(
         command_executor=executor,
         pre_command_handler=pre_command_handler,
         post_checkpoint_handler=post_checkpoint_handler or _PostCheckpointHandler(timeline),
+        rejection_handler=rejection_handler,
         claimant="worker-1",
         claim_ttl_seconds=60,
         claim_renew_seconds=claim_renew_seconds,
@@ -352,6 +375,7 @@ async def test_pre_command_side_effect_runs_after_claim_commit_and_before_graph(
         result = await worker.run_once()
 
     assert result.status == "applied"
+    assert get_trace_id() == command.id.hex[:12]
     assert pre_handler.calls == [(pre_handler.calls[0][0], pre_handler.calls[0][1], None)]
     assert pre_handler.calls[0][0].run_id == run.id
     assert pre_handler.calls[0][1].id == command.id
@@ -735,13 +759,14 @@ async def test_defer_release_atomically_refunds_the_consumed_attempt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exhausted_command_is_explicitly_quarantined_before_lock_or_graph(
+async def test_exhausted_command_is_quarantined_under_lock_without_graph_execution(
     _stub_business_attempt_boundary,
 ) -> None:
     timeline: list[str] = []
     run = _run()
     command = _command(run, "start")
     command.attempt_count = 5
+    rejection_handler = _RejectionHandler()
 
     with (
         patch(
@@ -756,15 +781,143 @@ async def test_exhausted_command_is_explicitly_quarantined_before_lock_or_graph(
         result = await _worker(
             timeline=timeline,
             run=run,
-            reader=_Reader(),
+            reader=_Reader(command=(None,)),
             executor=_Executor(timeline),
+            rejection_handler=rejection_handler,
         ).run_once()
 
     assert result.status == "rejected"
     assert result.error_code == "reconciliation_required"
     rejected.assert_awaited_once()
+    assert len(rejection_handler.calls) == 1
+    _, rejected_run, rejected_command, error_code, error_message = (
+        rejection_handler.calls[0]
+    )
+    assert rejected_run.run_id == run.id
+    assert rejected_command.id == command.id
+    assert error_code == "reconciliation_required"
+    assert error_message == (
+        "Runtime could not reconcile the command after repeated attempts."
+    )
     _stub_business_attempt_boundary.assert_not_awaited()
-    assert "lock_acquire" not in timeline
+    assert "lock_acquire" in timeline
+
+
+@pytest.mark.asyncio
+async def test_exhausted_reclaimed_command_reconciles_stable_checkpoint_under_lock(
+    _stub_business_attempt_boundary,
+) -> None:
+    timeline: list[str] = []
+    run = _run()
+    command = _command(run, "start")
+    command.attempt_count = 5
+    observed = _checkpoint(run, status="completed", command=command)
+    rejection_handler = _RejectionHandler()
+
+    with (
+        patch(
+            "app.services.agent_runtime.command_worker.claim_next_command",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "app.services.agent_runtime.command_worker.mark_command_applied",
+            new=AsyncMock(),
+        ) as applied,
+        patch(
+            "app.services.agent_runtime.command_worker.mark_command_rejected",
+            new=AsyncMock(),
+        ) as rejected,
+    ):
+        result = await _worker(
+            timeline=timeline,
+            run=run,
+            reader=_Reader(command=(observed,)),
+            executor=_Executor(timeline),
+            rejection_handler=rejection_handler,
+        ).run_once()
+
+    assert result.status == "reconciled"
+    assert result.checkpoint_id == observed.checkpoint_id
+    assert "lock_acquire" in timeline
+    applied.assert_awaited_once()
+    rejected.assert_not_awaited()
+    assert rejection_handler.calls == []
+    _stub_business_attempt_boundary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_command_waits_when_another_invocation_owns_thread_lock(
+    _stub_business_attempt_boundary,
+) -> None:
+    timeline: list[str] = []
+    run = _run()
+    command = _command(run, "start")
+    command.attempt_count = 5
+    rejection_handler = _RejectionHandler()
+
+    with (
+        patch(
+            "app.services.agent_runtime.command_worker.claim_next_command",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "app.services.agent_runtime.command_worker.release_command_claim",
+            new=AsyncMock(),
+        ) as release,
+        patch(
+            "app.services.agent_runtime.command_worker.mark_command_rejected",
+            new=AsyncMock(),
+        ) as rejected,
+    ):
+        result = await _worker(
+            timeline=timeline,
+            run=run,
+            reader=_Reader(),
+            executor=_Executor(timeline),
+            rejection_handler=rejection_handler,
+            acquired=False,
+        ).run_once()
+
+    assert result.status == "retry"
+    assert result.error_code == "thread_lock_busy"
+    release.assert_awaited_once()
+    rejected.assert_not_awaited()
+    assert rejection_handler.calls == []
+    _stub_business_attempt_boundary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejected_start_publish_failure_does_not_undo_durable_settlement() -> None:
+    timeline: list[str] = []
+    run = _run()
+    command = _command(run, "start")
+    command.attempt_count = 5
+    rejection_handler = _RejectionHandler((uuid.uuid4(), uuid.uuid4()))
+
+    with (
+        patch(
+            "app.services.agent_runtime.command_worker.claim_next_command",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "app.services.agent_runtime.command_worker.mark_command_rejected",
+            new=AsyncMock(),
+        ),
+        patch(
+            "app.services.agent_runtime.command_worker.publish_stored_group_message",
+            new=AsyncMock(side_effect=RuntimeError("realtime unavailable")),
+        ) as publish,
+    ):
+        result = await _worker(
+            timeline=timeline,
+            run=run,
+            reader=_Reader(command=(None,)),
+            executor=_Executor(timeline),
+            rejection_handler=rejection_handler,
+        ).run_once()
+
+    assert result.status == "rejected"
+    publish.assert_awaited_once()
 
 
 @pytest.mark.asyncio

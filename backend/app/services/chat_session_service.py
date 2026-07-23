@@ -329,7 +329,12 @@ async def get_primary_platform_session(
     user_id: uuid.UUID,
 ) -> ChatSession | None:
     """Compatibility wrapper for callers that do not yet pass tenant identity."""
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
     agent = agent_result.scalar_one_or_none()
     if agent is None or agent.tenant_id is None:
         return None
@@ -342,7 +347,12 @@ async def ensure_primary_platform_session(
     user_id: uuid.UUID,
 ) -> ChatSession:
     """Compatibility wrapper that resolves tenant and creator Participant first."""
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
     agent = agent_result.scalar_one_or_none()
     if agent is None or agent.tenant_id is None:
         raise ValueError("agent must belong to a tenant")

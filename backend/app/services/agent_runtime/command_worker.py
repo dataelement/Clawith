@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from app.config import Settings, get_settings
+from app.core.logging_config import set_trace_id
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
 from app.services.agent_runtime.persistence import (
@@ -36,6 +37,7 @@ from app.services.agent_runtime.thread_lock import ThreadLockNotAcquired, run_wi
 from app.services.agent_runtime.tool_execution import (
     ToolExecutionReconciliationPending,
 )
+from app.services.group_realtime import publish_stored_group_message
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,27 @@ _LIFECYCLE_STATUSES = frozenset(
         *_TERMINAL_STATUSES,
     }
 )
+_COMMAND_REJECTION_MESSAGES = {
+    "reconciliation_required": (
+        "Runtime could not reconcile the command after repeated attempts."
+    ),
+    "unsupported_command": "Runtime received an unsupported command.",
+    "run_not_found": "The Runtime run no longer exists.",
+    "legacy_runtime": "The run is not supported by the durable Runtime worker.",
+    "thread_not_started": "The Runtime thread has not started.",
+    "already_terminal": "The Runtime run is already complete.",
+    "cancelled_before_apply": "The Runtime invocation was cancelled before it applied.",
+}
+
+
+def command_rejection_message(error_code: str | None) -> str | None:
+    """Return the stable safe explanation for a persisted rejection code."""
+    if error_code is None:
+        return None
+    return _COMMAND_REJECTION_MESSAGES.get(
+        error_code,
+        "Runtime rejected the command.",
+    )
 
 
 class RuntimeSessionFactory(Protocol):
@@ -216,6 +239,20 @@ class RuntimePreCommandHandler(Protocol):
     ) -> None: ...
 
 
+class RuntimeCommandRejectionHandler(Protocol):
+    """Persist terminal products for a rejected command in its settlement transaction."""
+
+    async def handle_rejection(
+        self,
+        *,
+        db: AsyncSession,
+        run: RuntimeRunRecord,
+        command: RuntimeCommandRecord,
+        error_code: str,
+        error_message: str,
+    ) -> tuple[uuid.UUID, uuid.UUID] | None: ...
+
+
 class CommandWorkerError(RuntimeError):
     """Command processing failed with a stable, non-sensitive code."""
 
@@ -284,6 +321,7 @@ class RuntimeCommandWorker:
         command_executor: RuntimeCommandExecutor,
         post_checkpoint_handler: RuntimePostCheckpointHandler,
         pre_command_handler: RuntimePreCommandHandler | None = None,
+        rejection_handler: RuntimeCommandRejectionHandler | None = None,
         claimant: str,
         settings: Settings | None = None,
         claim_ttl_seconds: int | None = None,
@@ -297,6 +335,7 @@ class RuntimeCommandWorker:
         self._command_executor = command_executor
         self._pre_command_handler = pre_command_handler
         self._post_checkpoint_handler = post_checkpoint_handler
+        self._rejection_handler = rejection_handler
         self._claimant = claimant
         self._claim_ttl_seconds = (
             claim_ttl_seconds
@@ -453,7 +492,15 @@ class RuntimeCommandWorker:
                     cancel_command_id=command.id,
                 )
 
-    async def _mark_rejected(self, command: RuntimeCommandRecord, error_code: str) -> None:
+    async def _mark_rejected(
+        self,
+        command: RuntimeCommandRecord,
+        error_code: str,
+        *,
+        error_message: str,
+        run: RuntimeRunRecord | None,
+    ) -> None:
+        delivered_message: tuple[uuid.UUID, uuid.UUID] | None = None
         async with self._session_factory() as db:
             async with db.begin():
                 await mark_command_rejected(
@@ -462,6 +509,35 @@ class RuntimeCommandWorker:
                     command_id=command.id,
                     claimant=self._claimant,
                     error_code=error_code,
+                )
+                if (
+                    self._rejection_handler is not None
+                    and run is not None
+                    and command.command_type == "start"
+                    and error_code not in {"already_terminal", "cancelled_before_apply"}
+                ):
+                    delivered_message = await self._rejection_handler.handle_rejection(
+                        db=db,
+                        run=run,
+                        command=command,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+        if delivered_message is not None:
+            session_id, message_id = delivered_message
+            try:
+                await publish_stored_group_message(
+                    self._session_factory,
+                    tenant_id=command.tenant_id,
+                    session_id=session_id,
+                    message_id=message_id,
+                )
+            except Exception:
+                # The transaction above is authoritative; history/cursor backfill
+                # recovers a missed Group realtime notification.
+                logger.exception(
+                    "Rejected Runtime start was delivered but realtime publish failed",
+                    extra={"run_id": command.run_id, "command_id": command.id},
                 )
 
     async def _mark_product_synced(self, command: RuntimeCommandRecord) -> None:
@@ -555,8 +631,30 @@ class RuntimeCommandWorker:
         self,
         command: RuntimeCommandRecord,
         error_code: str,
+        *,
+        error_message: str | None = None,
+        run: RuntimeRunRecord | None = None,
+        synchronize: bool = True,
     ) -> CommandWorkResult:
-        await self._mark_rejected(command, error_code)
+        resolved_message = error_message or command_rejection_message(error_code)
+        if resolved_message is None:
+            resolved_message = "Runtime rejected the command."
+        if (
+            synchronize
+            and self._rejection_handler is not None
+            and run is None
+            and command.command_type == "start"
+        ):
+            try:
+                run = await self._load_run(command)
+            except CommandExecutionRejected:
+                run = None
+        await self._mark_rejected(
+            command,
+            error_code,
+            error_message=resolved_message,
+            run=run if synchronize else None,
+        )
         return CommandWorkResult(
             status="rejected",
             command_id=command.id,
@@ -623,7 +721,7 @@ class RuntimeCommandWorker:
         run: RuntimeRunRecord,
     ) -> CommandWorkResult:
         if command.command_type not in _COMMAND_TYPES:
-            return await self._reject(command, "unsupported_command")
+            return await self._reject(command, "unsupported_command", run=run)
 
         await self._begin_attempt(command)
 
@@ -683,7 +781,7 @@ class RuntimeCommandWorker:
                     )
                 disposition = classify_checkpoint(checkpoint)
                 if disposition == "terminal":
-                    return await self._reject(command, "already_terminal")
+                    return await self._reject(command, "already_terminal", run=run)
                 if disposition == "inconsistent":
                     raise RetryableCommandError(
                         "inconsistent_checkpoint",
@@ -711,9 +809,9 @@ class RuntimeCommandWorker:
                     "start found a checkpoint for this Run without matching Command metadata",
                 )
             if command.command_type == "resume" and checkpoint is None:
-                return await self._reject(command, "thread_not_started")
+                return await self._reject(command, "thread_not_started", run=run)
             if checkpoint is not None and classify_checkpoint(checkpoint) == "terminal":
-                return await self._reject(command, "already_terminal")
+                return await self._reject(command, "already_terminal", run=run)
 
             await self._handle_pre_command(
                 run=run,
@@ -729,7 +827,12 @@ class RuntimeCommandWorker:
                 checkpoint=checkpoint,
             )
         except CommandExecutionRejected as exc:
-            return await self._reject(command, exc.code)
+            return await self._reject(
+                command,
+                exc.code,
+                error_message=str(exc),
+                run=run,
+            )
 
         observed = await self._checkpoint_reader.read_for_command(
             connection=connection,
@@ -763,13 +866,51 @@ class RuntimeCommandWorker:
             checkpoint_id=observed.checkpoint_id,
         )
 
+    async def _process_exhausted_locked(
+        self,
+        connection: AsyncConnection,
+        command: RuntimeCommandRecord,
+        run: RuntimeRunRecord,
+    ) -> CommandWorkResult:
+        """Reconcile a stale claim under the Thread lock before terminalizing it."""
+        observed = await self._checkpoint_reader.read_for_command(
+            connection=connection,
+            run=run,
+            command=command,
+        )
+        if observed is not None:
+            self._validate_checkpoint(run, observed, command=command)
+            disposition = classify_checkpoint(observed)
+            if command.command_type != "cancel" and disposition in {
+                "waiting",
+                "terminal",
+            }:
+                await self._mark_applied(command, observed.checkpoint_id)
+                await self._sync_products_best_effort(
+                    run=run,
+                    command=command,
+                    checkpoint=observed,
+                )
+                return CommandWorkResult(
+                    status="reconciled",
+                    command_id=command.id,
+                    run_id=command.run_id,
+                    checkpoint_id=observed.checkpoint_id,
+                )
+        return await self._reject(
+            command,
+            "reconciliation_required",
+            run=run,
+        )
+
     async def run_once(self) -> CommandWorkResult:
         """Process at most one Command; callers own daemon polling/backoff."""
         command = await self._claim()
         if command is None:
             return CommandWorkResult(status="idle")
-        if command.attempt_count >= self._max_attempts:
-            return await self._reject(command, "reconciliation_required")
+        # One stable trace follows the durable Command across claim retries.
+        set_trace_id(command.id.hex[:12])
+        exhausted = command.attempt_count >= self._max_attempts
 
         stop_heartbeat = asyncio.Event()
         heartbeat = asyncio.create_task(
@@ -781,11 +922,20 @@ class RuntimeCommandWorker:
                 try:
                     run = await self._load_run(command)
                 except CommandExecutionRejected as exc:
-                    return await self._reject(command, exc.code)
+                    return await self._reject(
+                        command,
+                        exc.code,
+                        error_message=str(exc),
+                        synchronize=False,
+                    )
                 return await run_with_thread_lock(
                     self._lock_engine,
                     run.thread_id,
-                    lambda connection: self._process_locked(connection, command, run),
+                    lambda connection: (
+                        self._process_exhausted_locked(connection, command, run)
+                        if exhausted
+                        else self._process_locked(connection, command, run)
+                    ),
                 )
             except ThreadLockNotAcquired:
                 await self._release_for_retry(command, "thread_lock_busy")
@@ -800,7 +950,11 @@ class RuntimeCommandWorker:
                 # synthetic cancelled state. Settle this invocation, release
                 # the real Thread lock, then let the durable cancel Command
                 # apply against the preserved checkpoint.
-                return await self._reject(command, "cancelled_before_apply")
+                return await self._reject(
+                    command,
+                    "cancelled_before_apply",
+                    run=run,
+                )
             except ToolExecutionReconciliationPending as exc:
                 if exc.defer_without_attempt:
                     await self._defer_without_attempt(command, exc.code)

@@ -562,8 +562,8 @@
       "danger": {
         "title": "危险操作",
         "deleteAgent": "删除数字员工",
-        "deleteWarning": "此操作不可逆，将永久删除此数字员工及其所有数据。",
-        "confirmDelete": "确认删除",
+        "deleteWarning": "删除后数字员工会立即停用；聊天、运行、任务、审计记录和 Workspace 文件都会保留。",
+        "confirmDelete": "停用数字员工",
         "typeToConfirm": "输入数字员工名称以确认"
       },
       "expiry": {
@@ -1224,7 +1224,10 @@
       "vision": "视觉",
       "temperature": "模型温度",
       "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）",
-      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0"
+      "temperatureDesc": "留空使用提供商默认值。o1/o3 推理模型通常需要 1.0",
+      "deleteConfirm": "停用 {{name}}？现有数字员工和历史记录会保留模型引用，后续调用会自动选择其他可用模型。",
+      "deleteDone": "模型已停用",
+      "deleteFailed": "删除模型失败"
     },
     "tools": {
       "title": "全局工具管理",
@@ -2270,6 +2273,7 @@
     "noMessages": "还没有消息。发一条，或 @ 一个智能体开始协作。",
     "unknownSender": "未知成员",
     "agentBadge": "智能体",
+    "deletedBadge": "已删除",
     "polling": "轮询中",
     "offline": "连接断开",
     "announcement": "群公告",
@@ -2277,7 +2281,7 @@
     "announcementPlaceholder": "写下群目标、协作规则和对智能体的要求...",
     "workspace": "文件",
     "workspaceNote": "群 workspace 是全群共享的文件区，群内所有会话共用同一份。智能体的产物也会放在这里。",
-    "workspaceUploadTextOnly": "群文件区当前只支持 UTF-8 文本文件。",
+    "workspaceUploadUnsupported": "群文件区不支持这种文件格式。",
     "workspaceUploadInvalidName": "文件名不能包含路径分隔符。",
     "workspaceUploadInvalidUtf8": "文件不是有效的 UTF-8 文本，未上传。",
     "memory": "记忆",

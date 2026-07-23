@@ -1,7 +1,6 @@
 """Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
 
 import json
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +15,7 @@ from app.config import get_settings
 from app.models.agent import Agent, AgentTemplate
 from app.models.llm import LLMModel
 from app.services.llm import get_model_api_key
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.storage import get_storage_backend, normalize_storage_key
 
 settings = get_settings()
@@ -252,6 +252,10 @@ class AgentManager:
 
         Returns container_id or None if Docker not available.
         """
+        if agent.deleted_at is not None:
+            logger.info("Agent {} is deleted; skipping container start", agent.id)
+            return None
+
         if not self.docker_client:
             logger.info("Docker not available, skipping container start")
             agent.status = "idle"
@@ -261,10 +265,7 @@ class AgentManager:
         agent_dir = await self._materialize_agent_dir(agent.id)
 
         # Get model config
-        model = None
-        if agent.primary_model_id:
-            result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
-            model = result.scalar_one_or_none()
+        model = await resolve_active_agent_model(db, agent)
 
         # Generate OpenClaw config
         config = self._generate_openclaw_config(agent, model)
@@ -352,21 +353,6 @@ class AgentManager:
         except DockerException as e:
             logger.error(f"Failed to remove container: {e}")
             return False
-
-    async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
-        """Archive agent files to a backup location and return the archive directory."""
-        agent_dir = self._agent_dir(agent_id)
-        local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
-        archive_dir = Path(local_root) / "_archived"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        dest = archive_dir / f"{agent_id}_{timestamp}"
-        if agent_dir.exists():
-            shutil.move(str(agent_dir), str(dest))
-            logger.info(f"Archived agent files to {dest}")
-        else:
-            dest.mkdir(parents=True, exist_ok=True)
-        return dest
 
     def get_container_status(self, agent: Agent) -> dict:
         """Get real-time container status."""

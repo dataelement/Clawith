@@ -55,7 +55,12 @@ async def find_or_create_channel_session(
             "External channel and conversation ID are required",
         )
 
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
     agent = agent_result.scalar_one_or_none()
     if agent is None or agent.tenant_id is None:
         raise ChannelSessionError(

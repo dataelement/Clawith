@@ -1,6 +1,10 @@
 /** API service layer */
 
 import type { Agent, TokenResponse, User, Task, ChatMessage } from '../types';
+import { AppError, parseHttpError, parseHttpErrorResponse, normalizeUnknownError } from './apiError';
+
+export { ApiError, AppError } from './apiError';
+export type { ApiErrorContext, AppErrorContext, ErrorSource } from './apiError';
 
 const API_BASE = '/api';
 
@@ -11,9 +15,15 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
 
-    const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    let res: Response;
+    try {
+        res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    } catch (error) {
+        throw normalizeUnknownError(error, { code: 'network_error', source: 'http', retryable: true });
+    }
 
     if (!res.ok) {
+        const apiError = await parseHttpErrorResponse(res);
         // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
         const isAuthEndpoint = url.startsWith('/auth/login')
             || url.startsWith('/auth/register')
@@ -25,50 +35,9 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             window.location.href = '/login';
-            throw new Error('Session expired');
+            throw apiError;
         }
-        const bodyText = await res.text();
-        let error: { detail?: unknown };
-        try {
-            error = bodyText ? JSON.parse(bodyText) : {};
-        } catch {
-            const snippet = bodyText.trim().slice(0, 280);
-            error = {
-                detail: snippet || `HTTP ${res.status} ${res.statusText || ''}`.trim(),
-            };
-        }
-        // Pydantic validation errors return detail as an array of objects
-        const fieldLabels: Record<string, string> = {
-            name: '名称',
-            role_description: '角色描述',
-            agent_type: '智能体类型',
-            primary_model_id: '主模型',
-            max_tokens_per_day: '每日 Token 上限',
-            max_tokens_per_month: '每月 Token 上限',
-        };
-        let message = '';
-        if (Array.isArray(error.detail)) {
-            message = error.detail
-                .map((e: any) => {
-                    const field = e.loc?.slice(-1)[0] || '';
-                    const label = fieldLabels[field] || field;
-                    return label ? `${label}: ${e.msg}` : e.msg;
-                })
-                .join('; ');
-        } else if (typeof error.detail === 'object' && error.detail !== null) {
-            // Structured error detail (e.g., NeedsVerificationResponse)
-            message = (error.detail as Record<string, any>).message || `HTTP ${res.status}`;
-        } else {
-            const d = error.detail;
-            if (typeof d === 'string') message = d;
-            else if (d != null && typeof d === 'object') message = JSON.stringify(d);
-            else message = `HTTP ${res.status}`;
-        }
-
-        const apiErr: any = new Error(message);
-        apiErr.status = res.status;
-        apiErr.detail = error.detail;
-        throw apiErr;
+        throw apiError;
     }
 
     if (res.status === 204) return undefined as T;
@@ -87,14 +56,18 @@ async function uploadFile(url: string, file: File, extraFields?: Record<string, 
             formData.append(k, v);
         }
     }
-    const res = await fetch(`${API_BASE}${url}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-    });
+    let res: Response;
+    try {
+        res = await fetch(`${API_BASE}${url}`, {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            body: formData,
+        });
+    } catch (error) {
+        throw normalizeUnknownError(error, { code: 'network_error', source: 'http', retryable: true });
+    }
     if (!res.ok) {
-        const error = await res.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new Error(error.detail || `HTTP ${res.status}`);
+        throw await parseHttpErrorResponse(res);
     }
     return res.json();
 }
@@ -137,15 +110,17 @@ export function uploadFileWithProgress(
             if (xhr.status >= 200 && xhr.status < 300) {
                 try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(undefined); }
             } else {
-                try {
-                    const err = JSON.parse(xhr.responseText);
-                    reject(new Error(err.detail || `HTTP ${xhr.status}`));
-                } catch { reject(new Error(`HTTP ${xhr.status}`)); }
+                reject(parseHttpError({
+                    status: xhr.status,
+                    statusText: xhr.statusText,
+                    bodyText: xhr.responseText,
+                    traceId: xhr.getResponseHeader('X-Trace-Id'),
+                }));
             }
         };
-        xhr.onerror = () => reject(new Error('Network error'));
-        xhr.ontimeout = () => reject(new Error('Upload timed out'));
-        xhr.onabort = () => reject(new Error('Upload cancelled'));
+        xhr.onerror = () => reject(new AppError({ message: 'Network error', code: 'network_error', source: 'http', retryable: true }));
+        xhr.ontimeout = () => reject(new AppError({ message: 'Upload timed out', code: 'upload_timeout', source: 'http', retryable: true }));
+        xhr.onabort = () => reject(new AppError({ message: 'Upload cancelled', code: 'upload_cancelled', source: 'http', retryable: false }));
         xhr.timeout = timeoutMs;
         xhr.send(formData);
     });
