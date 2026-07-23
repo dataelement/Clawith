@@ -2,6 +2,7 @@
 
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -24,15 +25,22 @@ class _ModelResult:
     def all(self) -> list[LLMModel]:
         return self.models
 
+    def scalar_one_or_none(self) -> LLMModel | None:
+        return self.models[0] if self.models else None
+
 
 class _ModelSession:
     def __init__(self, models: list[LLMModel]) -> None:
         self.models = models
         self.execute_count = 0
+        self.commit = AsyncMock()
 
     async def execute(self, _statement: object) -> _ModelResult:
         self.execute_count += 1
         return _ModelResult(self.models)
+
+    def add(self, _value: object) -> None:
+        pass
 
 
 def _model(model_id: uuid.UUID, **overrides: object) -> LLMModel:
@@ -76,7 +84,6 @@ async def test_runtime_model_settings_are_company_admin_only() -> None:
     [
         {"tenant_id": uuid.uuid4()},
         {"enabled": False},
-        {"supports_tool_calling": False},
     ],
 )
 async def test_runtime_model_settings_reject_ineligible_models(
@@ -103,3 +110,37 @@ async def test_runtime_model_settings_reject_ineligible_models(
 
     assert exc_info.value.status_code == 422
     assert session.execute_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supports_tool_calling", [None, False])
+async def test_runtime_model_settings_accept_saved_model_without_verified_tools(
+    supports_tool_calling: bool | None,
+) -> None:
+    model_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session = _ModelSession(
+        [_model(model_id, supports_tool_calling=supports_tool_calling)]
+    )
+    expected = {"planning_model_id": str(model_id)}
+
+    with patch(
+        "app.api.enterprise._runtime_model_settings_payload",
+        new=AsyncMock(return_value=expected),
+    ):
+        result = await update_runtime_model_settings(
+            RuntimeModelSettingsUpdate(
+                planning_model_id=model_id,
+                compact_model_id=model_id,
+            ),
+            tenant_id=str(tenant_id),
+            current_user=SimpleNamespace(
+                role="platform_admin",
+                identity=None,
+                tenant_id=tenant_id,
+            ),  # type: ignore[arg-type]
+            db=session,  # type: ignore[arg-type]
+        )
+
+    assert result == expected
+    session.commit.assert_awaited_once()

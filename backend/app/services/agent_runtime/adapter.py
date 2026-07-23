@@ -20,10 +20,6 @@ from app.services.agent_runtime.contracts import (
     StartRunCommand,
 )
 from app.services.agent_runtime.graph import RuntimeGraphIdentity
-from app.services.agent_runtime.model_capabilities import (
-    ModelCapabilityError,
-    ModelCapabilityResolver,
-)
 from app.services.agent_runtime.persistence import (
     RunRegistration,
     enqueue_cancel,
@@ -156,7 +152,7 @@ class RuntimeCommandIntake:
         command: StartRunCommand,
         agent: Agent | None,
     ) -> uuid.UUID | None:
-        """Reject new tool-driven Agent Runs before any durable Run is created."""
+        """Pin an active tenant-valid model before a durable Run is created."""
         if command.run_kind == "orchestration":
             return command.model_id
         model = await load_active_model(
@@ -165,20 +161,12 @@ class RuntimeCommandIntake:
             tenant_id=command.tenant_id,
         )
         if model is None and agent is not None:
-            model = await resolve_active_agent_model(
-                self._db,
-                agent,
-                require_tool_calling=True,
-            )
+            model = await resolve_active_agent_model(self._db, agent)
         if model is None:
             raise RuntimeAdapterError(
                 "model_unavailable",
-                "Agent Runtime has no active tool-capable model in the command tenant",
+                "Agent Runtime has no active model in the command tenant",
             )
-        try:
-            ModelCapabilityResolver.require_native_tool_calling(model)
-        except ModelCapabilityError as exc:
-            raise RuntimeAdapterError(exc.code, str(exc)) from exc
         return model.id
 
     @staticmethod

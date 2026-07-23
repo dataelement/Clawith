@@ -166,7 +166,7 @@ async def test_direct_session_has_no_second_session_compact_policy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_scanner_only_selects_group_sessions() -> None:
+async def test_background_scanner_only_selects_live_groups_with_active_agents() -> None:
     captured = []
 
     class _ScannerDB:
@@ -189,7 +189,13 @@ async def test_background_scanner_only_selects_group_sessions() -> None:
     assert await scanner.scan_once() == 0
     assert len(captured) == 1
     compiled = captured[0].compile()
-    assert "session_type" in str(compiled)
+    sql = str(compiled)
+    assert "session_type" in sql
+    assert "groups.deleted_at IS NULL" in sql
+    assert "EXISTS" in sql
+    assert "group_members.removed_at IS NULL" in sql
+    assert "agents.deleted_at IS NULL" in sql
+    assert "agents.status IN" in sql
     assert "group" in compiled.params.values()
 
 

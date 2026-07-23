@@ -936,7 +936,6 @@ async def _runtime_model_settings_payload(db: AsyncSession, *, tenant_id: uuid.U
             or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id),
             LLMModel.enabled.is_(True),
             LLMModel.deleted_at.is_(None),
-            LLMModel.supports_tool_calling.is_(True),
         )
         .order_by(LLMModel.created_at.desc())
     )
@@ -1000,12 +999,6 @@ async def update_runtime_model_settings(
             raise HTTPException(status_code=422, detail=f"Model {model_id} belongs to another tenant")
         if not model.enabled:
             raise HTTPException(status_code=422, detail=f"Model {model_id} is disabled")
-        if model.supports_tool_calling is not True:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Model {model_id} has not passed the native tool-calling test",
-            )
-
     result = await db.execute(
         select(SystemSetting).where(
             SystemSetting.key == runtime_model_setting_key(resolved_tenant_id)

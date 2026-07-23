@@ -92,7 +92,7 @@ async def test_candidates_skip_deleted_disabled_cross_tenant_and_duplicate_model
 
 
 @pytest.mark.asyncio
-async def test_tool_calling_requirement_filters_incapable_candidate():
+async def test_tool_calling_diagnostic_does_not_filter_saved_candidate():
     from app.services.llm.model_resolution import active_agent_model_candidates
 
     tenant_id = uuid.uuid4()
@@ -110,13 +110,9 @@ async def test_tool_calling_requirement_filters_incapable_candidate():
         DummyResult([primary, fallback]),
     ])
 
-    candidates = await active_agent_model_candidates(
-        db,
-        agent,
-        require_tool_calling=True,
-    )
+    candidates = await active_agent_model_candidates(db, agent)
 
-    assert candidates == (fallback,)
+    assert candidates == (primary, fallback)
 
 
 @pytest.mark.asyncio

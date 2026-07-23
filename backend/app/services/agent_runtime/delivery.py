@@ -29,6 +29,9 @@ from app.services.agent_runtime.state import JsonObject
 from app.services.participant_identity import get_or_create_agent_participant
 
 
+# ``ack`` remains readable only for historical delivery receipts created before
+# native Group start acknowledgements were retired. New requests accept only
+# waiting and terminal delivery kinds.
 DeliveryKind = Literal["ack", "waiting", "terminal"]
 DeliveryLifecycleStatus = Literal[
     "waiting_user",
@@ -85,8 +88,6 @@ class DeliveryRequest:
 
     @property
     def idempotency_key(self) -> str:
-        if self.kind == "ack":
-            return f"run:{self.run_id}:ack"
         if self.kind == "waiting":
             return f"run:{self.run_id}:waiting:{self.interrupt_id}"
         return f"run:{self.run_id}:terminal:{self.lifecycle_status}"
@@ -152,7 +153,7 @@ def _require_text(
 
 
 def _validate_request(request: DeliveryRequest) -> None:
-    if request.kind not in {"ack", "waiting", "terminal"}:
+    if request.kind not in {"waiting", "terminal"}:
         raise DeliveryServiceError(
             "invalid_delivery_request",
             f"unsupported delivery kind: {request.kind!r}",
@@ -162,22 +163,6 @@ def _validate_request(request: DeliveryRequest) -> None:
             "invalid_delivery_request",
             "original_target_outcome must be not_attempted or unknown",
         )
-    if request.kind == "ack":
-        _require_text(request.content, field="content")
-        if (
-            request.checkpoint_id is not None
-            or request.lifecycle_status is not None
-            or request.interrupt_id is not None
-            or request.group_handoff_intent is not None
-            or request.failure_code is not None
-            or request.failure_message is not None
-        ):
-            raise DeliveryServiceError(
-                "invalid_delivery_request",
-                "ack delivery cannot carry checkpoint lifecycle fields",
-            )
-        return
-
     _require_text(request.checkpoint_id, field="checkpoint_id", max_length=255)
     if request.kind == "waiting":
         _require_text(request.content, field="content")

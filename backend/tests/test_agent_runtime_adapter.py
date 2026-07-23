@@ -272,16 +272,9 @@ async def test_missing_or_invalid_agent_budget_fails_without_runtime_fallback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("supports_tool_calling", "error_code"),
-    [
-        (None, "model_tool_calling_unverified"),
-        (False, "model_tool_calling_unsupported"),
-    ],
-)
-async def test_new_agent_run_fails_before_persistence_without_verified_tool_calling(
+@pytest.mark.parametrize("supports_tool_calling", [None, False])
+async def test_new_agent_run_accepts_saved_model_without_verified_tool_calling(
     supports_tool_calling: bool | None,
-    error_code: str,
 ) -> None:
     tenant_id = uuid.uuid4()
     agent = _agent(tenant_id)
@@ -292,19 +285,25 @@ async def test_new_agent_run_fails_before_persistence_without_verified_tool_call
         supports_tool_calling=supports_tool_calling,
     )
     db = _session(agent, model)
+    run = _run(
+        tenant_id=tenant_id,
+        agent_id=agent.id,
+        model_turn_limit=50,
+    )
 
     with patch(
         "app.services.agent_runtime.adapter.register_run_with_start",
-        new=AsyncMock(),
+        new=AsyncMock(
+            return_value=RegisteredRun(run, _stored_command(run, "start"), True)
+        ),
     ) as persist:
-        with pytest.raises(RuntimeAdapterError) as raised:
-            await RuntimeCommandIntake(
-                db,
-                settings=_settings(enabled=True),
-            ).start_run(command)
+        await RuntimeCommandIntake(
+            db,
+            settings=_settings(enabled=True),
+        ).start_run(command)
 
-    assert raised.value.code == error_code
-    persist.assert_not_awaited()
+    persist.assert_awaited_once()
+    assert persist.await_args.args[1].model_id == model.id
 
 
 @pytest.mark.asyncio

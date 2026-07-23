@@ -224,6 +224,8 @@ Current Run is executing inside a native Clawith group. Follow these platform ru
 - For a chained request such as "wake A and ask A to wake B", this Run should mention A only and give A the concrete instruction to wake B. Do not wake B from this Run unless the user also asked you to contact B directly.
 - Runtime publishes the `finish.content` as your public group reply and starts one child Run per mentioned participant so each target can reply publicly in this same group session. After `finish`, you cannot add another mention target from this Run. For multiple mentions, verify that the array contains every intended recipient before calling `finish`.
 - `send_message_to_agent` is private A2A. Use it only when you need private advice or facts and the target does not need to reply publicly in the group. It is never a substitute for `finish.mention_participant_ids` when the user asks you to `@` an Agent or have them respond in the group.
+- A planned group transition must remain in this group session. When `group_context.planning_hint` assigns a later responsibility to another current-group Agent, never call `send_message_to_agent` for that transition under any `msg_type`; publish your completed part with `finish`, mention that Agent through `mention_participant_ids`, and state exactly what they must do and reply with publicly.
+- Do not perform another Agent's assigned responsibility, wait for its private delegated result, merge that private result into your answer, or claim that Agent completed work on your behalf. A private A2A result is not that Agent's public group reply.
 - A textual `@name` or display name in `finish.content` is only text and never routes or wakes an Agent. Never infer participant IDs from display names. If no other Agent needs to join and reply publicly, omit `mention_participant_ids`.
 - If this Run was started because another Agent mentioned you, answer only the part addressed to you in `current_responsibility`, using your own role and voice, and normally finish without mentioning anyone. Do not repeat the source Agent's message, answer on behalf of other mentioned participants, describe its mention operation as your own action, or mention the source/co-mentioned Agents merely to reciprocate a greeting or acknowledgment. Mention another Agent only for a new concrete question, request, or responsibility that genuinely requires another public reply.
 - When several Agents were already woken by the same source message, each has its own Run. Address them by plain display name if useful, but do not `@` them just to make them greet or acknowledge one another again.
@@ -730,13 +732,38 @@ def _repair(
     repair_code: str | None = None,
     repair_tool_name: str | None = None,
 ) -> ModelStepResult:
+    assistant_message = _assistant_message(state, context, step)
+    if (
+        not str(assistant_message.get("content") or "").strip()
+        and not assistant_message.get("tool_calls")
+    ):
+        # Invalid/truncated tool calls cannot be replayed in provider history.
+        # Persist only the user-role repair instruction; an empty assistant
+        # message is rejected by providers such as Cohere.
+        assistant_message = None
     return ModelStepResult(
         intent="text",
-        assistant_message=_assistant_message(state, context, step),
+        assistant_message=assistant_message,
         repair_instruction=instruction,
         repair_code=repair_code,
         repair_tool_name=repair_tool_name,
     )
+
+
+def _safe_provider_failure_message(error: Exception) -> str:
+    """Return bounded user-facing provider diagnostics; raw bodies stay in logs."""
+    match = re.search(
+        r"(?<!\d)(400|401|403|408|422|429|500|502|503|504)(?!\d)",
+        str(error),
+    )
+    status = match.group(1) if match else "unknown"
+    if status in {"401", "403"}:
+        return f"Model provider authentication or authorization failed (HTTP {status})."
+    if status in {"400", "422"}:
+        return f"Model provider rejected the request (HTTP {status})."
+    if status != "unknown":
+        return f"Model provider request failed (HTTP {status})."
+    return "Model provider request failed."
 
 
 def _parse_step(
@@ -1028,11 +1055,7 @@ class RuntimeModelStepService:
                 or not model.enabled
                 or model.tenant_id not in {None, tenant_id}
             ):
-                candidates = await active_agent_model_candidates(
-                    db,
-                    agent,
-                    require_tool_calling=True,
-                )
+                candidates = await active_agent_model_candidates(db, agent)
                 model = candidates[0] if candidates else None
         if (
             model is None
@@ -1047,7 +1070,6 @@ class RuntimeModelStepService:
                 "model_unavailable",
                 "pinned Runtime model is disabled or outside the tenant scope",
             )
-        ModelCapabilityResolver.require_native_tool_calling(model)
         if agent is None or agent.status not in _ACTIVE_AGENT_STATUSES or agent.is_expired:
             raise ContextBuildError(
                 "agent_unavailable",
@@ -1078,11 +1100,7 @@ class RuntimeModelStepService:
         primary_model: LLMModel,
     ) -> LLMModel | None:
         async with self._session_factory() as db:
-            candidates = await active_agent_model_candidates(
-                db,
-                agent,
-                require_tool_calling=True,
-            )
+            candidates = await active_agent_model_candidates(db, agent)
         return next((model for model in candidates if model.id != primary_model.id), None)
 
     async def compact_inputs(
@@ -1530,7 +1548,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_call_failed",
-                        str(primary_error) or type(primary_error).__name__,
+                        _safe_provider_failure_message(primary_error),
                     ) from primary_error
                 tenant_id = uuid.UUID(context.tenant_id)
                 fallback = await self._fallback_model(
@@ -1620,7 +1638,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_failover_failed",
-                        str(fallback_error) or type(fallback_error).__name__,
+                        _safe_provider_failure_message(fallback_error),
                     ) from fallback_error
                 actual_model = fallback
                 failed_over_from = model
@@ -1724,7 +1742,7 @@ class RuntimeModelStepService:
             )
             return _error(
                 "model_call_failed",
-                str(exc) or type(exc).__name__,
+                "The model call failed.",
             )
 
 

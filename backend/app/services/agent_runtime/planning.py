@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
+import re
 from typing import Protocol, cast
 import uuid
 
@@ -40,6 +41,30 @@ _PLAN_MODES = frozenset({"advisory", "enforced"})
 _MAX_ENTRY_STEPS = 50
 _PLAN_FIELDS = frozenset({"version", "mode", "goal", "plan_prompt", "entry_steps"})
 _ENTRY_FIELDS = frozenset({"agent_id", "instruction"})
+_SIMPLE_CHECK_INS = frozenset(
+    {
+        "在吗",
+        "在嘛",
+        "在么",
+        "在不在",
+        "都在吗",
+        "都在嘛",
+        "你们在吗",
+        "你们在嘛",
+        "有人吗",
+        "你好",
+        "你好呀",
+        "你们好",
+        "大家好",
+        "嗨",
+        "哈喽",
+        "哈啰",
+        "hi",
+        "hello",
+        "hey",
+    }
+)
+_CHECK_IN_PUNCTUATION = re.compile(r"[\s,，.!！?？。:：;；~～、]+")
 
 _SYSTEM_PROMPT = """You are Clawith's internal multi-Agent planning component.
 Return exactly one JSON object and no Markdown. Never call tools and never do the work yourself.
@@ -58,7 +83,16 @@ Return exactly this schema and no additional fields:
   ]
 }
 Set mode to enforced only when the human explicitly specified workflow constraints such as Agent assignments, order, rounds, dependencies, branches, or completion conditions. Otherwise use advisory.
+Use the simplest plan that satisfies the human's actual request. Do not invent analysis, synthesis, status reporting, review, or collaboration merely because several Agents were mentioned.
+Before arranging any work, silently rewrite user_goal into clear directives in the original mention order. For each directive, fix the exact Agent, action, input, expected public output, and any dependency or next Agent. Then build goal, plan_prompt, and entry_steps only from those normalized directives; do not return the rewrite as an extra field.
+Bind an instruction after an @mentioned Agent to that Agent until the next @mention, unless the human explicitly says otherwise. Never swap or reassign that work based on candidate order, Agent name, role_description, or perceived capability. For example, "@A write a poem @B then translate it" means A writes the poem, publicly hands that poem to B, and B translates it; it never means B writes and A translates.
+When wording is vague, make the smallest literal interpretation explicit in goal, plan_prompt, and entry instructions before scheduling. Preserve every unambiguous Agent-to-responsibility binding, and never resolve ambiguity by moving work to a different Agent.
+When repairing an invalid previous output, repeat this normalization from the original user_goal and verify every Agent-to-responsibility binding before returning corrected JSON. Do not merely repair JSON syntax or preserve a semantically wrong assignment from previous_output.
+For a greeting or check-in, start the addressed Agents in parallel and tell each one to reply briefly as itself. Do not ask one Agent to report another Agent's status, unify their greetings, or exchange public handoffs.
 entry_steps starts only the first Agent or first parallel Agents. It may be a subset of candidates. Do not describe a DAG, step IDs, dependencies, progress, or later scheduling fields. Later collaboration proceeds through public Agent handoffs.
+Create a public handoff only when a different Agent must provide a new reply for the task to proceed. Never create a handoff from an Agent to itself.
+Each assigned Agent must author its own public group reply. Never route a planned group transition through private A2A, never ask an entry Agent to wait for a private result, and never ask one Agent to perform or claim another Agent's assigned work.
+For every sequential transition, plan_prompt and the responsible entry instruction must say exactly which different Agent to wake publicly next, what concrete result to pass in the public group message, and what that Agent must reply with in the group.
 plan_prompt must be complete enough for every later participating Agent to receive unchanged. Preserve the human's explicit constraints, but do not repeat platform rules or invent mandatory constraints."""
 
 
@@ -169,6 +203,71 @@ def _candidate_agent_ids(state: RuntimeGraphState) -> frozenset[uuid.UUID]:
             "Planning requires at least two distinct candidate Agents",
         )
     return frozenset(resolved)
+
+
+def _simple_check_in_plan(
+    state: RuntimeGraphState,
+    *,
+    goal: str,
+    candidate_agent_ids: frozenset[uuid.UUID],
+) -> JsonObject | None:
+    """Return a deterministic one-reply-per-Agent plan for exact greetings."""
+    raw_candidates = state["snapshots"].initial_input.get("candidate_agents")
+    if not isinstance(raw_candidates, Sequence) or isinstance(
+        raw_candidates,
+        (str, bytes, bytearray),
+    ):
+        return None
+
+    candidates: list[tuple[uuid.UUID, str]] = []
+    for raw_candidate in raw_candidates:
+        if not isinstance(raw_candidate, Mapping):
+            return None
+        try:
+            agent_id = uuid.UUID(str(raw_candidate.get("agent_id")))
+        except (TypeError, ValueError):
+            return None
+        raw_name = raw_candidate.get("name")
+        if (
+            agent_id not in candidate_agent_ids
+            or not isinstance(raw_name, str)
+            or not raw_name.strip()
+        ):
+            return None
+        candidates.append((agent_id, raw_name.strip()))
+
+    remaining = goal
+    for _, name in sorted(candidates, key=lambda candidate: len(candidate[1]), reverse=True):
+        remaining = remaining.replace(f"@{name}", " ")
+    normalized = _CHECK_IN_PUNCTUATION.sub("", remaining).casefold()
+    if normalized not in _SIMPLE_CHECK_INS:
+        return None
+
+    plan: JsonObject = {
+        "version": _PLAN_VERSION,
+        "mode": "advisory",
+        "goal": "Each mentioned Agent replies briefly to the user's greeting or check-in as itself.",
+        "plan_prompt": (
+            "This is a simple greeting or check-in. Every entry Agent replies once, "
+            "briefly, and only as itself. Do not report another Agent's status, do not "
+            "ask another Agent to reply, and do not create a public handoff."
+        ),
+        "entry_steps": [
+            {
+                "agent_id": str(agent_id),
+                "instruction": (
+                    f"Reply briefly to the user's greeting or check-in as {name} only. "
+                    "Do not report another Agent's status and do not mention or hand off "
+                    "to another Agent."
+                ),
+            }
+            for agent_id, name in candidates
+        ],
+    }
+    return validate_planning_output(
+        plan,
+        candidate_agent_ids=candidate_agent_ids,
+    )
 
 
 def validate_planning_output(
@@ -327,6 +426,20 @@ class PlanningModelService:
     ) -> PlanningModelResult:
         try:
             candidates = _candidate_agent_ids(state)
+        except PlanningContractError as exc:
+            return PlanningModelResult(
+                error_code=exc.code,
+                error_message=str(exc),
+                retryable=False,
+            )
+        simple_plan = _simple_check_in_plan(
+            state,
+            goal=context.goal,
+            candidate_agent_ids=candidates,
+        )
+        if simple_plan is not None:
+            return PlanningModelResult(plan=simple_plan)
+        try:
             model = await self._load_model(context)
         except PlanningContractError as exc:
             return PlanningModelResult(

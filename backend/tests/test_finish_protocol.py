@@ -361,28 +361,34 @@ async def test_call_llm_requires_finish_tool_to_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("supports_tool_calling", "error_code"),
-    [
-        (None, "model_tool_calling_unverified"),
-        (False, "model_tool_calling_unsupported"),
-    ],
-)
-async def test_legacy_tool_loop_fails_closed_before_provider_call(
+@pytest.mark.parametrize("supports_tool_calling", [None, False])
+async def test_legacy_tool_loop_calls_saved_model_without_verified_tool_calling(
     monkeypatch,
     supports_tool_calling,
-    error_code,
 ):
     from app.services.llm import caller
 
     model = _model()
     model.supports_tool_calling = supports_tool_calling
-
-    def create_client(**_kwargs):
-        raise AssertionError("provider must not be called")
+    fake_client = FakeStreamClient([_finish_response("Final answer.")])
 
     monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
-    monkeypatch.setattr(caller, "create_llm_client", create_client)
+    monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return([]),
+    )
+    monkeypatch.setattr(caller, "create_llm_client", lambda **_kwargs: fake_client)
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
 
     result = await caller.call_llm(
         model,
@@ -390,9 +396,11 @@ async def test_legacy_tool_loop_fails_closed_before_provider_call(
         "Agent",
         "",
         agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
     )
 
-    assert result.startswith(f"[Error] {error_code}:")
+    assert result == "Final answer."
+    assert len(fake_client.messages_seen) == 1
 
 
 @pytest.mark.asyncio

@@ -22,10 +22,10 @@ from app.services.agent_runtime.command_worker import (
     RuntimeRunRecord,
 )
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
+from app.services.agent_runtime.delivery import DeliveryReceipt
 from app.services.agent_runtime.planning import validate_planning_output
 from app.services.agent_runtime.planning_scheduler import (
     PlanningCheckpointScheduler,
-    PlanningSchedulingError,
 )
 from app.services.agent_runtime.state import RunInputSnapshots, RuntimeGraphState
 from app.services.group_message_service import ResolvedGroupMention, _SenderScope
@@ -424,7 +424,46 @@ async def test_completed_plan_product_retry_is_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_entry_revalidation_failure_creates_no_partial_child() -> None:
+async def test_completed_plan_uses_the_resolved_active_fallback_model() -> None:
+    run, checkpoint, root, message, scope, candidates, _ = _records()
+    first, second, _ = candidates
+    first.agent.primary_model_id = uuid.uuid4()
+    second.agent.primary_model_id = uuid.uuid4()
+    db = _Session(root, message)
+    start = AsyncMock(side_effect=(_handle(run.tenant_id), _handle(run.tenant_id)))
+
+    with (
+        patch(
+            "app.services.agent_runtime.planning_scheduler._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        patch(
+            "app.services.agent_runtime.planning_scheduler._resolve_mentions",
+            new=AsyncMock(return_value=(first, second)),
+        ),
+        patch(
+            "app.services.agent_runtime.planning_scheduler.RuntimeCommandIntake.start_run",
+            new=start,
+        ),
+    ):
+        await PlanningCheckpointScheduler(
+            session_factory=_SessionFactory(db),  # type: ignore[arg-type]
+            settings=_settings(),
+        ).handle(run=run, checkpoint=checkpoint)
+
+    commands = [call.args[0] for call in start.await_args_list]
+    assert [command.model_id for command in commands] == [
+        first.model.id,
+        second.model.id,
+    ]
+    assert all(
+        command.model_id != target.agent.primary_model_id
+        for command, target in zip(commands, (first, second), strict=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_entry_revalidation_failure_rolls_back_and_delivers_terminal_error() -> None:
     run, checkpoint, root, message, scope, candidates, _ = _records()
     first, second, _ = candidates
     invalid = ResolvedGroupMention(
@@ -437,7 +476,22 @@ async def test_entry_revalidation_failure_creates_no_partial_child() -> None:
         reason="agent_unavailable",
     )
     db = _Session(root, message)
+    delivery_db = _Session(root)
+    factory = _SessionFactory(db, delivery_db)
     start = AsyncMock()
+    receipt = DeliveryReceipt(
+        tenant_id=run.tenant_id,
+        run_id=run.run_id,
+        idempotency_key=f"run:{run.run_id}:terminal:failed",
+        status="delivered",
+        delivery_kind="terminal",
+        checkpoint_id=checkpoint.checkpoint_id,
+        message_id=uuid.uuid4(),
+        requested_session_id=uuid.UUID(run.session_id),
+        actual_session_id=uuid.UUID(run.session_id),
+        fallback_reason=None,
+        error_code=None,
+    )
 
     with (
         patch(
@@ -452,17 +506,37 @@ async def test_entry_revalidation_failure_creates_no_partial_child() -> None:
             "app.services.agent_runtime.planning_scheduler.RuntimeCommandIntake.start_run",
             new=start,
         ),
+        patch(
+            "app.services.agent_runtime.planning_scheduler.deliver_runtime_message",
+            new=AsyncMock(return_value=receipt),
+        ) as deliver,
+        patch(
+            "app.services.agent_runtime.planning_scheduler.publish_stored_group_message",
+            new=AsyncMock(),
+        ) as publish,
     ):
-        with pytest.raises(PlanningSchedulingError) as raised:
-            await PlanningCheckpointScheduler(
-                session_factory=_SessionFactory(db),  # type: ignore[arg-type]
-                settings=_settings(),
-            ).handle(run=run, checkpoint=checkpoint)
+        await PlanningCheckpointScheduler(
+            session_factory=factory,  # type: ignore[arg-type]
+            settings=_settings(),
+        ).handle(run=run, checkpoint=checkpoint)
 
-    assert raised.value.code == "planning_entry_unavailable"
     start.assert_not_awaited()
     assert root.delivery_status == "pending"
     assert db.transaction is not None and db.transaction.rolled_back is True
+    request = deliver.await_args.args[1]
+    assert request.run_id == run.run_id
+    assert request.lifecycle_status == "failed"
+    assert request.failure_code == "planning_entry_unavailable"
+    assert request.failure_message == (
+        "A Planning entry Agent is no longer an available Group target"
+    )
+    assert request.checkpoint_id == checkpoint.checkpoint_id
+    publish.assert_awaited_once_with(
+        factory,
+        tenant_id=run.tenant_id,
+        session_id=uuid.UUID(run.session_id),
+        message_id=receipt.message_id,
+    )
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import pytest
 
 from app.config import Settings
 from app.models.llm import LLMModel
+from app.services.agent_runtime.model_capabilities import ModelCapabilityError
 from app.services.agent_runtime.run_compactor import (
     RunCompactInputs,
     RunCompactorError,
@@ -247,6 +248,59 @@ async def test_missing_complete_business_request_budget_fails_closed() -> None:
         await service.compact_if_needed(state, context)
 
     assert raised.value.code == "missing_request_budget"
+
+
+@pytest.mark.asyncio
+async def test_invalid_request_budget_from_input_loader_is_deterministic() -> None:
+    state, context, _tenant_id = _state([_normal("current")])
+
+    async def load(
+        _state: RuntimeGraphState,
+        _context: RuntimeContext,
+    ) -> RunCompactInputs:
+        raise ModelCapabilityError(
+            "invalid_request_budget",
+            "requested output tokens leave no room in the shared context window",
+        )
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid request budget must fail before model use")
+
+    service = RuntimeRunCompactorService(
+        settings=_settings(),
+        completion=forbidden,
+        input_loader=load,
+    )
+
+    with pytest.raises(RunCompactorError) as raised:
+        await service.compact_if_needed(state, context)
+
+    assert raised.value.code == "invalid_request_budget"
+    assert raised.value.is_deterministic_compact_error is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_compact_model_budget_is_a_deterministic_runtime_error() -> None:
+    state, context, tenant_id = _state(
+        [_normal("old", "old " * 300), _normal("current")]
+    )
+    model = _model(tenant_id)
+    model.max_input_tokens = None
+    model.context_window_tokens_override = model.max_output_tokens
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid compact budget must fail before model use")
+
+    with pytest.raises(RunCompactorError) as raised:
+        await _service(
+            model=model,
+            completion=forbidden,
+            effective_budget=1_000,
+            current_tokens=800,
+        ).compact_if_needed(state, context)
+
+    assert raised.value.code == "invalid_request_budget"
+    assert raised.value.is_deterministic_compact_error is True
 
 
 @pytest.mark.asyncio

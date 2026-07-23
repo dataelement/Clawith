@@ -467,6 +467,21 @@ async def _record_lifecycle_events(
     agent_id = uuid.UUID(run.agent_id) if run.agent_id is not None else None
     events: list[tuple[str, str, dict, str, str | None]] = []
     if checkpoint is None:
+        terminal_result = await db.execute(
+            select(AgentRunEvent.id)
+            .where(
+                AgentRunEvent.tenant_id == run.tenant_id,
+                AgentRunEvent.run_id == run.run_id,
+                AgentRunEvent.event_type.in_(
+                    ("run_completed", "run_failed", "run_cancelled")
+                ),
+            )
+            .limit(1)
+        )
+        if terminal_result.scalar_one_or_none() is not None:
+            # A later cancel command may release control resources, but it must
+            # not append a second, contradictory terminal outcome.
+            return
         events.append(
             (
                 "run_cancelled",

@@ -1596,6 +1596,14 @@ async def download_group_workspace_file(
     }
     if allow_inline and media_type == "image/svg+xml":
         headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+    _stage_audit(
+        db,
+        current_user=current_user,
+        action="group:workspace_download",
+        tenant_id=tenant_id,
+        group_id=group_id,
+        details={"path": value.path, "inline": allow_inline},
+    )
     return Response(content=value.content, media_type=media_type, headers=headers)
 
 

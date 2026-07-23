@@ -491,14 +491,6 @@ async def call_llm(
     _max_tool_rounds, _token_limit_msg = await _get_agent_config(agent_id)
     if _token_limit_msg:
         return _token_limit_msg
-    from app.services.agent_runtime.model_capabilities import (
-        ModelCapabilityError,
-        ModelCapabilityResolver,
-    )
-    try:
-        ModelCapabilityResolver.require_native_tool_calling(model)
-    except ModelCapabilityError as exc:
-        return f"[Error] {exc.code}: {exc}"
     if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
         _max_tool_rounds = max_tool_rounds_override
 

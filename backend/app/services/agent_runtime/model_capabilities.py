@@ -77,28 +77,6 @@ class ModelCapabilityResolver:
     """Resolve model semantics without performing provider I/O."""
 
     @staticmethod
-    def require_native_tool_calling(model: LLMModel) -> None:
-        """Require a concrete model row to be safe for an Agent tool Runtime."""
-        model_label = getattr(model, "label", None) or model.model
-        if model.supports_tool_calling is True:
-            return
-        if model.supports_tool_calling is False:
-            raise ModelCapabilityError(
-                "model_tool_calling_unsupported",
-                (
-                    f"Model {model_label!r} did not produce a valid "
-                    "native tool call during its capability test."
-                ),
-            )
-        raise ModelCapabilityError(
-            "model_tool_calling_unverified",
-            (
-                f"Model {model_label!r} has not passed the native "
-                "tool-calling capability test required by Agent Runtime."
-            ),
-        )
-
-    @staticmethod
     def capabilities(
         model: LLMModel,
         *,

@@ -162,6 +162,14 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _websocket_content_log_summary(content: object) -> str:
+    """Return payload-free metadata for one inbound WebSocket message."""
+    if not isinstance(content, str):
+        return f"content_type={type(content).__name__}"
+    image_count = content.count("[image_data:data:image/")
+    return f"content_chars={len(content)} image_count={image_count}"
+
+
 def _runtime_error_packet(
     *,
     code: str,
@@ -680,7 +688,7 @@ class WebSocketChatHandler:
         override_model_id = data.get("model_id")
         is_onboarding_trigger = data.get("kind") == "onboarding_trigger"
         logger.info(
-            f"[WS] Received: {str(content)[:50]}"
+            f"[WS] Received: {_websocket_content_log_summary(content)}"
             + (" [onboarding]" if is_onboarding_trigger else "")
         )
         if not isinstance(content, str) or (not content and not is_onboarding_trigger):

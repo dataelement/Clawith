@@ -16,6 +16,7 @@ from app.api.websocket import (
     AcceptedWebChatMessage,
     WebChatRuntimeIntake,
     WebSocketChatHandler,
+    _websocket_content_log_summary,
 )
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
@@ -49,6 +50,20 @@ class _WebSocket:
 
     async def close(self, code: int) -> None:
         self.closed_code = code
+
+
+def test_websocket_log_summary_never_includes_message_or_image_payload() -> None:
+    payload = (
+        "[image_data:data:image/png;base64,SECRET_IMAGE_PAYLOAD]"
+        "[image_data:data:image/jpeg;base64,SECOND_SECRET_PAYLOAD]"
+        " user secret"
+    )
+
+    summary = _websocket_content_log_summary(payload)
+
+    assert summary == f"content_chars={len(payload)} image_count=2"
+    assert "SECRET" not in summary
+    assert "data:image" not in summary
 
 
 class _Transaction:

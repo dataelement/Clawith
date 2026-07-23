@@ -410,10 +410,38 @@ class SessionContextCompactionScanner:
         async with self._session_factory() as db:
             statement = (
                 select(ChatSession.tenant_id, ChatSession.id)
+                .join(
+                    Group,
+                    (Group.id == ChatSession.group_id)
+                    & (Group.tenant_id == ChatSession.tenant_id),
+                )
                 .where(
                     ChatSession.deleted_at.is_(None),
                     ChatSession.last_message_at.is_not(None),
                     ChatSession.session_type == "group",
+                    Group.deleted_at.is_(None),
+                    sa.exists(
+                        select(1)
+                        .select_from(GroupMember)
+                        .join(
+                            Participant,
+                            Participant.id == GroupMember.participant_id,
+                        )
+                        .join(
+                            Agent,
+                            (Participant.type == "agent")
+                            & (Participant.ref_id == Agent.id),
+                        )
+                        .where(
+                            GroupMember.group_id == ChatSession.group_id,
+                            GroupMember.removed_at.is_(None),
+                            Agent.tenant_id == ChatSession.tenant_id,
+                            Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                            Agent.is_expired.is_(False),
+                            Agent.access_mode != "private",
+                            Agent.deleted_at.is_(None),
+                        )
+                    ),
                 )
                 .order_by(ChatSession.id)
                 .limit(self._settings.AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE)
