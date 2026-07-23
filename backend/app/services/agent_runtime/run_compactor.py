@@ -627,7 +627,10 @@ class RuntimeRunCompactorService:
         messages = _thread_messages(state, current_run_id=context.run_id)
         if not messages:
             return RunCompactResult()
-        inputs = await self._input_loader(state, context)
+        try:
+            inputs = await self._input_loader(state, context)
+        except ModelCapabilityError as exc:
+            raise RunCompactorError(exc.code, str(exc)) from exc
         if not _should_compact(inputs):
             return RunCompactResult()
 
