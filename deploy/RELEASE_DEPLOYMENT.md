@@ -65,3 +65,16 @@ curl -fsS http://127.0.0.1:3008/api/health
 The server checkout is intentionally left at a detached release tag after a
 successful deployment. Never move or reuse a published tag; publish a new
 version to roll forward.
+
+An existing release can be redeployed without creating another release:
+
+```bash
+gh workflow run release.yml \
+  --ref main \
+  -f operation=deploy \
+  -f deploy_tag=v1.11.2
+```
+
+The manual path uses the same tag validation, production Environment, SSH
+credentials, source build, health check, and rollback behavior as an automatic
+post-release deployment.

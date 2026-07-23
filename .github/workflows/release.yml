@@ -6,6 +6,18 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Release a new version or redeploy an existing tag
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - deploy
+      deploy_tag:
+        description: Existing vX.Y.Z tag to deploy when operation is deploy
+        required: false
+        type: string
       release_type:
         description: Release type to cut
         required: true
@@ -42,7 +54,7 @@ jobs:
   propose_release:
     name: Propose release
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'release'
 
     steps:
       - name: Checkout source
@@ -488,9 +500,37 @@ jobs:
           prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
 
+  resolve_deploy_tag:
+    name: Resolve deployment tag
+    needs: publish_release
+    if: >-
+      ${{ always() &&
+          (needs.publish_release.result == 'success' ||
+           (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - name: Resolve and validate tag
+        id: tag
+        shell: bash
+        env:
+          PUBLISHED_TAG: ${{ needs.publish_release.outputs.tag }}
+          REQUESTED_TAG: ${{ inputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+
+          tag="${PUBLISHED_TAG:-$REQUESTED_TAG}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::A valid deploy_tag in vX.Y.Z form is required"
+            exit 1
+          fi
+
+          echo "value=$tag" >> "$GITHUB_OUTPUT"
+
   deploy_release:
     name: Deploy release to production
-    needs: publish_release
+    needs: resolve_deploy_tag
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -498,14 +538,14 @@ jobs:
       DEPLOY_USER: ${{ vars.CLAWITH_DEPLOY_USER }}
       DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
       DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
-      RELEASE_TAG: ${{ needs.publish_release.outputs.tag }}
+      RELEASE_TAG: ${{ needs.resolve_deploy_tag.outputs.tag }}
       SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
     steps:
       - name: Checkout released source
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.publish_release.outputs.tag }}
+          ref: ${{ needs.resolve_deploy_tag.outputs.tag }}
 
       - name: Validate deployment configuration
         shell: bash
