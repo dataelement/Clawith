@@ -256,7 +256,7 @@ jobs:
 
           prompt = Path(".github/release-artifacts/release-prompt.txt").read_text(encoding="utf-8")
           payload = {
-              "model": "openai/gpt-4.1",
+              "model": "openai/gpt-5",
               "messages": [
                   {
                       "role": "system",
@@ -395,28 +395,6 @@ jobs:
           )
           PY
 
-      - name: Refresh RELEASE_NOTES.md
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python <<'PY'
-          from pathlib import Path
-
-          notes_file = Path(".github/release-artifacts/release-notes.generated.md")
-          release_notes_path = Path("RELEASE_NOTES.md")
-
-          new_block = notes_file.read_text(encoding="utf-8").strip()
-          existing = release_notes_path.read_text(encoding="utf-8").strip() if release_notes_path.exists() else ""
-
-          if existing:
-              combined = f"{new_block}\n\n---\n\n{existing}\n"
-          else:
-              combined = f"{new_block}\n"
-
-          release_notes_path.write_text(combined, encoding="utf-8")
-          PY
-
       - name: Commit release metadata
         shell: bash
         env:
@@ -424,7 +402,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          git add backend/VERSION frontend/VERSION RELEASE_NOTES.md
+          git add backend/VERSION frontend/VERSION
 
           if git diff --cached --quiet; then
             echo "No release metadata changes to commit."
@@ -480,25 +458,21 @@ jobs:
       - name: Extract Release Info
         id: release_info
         shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
           branch_name="${{ github.event.pull_request.head.ref }}"
           tag_name="${branch_name#release/}"
 
-          python - "$tag_name" <<'PY'
+          python <<'PY'
+          import os
           from pathlib import Path
-          import sys
 
-          tag_name = sys.argv[1]
-          notes_path = Path("RELEASE_NOTES.md")
-          if not notes_path.exists():
-              Path("release-notes.extracted.md").write_text(f"# {tag_name}\n\nRelease cut via merge.", encoding="utf-8")
-              sys.exit(0)
-
-          content = notes_path.read_text(encoding="utf-8")
-          parts = content.split("\n\n---\n\n")
-          latest_notes = parts[0].strip()
+          body = os.environ.get("PR_BODY", "")
+          parts = body.split("\n\n---\n\n", 1)
+          latest_notes = parts[1].strip() if len(parts) == 2 else body.strip()
 
           Path("release-notes.extracted.md").write_text(latest_notes + "\n", encoding="utf-8")
           PY
