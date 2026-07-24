@@ -539,6 +539,7 @@ jobs:
       DEPLOY_USER: ${{ vars.CLAWITH_DEPLOY_USER }}
       DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
       DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
+      SOURCE_PATH: ${{ vars.CLAWITH_SOURCE_PATH || 'Clawith' }}
       RELEASE_TAG: ${{ needs.resolve_deploy_tag.outputs.tag }}
       SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
@@ -552,7 +553,7 @@ jobs:
           set -euo pipefail
 
           required=(
-            DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_PATH RELEASE_TAG
+            DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_PATH SOURCE_PATH RELEASE_TAG
             SSH_PRIVATE_KEY SSH_KNOWN_HOSTS
           )
           for name in "${required[@]}"; do
@@ -586,7 +587,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          printf -v remote_command 'bash -s -- %q %q' "$RELEASE_TAG" "$DEPLOY_PATH"
+          printf -v remote_command 'bash -s -- %q %q %q' \
+            "$RELEASE_TAG" "$DEPLOY_PATH" "$SOURCE_PATH"
           ssh \
             -i "$SSH_KEY_FILE" \
             -p "$DEPLOY_PORT" \

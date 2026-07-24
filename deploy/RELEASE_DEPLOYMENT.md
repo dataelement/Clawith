@@ -2,8 +2,12 @@
 
 Merging an automated `release/vX.Y.Z` pull request publishes the GitHub Release
 and then deploys that exact tag to production. GitHub Actions does not build or
-upload application artifacts. The production server fetches the tag and runs
-`docker compose up -d --build` in its existing source checkout.
+upload application artifacts. The production server fetches the tag in its
+source checkout, builds versioned backend and frontend images, points the
+deployment's `latest` image tags to them, and restarts the existing Compose
+project. Success requires the API and worker containers to use the newly built
+backend image, the frontend container to use the newly built frontend image,
+and `/api/health` to report both `status: ok` and the released version.
 
 The deployment keeps the server's ignored `.env`, `ss-nodes.json`,
 `backend/agent_data`, and Docker volumes in place. It refuses to overwrite
@@ -23,6 +27,7 @@ protection rules can require approval before the deployment job starts.
 | `CLAWITH_DEPLOY_USER` | `qinrui` |
 | `CLAWITH_DEPLOY_PORT` | `10022` |
 | `CLAWITH_DEPLOY_PATH` | `clawith_new` |
+| `CLAWITH_SOURCE_PATH` | `Clawith` |
 
 ### Secrets
 
@@ -38,27 +43,29 @@ result.
 
 ## Server prerequisites
 
-The deployment directory must already be a Git checkout whose `origin` points
-to this repository. The server also needs:
+The source directory must be a Git checkout whose `origin` points to this
+repository. The deployment directory keeps the production `.env`, Compose
+file, Nginx configuration, and other environment-specific files. The server
+also needs:
 
 - Docker with the Compose plugin
 - `curl`
 - read access to the repository
 - permission for the deployment user to run Docker directly or with
   passwordless `sudo`
-- an existing `.env` and `ss-nodes.json` in `clawith_new`
+- an existing `.env` in `clawith_new`
 
 Validate the server once before enabling automatic deployments:
 
 ```bash
 ssh clawith
-cd clawith_new
+cd Clawith
 git status --short
 git remote -v
+cd ../clawith_new
 test -f .env
-test -f ss-nodes.json
 docker compose config --quiet
-docker compose up -d --build
+docker compose ps
 curl -fsS http://127.0.0.1:3008/api/health
 ```
 
