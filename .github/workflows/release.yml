@@ -6,18 +6,6 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      operation:
-        description: Release a new version or redeploy an existing tag
-        required: true
-        default: release
-        type: choice
-        options:
-          - release
-          - deploy
-      deploy_tag:
-        description: Existing vX.Y.Z tag to deploy when operation is deploy
-        required: false
-        type: string
       release_type:
         description: Release type to cut
         required: true
@@ -54,7 +42,7 @@ jobs:
   propose_release:
     name: Propose release
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'release'
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout source
@@ -213,8 +201,7 @@ jobs:
           3. ## Bug Fixes:
              - List resolved bugs, issues, or stability improvements.
           4. ## Upgrade Guide:
-             - Explain that merging the automated release PR publishes the release and automatically deploys its exact tag to production.
-             - Production fetches the tag in the existing server checkout, builds from source with Docker Compose, restarts the services, and verifies the health endpoint.
+             - Provide standard deployment instructions for upgrading to this version (e.g., rebuilding frontend, restart commands for Docker/Source/Kubernetes).
              - Do NOT include manual database migration commands (such as `alembic upgrade heads`), as database migrations run automatically on application startup.
              - Mimic the exact formatting, sections, and command blocks shown in the Style Reference below (excluding any manual database migration steps).
           5. ## Notes:
@@ -327,6 +314,7 @@ jobs:
           BASE_TAG: ${{ steps.version.outputs.base_tag }}
           TARGET_VERSION: ${{ steps.version.outputs.version }}
           TARGET_TAG: ${{ steps.version.outputs.tag }}
+          SOURCE_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -341,6 +329,7 @@ jobs:
           base_tag = os.environ["BASE_TAG"]
           target_version = os.environ["TARGET_VERSION"]
           target_tag = os.environ["TARGET_TAG"]
+          source_ref = os.environ["SOURCE_REF"]
 
           entries = []
           for line in Path(".github/release-artifacts/commit-table.tsv").read_text(encoding="utf-8").splitlines():
@@ -382,7 +371,18 @@ jobs:
               "",
               "## Upgrade Guide",
               "",
-              "Merging the automated release PR publishes this tag and starts the production deployment. The server fetches the exact release tag, builds the Docker services from source, restarts them, and verifies `/api/health` automatically.",
+              "### Docker Deployment",
+              "```bash",
+              f"git pull origin {source_ref}",
+              "docker compose down && docker compose up -d --build",
+              "```",
+              "",
+              "### Source Deployment",
+              "```bash",
+              f"git pull origin {source_ref}",
+              "cd frontend && npm install && npm run build",
+              "cd ..",
+              "```",
               "",
               "## Notes",
               f"- Release generated from changes since `{base_tag}`.",
@@ -500,38 +500,10 @@ jobs:
           prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
 
-  resolve_deploy_tag:
-    name: Resolve deployment tag
-    needs: publish_release
-    if: >-
-      ${{ always() &&
-          (needs.publish_release.result == 'success' ||
-           (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy')) }}
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.tag.outputs.value }}
-    steps:
-      - name: Resolve and validate tag
-        id: tag
-        shell: bash
-        env:
-          PUBLISHED_TAG: ${{ needs.publish_release.outputs.tag }}
-          REQUESTED_TAG: ${{ inputs.deploy_tag }}
-        run: |
-          set -euo pipefail
-
-          tag="${PUBLISHED_TAG:-$REQUESTED_TAG}"
-          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::A valid deploy_tag in vX.Y.Z form is required"
-            exit 1
-          fi
-
-          echo "value=$tag" >> "$GITHUB_OUTPUT"
-
   deploy_release:
     name: Deploy release to production
-    needs: resolve_deploy_tag
-    if: ${{ always() && needs.resolve_deploy_tag.result == 'success' }}
+    needs: publish_release
+    if: ${{ needs.publish_release.result == 'success' }}
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -540,7 +512,7 @@ jobs:
       DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
       DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
       SOURCE_PATH: ${{ vars.CLAWITH_SOURCE_PATH || 'Clawith' }}
-      RELEASE_TAG: ${{ needs.resolve_deploy_tag.outputs.tag }}
+      RELEASE_TAG: ${{ needs.publish_release.outputs.tag }}
       SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
     steps:
