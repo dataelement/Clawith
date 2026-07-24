@@ -5,6 +5,8 @@ set -Eeuo pipefail
 release_tag=${1:?release tag is required}
 deploy_dir=${2:?deployment directory is required}
 source_dir=${3:?source directory is required}
+pip_index_url=${4:-https://mirrors.aliyun.com/pypi/simple/}
+pip_trusted_host=${5:-}
 
 case "$deploy_dir" in
     /*) ;;
@@ -96,7 +98,11 @@ git checkout --detach "$release_tag"
 backend_release_image="clawith-backend:$release_tag"
 frontend_release_image="clawith-frontend:$release_tag"
 
-"${docker_cmd[@]}" build -t "$backend_release_image" backend
+"${docker_cmd[@]}" build \
+    --build-arg "CLAWITH_PIP_INDEX_URL=$pip_index_url" \
+    --build-arg "CLAWITH_PIP_TRUSTED_HOST=$pip_trusted_host" \
+    -t "$backend_release_image" \
+    backend
 "${docker_cmd[@]}" build -t "$frontend_release_image" frontend
 
 activation_started=true

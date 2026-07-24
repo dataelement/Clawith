@@ -28,6 +28,8 @@ protection rules can require approval before the deployment job starts.
 | `CLAWITH_DEPLOY_PORT` | `10022` |
 | `CLAWITH_DEPLOY_PATH` | `clawith_new` |
 | `CLAWITH_SOURCE_PATH` | `Clawith` |
+| `CLAWITH_PIP_INDEX_URL` | `https://mirrors.aliyun.com/pypi/simple/` (optional default) |
+| `CLAWITH_PIP_TRUSTED_HOST` | Optional; only for a mirror that requires pip trusted-host handling |
 
 ### Secrets
 
@@ -68,6 +70,11 @@ docker compose config --quiet
 docker compose ps
 curl -fsS http://127.0.0.1:3008/api/health
 ```
+
+The PyPI mirror defaults to Aliyun and can be overridden with the two optional
+production Environment variables above. Docker's existing image-layer cache
+continues to skip dependency installation when `backend/pyproject.toml` has not
+changed.
 
 The server checkout is intentionally left at a detached release tag after a
 successful deployment. Never move or reuse a published tag; publish a new

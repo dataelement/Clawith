@@ -512,6 +512,8 @@ jobs:
       DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
       DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
       SOURCE_PATH: ${{ vars.CLAWITH_SOURCE_PATH || 'Clawith' }}
+      PIP_INDEX_URL: ${{ vars.CLAWITH_PIP_INDEX_URL || 'https://mirrors.aliyun.com/pypi/simple/' }}
+      PIP_TRUSTED_HOST: ${{ vars.CLAWITH_PIP_TRUSTED_HOST }}
       RELEASE_TAG: ${{ needs.publish_release.outputs.tag }}
       SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
@@ -559,8 +561,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          printf -v remote_command 'bash -s -- %q %q %q' \
-            "$RELEASE_TAG" "$DEPLOY_PATH" "$SOURCE_PATH"
+          printf -v remote_command 'bash -s -- %q %q %q %q %q' \
+            "$RELEASE_TAG" "$DEPLOY_PATH" "$SOURCE_PATH" \
+            "$PIP_INDEX_URL" "$PIP_TRUSTED_HOST"
           ssh \
             -i "$SSH_KEY_FILE" \
             -p "$DEPLOY_PORT" \
