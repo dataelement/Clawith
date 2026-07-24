@@ -166,9 +166,9 @@ export default function SettingsTab(props: Props) {
             </div>
 
             <div className="card" style={{ marginBottom: '12px' }}>
-                <h4 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}><IconTools size={16} stroke={1.8} /> {t('agent.settings.maxToolRounds', 'Max Tool Call Rounds')}</h4>
+                <h4 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}><IconTools size={16} stroke={1.8} /> {t('agent.settings.maxToolRounds', 'Model Step Limit')}</h4>
                 <div>
-                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum rounds per message')}</label>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.maxToolRoundsLabel', 'Maximum model steps per run')}</label>
                     <input
                         className="input"
                         type="number"
@@ -178,7 +178,7 @@ export default function SettingsTab(props: Props) {
                         onChange={(e) => setSettingsForm((form) => ({ ...form, max_tool_rounds: Math.max(5, Math.min(200, parseInt(e.target.value) || 50)) }))}
                         style={{ width: '120px' }}
                     />
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.maxToolRoundsDesc', 'How many tool-calling rounds the agent can perform per message (search, write, etc). Default: 50')}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.maxToolRoundsDesc', 'Each model step that returns a result counts, including wait or error results. Tool-call count is separate. Default: 50')}</div>
                 </div>
             </div>
 
