@@ -5,9 +5,10 @@
 # 流程:
 #   1. 代码克隆 (获取完整历史和 tags)
 #   2. 构建 Docker 镜像
-#   3. 本地部署测试 (直接利用本地 docker socket 和 docker-compose.ci.yml)
-#   4. 本地升级测试 (测试旧版到新版的迁移)
-#   5. 打包传输到服务器 (可选)
+#   3. 空数据库迁移测试
+#   4. 本地部署测试 (直接利用本地 docker socket 和 docker-compose.ci.yml)
+#   5. 本地升级测试 (测试旧版到新版的迁移)
+#   6. 打包传输到服务器 (可选)
 # ============================================================
 kind: pipeline
 type: docker
@@ -150,7 +151,20 @@ steps:
         echo "镜像构建完成 source=$PREVIOUS_RELEASE_TAG target=$DRONE_COMMIT"
 
   # --------------------------------------------------------
-  # Step 3: 本地部署测试 (Deploy Test)
+  # Step 3: 空数据库迁移测试 (Migration Test)
+  # --------------------------------------------------------
+  - name: fresh-database-migration-test
+    image: docker:24.0.6
+    privileged: true
+    volumes:
+      - name: docker-socket
+        path: /var/run/docker.sock
+    commands:
+      - chmod +x .github/scripts/ci_migration_test.sh
+      - .github/scripts/ci_migration_test.sh
+
+  # --------------------------------------------------------
+  # Step 4: 本地部署测试 (Deploy Test)
   # --------------------------------------------------------
   - name: local-deploy-test
     image: docker:24.0.6
@@ -163,7 +177,7 @@ steps:
       - .github/scripts/ci_deploy_test.sh
 
   # --------------------------------------------------------
-  # Step 4: 本地升级测试 (Upgrade Test)
+  # Step 5: 本地升级测试 (Upgrade Test)
   # --------------------------------------------------------
   - name: local-upgrade-test
     image: docker:24.0.6
@@ -176,7 +190,7 @@ steps:
       - .github/scripts/ci_upgrade_test.sh
 
   # --------------------------------------------------------
-  # Step 5: (可选) 导出镜像并传输到私有服务器
+  # Step 6: (可选) 导出镜像并传输到私有服务器
   # 只有在部署测试通过后才会执行到这一步
   # --------------------------------------------------------
   - name: save-images

@@ -46,6 +46,19 @@ wait_healthy() {
   done
 }
 
+run_schema_command() {
+  IMAGE="$1"
+  COMMAND="$2"
+  docker run --rm \
+    --network "$NETWORK" \
+    --entrypoint /bin/bash \
+    -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+    -e REDIS_URL=redis://redis:6379/0 \
+    -e SECRET_KEY=ci-test-secret \
+    -e JWT_SECRET_KEY=ci-test-jwt-secret \
+    "$IMAGE" -lc "$COMMAND"
+}
+
 trap cleanup EXIT
 
 compose down -v --remove-orphans >/dev/null 2>&1 || true
@@ -62,6 +75,15 @@ OLD_REVISION=$(cat /tmp/old_revision | tr -d '\r')
 docker image inspect "$OLD_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' > /tmp/old_version
 OLD_VERSION=$(cat /tmp/old_version | tr -d '\r')
 echo "启动升级源 version=$OLD_VERSION revision=$OLD_REVISION"
+
+if [ "$OLD_VERSION" = "v1.11.2" ]; then
+  echo "v1.11.2 无法从空库执行最终 migration，先建立其父 revision"
+  run_schema_command "$OLD_IMAGE" \
+    "alembic upgrade add_experience_revision_drafts"
+  echo "使用目标镜像执行修复后的最终 migration"
+  run_schema_command "$NEW_IMAGE" \
+    "alembic upgrade head && python -m app.scripts.setup_langgraph_checkpoints"
+fi
 
 docker run -d \
   --name "$OLD_CONTAINER" \
