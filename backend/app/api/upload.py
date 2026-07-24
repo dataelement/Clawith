@@ -1,14 +1,17 @@
 """File upload API for chat — saves files to agent workspace and extracts text."""
 
-import base64
 import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
-from loguru import logger
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+
 from app.core.security import get_current_user
 from app.models.user import User
+from app.services.chat_image_preview import (
+    VisionImagePreviewError,
+    build_vision_image_data_url,
+)
 from app.services.storage import ensure_local_path, get_storage_backend, guess_content_type, normalize_storage_key
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -23,10 +26,7 @@ OFFICE_EXTENSIONS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 EXTRACTABLE = TEXT_EXTENSIONS | OFFICE_EXTENSIONS
 
-MIME_MAP = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
-}
+MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 def extract_text(file_path: Path, extension: str) -> str:
@@ -147,12 +147,16 @@ async def upload_file(
     is_image = ext in IMAGE_EXTENSIONS
     image_data_url = ""
     if is_image:
-        # For images: generate base64 data URL for vision models
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
+        # Store the original, but send a bounded preview to vision models so a
+        # batch of images still fits in a single WebSocket message.
+        if len(content) > MAX_CHAT_IMAGE_BYTES:
             raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
-        mime = MIME_MAP.get(ext, "image/png")
-        b64 = base64.b64encode(content).decode("ascii")
-        image_data_url = f"data:{mime};base64,{b64}"
+        try:
+            image_data_url = build_vision_image_data_url(content, ext)
+        except VisionImagePreviewError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid or unsupported image"
+            ) from exc
         extracted = f"[图片文件: {file.filename}，需要视觉模型分析]"
     elif ext in EXTRACTABLE:
         extracted = extract_text(save_path, ext)
