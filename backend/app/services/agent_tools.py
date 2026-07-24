@@ -131,6 +131,19 @@ _READ_FILE_BINARY_EXTENSIONS = frozenset(
         ".zip",
     }
 )
+_WORKSPACE_SCOPED_FILE_TOOL_NAMES = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "read_document",
+        "search_files",
+        "find_files",
+        "write_file",
+        "edit_file",
+        "move_file",
+        "delete_file",
+    }
+)
 
 
 def _read_file_binary_extension(path: str) -> str | None:
@@ -2488,6 +2501,14 @@ async def execute_builtin_tool_outcome(
     Durable Runtime rejects those as ``untyped_tool_outcome``; this function
     never infers success from display text or from a non-raising handler.
     """
+    if (
+        tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
+        and arguments.get("workspace_scope", "agent") != "agent"
+    ):
+        return _typed_failure(
+            "workspace_scope=group is only available in a validated Group Run.",
+            "workspace_scope_unavailable",
+        )
     tenant_id: str | None = None
     if tool_name in {
         "list_files",
@@ -7054,6 +7075,31 @@ async def _read_document_result(
     tenant_id: str | None = None,
 ) -> DocumentReadResult:
     return await asyncio.to_thread(_read_document_with_timeout, ws, rel_path, max_chars, tenant_id)
+
+
+async def read_document_bytes(
+    file_bytes: bytes,
+    filename: str,
+    *,
+    max_chars: int = 8000,
+) -> DocumentReadResult:
+    """Run the shared document extractor for bytes from any authorized workspace."""
+    safe_name = Path(filename).name
+    if not safe_name:
+        return DocumentReadResult(
+            False,
+            "Document filename is required.",
+            "invalid_tool_arguments",
+        )
+    with tempfile.TemporaryDirectory(prefix="clawith-document-") as temp_dir:
+        root = Path(temp_dir)
+        (root / safe_name).write_bytes(file_bytes)
+        return await _read_document_result(
+            root,
+            safe_name,
+            max_chars=max_chars,
+            tenant_id=None,
+        )
 
 
 async def _read_document(

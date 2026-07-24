@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from collections import deque
 import json
+from types import SimpleNamespace
 import uuid
 
 import pytest
@@ -15,10 +16,13 @@ from app.models.participant import Participant
 from app.services import group_chat_service, group_file_service
 from app.services.agent_runtime import group_runtime_tools
 from app.services.agent_runtime.group_runtime_tools import (
+    GROUP_BUSINESS_TOOL_NAMES,
+    GROUP_SCOPED_WORKSPACE_TOOL_NAMES,
     GROUP_TOOL_NAMES,
     GROUP_READ_WORKSPACE_FILE,
     GROUP_WRITE_MEMORY,
     GROUP_WRITE_WORKSPACE_FILE,
+    GroupRuntimeToolError,
     GroupRuntimeToolService,
     with_group_runtime_tools,
 )
@@ -169,6 +173,11 @@ def test_group_tool_definitions_exist_only_for_validated_group_snapshots() -> No
             "function": {
                 "name": "read_file",
                 "description": "Read from the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
             },
         }
     ]
@@ -199,17 +208,71 @@ def test_group_tool_definitions_exist_only_for_validated_group_snapshots() -> No
     assert {tool["function"]["name"] for tool in direct_tools} == {"read_file"}
     assert direct_tools[0]["function"]["description"] == "Read from the workspace."
     assert base[0]["function"]["description"] == "Read from the workspace."
-    assert GROUP_TOOL_NAMES.issubset(
-        {tool["function"]["name"] for tool in group_tools}
-    )
+    group_tool_names = {tool["function"]["name"] for tool in group_tools}
+    assert GROUP_BUSINESS_TOOL_NAMES.issubset(group_tool_names)
+    assert GROUP_SCOPED_WORKSPACE_TOOL_NAMES.isdisjoint(group_tool_names)
+    assert GROUP_TOOL_NAMES - GROUP_SCOPED_WORKSPACE_TOOL_NAMES == GROUP_BUSINESS_TOOL_NAMES
     group_read_file = next(
         tool for tool in group_tools if tool["function"]["name"] == "read_file"
     )
     description = group_read_file["function"]["description"]
-    assert "Agent's own Workspace" in description
-    assert "not the current Group Workspace" in description
+    assert "workspace_scope" in description
+    assert "Group Workspace" in description
     assert "group_context.workspace_index" in description
-    assert "missing result" in description
+    scope = group_read_file["function"]["parameters"]["properties"]["workspace_scope"]
+    assert scope["enum"] == ["agent", "group"]
+    assert scope["default"] == "group"
+
+
+def test_group_snapshot_patches_every_shared_file_tool_with_workspace_scope() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    participant_id = uuid.uuid4()
+    shared_names = {
+        "list_files",
+        "read_file",
+        "read_document",
+        "search_files",
+        "find_files",
+        "write_file",
+        "edit_file",
+        "delete_file",
+    }
+    base = [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": name,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for name in sorted(shared_names)
+    ]
+
+    tools = with_group_runtime_tools(
+        base,
+        _state(
+            tenant_id,
+            group_id,
+            session_id,
+            agent,
+            participant_id,
+            group_context=True,
+        ),
+    )
+
+    patched = {
+        tool["function"]["name"]: tool["function"]["parameters"]["properties"][
+            "workspace_scope"
+        ]
+        for tool in tools
+        if tool["function"]["name"] in shared_names
+    }
+    assert set(patched) == shared_names
+    assert all(value["enum"] == ["agent", "group"] for value in patched.values())
 
 
 @pytest.mark.asyncio
@@ -378,6 +441,126 @@ async def test_group_text_reads_return_utf8_safe_continuation(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_read_document_reuses_shared_parser_for_group_workspace_bytes(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(
+        tenant_id,
+        group_id,
+        session_id,
+        agent,
+        participant_id,
+        group_context=True,
+    )
+    calls = []
+
+    async def read_binary(db, **kwargs):
+        assert isinstance(db, _DB)
+        calls.append(("read", kwargs))
+        return group_file_service.GroupBinaryFile(
+            path="inputs/report.pdf",
+            content=b"%PDF-test",
+            version_token="v1",
+            modified_at="now",
+        )
+
+    async def parse(content, filename, *, max_chars):
+        calls.append(("parse", (content, filename, max_chars)))
+        return SimpleNamespace(
+            ok=True,
+            content="parsed report",
+            error_code=None,
+            retryable=False,
+        )
+
+    monkeypatch.setattr(
+        group_file_service,
+        "read_workspace_binary_file",
+        read_binary,
+    )
+    monkeypatch.setattr(group_runtime_tools, "read_document_bytes", parse)
+
+    outcome = await GroupRuntimeToolService(
+        session_factory=_factory()
+    ).execute_scoped_workspace_tool(
+        state,
+        _context(state),
+        agent,
+        "read_document",
+        {
+            "workspace_scope": "group",
+            "path": "workspace/inputs/report.pdf",
+            "max_chars": 12000,
+        },
+    )
+
+    assert outcome.status == "succeeded"
+    assert outcome.result_summary == "parsed report"
+    assert calls == [
+        (
+            "read",
+            {
+                "tenant_id": tenant_id,
+                "group_id": group_id,
+                "actor_participant_id": participant_id,
+                "path": "inputs/report.pdf",
+            },
+        ),
+        ("parse", (b"%PDF-test", "report.pdf", 12000)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_workspace_maps_group_file_errors_to_runtime_errors(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(
+        tenant_id,
+        group_id,
+        session_id,
+        agent,
+        participant_id,
+        group_context=True,
+    )
+
+    async def list_workspace(*_args, **_kwargs):
+        raise group_file_service.GroupFileServiceError(
+            "group_workspace_access_denied",
+            "Participant cannot read this workspace",
+        )
+
+    monkeypatch.setattr(
+        group_file_service,
+        "list_workspace",
+        list_workspace,
+    )
+
+    with pytest.raises(GroupRuntimeToolError) as caught:
+        await GroupRuntimeToolService(
+            session_factory=_factory()
+        ).execute_scoped_workspace_tool(
+            state,
+            _context(state),
+            agent,
+            "list_files",
+            {"workspace_scope": "group", "path": "workspace"},
+        )
+
+    assert caught.value.code == "group_workspace_access_denied"
+    assert str(caught.value) == "Participant cannot read this workspace"
+
+
+@pytest.mark.asyncio
 async def test_group_workspace_mutation_prepares_applies_and_finalizes_one_operation(
     monkeypatch,
 ) -> None:
@@ -466,12 +649,18 @@ async def test_group_workspace_mutation_prepares_applies_and_finalizes_one_opera
         assert_fence,
     )
 
-    outcome = await GroupRuntimeToolService(session_factory=_factory()).execute(
+    outcome = await GroupRuntimeToolService(
+        session_factory=_factory()
+    ).execute_scoped_workspace_tool(
         state,
         _context(state),
         agent,
-        GROUP_WRITE_WORKSPACE_FILE,
-        {"path": "report.md", "content": "final"},
+        "write_file",
+        {
+            "workspace_scope": "group",
+            "path": "workspace/report.md",
+            "content": "final",
+        },
         operation_id=operation_id,
         lease_owner=lease_owner,
     )
@@ -490,6 +679,8 @@ async def test_group_workspace_mutation_prepares_applies_and_finalizes_one_opera
         "lease_owner": lease_owner,
     }
     assert calls[1][1]["operation_id"] == operation_id
+    assert calls[1][1]["path"] == "report.md"
+    assert calls[1][1]["content"] == "final"
     assert calls[5][1] == {
         "group_id": group_id,
         "operation_id": operation_id,
@@ -505,6 +696,123 @@ async def test_group_workspace_mutation_prepares_applies_and_finalizes_one_opera
         "revision_id": str(revision_id),
     }
     assert outcome.metadata["operation_id"] == str(operation_id)
+
+
+@pytest.mark.asyncio
+async def test_edit_file_reads_current_group_version_before_fenced_write(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    operation_id = uuid.uuid4()
+    revision_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(
+        tenant_id,
+        group_id,
+        session_id,
+        agent,
+        participant_id,
+        group_context=True,
+    )
+    prepared = group_file_service.PreparedRuntimeWorkspaceOperation(
+        group_id=group_id,
+        operation_id=operation_id,
+        revision_id=revision_id,
+        operation="write",
+        path="notes.md",
+        storage_key=f"groups/{group_id}/workspace/notes.md",
+        before_content="draft value",
+        after_content="final value",
+        condition=WriteCondition(version_token="v1"),
+        content_hash="after-hash",
+    )
+    receipt = group_file_service.RuntimeWorkspaceOperationReceipt(
+        group_id=group_id,
+        operation_id=operation_id,
+        revision_id=revision_id,
+        operation="write",
+        path="notes.md",
+        content_hash="after-hash",
+        deleted=False,
+    )
+    prepared_arguments = []
+
+    async def assert_fence(*_args, **_kwargs):
+        return None
+
+    async def read_current(db, **kwargs):
+        assert isinstance(db, _DB)
+        assert kwargs["path"] == "notes.md"
+        return group_file_service.GroupTextFile(
+            path="notes.md",
+            content="draft value",
+            exists=True,
+            version_token="v1",
+            modified_at="now",
+        )
+
+    async def prepare(db, **kwargs):
+        assert isinstance(db, _DB)
+        prepared_arguments.append(kwargs)
+        return prepared
+
+    async def apply(_prepared):
+        return None
+
+    async def reconcile(db, **_kwargs):
+        assert isinstance(db, _DB)
+        return receipt
+
+    monkeypatch.setattr(
+        group_runtime_tools,
+        "assert_tool_execution_fence",
+        assert_fence,
+    )
+    monkeypatch.setattr(
+        group_file_service,
+        "read_workspace_file",
+        read_current,
+    )
+    monkeypatch.setattr(
+        group_file_service,
+        "prepare_runtime_workspace_write",
+        prepare,
+    )
+    monkeypatch.setattr(
+        group_file_service,
+        "apply_runtime_workspace_operation",
+        apply,
+    )
+    monkeypatch.setattr(
+        group_file_service,
+        "reconcile_runtime_workspace_operation",
+        reconcile,
+    )
+
+    outcome = await GroupRuntimeToolService(
+        session_factory=_factory()
+    ).execute_scoped_workspace_tool(
+        state,
+        _context(state),
+        agent,
+        "edit_file",
+        {
+            "workspace_scope": "group",
+            "path": "workspace/notes.md",
+            "old_string": "draft",
+            "new_string": "final",
+        },
+        operation_id=operation_id,
+        lease_owner="runtime-invocation-1",
+    )
+
+    assert outcome.status == "succeeded"
+    assert prepared_arguments[0]["path"] == "notes.md"
+    assert prepared_arguments[0]["content"] == "final value"
+    assert prepared_arguments[0]["expected_version_token"] == "v1"
 
 
 @pytest.mark.asyncio
