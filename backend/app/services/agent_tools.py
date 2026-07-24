@@ -6807,7 +6807,9 @@ def _read_document_sync(
             from pptx import Presentation
             prs = Presentation(str(file_path))
             slides = []
-            for i, slide in enumerate(prs.slides[:50]):
+            for i, slide in enumerate(prs.slides):
+                if i >= 50:
+                    break
                 texts = []
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
