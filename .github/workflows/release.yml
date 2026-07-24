@@ -443,6 +443,8 @@ jobs:
     name: Publish release
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    outputs:
+      tag: ${{ steps.release_info.outputs.tag }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -497,3 +499,74 @@ jobs:
           body_path: release-notes.extracted.md
           prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
+
+  deploy_release:
+    name: Deploy release to production
+    needs: publish_release
+    if: ${{ needs.publish_release.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ vars.CLAWITH_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.CLAWITH_DEPLOY_USER }}
+      DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
+      DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
+      SOURCE_PATH: ${{ vars.CLAWITH_SOURCE_PATH || 'Clawith' }}
+      RELEASE_TAG: ${{ needs.publish_release.outputs.tag }}
+      SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Checkout deployment tooling
+        uses: actions/checkout@v7
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_PATH SOURCE_PATH RELEASE_TAG
+            SSH_PRIVATE_KEY SSH_KNOWN_HOSTS
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required production deployment setting: $name"
+              exit 1
+            fi
+          done
+
+          if ! [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || [ "$DEPLOY_PORT" -lt 1 ] || [ "$DEPLOY_PORT" -gt 65535 ]; then
+            echo "::error::CLAWITH_DEPLOY_PORT must be a valid TCP port"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+
+          key_file="$RUNNER_TEMP/clawith-deploy-key"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$key_file"
+          chmod 0600 "$key_file"
+          echo "SSH_KEY_FILE=$key_file" >> "$GITHUB_ENV"
+
+      - name: Update, build, and restart production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf -v remote_command 'bash -s -- %q %q %q' \
+            "$RELEASE_TAG" "$DEPLOY_PATH" "$SOURCE_PATH"
+          ssh \
+            -i "$SSH_KEY_FILE" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "$remote_command" \
+            < .github/scripts/deploy-release.sh
