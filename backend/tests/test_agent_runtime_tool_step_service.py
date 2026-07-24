@@ -1278,6 +1278,105 @@ async def test_group_write_tool_uses_checkpoint_scoped_executor_and_conditional_
 
 
 @pytest.mark.asyncio
+async def test_ordinary_write_file_routes_group_scope_through_group_executor(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = {
+        "id": "call-scoped-group-write",
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "arguments": '{"path":"workspace/report.md","content":"final"}',
+        },
+    }
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 0},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={
+            "group_id": str(uuid.uuid4()),
+            "target_participant_id": str(uuid.uuid4()),
+            "group_context": {"agent": {"agent_id": str(agent.id)}},
+        },
+    )
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(state["registry"].run_id),
+        "call-scoped-group-write",
+        "write_file",
+    )
+    execution.effect = "write"
+    execution.retry_policy = "conditional"
+    group_calls = []
+
+    async def reserve(db, **kwargs):
+        del db
+        assert kwargs["arguments"]["workspace_scope"] == "group"
+        return _reservation(execution)
+
+    async def mark(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    async def generic_executor(*_args, **_kwargs):
+        raise AssertionError("Group-scoped file tools must not use Agent storage")
+
+    class _GroupToolService:
+        async def execute_scoped_workspace_tool(
+            self,
+            state_arg,
+            context_arg,
+            agent_arg,
+            tool_name,
+            arguments,
+            **kwargs,
+        ):
+            group_calls.append(
+                (
+                    state_arg,
+                    context_arg,
+                    agent_arg,
+                    tool_name,
+                    arguments,
+                    kwargs,
+                )
+            )
+            return ToolExecutionOutcome(
+                status="succeeded",
+                result_summary='{"path":"report.md"}',
+                result_ref=None,
+            )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=_tools,
+        tool_executor=generic_executor,
+        group_tool_service=_GroupToolService(),  # type: ignore[arg-type]
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert group_calls[0][3] == "write_file"
+    assert group_calls[0][4] == {
+        "path": "workspace/report.md",
+        "content": "final",
+        "workspace_scope": "group",
+    }
+    assert group_calls[0][5]["operation_id"] == execution.id
+    assert group_calls[0][5]["lease_owner"]
+
+
+@pytest.mark.asyncio
 async def test_group_workspace_write_uses_ledger_id_and_reconciles_without_reexecution(
     monkeypatch,
 ) -> None:
@@ -1724,6 +1823,7 @@ async def test_group_preflight_confirmation_is_typed_failure_for_public_finish(
     tenant_id = uuid.uuid4()
     agent = _agent(tenant_id)
     call = _call("call-group-confirm", "write_file")
+    call["function"]["arguments"] = '{"workspace_scope":"agent"}'
     state = _state(tenant_id, agent, (call,))
     state["snapshots"] = RunInputSnapshots(
         session_context={"version": 0},
@@ -1784,6 +1884,8 @@ async def test_group_unknown_outcome_fails_run_without_user_interrupt(
     agent = _agent(tenant_id)
     first = _call("call-group-unknown", "write_file")
     second = _call("call-group-after", "read_file")
+    first["function"]["arguments"] = '{"workspace_scope":"agent"}'
+    second["function"]["arguments"] = '{"workspace_scope":"agent"}'
     state = _state(tenant_id, agent, (first, second))
     state["snapshots"] = RunInputSnapshots(
         session_context={"version": 0},

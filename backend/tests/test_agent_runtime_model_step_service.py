@@ -1389,18 +1389,33 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
         "group_read_announcement",
         "group_read_memory",
         "group_write_memory",
+    }.issubset(tool_names)
+    assert {
         "group_list_workspace",
         "group_read_workspace_file",
         "group_write_workspace_file",
         "group_delete_workspace_file",
-    }.issubset(tool_names)
+    }.isdisjoint(tool_names)
     assert "read_file" in tool_names
+    read_file = next(
+        tool for tool in calls[0][1]["tools"]
+        if tool["function"]["name"] == "read_file"
+    )
+    assert read_file["function"]["parameters"]["properties"]["workspace_scope"] == {
+        "type": "string",
+        "enum": ["agent", "group"],
+        "default": "group",
+        "description": (
+            "Select the Agent's private Workspace or the current Group Workspace."
+        ),
+    }
     assert "send_message_to_agent" in tool_names
     group_system_prompt = str(calls[0][0][0].content)
     assert "Answer only from this group" in group_system_prompt
-    assert "access only the Agent's own Workspace" in group_system_prompt
-    assert "Every path in `group_context.workspace_index`" in group_system_prompt
-    assert "not evidence that a Group Workspace path is missing" in group_system_prompt
+    assert "File tools that expose `workspace_scope`" in group_system_prompt
+    assert "Tools without that parameter retain their original scope" in group_system_prompt
+    assert "every path in `group_context.workspace_index`" in group_system_prompt
+    assert "missing from the other" in group_system_prompt
     assert "join the current group conversation" in group_system_prompt
     assert "It is not limited to a handoff" in group_system_prompt
     assert "call, check in with, ask, consult, involve" in group_system_prompt

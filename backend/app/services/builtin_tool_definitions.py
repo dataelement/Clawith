@@ -3648,82 +3648,17 @@ _GROUP_BUILTIN_TOOL_SOURCE = [
         "config": {},
         "config_schema": {},
     },
-    {
-        "name": "group_list_workspace",
-        "display_name": "List Group Workspace",
-        "description": "List one directory in the current group's shared workspace. Use an empty path for the root.",
-        "category": "group",
-        "icon": "📁",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {"path": {"type": "string", "default": ""}},
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_read_workspace_file",
-        "display_name": "Read Group Workspace File",
-        "description": "Read a bounded chunk of one UTF-8 text file from the current group's shared workspace. Continue with next_offset when has_more is true.",
-        "category": "group",
-        "icon": "📄",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                **deepcopy(_GROUP_TEXT_READ_WINDOW),
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_write_workspace_file",
-        "display_name": "Write Group Workspace File",
-        "description": "Create or replace one UTF-8 text file in the current group's shared workspace. Use expected_version_token after reading an existing file.",
-        "category": "group",
-        "icon": "📝",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-                "expected_version_token": {"type": "string"},
-            },
-            "required": ["path", "content"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_delete_workspace_file",
-        "display_name": "Delete Group Workspace File",
-        "description": "Delete one file from the current group's shared workspace. Use expected_version_token after reading the file.",
-        "category": "group",
-        "icon": "🗑️",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "expected_version_token": {"type": "string"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
 ]
 
 
+_LEGACY_GROUP_WORKSPACE_TOOL_NAMES = frozenset(
+    {
+        "group_list_workspace",
+        "group_read_workspace_file",
+        "group_write_workspace_file",
+        "group_delete_workspace_file",
+    }
+)
 
 
 _READ_TOOL_NAMES = frozenset(
@@ -3990,6 +3925,13 @@ def builtin_policy(name: str) -> dict[str, Any]:
     """Return the persisted execution policy, conservatively for dynamics."""
     definition = _ALL_BUILTIN_TOOL_BY_NAME.get(name)
     if definition is None:
+        if name in _LEGACY_GROUP_WORKSPACE_TOOL_NAMES:
+            effect, retry_policy, parallel_safe = _policy_for_name(name)
+            return {
+                "effect": effect,
+                "retry_policy": retry_policy,
+                "parallel_safe": parallel_safe,
+            }
         return {
             "effect": "external_write",
             "retry_policy": "never",

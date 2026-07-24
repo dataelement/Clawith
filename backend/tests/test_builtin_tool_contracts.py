@@ -128,8 +128,22 @@ def test_group_runtime_tools_are_served_from_the_canonical_data_module() -> None
     names = {
         tool["function"]["name"] for tool in GROUP_RUNTIME_TOOL_DEFINITIONS
     }
-    assert names == group_runtime_tools.GROUP_TOOL_NAMES
+    assert names == group_runtime_tools.GROUP_BUSINESS_TOOL_NAMES
+    assert names.isdisjoint(group_runtime_tools.GROUP_SCOPED_WORKSPACE_TOOL_NAMES)
     assert "agent_id" in builtin_model_definition("group_query_members")["function"]["description"]
+
+
+def test_removed_group_workspace_tools_keep_legacy_execution_policy() -> None:
+    assert builtin_policy("group_list_workspace") == {
+        "effect": "read",
+        "retry_policy": "safe",
+        "parallel_safe": True,
+    }
+    assert builtin_policy("group_write_workspace_file") == {
+        "effect": "write",
+        "retry_policy": "conditional",
+        "parallel_safe": False,
+    }
 
 
 def test_non_reserved_dynamic_tool_keeps_conservative_policy() -> None:
