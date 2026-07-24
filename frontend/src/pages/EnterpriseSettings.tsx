@@ -13,6 +13,7 @@ import OkrTab from './enterprise-settings/tabs/OkrTab';
 import LlmTab from './enterprise-settings/tabs/LlmTab';
 import EnterpriseKBBrowser from './enterprise-settings/components/EnterpriseKBBrowser';
 import { A2AAsyncToggle, CompanyLogoEditor, CompanyNameEditor, CompanyTimezoneEditor } from './enterprise-settings/components/CompanyInfoEditors';
+import { fetchJson } from './enterprise-settings/utils/fetchJson';
 import {
     IconBrowser,
     IconBulb,
@@ -27,30 +28,6 @@ import {
     IconTools,
     IconUser,
 } from '@tabler/icons-react';
-// API helpers for enterprise endpoints
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-    const token = localStorage.getItem('token');
-    const res = await fetch(`/api${url}`, {
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-    });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        // Pydantic validation errors return detail as an array of objects,
-        // each with {loc, msg, type}. Extract readable messages from the array.
-        const detail = body.detail;
-        const msg = Array.isArray(detail)
-            ? detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
-            : (typeof detail === 'string' ? detail : 'Error');
-        throw new Error(msg);
-    }
-    if (res.status === 204) return undefined as T;
-    return res.json();
-}
-
 // ─── Theme Color Picker ────────────────────────────
 function ThemeColorPicker() {
     const { t } = useTranslation();

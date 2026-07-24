@@ -19,6 +19,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
+from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_tool_execution import AgentToolExecution
 from app.models.audit import AuditLog, ChatMessage
 from app.models.chat_session import ChatSession
@@ -764,6 +765,32 @@ def _base_message_entry(message: ChatMessage) -> dict:
     }
 
 
+def _runtime_error_from_delivery_event(event: AgentRunEvent) -> tuple[str, dict] | None:
+    """Recover safe Runtime diagnostics for a persisted failure ChatMessage."""
+    payload = event.payload
+    if not isinstance(payload, dict) or payload.get("lifecycle_status") != "failed":
+        return None
+    message_id = payload.get("message_id")
+    error_code = payload.get("failure_code")
+    error_message = payload.get("failure_message")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (message_id, error_code, error_message)
+    ):
+        return None
+    error = {
+        "code": error_code.strip(),
+        "message": error_message.strip(),
+        "run_id": str(event.run_id),
+        "agent_id": str(event.agent_id) if event.agent_id is not None else None,
+        "stage": "execution",
+    }
+    trace_id = payload.get("trace_id")
+    if isinstance(trace_id, str) and trace_id.strip():
+        error["trace_id"] = trace_id.strip()
+    return message_id, error
+
+
 @router.get("/{agent_id}/sessions/{session_id}/messages")
 async def get_session_messages(
     agent_id: uuid.UUID,
@@ -806,6 +833,37 @@ async def get_session_messages(
     message_result = await db.execute(query)
     messages = list(reversed(message_result.scalars().all()))
 
+    runtime_errors: dict[str, dict] = {}
+    assistant_message_ids = {
+        str(message.id) for message in messages if message.role == "assistant"
+    }
+    if session.session_type == "direct" and assistant_message_ids:
+        error_result = await db.execute(
+            select(AgentRunEvent)
+            .join(
+                AgentRun,
+                and_(
+                    AgentRun.tenant_id == AgentRunEvent.tenant_id,
+                    AgentRun.id == AgentRunEvent.run_id,
+                ),
+            )
+            .where(
+                AgentRunEvent.tenant_id == tenant_id,
+                AgentRunEvent.agent_id == agent_id,
+                AgentRun.session_id == session_id,
+                AgentRunEvent.event_type == "delivery_succeeded",
+                AgentRunEvent.payload["message_id"].as_string().in_(
+                    assistant_message_ids
+                ),
+                AgentRunEvent.payload["lifecycle_status"].as_string() == "failed",
+            )
+        )
+        for event in error_result.scalars().all():
+            recovered = _runtime_error_from_delivery_event(event)
+            if recovered is not None:
+                message_id, runtime_error = recovered
+                runtime_errors[message_id] = runtime_error
+
     if session.session_type == "direct" and str(session.user_id) == str(current_user.id):
         read_at = datetime.now(UTC)
         session.last_read_at_by_user = read_at
@@ -836,6 +894,8 @@ async def get_session_messages(
     for message in messages:
         sender_name = sender_names.get(str(message.participant_id)) if message.participant_id else None
         entry = _base_message_entry(message)
+        if runtime_error := runtime_errors.get(str(message.id)):
+            entry["runtime_error"] = runtime_error
         if message.role == "tool_call":
             try:
                 data = json.loads(message.content)

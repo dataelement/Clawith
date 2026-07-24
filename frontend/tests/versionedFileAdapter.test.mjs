@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import { createVersionedFileAdapter } from '../src/pages/groups/versionedFileAdapter.ts';
 import {
+  GROUP_WORKSPACE_UPLOAD_EXTENSIONS,
   GroupWorkspaceUploadError,
   groupWorkspaceUploadPath,
+  isGroupWorkspaceTextUpload,
   readGroupWorkspaceTextUpload,
 } from '../src/pages/groups/groupWorkspaceUpload.ts';
 
@@ -98,7 +100,16 @@ test('group workspace uploads stay in the current directory and decode exact UTF
   assert.equal(content, '# 周报\n');
 });
 
-test('group workspace upload rejects traversal, binary extensions, and invalid UTF-8', async () => {
+test('group workspace accepts the single-agent formats and classifies binary files', async () => {
+  for (const extension of ['.pdf', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']) {
+    assert.ok(GROUP_WORKSPACE_UPLOAD_EXTENSIONS.includes(extension));
+    assert.equal(groupWorkspaceUploadPath('shared', `sample${extension}`), `shared/sample${extension}`);
+    assert.equal(isGroupWorkspaceTextUpload(`sample${extension}`), false);
+  }
+  assert.equal(isGroupWorkspaceTextUpload('notes.md'), true);
+});
+
+test('group workspace upload rejects traversal, unsupported formats, and invalid UTF-8', async () => {
   assert.throws(
     () => groupWorkspaceUploadPath('reports', '../secret.md'),
     (error) => error instanceof GroupWorkspaceUploadError && error.code === 'invalid_name',

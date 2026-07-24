@@ -77,7 +77,10 @@ async def hook_new_agent(db: AsyncSession, new_agent_id: uuid.UUID, tenant_id: u
     """When a new company-visible agent is created, bind to OKR Agent."""
     agent_res = await query_dao.execute(db, 
         select(Agent)
-        .where(Agent.id == new_agent_id)
+        .where(
+            Agent.id == new_agent_id,
+            Agent.deleted_at.is_(None),
+        )
     )
     agent = agent_res.scalar_one_or_none()
     if not agent or getattr(agent, "is_system", False):
@@ -125,7 +128,8 @@ async def _get_okr_agent(db: AsyncSession, tenant_id: uuid.UUID) -> Agent | None
         select(Agent).where(
             Agent.tenant_id == tenant_id,
             Agent.is_system == True,
-            Agent.name == "OKR Agent"
+            Agent.name == "OKR Agent",
+            Agent.deleted_at.is_(None),
         ).limit(1)
     )
     return res.scalar_one_or_none()

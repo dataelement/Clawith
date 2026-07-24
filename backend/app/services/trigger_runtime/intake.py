@@ -344,6 +344,7 @@ async def load_trigger_agent(
     result = await db.execute(
         select(Agent).where(
             Agent.id == trigger.agent_id,
+            Agent.deleted_at.is_(None),
         )
     )
     return result.scalar_one_or_none()

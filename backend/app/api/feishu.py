@@ -20,6 +20,7 @@ from app.services.agent_runtime.channel_chat import (
 )
 from app.services.agent_runtime.chat_intake import ChatRuntimeIntake
 from app.services.feishu_service import feishu_service
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.storage import store_agent_upload
 
 router = APIRouter(tags=["feishu"])
@@ -320,7 +321,12 @@ async def _accept_feishu_runtime_message(
     from app.services.channel_session import find_or_create_channel_session
 
     async with _async_session() as db:
-        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = agent_result.scalar_one_or_none()
         if agent is None:
             raise RuntimeError(f"Feishu Agent {agent_id} not found")
@@ -691,32 +697,18 @@ async def _load_agent_and_model(
     scalar values before closing the session to avoid detached-instance errors.
     """
     from app.models.agent import Agent
-    from app.models.llm import LLMModel
-
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
     agent = agent_result.scalar_one_or_none()
     if not agent:
         return None, None, None
 
-    model = None
-    if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
-        model = model_result.scalar_one_or_none()
-        if model and not model.enabled:
-            logger.info(f"[Channel] Primary model {model.model} is disabled, skipping")
-            model = None
-
-    fallback_model = None
-    if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
-        fallback_model = fb_result.scalar_one_or_none()
-        if fallback_model and not fallback_model.enabled:
-            logger.info(f"[Channel] Fallback model {fallback_model.model} is disabled, skipping")
-            fallback_model = None
-
-    if not model and fallback_model:
-        model = fallback_model
-        fallback_model = None
-        logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
+    candidates = await active_agent_model_candidates(db, agent)
+    model = candidates[0] if candidates else None
+    fallback_model = candidates[1] if len(candidates) > 1 else None
 
     return agent, model, fallback_model

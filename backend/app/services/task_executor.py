@@ -140,7 +140,12 @@ async def _try_enqueue_runtime_task(
                     "task_not_found",
                     "Task does not exist for the requested Agent",
                 )
-            agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            agent_result = await db.execute(
+                select(Agent).where(
+                    Agent.id == agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
             agent = agent_result.scalar_one_or_none()
             if agent is None:
                 raise TaskRuntimeIntakeError(

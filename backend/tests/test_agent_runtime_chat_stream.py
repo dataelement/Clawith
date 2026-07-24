@@ -325,6 +325,7 @@ async def test_delivery_receipt_status_is_sufficient_after_reconnect_cursor() ->
             "delivery_kind": "terminal",
             "lifecycle_status": "cancelled",
             "error_code": "session_deleted",
+            "trace_id": "delivery-worker-trace",
         },
     )
     packets: list[dict] = []
@@ -344,3 +345,124 @@ async def test_delivery_receipt_status_is_sufficient_after_reconnect_cursor() ->
 
     assert outcome.status == "cancelled"
     assert packets[-1]["delivery_error"] == "session_deleted"
+    assert packets[-1]["code"] == "session_deleted"
+    assert packets[-1]["stage"] == "delivery"
+    assert packets[-1]["error"] == {
+        "code": "session_deleted",
+        "message": "Runtime result could not be delivered to this chat.",
+        "run_id": str(handle.run_id),
+        "agent_id": packets[-1]["agent_id"],
+        "stage": "delivery",
+        "trace_id": "delivery-worker-trace",
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_run_done_packet_exposes_error_context_without_changing_message() -> None:
+    handle = _handle()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    message = ChatMessage(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        user_id=user_id,
+        role="assistant",
+        content="Provider rejected the request.\n错误码：provider_rate_limited",
+        conversation_id=str(session_id),
+        mentions=[],
+    )
+    events = [
+        _event(
+            handle,
+            "run_failed",
+            position=1,
+            payload={
+                "status": "failed",
+                "error_code": "provider_rate_limited",
+                "trace_id": "failure-worker-trace",
+            },
+        ),
+        _event(
+            handle,
+            "delivery_succeeded",
+            position=2,
+            payload={
+                "delivery_kind": "terminal",
+                "lifecycle_status": "failed",
+                "message_id": str(message.id),
+            },
+        ),
+    ]
+    packets: list[dict] = []
+
+    async def send(packet: dict) -> None:
+        packets.append(packet)
+
+    await stream_web_chat_run(
+        handle=handle,
+        session_factory=_SessionFactory(_Session(message)),  # type: ignore[arg-type]
+        send_packet=send,
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        event_source=_EventSource(events),
+        trace_id="socket-attachment-trace",
+    )
+
+    assert packets[-1]["content"] == message.content
+    assert packets[-1]["error"] == {
+        "code": "provider_rate_limited",
+        "message": message.content,
+        "run_id": str(handle.run_id),
+        "agent_id": str(agent_id),
+        "stage": "execution",
+        "trace_id": "failure-worker-trace",
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_delivery_reconnect_retains_original_code_and_worker_trace() -> None:
+    handle = _handle()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    message = ChatMessage(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        user_id=user_id,
+        role="assistant",
+        content="Provider rejected the request.",
+        conversation_id=str(session_id),
+        mentions=[],
+    )
+    delivery = _event(
+        handle,
+        "delivery_succeeded",
+        position=2,
+        payload={
+            "delivery_kind": "terminal",
+            "lifecycle_status": "failed",
+            "message_id": str(message.id),
+            "failure_code": "provider_rate_limited",
+            "trace_id": "failure-worker-trace",
+        },
+    )
+    packets: list[dict] = []
+
+    async def send(packet: dict) -> None:
+        packets.append(packet)
+
+    await stream_web_chat_run(
+        handle=handle,
+        session_factory=_SessionFactory(_Session(message)),  # type: ignore[arg-type]
+        send_packet=send,
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        event_source=_EventSource([delivery]),
+        trace_id="new-socket-trace",
+    )
+
+    assert packets[-1]["code"] == "provider_rate_limited"
+    assert packets[-1]["trace_id"] == "failure-worker-trace"

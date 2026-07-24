@@ -1,8 +1,9 @@
 """Timezone utilities for resolving agent and tenant timezones."""
 
 import uuid
-from zoneinfo import ZoneInfo
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
 
 from sqlalchemy import select
 
@@ -41,7 +42,13 @@ async def get_agent_timezone(agent_id: uuid.UUID) -> str:
     from app.models.tenant import Tenant
 
     async with query_dao.session() as db:
-        result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
+        result = await query_dao.execute(
+            db,
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if not agent:
             return "UTC"

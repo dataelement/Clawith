@@ -45,6 +45,8 @@ def can_use_agent_static(user: User, agent: Agent) -> bool:
     """Return whether a user can use an agent without DB-backed custom checks."""
     if not user or not agent:
         return False
+    if getattr(agent, "deleted_at", None) is not None:
+        return False
     if not getattr(user, "is_active", True):
         return False
     if not _agent_tenant_matches_user(agent, user):
@@ -65,6 +67,8 @@ async def can_use_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
     if can_use_agent_static(user, agent):
         return True
     if not user or not agent:
+        return False
+    if getattr(agent, "deleted_at", None) is not None:
         return False
     if not getattr(user, "is_active", True):
         return False
@@ -88,9 +92,17 @@ async def can_use_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-async def can_manage_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
+async def can_manage_agent(
+    db: AsyncSession,
+    user: User,
+    agent: Agent,
+    *,
+    include_deleted: bool = False,
+) -> bool:
     """Return whether a human user can manage agent configuration."""
     if not user or not agent:
+        return False
+    if not include_deleted and getattr(agent, "deleted_at", None) is not None:
         return False
     if not getattr(user, "is_active", True):
         return False
@@ -118,6 +130,8 @@ async def can_manage_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
 
 
 def _roster_agent_unavailable_reason(agent: Agent) -> str | None:
+    if getattr(agent, "deleted_at", None) is not None:
+        return "agent_deleted"
     status_value = getattr(agent, "status", None)
     if status_value in (None, "running", "idle"):
         pass
@@ -231,6 +245,7 @@ def build_visible_agents_query(
 
     return stmt.where(
         Agent.tenant_id == target_tenant_id,
+        Agent.deleted_at.is_(None),
         or_(*visible_conditions),
     )
 
@@ -325,6 +340,8 @@ async def get_agent_accessible_user_ids(db: AsyncSession, agent: Agent) -> set[u
 def _agent_available(agent: Agent | None) -> tuple[bool, str | None]:
     if not agent:
         return False, "target_not_found"
+    if getattr(agent, "deleted_at", None) is not None:
+        return False, "agent_deleted"
     if getattr(agent, "status", None) in ("stopped", "error"):
         return False, f"target_status_{agent.status}"
     if is_agent_expired(agent):
@@ -461,7 +478,13 @@ async def evaluate_human_relationship_status(
     }
 
 
-async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Tuple[Agent, str]:
+async def check_agent_access(
+    db: AsyncSession,
+    user: User,
+    agent_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
+) -> Tuple[Agent, str]:
     """Check if a user has access to a specific agent.
 
     Returns (agent, access_level) where access_level is 'manage' or 'use'.
@@ -471,7 +494,10 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     2. Company admin + non-private agent -> manage
     3. User has explicit permission (company/user scope) -> from permission record
     """
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    query = select(Agent).where(Agent.id == agent_id)
+    if not include_deleted:
+        query = query.where(Agent.deleted_at.is_(None))
+    result = await db.execute(query)
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -484,7 +510,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     if agent.creator_id == user.id:
         return agent, "manage"
 
-    if await can_manage_agent(db, user, agent):
+    if await can_manage_agent(db, user, agent, include_deleted=include_deleted):
         return agent, "manage"
     if await can_use_agent(db, user, agent):
         return agent, "use"

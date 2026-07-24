@@ -417,7 +417,8 @@
 }
 
 .group-badge-agent,
-.group-badge-manager {
+.group-badge-manager,
+.group-badge-deleted {
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     background: var(--accent-subtle);
@@ -430,6 +431,12 @@
     margin-left: var(--space-2);
     background: var(--bg-tertiary);
     color: var(--text-tertiary);
+}
+
+.group-badge-deleted {
+    margin-left: var(--space-2);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    color: var(--error);
 }
 
 .group-message-bubble {
@@ -971,6 +978,56 @@
     min-height: 0;
     overflow-y: auto;
     padding: 0 var(--space-4);
+}
+
+/* ─── Create group modal (name + members in one step) ── */
+
+.group-create-name {
+    padding: 0 var(--space-5);
+}
+
+.group-candidate.selectable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-candidate.picked {
+    background: var(--bg-hover);
+}
+
+.group-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-inverse, #fff);
+}
+
+.group-check.on {
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
+}
+
+.group-create-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 0 var(--space-5);
+}
+
+.group-create-count {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+}
+
+.group-create-actions {
+    display: flex;
+    gap: var(--space-2);
 }
 
 /* ─── Panel top bar (group-scoped label + gear) ───────── */

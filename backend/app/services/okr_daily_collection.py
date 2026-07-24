@@ -116,7 +116,12 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         if not settings.okr_agent_id:
             raise ValueError("OKR Agent not found for this tenant")
 
-        okr_agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        okr_agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == settings.okr_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         okr_agent = okr_agent_result.scalar_one_or_none()
         if not okr_agent:
             raise ValueError("OKR Agent not found for this tenant")
@@ -148,6 +153,7 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
                 AgentAgentRelationship.agent_id == okr_agent.id,
                 Agent.is_system == False,  # noqa: E712
                 Agent.status.notin_(["stopped", "error"]),
+                Agent.deleted_at.is_(None),
             )
         )
         tracked_agents = agent_rel_result.scalars().all()

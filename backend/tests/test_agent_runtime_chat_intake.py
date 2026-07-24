@@ -31,6 +31,13 @@ from app.services.agent_runtime.contracts import (
 )
 
 
+_TINY_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+    "x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+)
+
+
 class _ScalarResult:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -208,6 +215,50 @@ async def test_chat_message_and_start_command_share_the_caller_session() -> None
     assert command.payload["runtime_instruction"] == "Begin the trusted onboarding flow."
     assert command.payload["onboarding_target_phase"] == "greeted"
     assert command.actor_user_id == user.id
+
+
+@pytest.mark.asyncio
+async def test_image_chat_keeps_display_record_raw_but_structures_runtime_input() -> None:
+    agent, user, session, model = _records()
+    model.supports_vision = True
+    db = _Session()
+    participant = SimpleNamespace(id=uuid.uuid4())
+    handle = _handle(agent.tenant_id)
+    marker = f"[image_data:{_TINY_PNG_DATA_URL}] Inspect it"
+
+    with (
+        patch(
+            "app.services.agent_runtime.chat_intake.get_or_create_user_participant",
+            new=AsyncMock(return_value=participant),
+        ),
+        patch(
+            "app.services.agent_runtime.chat_intake.RuntimeCommandIntake.start_run",
+            new=AsyncMock(return_value=handle),
+        ) as start_run,
+    ):
+        result = await enqueue_chat_runtime(
+            db,  # type: ignore[arg-type]
+            agent=agent,
+            user=user,
+            session=session,
+            model=model,
+            content=marker,
+            display_content="[image] Inspect it",
+            settings_override=_settings(enabled=True),
+        )
+
+    assert result is not None
+    message = db.added[0]
+    assert isinstance(message, ChatMessage)
+    assert message.content == marker
+    command = start_run.await_args.args[0]
+    assert command.payload["input_content"] == [
+        {
+            "type": "image_url",
+            "image_url": {"url": _TINY_PNG_DATA_URL},
+        },
+        {"type": "text", "text": "Inspect it"},
+    ]
 
 
 @pytest.mark.asyncio

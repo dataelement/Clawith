@@ -217,6 +217,7 @@ def _target(
     *,
     tenant_id: uuid.UUID,
     participant_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | None = None,
     name: str = "Target Agent",
 ) -> ResolvedGroupMention:
     model = LLMModel(
@@ -229,7 +230,7 @@ def _target(
         enabled=True,
     )
     agent = Agent(
-        id=uuid.uuid4(),
+        id=agent_id or uuid.uuid4(),
         tenant_id=tenant_id,
         creator_id=uuid.uuid4(),
         name=name,
@@ -427,6 +428,51 @@ async def test_multi_target_preflight_failure_is_all_or_none_and_repairable() ->
             )
 
     assert raised.value.code == "group_handoff_target_invalid"
+    assert raised.value.repairable is True
+    assert ensure.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_self_handoff_fails_preflight_before_cycle_checks() -> None:
+    source_run, scope, context, state = _records()
+    self_target = _target(
+        tenant_id=source_run.tenant_id,
+        participant_id=scope.participant.id,
+        agent_id=source_run.agent_id,
+        name=scope.participant.display_name,
+    )
+    ensure = AsyncMock(return_value=_cycle_check())
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_handoff._load_source_run",
+            new=AsyncMock(return_value=source_run),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._resolve_mentions",
+            new=AsyncMock(return_value=(self_target,)),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff.AgentCycleGuard.ensure_delegation_allowed",
+            new=ensure,
+        ),
+    ):
+        with pytest.raises(GroupAgentHandoffError) as raised:
+            await preflight_group_agent_handoff(
+                _DB(),  # type: ignore[arg-type]
+                state=state,
+                context=context,
+                content="@Source Agent please answer again",
+                mention_participant_ids=(str(self_target.participant_id),),
+                settings=_settings(),
+                clock=lambda: NOW,
+            )
+
+    assert raised.value.code == "group_handoff_self_target"
     assert raised.value.repairable is True
     assert ensure.await_count == 0
 

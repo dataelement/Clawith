@@ -517,6 +517,7 @@ class RuntimeToolStepService:
                 select(Agent).where(
                     Agent.id == agent_id,
                     Agent.tenant_id == tenant_id,
+                    Agent.deleted_at.is_(None),
                 )
             )
             agent = result.scalar_one_or_none()

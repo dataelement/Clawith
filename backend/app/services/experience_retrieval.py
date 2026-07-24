@@ -24,10 +24,10 @@ from app.database import async_session
 from app.models.agent import Agent
 from app.models.experience import ExperienceEntry
 from app.models.experience_reference import ExperienceReference
-from app.models.llm import LLMModel
 from app.models.org import OrgMember
 from app.models.system_settings import SystemSetting
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
+from app.services.llm.model_resolution import resolve_active_agent_model
 
 # Agents echo this marker in their final answer to cite an entry they actually used.
 CITATION_RE = re.compile(r"\[\[exp:([0-9a-fA-F-]{36})\]\]")
@@ -78,7 +78,14 @@ def _token_needles(token: str) -> list[str]:
 
 
 async def _resolve_agent(db, agent_id: uuid.UUID) -> Agent | None:
-    return (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    return (
+        await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def _agent_department_ids(db, agent: Agent) -> set[uuid.UUID]:
@@ -197,8 +204,7 @@ async def _expand_query(db, agent, keyword: str) -> list[str]:
         return _EXPANSION_CACHE[key]
     terms: list[str] = []
     try:
-        model_id = agent.primary_model_id or agent.fallback_model_id
-        model = (await db.execute(select(LLMModel).where(LLMModel.id == model_id))).scalar_one_or_none() if model_id else None
+        model = await resolve_active_agent_model(db, agent)
         if model:
             from app.services.llm import get_model_api_key
             from app.services.llm.client import chat_complete

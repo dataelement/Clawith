@@ -89,6 +89,9 @@ export default function GroupSidePanel({
                     {member.role === 'manager' && (
                         <span className="group-badge-manager">{t('groups.manager', '群管理')}</span>
                     )}
+                    {member.is_deleted && (
+                        <span className="group-badge-deleted">{t('groups.deletedBadge', '已删除')}</span>
+                    )}
                 </div>
                 {(member.role_description || member.title) && (
                     <div className="group-member-hint">{member.role_description || member.title}</div>

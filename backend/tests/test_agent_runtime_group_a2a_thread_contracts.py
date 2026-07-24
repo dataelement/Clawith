@@ -459,6 +459,7 @@ async def test_group_source_a2a_stays_pair_private_and_resumes_exact_source_run(
             target_agent,
             pair_session,
             source_run,
+            source_agent.id,
             source_run,
             None,
         )

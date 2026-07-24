@@ -206,6 +206,7 @@ async def _heartbeat_tick():
                 select(Agent).where(
                     Agent.heartbeat_enabled.is_(True),
                     Agent.status.in_(["running", "idle"]),
+                    Agent.deleted_at.is_(None),
                 )
             )
             agents = result.scalars().all()
@@ -219,6 +220,11 @@ async def _heartbeat_tick():
 
             triggered = 0
             for agent in agents:
+                # Capture diagnostic identity before a nested transaction can
+                # roll back and expire ORM attributes. Exception handlers must
+                # never lazy-load from an expired async ORM instance.
+                agent_id = agent.id
+                agent_name = agent.name
                 # Skip expired agents
                 if agent.is_expired:
                     continue
@@ -249,7 +255,7 @@ async def _heartbeat_tick():
                 if not runtime_decision.use_v2:
                     logger.error(
                         "Heartbeat for {} remains due because Runtime is disabled ({})",
-                        agent.name,
+                        agent_name,
                         runtime_decision.reason,
                     )
                     continue
@@ -294,7 +300,7 @@ async def _heartbeat_tick():
                 except HeartbeatRuntimeIntakeError as exc:
                     logger.error(
                         "Heartbeat Runtime intake failed for {} ({}): {}",
-                        agent.name,
+                        agent_name,
                         exc.code,
                         exc,
                     )
@@ -302,30 +308,30 @@ async def _heartbeat_tick():
                 except Exception as exc:
                     logger.exception(
                         "Heartbeat claim failed for {}: {}",
-                        agent.name,
+                        agent_name,
                         exc,
                     )
                     continue
 
                 logger.info(
                     "💓 Queued heartbeat for {} as Runtime Run {}",
-                    agent.name,
+                    agent_name,
                     runtime_handle.run_id,
                 )
                 try:
                     await write_audit_log(
                         "heartbeat_fire",
                         {
-                            "agent_name": agent.name,
+                            "agent_name": agent_name,
                             "runtime_type": runtime_handle.runtime_type,
                             "run_id": str(runtime_handle.run_id),
                         },
-                        agent_id=agent.id,
+                        agent_id=agent_id,
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to write heartbeat_fire audit log for {}: {}",
-                        agent.name,
+                        agent_name,
                         exc,
                     )
                 triggered += 1
@@ -391,7 +397,12 @@ async def run_agent_oneshot(
         from app.database import async_session
         from app.models.agent import Agent
         async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            result = await db.execute(
+                select(Agent).where(
+                    Agent.id == agent_id,
+                    Agent.deleted_at.is_(None),
+                )
+            )
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning(f"[Oneshot] Agent {agent_id} not found — aborting")

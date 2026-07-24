@@ -1692,7 +1692,12 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
                 404,
                 "OKR Agent not found. Please ensure OKR is enabled and the agent has been seeded.",
             )
-        okr_agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        okr_agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == settings.okr_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         okr_agent = okr_agent_result.scalar_one_or_none()
         if not okr_agent:
             raise HTTPException(
@@ -1755,6 +1760,7 @@ async def trigger_member_outreach(user=Depends(get_current_user)):
                 AgentAgentRelationship.agent_id == okr_agent.id,
                 Agent.is_system == False,  # noqa: E712
                 Agent.status.notin_(["stopped", "error"]),
+                Agent.deleted_at.is_(None),
             )
         )
         tracked_agents = agent_rel_result.scalars().all()

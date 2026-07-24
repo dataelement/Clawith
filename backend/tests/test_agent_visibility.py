@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,7 @@ def test_build_visible_agents_query_restricts_to_same_tenant_and_non_private_age
     assert "agents.creator_id" in sql
     assert "agents.access_mode" in sql
     assert "agent_permissions" in sql
+    assert "agents.deleted_at IS NULL" in sql
 
 
 def test_build_visible_agents_query_platform_admin_still_uses_visibility_filters():
@@ -190,6 +192,24 @@ def test_can_use_agent_static_keeps_private_creator_only():
 
     assert permissions.can_use_agent_static(user, private_agent) is True
     assert permissions.can_use_agent_static(admin, private_agent) is False
+
+
+def test_deleted_agent_is_never_usable_or_contactable():
+    tenant_id = uuid.uuid4()
+    creator_id = uuid.uuid4()
+    user = make_user(id=creator_id, tenant_id=tenant_id)
+    source = make_agent(tenant_id=tenant_id, creator_id=creator_id)
+    deleted = make_agent(
+        tenant_id=tenant_id,
+        creator_id=creator_id,
+        deleted_at=datetime.now(UTC),
+    )
+
+    assert permissions.can_use_agent_static(user, deleted) is False
+    visibility = permissions.evaluate_roster_agent_visibility(source, deleted)
+    assert visibility.visible is True
+    assert visibility.can_contact is False
+    assert visibility.unavailable_reason == "agent_deleted"
 
 
 def test_evaluate_roster_agent_visibility_matches_phase1_rules():

@@ -122,6 +122,12 @@ class _Result:
     def scalar_one_or_none(self):
         return self.value
 
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self.value) if isinstance(self.value, (list, tuple)) else []
+
 
 class _DB:
     def __init__(self, *values) -> None:
@@ -224,7 +230,7 @@ async def test_group_compact_resolves_the_tenant_scoped_context_model(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_direct_compact_selects_current_primary_without_querying_fallback() -> None:
+async def test_direct_compact_resolves_active_model_candidates() -> None:
     request = _request()
     primary = _model(request.tenant_id, name="current-primary")
     agent = Agent(
@@ -247,7 +253,7 @@ async def test_direct_compact_selects_current_primary_without_querying_fallback(
         source_channel="web",
         is_primary=True,
     )
-    db = _DB(direct_session, agent, primary)
+    db = _DB(direct_session, agent, None, [primary])
     compactor = LLMSessionContextCompactor(
         session_factory=_session_factory(db),  # type: ignore[arg-type]
     )
@@ -258,7 +264,7 @@ async def test_direct_compact_selects_current_primary_without_querying_fallback(
 
     assert selection.primary is primary
     assert selection.usage_agent_id == agent.id
-    assert db.calls == 3
+    assert db.calls == 4
     assert not db.results
 
 

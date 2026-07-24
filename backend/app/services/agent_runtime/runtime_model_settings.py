@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.llm import LLMModel
 from app.models.system_settings import SystemSetting
 
 
@@ -66,9 +67,52 @@ async def resolve_runtime_model_settings(
         value.get("compact_model_id"),
         setting_name="compact_model_id",
     )
+    requested_ids = {
+        model_id
+        for model_id in (
+            configured_planning,
+            configured_compact,
+            environment_planning_model_id,
+            environment_compact_model_id,
+        )
+        if model_id is not None
+    }
+    eligible_ids: set[uuid.UUID] = set()
+    if requested_ids:
+        eligible_result = await db.execute(
+            select(LLMModel.id).where(
+                LLMModel.id.in_(requested_ids),
+                or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id),
+                LLMModel.enabled.is_(True),
+                LLMModel.deleted_at.is_(None),
+            )
+        )
+        eligible_ids = {
+            value.id if isinstance(value, LLMModel) else value
+            for value in eligible_result.scalars().all()
+        }
+
+    def resolve_one(
+        configured_id: uuid.UUID | None,
+        environment_id: uuid.UUID | None,
+    ) -> tuple[uuid.UUID | None, str]:
+        if configured_id in eligible_ids:
+            return configured_id, "database"
+        if environment_id in eligible_ids:
+            return environment_id, "environment"
+        return None, "unavailable"
+
+    planning_id, planning_source = resolve_one(
+        configured_planning,
+        environment_planning_model_id,
+    )
+    compact_id, compact_source = resolve_one(
+        configured_compact,
+        environment_compact_model_id,
+    )
     return RuntimeModelSettings(
-        planning_model_id=configured_planning or environment_planning_model_id,
-        compact_model_id=configured_compact or environment_compact_model_id,
-        planning_source="database" if configured_planning else "environment",
-        compact_source="database" if configured_compact else "environment",
+        planning_model_id=planning_id,
+        compact_model_id=compact_id,
+        planning_source=planning_source,
+        compact_source=compact_source,
     )

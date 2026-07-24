@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 
@@ -9,6 +10,7 @@ import pytest
 
 from app.config import Settings
 from app.models.llm import LLMModel
+from app.services.agent_runtime.model_capabilities import ModelCapabilityError
 from app.services.agent_runtime.run_compactor import (
     RunCompactInputs,
     RunCompactorError,
@@ -25,6 +27,12 @@ from app.services.agent_runtime.state import (
 from app.services.llm.single_step import LLMCompletionStep
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.token_tracker import TokenUsage
+
+
+_TINY_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+    "x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
+)
 
 
 def _settings() -> Settings:
@@ -243,6 +251,59 @@ async def test_missing_complete_business_request_budget_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalid_request_budget_from_input_loader_is_deterministic() -> None:
+    state, context, _tenant_id = _state([_normal("current")])
+
+    async def load(
+        _state: RuntimeGraphState,
+        _context: RuntimeContext,
+    ) -> RunCompactInputs:
+        raise ModelCapabilityError(
+            "invalid_request_budget",
+            "requested output tokens leave no room in the shared context window",
+        )
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid request budget must fail before model use")
+
+    service = RuntimeRunCompactorService(
+        settings=_settings(),
+        completion=forbidden,
+        input_loader=load,
+    )
+
+    with pytest.raises(RunCompactorError) as raised:
+        await service.compact_if_needed(state, context)
+
+    assert raised.value.code == "invalid_request_budget"
+    assert raised.value.is_deterministic_compact_error is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_compact_model_budget_is_a_deterministic_runtime_error() -> None:
+    state, context, tenant_id = _state(
+        [_normal("old", "old " * 300), _normal("current")]
+    )
+    model = _model(tenant_id)
+    model.max_input_tokens = None
+    model.context_window_tokens_override = model.max_output_tokens
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid compact budget must fail before model use")
+
+    with pytest.raises(RunCompactorError) as raised:
+        await _service(
+            model=model,
+            completion=forbidden,
+            effective_budget=1_000,
+            current_tokens=800,
+        ).compact_if_needed(state, context)
+
+    assert raised.value.code == "invalid_request_budget"
+    assert raised.value.is_deterministic_compact_error is True
+
+
+@pytest.mark.asyncio
 async def test_at_eighty_percent_compacts_prefix_and_keeps_current_input_exact() -> None:
     messages = [
         *[_normal(f"old-{index}", "old history " * 12) for index in range(8)],
@@ -275,6 +336,41 @@ async def test_at_eighty_percent_compacts_prefix_and_keeps_current_input_exact()
     assert result.recent_messages[-1]["content"] == "EXACT CURRENT INPUT"
     assert result.recent_messages[-1]["runtime_input"] == "current"
     assert result.covered_through_message_id != "current"
+
+
+@pytest.mark.asyncio
+async def test_large_image_base64_is_excluded_from_recent_budget_and_compact_prompt() -> None:
+    padded_png = base64.b64encode(
+        base64.b64decode(_TINY_PNG_BASE64) + b"x" * (64 * 1024)
+    ).decode("ascii")
+    marker = f"[image_data:data:image/png;base64,{padded_png}] inspect"
+    messages = [
+        _normal("old", "old completed history " * 300),
+        {
+            **_normal("current", marker),
+            "runtime_input": "current",
+        },
+    ]
+    state, context, tenant_id = _state(messages)
+    payloads: list[dict] = []
+
+    async def complete(_model, prompt, **_kwargs):
+        payloads.append(json.loads(prompt[1].content))
+        return _step()
+
+    result = await _service(
+        model=_model(tenant_id),
+        completion=complete,
+        effective_budget=1_000,
+        current_tokens=900,
+    ).compact_if_needed(state, context)
+
+    assert result.compacted is True
+    assert result.recent_messages is not None
+    assert result.recent_messages[-1]["content"] == marker
+    serialized = json.dumps(payloads, ensure_ascii=False)
+    assert "base64," not in serialized
+    assert "image omitted from compact prompt" in serialized
 
 
 @pytest.mark.asyncio

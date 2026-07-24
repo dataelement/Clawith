@@ -248,6 +248,7 @@ class GroupContextBuilder:
                 Agent.tenant_id == tenant_id,
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
+                Agent.deleted_at.is_(None),
             )
         )
         agent = agent_result.scalar_one_or_none()

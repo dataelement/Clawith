@@ -233,9 +233,6 @@ start_backend() {
     echo -e "${YELLOW}🔄 Running LangGraph checkpoint migrations...${NC}"
     .venv/bin/python -m app.scripts.setup_langgraph_checkpoints
 
-    # Auto-run data migrations (idempotent)
-    echo -e "${YELLOW}🔄 Running data migrations...${NC}"
-    .venv/bin/python -m app.scripts.migrate_schedules_to_triggers || true
     start_detached "$BACKEND_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
         env PYTHONUNBUFFERED=1 \
             AGENT_RUNTIME_V2_ENABLED=true \

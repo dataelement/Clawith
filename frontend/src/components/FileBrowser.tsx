@@ -10,6 +10,10 @@ import { IconDownload, IconEdit, IconFolder, IconFolderPlus, IconTrash, IconUplo
 import MarkdownRenderer from './MarkdownRenderer';
 import { useDropZone } from '../hooks/useDropZone';
 import { formatFileSize } from '../utils/formatFileSize';
+import {
+    WORKSPACE_TEXT_UPLOAD_EXTENSIONS,
+    WORKSPACE_UPLOAD_ACCEPT,
+} from '../utils/workspaceFileFormats.ts';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -26,7 +30,7 @@ export interface FileBrowserApi {
     write: (path: string, content: string) => Promise<any>;
     delete: (path: string) => Promise<any>;
     upload?: (file: File, path: string, onProgress?: (pct: number) => void) => Promise<any>;
-    downloadUrl?: (path: string) => string;
+    downloadUrl?: (path: string, options?: { inline?: boolean }) => string;
 }
 
 export interface FileBrowserProps {
@@ -50,7 +54,7 @@ export interface FileBrowserProps {
 
 // ─── Text file detection ───────────────────────────────
 
-const TEXT_EXTS = ['.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.js', '.ts', '.py', '.html', '.css', '.sh', '.log', '.gitkeep', '.env'];
+const TEXT_EXTS = WORKSPACE_TEXT_UPLOAD_EXTENSIONS;
 
 function isTextFile(name: string): boolean {
     const n = name.toLowerCase();
@@ -74,7 +78,7 @@ export default function FileBrowser({
     features = {},
     fileFilter,
     singleFile,
-    uploadAccept = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.py,.html,.css,.sh,.log,.png,.jpg,.jpeg,.gif,.svg,.webp',
+    uploadAccept = WORKSPACE_UPLOAD_ACCEPT,
     title,
     readOnly = false,
     onRefresh,
@@ -189,6 +193,10 @@ export default function FileBrowser({
 
     useEffect(() => {
         if (!viewing || singleFile) return;
+        if (!isTextFile(viewing)) {
+            setContent('');
+            return;
+        }
         api.read(viewing).then(data => {
             setContent(data.content || '');
         }).catch((err: any) => {
@@ -471,7 +479,7 @@ export default function FileBrowser({
                         <div style={{ textAlign: 'center', padding: '20px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
                             {api.downloadUrl ? (
                                 <img 
-                                    src={api.downloadUrl(viewing)} 
+                                    src={api.downloadUrl(viewing, { inline: true })}
                                     alt={viewing.split('/').pop()} 
                                     style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
                                 />

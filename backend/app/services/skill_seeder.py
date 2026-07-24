@@ -1061,7 +1061,9 @@ async def push_default_skills_to_existing_agents():
             return
 
         # Load all agents
-        agents_r = await query_dao.execute(db, select(Agent))
+        agents_r = await query_dao.execute(
+            db, select(Agent).where(Agent.deleted_at.is_(None))
+        )
         agents = agents_r.scalars().all()
 
         pushed = 0

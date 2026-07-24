@@ -56,12 +56,15 @@ async def _tick():
                 if occurrence_at is None:
                     continue
                 agent_result = await db.execute(
-                    select(Agent).where(Agent.id == sched.agent_id)
+                    select(Agent).where(
+                        Agent.id == sched.agent_id,
+                        Agent.deleted_at.is_(None),
+                    )
                 )
                 agent = agent_result.scalar_one_or_none()
                 if (
                     agent is None
-                    or agent.status != "running"
+                    or agent.status not in {"creating", "running", "idle"}
                     or is_agent_expired(agent)
                 ):
                     logger.info(

@@ -19,9 +19,6 @@ from app.services.agent_runtime.channel_delivery import ChannelDeliveryWorkResul
 from app.services.agent_runtime.heartbeat_completion import (
     HeartbeatRuntimeCompletionHandler,
 )
-from app.services.agent_runtime.group_acknowledgement import (
-    RuntimeGroupStartAcknowledgementHandler,
-)
 from app.services.agent_runtime.onboarding_completion import (
     OnboardingRuntimeCompletionHandler,
 )
@@ -316,10 +313,7 @@ def test_component_builder_installs_current_agent_and_planning_graphs() -> None:
     )
     assert components.channel_delivery_worker._claimant == "worker-test"
     assert components.async_tool_poll_scheduler._session_factory is not None
-    assert isinstance(
-        components.worker._pre_command_handler,
-        RuntimeGroupStartAcknowledgementHandler,
-    )
+    assert components.worker._pre_command_handler is None
     terminal_handlers = components.worker._post_checkpoint_handler._terminal_handlers
     assert [type(handler) for handler in terminal_handlers] == [
         SessionContextCompletionHandler,

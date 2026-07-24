@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
 
@@ -122,6 +124,100 @@ def test_default_heartbeat_prompt_does_not_advertise_hardcoded_tools() -> None:
         "plaza_add_comment",
     ):
         assert hardcoded_tool not in prompt
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_intake_error_does_not_read_expired_agent_identity() -> None:
+    class _ExpiringAgent:
+        def __init__(self) -> None:
+            self._id = uuid.uuid4()
+            self._name = "Heartbeat Agent"
+            self.expired = False
+            self.name_reads = 0
+            self.tenant_id = None
+            self.is_expired = False
+            self.expires_at = None
+            self.heartbeat_active_hours = "00:00-23:59"
+            self.heartbeat_interval_minutes = 1
+            self.last_heartbeat_at = None
+
+        @property
+        def id(self):
+            return self._id
+
+        @property
+        def name(self):
+            self.name_reads += 1
+            if self.expired:
+                raise RuntimeError("expired ORM attribute was accessed")
+            return self._name
+
+    agent = _ExpiringAgent()
+
+    class _Result:
+        rowcount = 1
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [agent]
+
+    class _NestedTransaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            if exc_type is not None:
+                agent.expired = True
+            return False
+
+    class _HeartbeatSession:
+        async def execute(self, _statement):
+            return _Result()
+
+        def begin_nested(self):
+            return _NestedTransaction()
+
+        async def commit(self):
+            return None
+
+    @asynccontextmanager
+    async def fake_session():
+        yield _HeartbeatSession()
+
+    async def fail_intake(*_args, **_kwargs):
+        raise HeartbeatRuntimeIntakeError(
+            "model_unavailable",
+            "Heartbeat Agent has no primary model",
+        )
+
+    audit = AsyncMock()
+    with (
+        patch("app.database.async_session", new=fake_session),
+        patch(
+            "app.services.agent_runtime.config.decide_runtime_v2",
+            return_value=SimpleNamespace(use_v2=True, reason="enabled"),
+        ),
+        patch(
+            "app.services.timezone_utils.get_agent_timezone_sync",
+            return_value="UTC",
+        ),
+        patch(
+            "app.services.heartbeat._build_heartbeat_instruction",
+            new=AsyncMock(return_value=("Review", {})),
+        ),
+        patch(
+            "app.services.heartbeat_runtime.enqueue_heartbeat_runtime",
+            new=fail_intake,
+        ),
+        patch("app.services.audit_logger.write_audit_log", new=audit),
+    ):
+        await heartbeat_service._heartbeat_tick()
+
+    assert agent.expired is True
+    assert agent.name_reads == 1
+    audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

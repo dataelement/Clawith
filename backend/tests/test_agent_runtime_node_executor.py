@@ -25,6 +25,10 @@ from app.services.agent_runtime.node_executor import (
     ToolStepResult,
     VerificationResult,
 )
+from app.services.agent_runtime.run_compactor import (
+    RunCompactorError,
+    TransientRunCompactorError,
+)
 from app.services.agent_runtime.state import (
     JsonObject,
     JsonValue,
@@ -204,6 +208,21 @@ class RunCompactor:
         return self.result
 
 
+class FailingRunCompactor:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def compact_if_needed(
+        self,
+        state: RuntimeGraphState,
+        context: RuntimeContext,
+    ) -> RunCompactResult:
+        del state, context
+        self.calls += 1
+        raise self.error
+
+
 class Verifier:
     def __init__(self, *results: VerificationResult) -> None:
         self.results = deque(results)
@@ -319,7 +338,7 @@ def _executor(
     *,
     cancel: CancelSource | None = None,
     tools: ToolService | None = None,
-    run_compactor: RunCompactor | None = None,
+    run_compactor: RunCompactor | FailingRunCompactor | None = None,
     verifier: Verifier | None = None,
     max_verification_repairs: int = 2,
 ) -> DeterministicRuntimeNodeExecutor:
@@ -402,6 +421,86 @@ async def test_compact_is_rejected_outside_the_pre_model_running_boundary() -> N
 
     assert raised.value.code == "invalid_compact_status"
     assert compactor.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_deterministic_compact_error_commits_a_failed_terminal_lifecycle() -> None:
+    run_id = uuid.uuid4()
+    executor = _executor(
+        ModelService(),
+        run_compactor=FailingRunCompactor(
+            RunCompactorError(
+                "input_exceeds_model_context",
+                "The exact current input exceeds the model context window",
+            )
+        ),
+    )
+    state = _state(run_id)
+    state["lifecycle"]["next_route"] = "compact"
+
+    update = await executor.execute(
+        "compact",
+        state,
+        _context(run_id, executor, "command-compact"),
+    )
+
+    assert update["lifecycle"]["status"] == "failed"
+    assert update["lifecycle"]["next_route"] == "terminal"
+    assert update["lifecycle"]["reason"] == "input_exceeds_model_context"
+    assert update["lifecycle"]["error"]["code"] == "input_exceeds_model_context"
+
+
+@pytest.mark.asyncio
+async def test_graph_commits_deterministic_compact_failure_without_retry() -> None:
+    run_id = uuid.uuid4()
+    compactor = FailingRunCompactor(
+        RunCompactorError(
+            "input_exceeds_model_context",
+            "The exact current input exceeds the model context window",
+        )
+    )
+    executor = _executor(ModelService(), run_compactor=compactor)
+    state = _state(run_id)
+    state["lifecycle"]["next_route"] = "compact"
+    graph = build_agent_runtime_graph(
+        checkpointer=InMemorySaver(),
+        settings=_settings(),
+    )
+
+    result = await graph.compiled.ainvoke(
+        state,
+        runtime_thread_config(run_id),
+        context=_context(run_id, executor, "command-compact"),
+    )
+
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["next_route"] == "terminal"
+    assert result["lifecycle"]["error"]["code"] == "input_exceeds_model_context"
+    assert compactor.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_compact_error_still_escapes_for_langgraph_retry() -> None:
+    run_id = uuid.uuid4()
+    error = TransientRunCompactorError(
+        "thread_compact_provider_transient",
+        "Compact provider was temporarily unavailable",
+    )
+    executor = _executor(
+        ModelService(),
+        run_compactor=FailingRunCompactor(error),
+    )
+    state = _state(run_id)
+    state["lifecycle"]["next_route"] = "compact"
+
+    with pytest.raises(TransientRunCompactorError) as raised:
+        await executor.execute(
+            "compact",
+            state,
+            _context(run_id, executor, "command-compact"),
+        )
+
+    assert raised.value is error
 
 
 def _context(
@@ -1054,6 +1153,64 @@ async def test_repeated_model_tool_protocol_repair_code_fails_explicitly(
     assert lifecycle["model_protocol_repairs"] == {repair_code: 1}
     assert lifecycle["model_step_count"] == 2
     assert model.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_write_file_protocol_repair_uses_three_attempts_then_guides_user() -> None:
+    run_id = uuid.uuid4()
+    repair = ModelStepResult(
+        intent="text",
+        assistant_message={"role": "assistant", "content": "bad write_file call"},
+        repair_instruction="Retry write_file with valid JSON.",
+        repair_code="invalid_tool_call",
+        repair_tool_name="write_file",
+    )
+    model = ModelService(repair, repair, repair, repair)
+    executor = _executor(model)
+
+    result = await _invoke(run_id, executor, model_turn_limit=50)
+
+    lifecycle = result["lifecycle"]
+    assert lifecycle["status"] == "failed"
+    assert lifecycle["reason"] == "model_tool_protocol_violation"
+    assert lifecycle["error"] == {
+        "code": "model_tool_protocol_violation",
+        "message": (
+            "本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
+            "请回复「重新生成」，我会基于当前对话重新尝试。"
+        ),
+    }
+    assert lifecycle["model_protocol_repairs"] == {
+        "invalid_tool_call:write_file": 3,
+    }
+    assert lifecycle["model_step_count"] == 4
+    assert model.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_write_file_protocol_can_recover_on_the_third_repair() -> None:
+    run_id = uuid.uuid4()
+    repair = ModelStepResult(
+        intent="text",
+        repair_instruction="Retry write_file with valid JSON.",
+        repair_code="invalid_tool_call",
+        repair_tool_name="write_file",
+    )
+    model = ModelService(
+        repair,
+        repair,
+        repair,
+        ModelStepResult(intent="finish", finish_content="Recovered"),
+    )
+    executor = _executor(model)
+
+    result = await _invoke(run_id, executor, model_turn_limit=50)
+
+    assert result["lifecycle"]["status"] == "completed"
+    assert result["lifecycle"]["model_protocol_repairs"] == {
+        "invalid_tool_call:write_file": 3,
+    }
+    assert model.calls == 4
 
 
 @pytest.mark.asyncio

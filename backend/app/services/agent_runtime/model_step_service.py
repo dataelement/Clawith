@@ -65,7 +65,14 @@ from app.services.llm.finish import (
     group_finish_tool_definition,
     parse_tool_arguments,
 )
+from app.services.llm.multimodal_content import (
+    MultimodalContentError,
+    estimate_multimodal_tokens,
+    multimodal_context_stats,
+    parse_multimodal_content,
+)
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.utils import get_max_tokens
 
 
@@ -217,6 +224,8 @@ Current Run is executing inside a native Clawith group. Follow these platform ru
 - For a chained request such as "wake A and ask A to wake B", this Run should mention A only and give A the concrete instruction to wake B. Do not wake B from this Run unless the user also asked you to contact B directly.
 - Runtime publishes the `finish.content` as your public group reply and starts one child Run per mentioned participant so each target can reply publicly in this same group session. After `finish`, you cannot add another mention target from this Run. For multiple mentions, verify that the array contains every intended recipient before calling `finish`.
 - `send_message_to_agent` is private A2A. Use it only when you need private advice or facts and the target does not need to reply publicly in the group. It is never a substitute for `finish.mention_participant_ids` when the user asks you to `@` an Agent or have them respond in the group.
+- A planned group transition must remain in this group session. When `group_context.planning_hint` assigns a later responsibility to another current-group Agent, never call `send_message_to_agent` for that transition under any `msg_type`; publish your completed part with `finish`, mention that Agent through `mention_participant_ids`, and state exactly what they must do and reply with publicly.
+- Do not perform another Agent's assigned responsibility, wait for its private delegated result, merge that private result into your answer, or claim that Agent completed work on your behalf. A private A2A result is not that Agent's public group reply.
 - A textual `@name` or display name in `finish.content` is only text and never routes or wakes an Agent. Never infer participant IDs from display names. If no other Agent needs to join and reply publicly, omit `mention_participant_ids`.
 - If this Run was started because another Agent mentioned you, answer only the part addressed to you in `current_responsibility`, using your own role and voice, and normally finish without mentioning anyone. Do not repeat the source Agent's message, answer on behalf of other mentioned participants, describe its mention operation as your own action, or mention the source/co-mentioned Agents merely to reciprocate a greeting or acknowledgment. Mention another Agent only for a new concrete question, request, or responsibility that genuinely requires another public reply.
 - When several Agents were already woken by the same source message, each has its own Run. Address them by plain display name if useful, but do not `@` them just to make them greet or acknowledge one another again.
@@ -257,18 +266,37 @@ def _error(code: str, message: str) -> ModelStepResult:
 
 
 def _estimate_tokens(value: object) -> int:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        default=str,
-    )
-    return max((len(serialized) + 2) // 3, 1)
+    return estimate_multimodal_tokens(value, chars_per_token=3)
 
 
 def _message_token_counter(messages: Sequence[Mapping[str, object]]) -> int:
     return _estimate_tokens(messages)
+
+
+def _log_provider_request_start(
+    *,
+    context: RuntimeContext,
+    model: LLMModel,
+    agent: Agent,
+    messages: Sequence[LLMMessage],
+    stage: str,
+) -> None:
+    stats = multimodal_context_stats(
+        [message.content for message in messages if message.content is not None]
+    )
+    logger.info(
+        "[RuntimeModelRequest] run_id={} agent_id={} model_id={} stage={} "
+        "provider={} model={} image_count={} image_bytes={} image_context_tokens={}",
+        context.run_id,
+        agent.id,
+        model.id,
+        stage,
+        model.provider,
+        model.model,
+        stats.image_count,
+        stats.decoded_bytes,
+        stats.image_context_tokens,
+    )
 
 
 def _tool_name(tool: Mapping[str, object]) -> str | None:
@@ -510,7 +538,7 @@ def _runtime_sections(build: RuntimeContextBuild) -> JsonObject:
 
 def _message_content(value: JsonValue) -> str | list:
     if isinstance(value, (str, list)):
-        return value
+        return parse_multimodal_content(value)
     return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
@@ -532,17 +560,17 @@ def _model_message_content(raw: Mapping[str, object], build: RuntimeContextBuild
         if (
             isinstance(initial_message_id, str)
             and raw.get("id") == initial_message_id
-            and isinstance(input_content, str)
+            and isinstance(input_content, (str, list))
         ):
-            return input_content
+            return parse_multimodal_content(input_content)
 
         if raw.get("runtime_input") == "resume" and isinstance(content, Mapping):
             resume_type = content.get("resume_type")
             payload = content.get("payload")
             if resume_type == "user_input" and isinstance(payload, Mapping):
                 resumed_content = payload.get("content")
-                if isinstance(resumed_content, str):
-                    return resumed_content
+                if isinstance(resumed_content, (str, list)):
+                    return parse_multimodal_content(resumed_content)
     return _message_content(content)
 
 
@@ -643,8 +671,13 @@ def _prompt_messages(
         append_history(deferred_current)
     if not initial_message_seen:
         input_content = build.initial_input.get("input_content")
-        if isinstance(input_content, str):
-            messages.append(LLMMessage(role="user", content=input_content))
+        if isinstance(input_content, (str, list)):
+            messages.append(
+                LLMMessage(
+                    role="user",
+                    content=parse_multimodal_content(input_content),
+                )
+            )
             initial_message_seen = True
     if not initial_message_seen:
         directive = _current_run_directive(build)
@@ -697,13 +730,40 @@ def _repair(
     instruction: str,
     *,
     repair_code: str | None = None,
+    repair_tool_name: str | None = None,
 ) -> ModelStepResult:
+    assistant_message = _assistant_message(state, context, step)
+    if (
+        not str(assistant_message.get("content") or "").strip()
+        and not assistant_message.get("tool_calls")
+    ):
+        # Invalid/truncated tool calls cannot be replayed in provider history.
+        # Persist only the user-role repair instruction; an empty assistant
+        # message is rejected by providers such as Cohere.
+        assistant_message = None
     return ModelStepResult(
         intent="text",
-        assistant_message=_assistant_message(state, context, step),
+        assistant_message=assistant_message,
         repair_instruction=instruction,
         repair_code=repair_code,
+        repair_tool_name=repair_tool_name,
     )
+
+
+def _safe_provider_failure_message(error: Exception) -> str:
+    """Return bounded user-facing provider diagnostics; raw bodies stay in logs."""
+    match = re.search(
+        r"(?<!\d)(400|401|403|408|422|429|500|502|503|504)(?!\d)",
+        str(error),
+    )
+    status = match.group(1) if match else "unknown"
+    if status in {"401", "403"}:
+        return f"Model provider authentication or authorization failed (HTTP {status})."
+    if status in {"400", "422"}:
+        return f"Model provider rejected the request (HTTP {status})."
+    if status != "unknown":
+        return f"Model provider request failed (HTTP {status})."
+    return "Model provider request failed."
 
 
 def _parse_step(
@@ -716,12 +776,14 @@ def _parse_step(
     allow_group_handoff: bool,
 ) -> ModelStepResult:
     if step.retry_instruction:
+        retry_tool_name = step.retry_tool_name
         return _repair(
             state,
             context,
             step,
             step.retry_instruction,
             repair_code="invalid_tool_call",
+            repair_tool_name=retry_tool_name,
         )
     if not step.tool_calls:
         content = (step.content or "").strip()
@@ -947,12 +1009,18 @@ class RuntimeModelStepService:
             ) from exc
         prior_incomplete = _prior_incomplete_tool_calls(state, current_run_id=run_id)
         async with self._session_factory() as db:
-            model_result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+            model_result = await db.execute(
+                select(LLMModel).where(
+                    LLMModel.id == model_id,
+                    LLMModel.deleted_at.is_(None),
+                )
+            )
             model = model_result.scalar_one_or_none()
             agent_result = await db.execute(
                 select(Agent).where(
                     Agent.id == agent_id,
                     Agent.tenant_id == tenant_id,
+                    Agent.deleted_at.is_(None),
                 )
             )
             agent = agent_result.scalar_one_or_none()
@@ -982,6 +1050,13 @@ class RuntimeModelStepService:
                         )
                     )
                     executions.extend(prior_execution_result.scalars().all())
+            if agent is not None and (
+                model is None
+                or not model.enabled
+                or model.tenant_id not in {None, tenant_id}
+            ):
+                candidates = await active_agent_model_candidates(db, agent)
+                model = candidates[0] if candidates else None
         if (
             model is None
             or not model.enabled
@@ -995,7 +1070,6 @@ class RuntimeModelStepService:
                 "model_unavailable",
                 "pinned Runtime model is disabled or outside the tenant scope",
             )
-        ModelCapabilityResolver.require_native_tool_calling(model)
         if agent is None or agent.status not in _ACTIVE_AGENT_STATUSES or agent.is_expired:
             raise ContextBuildError(
                 "agent_unavailable",
@@ -1025,20 +1099,9 @@ class RuntimeModelStepService:
         agent: Agent,
         primary_model: LLMModel,
     ) -> LLMModel | None:
-        fallback_id = agent.fallback_model_id
-        if fallback_id is None or fallback_id == primary_model.id:
-            return None
         async with self._session_factory() as db:
-            result = await db.execute(select(LLMModel).where(LLMModel.id == fallback_id))
-            fallback = result.scalar_one_or_none()
-        if (
-            fallback is None
-            or not fallback.enabled
-            or fallback.tenant_id not in {None, tenant_id}
-            or fallback.supports_tool_calling is not True
-        ):
-            return None
-        return fallback
+            candidates = await active_agent_model_candidates(db, agent)
+        return next((model for model in candidates if model.id != primary_model.id), None)
 
     async def compact_inputs(
         self,
@@ -1454,6 +1517,13 @@ class RuntimeModelStepService:
             failed_over_from: LLMModel | None = None
             active_allowed_names = allowed_names
             try:
+                _log_provider_request_start(
+                    context=context,
+                    model=model,
+                    agent=agent,
+                    messages=prepared,
+                    stage="primary",
+                )
                 step = await self._call_prepared_with_retry(
                     model=model,
                     agent=agent,
@@ -1478,7 +1548,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_call_failed",
-                        str(primary_error) or type(primary_error).__name__,
+                        _safe_provider_failure_message(primary_error),
                     ) from primary_error
                 tenant_id = uuid.UUID(context.tenant_id)
                 fallback = await self._fallback_model(
@@ -1533,6 +1603,13 @@ class RuntimeModelStepService:
                 if isinstance(fallback_prepared, ModelStepResult):
                     return fallback_prepared
                 try:
+                    _log_provider_request_start(
+                        context=context,
+                        model=fallback,
+                        agent=agent,
+                        messages=fallback_prepared,
+                        stage="fallback",
+                    )
                     step = await self._call_prepared_with_retry(
                         model=fallback,
                         agent=agent,
@@ -1561,7 +1638,7 @@ class RuntimeModelStepService:
                     )
                     raise RuntimeModelCallError(
                         "model_failover_failed",
-                        str(fallback_error) or type(fallback_error).__name__,
+                        _safe_provider_failure_message(fallback_error),
                     ) from fallback_error
                 actual_model = fallback
                 failed_over_from = model
@@ -1637,7 +1714,12 @@ class RuntimeModelStepService:
                     )
                 result = replace(result, assistant_message=assistant_message)
             return result
-        except (ContextBuildError, ModelCapabilityError, RuntimeModelCallError) as exc:
+        except (
+            ContextBuildError,
+            ModelCapabilityError,
+            MultimodalContentError,
+            RuntimeModelCallError,
+        ) as exc:
             logger.error(
                 "[RuntimeModelStepFailure] run_id={} agent_id={} error_code={} "
                 "error_type={} error_message={!r}",
@@ -1660,7 +1742,7 @@ class RuntimeModelStepService:
             )
             return _error(
                 "model_call_failed",
-                str(exc) or type(exc).__name__,
+                "The model call failed.",
             )
 
 

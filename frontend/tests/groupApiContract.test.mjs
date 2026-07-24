@@ -27,3 +27,10 @@ test('group runs expose exact state and explicit cancellation by run id', () => 
   assert.match(source, /runState:[\s\S]*sessions\/\$\{sessionId\}\/runs\/\$\{runId\}/);
   assert.match(source, /cancelRun:[\s\S]*runs\/\$\{runId\}\/cancel/);
 });
+
+test('group workspace exposes binary upload progress and authenticated download URLs', () => {
+  assert.match(source, /uploadWorkspaceFile:[\s\S]*uploadFileWithProgress/);
+  assert.match(source, /workspace\/upload/);
+  assert.match(source, /downloadWorkspaceUrl:[\s\S]*workspace\/download/);
+  assert.match(source, /localStorage\.getItem\('token'\)/);
+});

@@ -123,13 +123,21 @@ export const runtimeCompletionNeedsMessageRefresh = (
     next: SessionActiveRun | null,
 ): boolean => previous !== null && next === null;
 
-export const terminalAssistantMessageAlreadyPresent = (
-    messages: Array<{ id?: string; role?: string; content?: string; _streaming?: boolean }>,
+type TerminalAssistantMessageLike = {
+    id?: string;
+    role?: string;
+    content?: string;
+    _streaming?: boolean;
+    runtimeError?: unknown;
+};
+
+const terminalAssistantMessageIndex = (
+    messages: TerminalAssistantMessageLike[],
     messageId: unknown,
     content: unknown,
-): boolean => {
+): number => {
     if (typeof messageId === 'string' && messageId.trim()) {
-        return messages.some((message) => message.id === messageId);
+        return messages.findIndex((message) => message.id === messageId);
     }
     const lastMessage = messages[messages.length - 1];
     return (
@@ -137,7 +145,29 @@ export const terminalAssistantMessageAlreadyPresent = (
         && lastMessage._streaming !== true
         && typeof content === 'string'
         && lastMessage.content === content
+    ) ? messages.length - 1 : -1;
+};
+
+export const terminalAssistantMessageAlreadyPresent = (
+    messages: TerminalAssistantMessageLike[],
+    messageId: unknown,
+    content: unknown,
+): boolean => terminalAssistantMessageIndex(messages, messageId, content) >= 0;
+
+export const mergeTerminalAssistantMessage = <T extends TerminalAssistantMessageLike>(
+    messages: T[],
+    terminalMessage: T,
+): T[] => {
+    const index = terminalAssistantMessageIndex(
+        messages,
+        terminalMessage.id,
+        terminalMessage.content,
     );
+    if (index < 0) return [...messages, terminalMessage];
+    if (terminalMessage.runtimeError === undefined) return messages;
+    return messages.map((message, position) => position === index
+        ? { ...message, runtimeError: terminalMessage.runtimeError }
+        : message);
 };
 
 export const waitingSessionActiveRunHint = ({

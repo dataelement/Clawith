@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import Literal
 import uuid
 
@@ -17,6 +18,7 @@ from app.models.chat_session import ChatSession
 from app.models.group import Group, GroupMember
 from app.models.llm import LLMModel
 from app.models.participant import Participant
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.agent_runtime.adapter import (
     RuntimeAdapterError,
@@ -33,6 +35,14 @@ from app.services.agent_runtime.model_capabilities import (
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 _MAX_CONTENT_LENGTH = 1_000_000
 _MAX_MENTIONS = 100
+logger = logging.getLogger(__name__)
+
+
+def _planning_public_error_message(error_code: str) -> str:
+    """Map internal planning failures to allowlisted user-safe semantics."""
+    if error_code == "planning_model_unavailable":
+        return "多 Agent 规划模型未配置或当前不可用，请联系管理员检查运行时模型设置。"
+    return "多 Agent 任务暂时无法启动，请稍后重试。"
 
 
 class GroupMessageServiceError(RuntimeError):
@@ -82,6 +92,7 @@ class GroupMessageIntake:
     created: bool
     new_public_messages: tuple[ChatMessage, ...]
     error_code: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +214,7 @@ async def _load_sender_scope(
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
+                Agent.deleted_at.is_(None),
             )
         )
         if agent_result.scalar_one_or_none() is None:
@@ -295,14 +307,29 @@ async def _resolve_mentions(
                 Agent.status.in_(_ACTIVE_AGENT_STATUSES),
                 Agent.is_expired.is_(False),
                 Agent.access_mode != "private",
+                Agent.deleted_at.is_(None),
             )
         )
         agents = {agent.id: agent for agent in agent_result.scalars().all()}
-        model_ids = {agent.primary_model_id for agent in agents.values() if agent.primary_model_id}
+        default_result = await db.execute(
+            select(Tenant.default_model_id).where(Tenant.id == tenant_id)
+        )
+        default_model_id = default_result.scalar_one_or_none()
+        model_ids = {
+            model_id
+            for agent in agents.values()
+            for model_id in (
+                agent.primary_model_id,
+                agent.fallback_model_id,
+                default_model_id,
+            )
+            if model_id is not None
+        }
         if model_ids:
             model_result = await db.execute(
                 select(LLMModel).where(
                     LLMModel.id.in_(model_ids),
+                    LLMModel.deleted_at.is_(None),
                     LLMModel.enabled.is_(True),
                 )
             )
@@ -344,7 +371,18 @@ async def _resolve_mentions(
         if agent is None:
             output.append(_invalid_mention(participant_id, reason="agent_unavailable"))
             continue
-        model = models.get(agent.primary_model_id) if agent.primary_model_id is not None else None
+        model = next(
+            (
+                models[model_id]
+                for model_id in (
+                    agent.primary_model_id,
+                    agent.fallback_model_id,
+                    default_model_id,
+                )
+                if model_id in models
+            ),
+            None,
+        )
         if model is None:
             output.append(_invalid_mention(participant_id, reason="agent_model_unavailable"))
             continue
@@ -541,6 +579,8 @@ async def _persist_planning_configuration_failure(
     *,
     scope: _SenderScope,
     trigger_message: ChatMessage,
+    error_code: str,
+    error_message: str,
     clock: datetime,
 ) -> tuple[ChatMessage, bool]:
     message_id = uuid.uuid5(trigger_message.id, "planning-configuration-failure")
@@ -553,7 +593,13 @@ async def _persist_planning_configuration_failure(
         agent_id=None,
         user_id=None,
         role="system",
-        content="任务规划未完成，请重试或改为单 Agent 处理。",
+        content="\n".join(
+            (
+                "任务规划未完成。",
+                f"错误：{error_message}",
+                f"错误码：{error_code}",
+            )
+        ),
         conversation_id=str(scope.session.id),
         participant_id=None,
         mentions=[],
@@ -640,10 +686,21 @@ async def enqueue_group_message(
             RuntimeAdapterError,
             RuntimePersistenceError,
         ) as exc:
+            error_code = (
+                exc.code if hasattr(exc, "code") else "planning_model_unavailable"
+            )
+            error_message = _planning_public_error_message(error_code)
+            logger.warning(
+                "Group planning intake failed: code=%s error=%s",
+                error_code,
+                exc,
+            )
             failure_message, failure_created = await _persist_planning_configuration_failure(
                 db,
                 scope=scope,
                 trigger_message=message,
+                error_code=error_code,
+                error_message=error_message,
                 clock=message.created_at or datetime.now(UTC),
             )
             return GroupMessageIntake(
@@ -656,7 +713,8 @@ async def enqueue_group_message(
                     *((message,) if created else ()),
                     *((failure_message,) if failure_created else ()),
                 ),
-                error_code=(exc.code if hasattr(exc, "code") else "planning_model_unavailable"),
+                error_code=error_code,
+                error_message=error_message,
             )
         return GroupMessageIntake(
             message=message,

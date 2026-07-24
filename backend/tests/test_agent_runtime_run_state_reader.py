@@ -373,4 +373,7 @@ async def test_rejected_start_without_checkpoint_is_a_failed_control_boundary() 
 
     assert view.execution_status == "failed"
     assert view.error_code == "reconciliation_required"
+    assert view.last_error == (
+        "Runtime could not reconcile the command after repeated attempts."
+    )
     assert view.applied_checkpoint_id is None

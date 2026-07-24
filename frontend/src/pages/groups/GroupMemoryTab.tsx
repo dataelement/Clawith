@@ -22,7 +22,9 @@ export default function GroupMemoryTab({
     members: GroupMember[];
 }) {
     const { t } = useTranslation();
-    const agents = members.filter((member) => member.participant_type === 'agent');
+    const agents = members.filter(
+        (member) => member.participant_type === 'agent' && !member.is_deleted,
+    );
     const [agentRefId, setAgentRefId] = useState<string | undefined>(agents[0]?.participant_ref_id);
 
     useEffect(() => {

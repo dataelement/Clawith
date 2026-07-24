@@ -209,12 +209,6 @@ def test_delivery_request_uses_the_documented_stable_keys() -> None:
     run_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
 
-    ack = DeliveryRequest(
-        tenant_id=tenant_id,
-        run_id=run_id,
-        kind="ack",
-        content="Accepted",
-    )
     waiting = DeliveryRequest(
         tenant_id=tenant_id,
         run_id=run_id,
@@ -233,9 +227,28 @@ def test_delivery_request_uses_the_documented_stable_keys() -> None:
         lifecycle_status="completed",
     )
 
-    assert ack.idempotency_key == f"run:{run_id}:ack"
     assert waiting.idempotency_key == f"run:{run_id}:waiting:interrupt-7"
     assert terminal.idempotency_key == f"run:{run_id}:terminal:completed"
+
+
+@pytest.mark.asyncio
+async def test_new_ack_delivery_requests_are_rejected() -> None:
+    run_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    db = _RecordingDB()
+
+    with pytest.raises(DeliveryServiceError) as exc_info:
+        await deliver_runtime_message(
+            db,
+            DeliveryRequest(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                kind="ack",
+                content="Accepted",
+            ),
+        )
+
+    assert exc_info.value.code == "invalid_delivery_request"
 
 
 @pytest.mark.asyncio
@@ -987,6 +1000,54 @@ async def test_runtime_failure_delivers_backend_error_code_and_run_id() -> None:
         "任务执行未完成。\n"
         "错误：HTTP 429 Too Many Requests\n"
         "错误码：model_call_failed\n"
+        f"Run ID：{run.id}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_file_protocol_failure_guides_user_to_regenerate() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    session = _session(tenant_id=tenant_id, agent_id=None, group_id=group_id)
+    run = _run(tenant_id=tenant_id, session=session, agent_id=agent_id)
+    participant = _participant(agent_id)
+    membership = GroupMember(
+        group_id=group_id,
+        participant_id=participant.id,
+        role="member",
+        removed_at=None,
+    )
+    db = _RecordingDB(
+        run,
+        None,
+        session,
+        _agent(tenant_id, agent_id),
+        participant,
+        _group(tenant_id, group_id),
+        membership,
+    )
+
+    receipt = await deliver_runtime_message(
+        db,
+        _terminal_request(
+            run,
+            status="failed",
+            failure_code="model_tool_protocol_violation",
+            failure_message=(
+                "本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
+                "请回复「重新生成」，我会基于当前对话重新尝试。"
+            ),
+        ),
+        clock=lambda: NOW,
+    )
+
+    assert receipt.status == "delivered"
+    assert _added(db, ChatMessage)[0].content == (
+        "任务执行未完成。\n"
+        "错误：本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
+        "请回复「重新生成」，我会基于当前对话重新尝试。\n"
+        "错误码：model_tool_protocol_violation\n"
         f"Run ID：{run.id}"
     )
 
