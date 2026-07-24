@@ -622,12 +622,12 @@ async def enqueue_group_message(
     content: str,
     mention_participant_ids: list[uuid.UUID] | None = None,
     message_id: uuid.UUID | None = None,
+    project_task_dispatch: bool = True,
     settings_override: Settings | None = None,
     clock: datetime | None = None,
 ) -> GroupMessageIntake:
     """Persist one public message and any first Runtime command without committing."""
     normalized_content = _required_content(content)
-    mention_ids = _dedupe_mentions(mention_participant_ids or [])
     scope = await _load_sender_scope(
         db,
         tenant_id=tenant_id,
@@ -635,6 +635,21 @@ async def enqueue_group_message(
         session_id=session_id,
         sender_participant_id=sender_participant_id,
     )
+    mention_ids = _dedupe_mentions(mention_participant_ids or [])
+    # Project groups are intentionally leader-led. A human's message is routed
+    # only to the designated business owner, even when the client rendered an
+    # explicit mention for another member. The group leader then uses normal Agent
+    # mentions to delegate work, so existing native groups remain unchanged.
+    if scope.role == "user" and scope.group.owner_agent_id is not None:
+        owner_result = await db.execute(
+            select(Participant.id).where(
+                Participant.type == "agent",
+                Participant.ref_id == scope.group.owner_agent_id,
+            )
+        )
+        owner_participant_id = owner_result.scalar_one_or_none()
+        if owner_participant_id is not None:
+            mention_ids = (owner_participant_id,)
     mentions = await _resolve_mentions(
         db,
         tenant_id=tenant_id,
@@ -652,6 +667,37 @@ async def enqueue_group_message(
         mentions=mentions,
         clock=clock or datetime.now(UTC),
     )
+    # HR-created project groups are Task-driven rather than a one-shot mention
+    # chain. A human instruction becomes one durable project task DAG whose
+    # entry task belongs to the group leader; its completion unlocks the next
+    # work packages. Ordinary native groups keep the existing mention behavior.
+    if (
+        project_task_dispatch
+        and scope.role == "user"
+        and scope.group.owner_agent_id is not None
+        and created
+    ):
+        from app.services.project_task_service import create_project_task_flow
+
+        task_flow = await create_project_task_flow(
+            db,
+            tenant_id=tenant_id,
+            group_id=scope.group.id,
+            session_id=scope.session.id,
+            trigger_message_id=message.id,
+            creator_id=scope.user_id,
+            goal=normalized_content,
+        )
+        if task_flow is not None:
+            _, handle = task_flow
+            return GroupMessageIntake(
+                message=message,
+                mentions=mentions,
+                dispatch_kind="single",
+                run_handles=(handle,) if handle is not None else (),
+                created=True,
+                new_public_messages=(message,),
+            )
     if not agent_mentions:
         return GroupMessageIntake(
             message=message,

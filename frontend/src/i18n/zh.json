@@ -41,7 +41,9 @@
     "language": "语言",
     "plaza": "经验广场",
     "okr": "OKR",
-    "groups": "群聊"
+    "groups": "群聊",
+    "projects": "项目流程",
+    "aiOperations": "AI 运营中心"
   },
   "talentMarket": {
     "title": "人才市场",
@@ -2308,7 +2310,15 @@
     "memberCount": "{{count}} 位成员",
     "showPanel": "展开面板",
     "hidePanel": "收起面板",
-    "dragToResize": "拖动调整宽度"
+    "dragToResize": "拖动调整宽度",
+    "decisionAiHint": "AI 会生成建议内容；审阅后发送给群主执行。",
+    "decisionAiInputLabel": "给群主的修改指令",
+    "decisionAiPlaceholder": "例如：将测试预算改为 300 美元，优先验证美国市场，并暂停其他渠道。",
+    "generateDecisionDraft": "AI 生成建议",
+    "generatingDecisionDraft": "正在生成建议…",
+    "sendToProjectLeader": "发送给群主",
+    "decisionDraftFailed": "AI 建议生成失败，请重试。",
+    "decisionReplyFailed": "发送给群主失败，请重试。"
   },
   "experience": {
     "title": "经验库",

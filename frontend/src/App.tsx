@@ -23,6 +23,8 @@ const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 const SSOEntry = lazy(() => import('./pages/SSOEntry'));
 const OKR = lazy(() => import('./pages/OKR'));
 const GroupsPage = lazy(() => import('./pages/groups/GroupsPage'));
+const Projects = lazy(() => import('./pages/Projects'));
+const AIOperations = lazy(() => import('./pages/AIOperations'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
@@ -290,7 +292,9 @@ export default function App() {
                     <Route path="agents/:id/chat" element={<AgentDetail />} />
                     <Route path="agents/:id/directory" element={<AgentDetail />} />
                     <Route path="agents/:id/settings" element={<AgentDetail />} />
-                    <Route path="groups" element={<GroupsPage />} />
+                        <Route path="groups" element={<GroupsPage />} />
+                    <Route path="projects" element={<Projects />} />
+                    <Route path="ai-operations" element={<AIOperations />} />
                     <Route path="groups/:groupId" element={<GroupsPage />} />
                     <Route path="groups/:groupId/:sessionId" element={<GroupsPage />} />
                     <Route path="messages" element={<Messages />} />

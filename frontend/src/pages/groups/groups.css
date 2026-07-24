@@ -666,6 +666,156 @@
     line-height: 1.6;
 }
 
+/* ── Project control tabs: dense operational cards rather than chat bubbles. ── */
+.project-panel-list {
+    display: grid;
+    gap: var(--space-2);
+}
+
+.project-decision-card {
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 24%, var(--border-default));
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent-subtle), var(--bg-primary) 72%);
+}
+
+.project-decision-kicker {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: var(--space-2);
+    color: var(--accent-primary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+}
+
+.project-decision-card h4 {
+    margin: 0 0 6px;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+}
+
+.project-decision-card p {
+    margin: 0 0 var(--space-3);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.65;
+    white-space: pre-wrap;
+}
+
+.project-decision-ai-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: -2px 0 var(--space-2);
+    color: var(--accent-primary);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.project-decision-input-wrap {
+    position: relative;
+}
+
+.project-decision-input {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 74px;
+    padding: var(--space-2) 78px 34px var(--space-2);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+    resize: vertical;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-xs);
+    line-height: 1.55;
+}
+
+.project-decision-input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+.project-decision-ai-action {
+    position: absolute;
+    right: 22px;
+    bottom: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 7px;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-primary));
+    color: var(--accent-primary);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.project-decision-ai-action:hover:not(:disabled) {
+    background: var(--accent-primary);
+    color: #fff;
+}
+
+.project-decision-ai-action:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+}
+
+.project-decision-submit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: var(--space-2);
+    padding: 7px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--text-primary);
+    color: var(--bg-primary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.project-decision-submit:hover:not(:disabled) { transform: translateY(-1px); }
+.project-decision-submit:disabled { cursor: not-allowed; opacity: .45; }
+
+.project-decision-error {
+    margin-top: 6px;
+    color: var(--danger, #dc2626);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.project-decision-sending {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 6px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+}
+
+.project-decision-empty {
+    display: grid;
+    place-items: center;
+    gap: var(--space-2);
+    min-height: 128px;
+    padding: var(--space-4);
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    text-align: center;
+}
+
 .group-invite-btn {
     display: flex;
     align-items: center;

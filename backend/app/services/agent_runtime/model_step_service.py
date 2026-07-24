@@ -1441,23 +1441,25 @@ class RuntimeModelStepService:
 
         raise AssertionError("model retry loop exhausted without an exception")
 
-    def _provider_retry_wait(
+    def _provider_retry_recovery(
         self,
         *,
-        context: RuntimeContext,
         model: LLMModel,
     ) -> ModelStepResult:
         attempts = self._model_retry_attempts + 1
         return ModelStepResult(
-            intent="wait",
-            waiting_request={
-                "waiting_type": "user",
-                "reason": (
-                    f"Model provider remained unavailable after {attempts} attempts. "
-                    "The Run checkpoint is preserved; resume to retry the model call."
-                ),
-                "correlation_id": f"model-provider-retry:{context.run_id}:{model.id}",
-            },
+            # This is a platform recovery, not a question for the user.  The
+            # executor records one bounded repair and immediately re-enters
+            # the model node with the same durable Run context.  That lets a
+            # transient provider outage recover without stopping a project
+            # group handoff chain on a manual "resume" action.
+            intent="text",
+            repair_code="model_provider_retry",
+            repair_instruction=(
+                f"The {model.provider} provider remained unavailable after "
+                f"{attempts} attempts. Automatically retry the same task; do "
+                "not ask the user to resend it."
+            ),
         )
 
     async def complete_once(
@@ -1557,8 +1559,7 @@ class RuntimeModelStepService:
                     primary_model=model,
                 )
                 if fallback is None:
-                    return self._provider_retry_wait(
-                        context=context,
+                    return self._provider_retry_recovery(
                         model=model,
                     )
                 fallback_application_tools = _application_tools_for_model(
@@ -1619,8 +1620,7 @@ class RuntimeModelStepService:
                 except Exception as fallback_error:
                     fallback_classification = classify_error(fallback_error)
                     if fallback_classification == FailoverErrorType.RETRYABLE:
-                        return self._provider_retry_wait(
-                            context=context,
+                        return self._provider_retry_recovery(
                             model=fallback,
                         )
                     logger.error(

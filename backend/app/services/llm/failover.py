@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+import httpx
+
 from .client import LLMError
 
 
@@ -33,7 +35,32 @@ def classify_error(error: Exception) -> FailoverErrorType:
     - Schema errors
     - Content policy violations
     """
-    error_msg = str(error).lower()
+    # httpx's timeout exceptions often intentionally have an empty message.
+    # Classifying only from ``str(error)`` therefore turns a real ReadTimeout
+    # into ``UNKNOWN`` and skips both retry and model failover.  Inspect the
+    # exception type (and wrapped causes) first so every provider gets the
+    # same transient-failure behaviour.
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        next_error = current.__cause__ or current.__context__
+        current = next_error
+    if any(
+        isinstance(
+            item,
+            (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                ConnectionError,
+                TimeoutError,
+            ),
+        )
+        for item in chain
+    ):
+        return FailoverErrorType.RETRYABLE
+
+    error_msg = " ".join(str(item) for item in chain).lower()
 
     # Non-retryable: authentication and authorization
     if any(kw in error_msg for kw in ["auth", "unauthorized", "forbidden", "invalid api key", "api key invalid"]):

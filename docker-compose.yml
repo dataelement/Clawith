@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: clawith
       POSTGRES_DB: clawith
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./clawithdata/pgdata:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U clawith" ]
       interval: 5s
@@ -22,7 +22,7 @@ services:
     networks:
       - default
     volumes:
-      - redisdata:/data
+      - ./clawithdata/redisdata:/data
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -103,10 +103,6 @@ services:
       - default
     depends_on:
       - backend
-
-volumes:
-  pgdata:
-  redisdata:
 
 
 networks:

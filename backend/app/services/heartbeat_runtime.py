@@ -13,6 +13,7 @@ from app.models.agent import Agent
 from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
+from app.services.llm.model_resolution import resolve_active_agent_model
 
 
 class HeartbeatRuntimeIntakeError(RuntimeError):
@@ -59,23 +60,32 @@ def schedule_occurrence_id(
     return uuid.uuid5(schedule_id, f"schedule-occurrence:{timestamp}")
 
 
-def _require_background_agent(agent: Agent, *, mode: str) -> uuid.UUID:
+async def _require_background_agent(
+    db: AsyncSession,
+    agent: Agent,
+    *,
+    mode: str,
+) -> tuple[uuid.UUID, uuid.UUID]:
     if agent.tenant_id is None:
         raise HeartbeatRuntimeIntakeError(
             "agent_tenant_missing",
             f"Runtime {mode} Agent has no tenant",
         )
-    if agent.primary_model_id is None:
-        raise HeartbeatRuntimeIntakeError(
-            "agent_model_missing",
-            f"Runtime {mode} Agent has no primary model",
-        )
+    model_id = agent.primary_model_id
+    if model_id is None:
+        model = await resolve_active_agent_model(db, agent)
+        if model is None:
+            raise HeartbeatRuntimeIntakeError(
+                "agent_model_missing",
+                f"Runtime {mode} Agent has no active primary, fallback, or tenant default model",
+            )
+        model_id = model.id
     if agent.is_expired or agent.status not in {"creating", "running", "idle"}:
         raise HeartbeatRuntimeIntakeError(
             "agent_unavailable",
             f"Runtime {mode} Agent is unavailable",
         )
-    return agent.tenant_id
+    return agent.tenant_id, model_id
 
 
 async def enqueue_heartbeat_runtime(
@@ -96,7 +106,7 @@ async def enqueue_heartbeat_runtime(
     )
     if not decision.use_v2:
         return None
-    tenant_id = _require_background_agent(agent, mode="Heartbeat")
+    tenant_id, model_id = await _require_background_agent(db, agent, mode="Heartbeat")
     normalized_instruction = instruction.strip()
     if not normalized_instruction:
         raise HeartbeatRuntimeIntakeError(
@@ -117,7 +127,7 @@ async def enqueue_heartbeat_runtime(
             source_execution_id=source_execution_id,
             goal=normalized_instruction,
             run_kind="background",
-            model_id=agent.primary_model_id,
+            model_id=model_id,
             delivery_status="not_required",
             idempotency_key=f"start:{source_execution_id}",
             payload={
@@ -149,7 +159,7 @@ async def enqueue_oneshot_runtime(
     )
     if not decision.use_v2:
         return None
-    tenant_id = _require_background_agent(agent, mode="oneshot")
+    tenant_id, model_id = await _require_background_agent(db, agent, mode="oneshot")
     normalized_prompt = prompt.strip()
     if not normalized_prompt:
         raise HeartbeatRuntimeIntakeError(
@@ -178,7 +188,7 @@ async def enqueue_oneshot_runtime(
             source_execution_id=source_execution_id,
             goal=normalized_prompt,
             run_kind="background",
-            model_id=agent.primary_model_id,
+            model_id=model_id,
             requested_model_turn_limit=requested_model_turn_limit,
             delivery_status="not_required",
             idempotency_key=f"start:{source_execution_id}",
@@ -217,7 +227,7 @@ async def enqueue_schedule_runtime(
     )
     if not decision.use_v2:
         return None
-    tenant_id = _require_background_agent(agent, mode="schedule")
+    tenant_id, model_id = await _require_background_agent(db, agent, mode="schedule")
     normalized_instruction = instruction.strip()
     if not normalized_instruction:
         raise HeartbeatRuntimeIntakeError(
@@ -237,7 +247,7 @@ async def enqueue_schedule_runtime(
             source_execution_id=source_execution_id,
             goal=f"[自动调度任务] {normalized_instruction}",
             run_kind="background",
-            model_id=agent.primary_model_id,
+            model_id=model_id,
             delivery_status="not_required",
             idempotency_key=f"start:{source_execution_id}",
             payload={

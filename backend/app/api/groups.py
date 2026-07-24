@@ -67,6 +67,7 @@ class GroupOut(BaseModel):
     name: str
     description: str | None = None
     created_by_participant_id: uuid.UUID
+    owner_agent_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -242,6 +243,7 @@ _FORBIDDEN_CODES = {
 _CONFLICT_CODES = {
     "group_member_already_active",
     "group_last_manager_required",
+    "group_owner_required",
 }
 
 

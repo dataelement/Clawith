@@ -2439,7 +2439,7 @@ async def test_provider_validation_error_is_redacted_from_runtime_delivery() -> 
 
 
 @pytest.mark.asyncio
-async def test_retryable_primary_error_without_fallback_pauses_for_resume() -> None:
+async def test_retryable_primary_error_without_fallback_retries_the_run_automatically() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)
@@ -2459,9 +2459,44 @@ async def test_retryable_primary_error_without_fallback_pauses_for_resume() -> N
         complete,
     ).complete_once(state, _context(state))
 
-    assert result.intent == "wait"
-    assert result.waiting_request is not None
-    assert result.waiting_request["waiting_type"] == "user"
-    assert str(result.waiting_request["correlation_id"]).startswith("model-provider-retry:")
-    assert "4 attempts" in str(result.waiting_request["reason"])
+    assert result.intent == "text"
+    assert result.repair_code == "model_provider_retry"
+    assert result.repair_instruction is not None
+    assert "Automatically retry" in result.repair_instruction
     assert calls == 4
+
+
+@pytest.mark.asyncio
+async def test_empty_httpx_read_timeout_is_retried_before_model_failover() -> None:
+    import httpx
+
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    calls = 0
+
+    async def complete(*args, **kwargs):
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("")
+        return LLMCompletionStep(
+            content="Recovered after timeout",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=12),
+        )
+
+    result = await _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.finish_content == "Recovered after timeout"
+    assert calls == 2

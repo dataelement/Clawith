@@ -32,6 +32,8 @@ from app.services.llm.multimodal_content import parse_multimodal_content
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_STATUSES = frozenset({"waiting_user", "waiting_external", "waiting_agent"})
+_MODEL_PROVIDER_RECOVERY_CODE = "model_provider_retry"
+_MODEL_PROVIDER_RECOVERY_LIMIT = 1
 
 ModelIntent = Literal["tool_calls", "wait", "finish", "text", "error"]
 VerificationOutcome = Literal["pass", "repair", "fail"]
@@ -679,7 +681,11 @@ class DeterministicRuntimeNodeExecutor:
                 repair_limit = (
                     WRITE_FILE_PROTOCOL_REPAIR_LIMIT
                     if is_write_file_repair
-                    else 1
+                    else (
+                        _MODEL_PROVIDER_RECOVERY_LIMIT
+                        if repair_code == _MODEL_PROVIDER_RECOVERY_CODE
+                        else 1
+                    )
                 )
                 repair_counter_key = (
                     WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY
@@ -690,15 +696,25 @@ class DeterministicRuntimeNodeExecutor:
                     violation_code = (
                         "finish_protocol_violation"
                         if repair_code == "missing_finish"
-                        else "model_tool_protocol_violation"
+                        else (
+                            "model_provider_unavailable"
+                            if repair_code == _MODEL_PROVIDER_RECOVERY_CODE
+                            else "model_tool_protocol_violation"
+                        )
                     )
                     error_message = (
                         WRITE_FILE_PROTOCOL_FAILURE_MESSAGE
                         if is_write_file_repair
                         else (
+                            "The model provider remained unavailable after "
+                            "automatic retries. Configure a fallback model or "
+                            "try again shortly."
+                            if repair_code == _MODEL_PROVIDER_RECOVERY_CODE
+                            else (
                             f"The model repeated the {repair_code!r} protocol "
                             f"error after {repair_limit} bounded repair attempt(s). "
                             "Native tool calling is not working for this Run."
+                            )
                         )
                     )
                     lifecycle.update(

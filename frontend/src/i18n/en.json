@@ -59,7 +59,9 @@
     "language": "Language",
     "plaza": "Plaza",
     "okr": "OKR",
-    "groups": "Groups"
+    "groups": "Groups",
+    "projects": "Project workflows",
+    "aiOperations": "AI Operations"
   },
   "talentMarket": {
     "title": "Talent Market",
@@ -2185,7 +2187,15 @@
     "memberCount_one": "{{count}} member",
     "showPanel": "Show panel",
     "hidePanel": "Hide panel",
-    "dragToResize": "Drag to resize"
+    "dragToResize": "Drag to resize",
+    "decisionAiHint": "AI will generate a suggestion. Review it before sending it to the group leader.",
+    "decisionAiInputLabel": "Instruction for the group leader",
+    "decisionAiPlaceholder": "For example: cap the test budget at $300, validate the US market first, and pause other channels.",
+    "generateDecisionDraft": "Generate with AI",
+    "generatingDecisionDraft": "Generating suggestion…",
+    "sendToProjectLeader": "Send to group leader",
+    "decisionDraftFailed": "Could not generate the AI suggestion. Please try again.",
+    "decisionReplyFailed": "Could not send the instruction to the group leader. Please try again."
   },
   "experience": {
     "title": "Experience",

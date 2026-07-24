@@ -22,6 +22,8 @@ import {
     IconBell,
     IconBuildingMonument,
     IconUsersGroup,
+    IconBriefcase2,
+    IconActivityHeartbeat,
     IconSearch,
     IconX,
     IconPin,
@@ -1078,6 +1080,18 @@ export default function Layout() {
                             {groupUnread > 0 && (
                                 <span className="sidebar-item-badge">{groupUnread > 99 ? '99+' : groupUnread}</span>
                             )}
+                        </NavLink>
+                        <NavLink to="/projects" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconBriefcase2 size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.projects', '项目流程')}</span>
+                        </NavLink>
+                        <NavLink to="/ai-operations" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+                            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                                <IconActivityHeartbeat size={14} stroke={1.5} />
+                            </span>
+                            <span className="sidebar-item-text">{t('nav.aiOperations', 'AI 运营中心')}</span>
                         </NavLink>
                     </div>
                 </div>

@@ -126,14 +126,21 @@ class AgentManager:
         else:
             logger.info(f"Template dir not found ({template_dir}), creating minimal workspace")
             await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
-            await storage.write_text(f"{agent_prefix}/tasks.json", "[]", encoding="utf-8")
-            for placeholder in (
-                "workspace/.gitkeep",
-                "workspace/knowledge_base/.gitkeep",
-                "memory/.gitkeep",
-                "skills/.gitkeep",
-            ):
-                await storage.write_text(f"{agent_prefix}/{placeholder}", "", encoding="utf-8")
+
+        # Object stores do not retain empty directories.  Materialize the
+        # standard roots even when a template was copied, otherwise a newly
+        # created Agent can expose a directory in the UI that resolves to a
+        # 404 before its first file is written.
+        for placeholder in (
+            "workspace/.gitkeep",
+            "workspace/knowledge_base/.gitkeep",
+            "memory/.gitkeep",
+            "skills/.gitkeep",
+            "daily_reports/.gitkeep",
+        ):
+            placeholder_key = f"{agent_prefix}/{placeholder}"
+            if not await storage.exists(placeholder_key):
+                await storage.write_text(placeholder_key, "", encoding="utf-8")
 
         # Customize soul.md
         # Get creator name

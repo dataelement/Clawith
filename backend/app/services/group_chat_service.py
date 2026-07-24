@@ -789,8 +789,8 @@ async def remove_group_member(
     actor_participant_id: uuid.UUID,
     member_id: uuid.UUID,
 ) -> GroupMember:
-    """Remove an active member while preserving a manager for a live group."""
-    await _active_group(db, tenant_id=tenant_id, group_id=group_id, lock=True)
+    """Remove an active member while preserving required project-group roles."""
+    group = await _active_group(db, tenant_id=tenant_id, group_id=group_id, lock=True)
     await _human_actor(
         db,
         tenant_id=tenant_id,
@@ -810,6 +810,12 @@ async def remove_group_member(
     target = target_result.scalar_one_or_none()
     if target is None:
         raise GroupChatServiceError("group_member_not_found", "Active group member not found")
+
+    if target.role == "owner" or target.participant_id == await _project_owner_participant_id(db, group):
+        raise GroupChatServiceError(
+            "group_owner_required",
+            "The project group leader is required and cannot be removed from this group",
+        )
 
     if target.role == "manager":
         other_manager_result = await db.execute(
@@ -831,6 +837,22 @@ async def remove_group_member(
     target.removed_at = _now()
     await db.flush()
     return target
+
+
+async def _project_owner_participant_id(
+    db: AsyncSession,
+    group: Group,
+) -> uuid.UUID | None:
+    """Resolve a project group-leader identity without trusting membership role alone."""
+    if group.owner_agent_id is None:
+        return None
+    result = await db.execute(
+        select(Participant.id).where(
+            Participant.type == "agent",
+            Participant.ref_id == group.owner_agent_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def create_group_session(

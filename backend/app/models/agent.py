@@ -153,7 +153,11 @@ class Agent(Base):
         """Whether this agent has an API key configured."""
         return bool(self.api_key_hash)
     permissions: Mapped[list["AgentPermission"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
-    tasks: Mapped[list["Task"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
+    tasks: Mapped[list["Task"]] = relationship(
+        back_populates="agent",
+        cascade="all, delete-orphan",
+        foreign_keys="Task.agent_id",
+    )
     channel_config: Mapped["ChannelConfig | None"] = relationship(back_populates="agent", uselist=False)
     primary_model: Mapped["LLMModel | None"] = relationship(foreign_keys=[primary_model_id])
     fallback_model: Mapped["LLMModel | None"] = relationship(foreign_keys=[fallback_model_id])

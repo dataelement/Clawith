@@ -217,6 +217,18 @@ def _group_cutoff(
         initial_input.get("message_id"),
         field="message_id",
     )
+    # A Task may execute in a group session after the public message that
+    # created the work package.  Its Run source is the Task ID (not that
+    # message), so it carries the immutable message cutoff without occupying a
+    # chat scheduling lane. Chat-originated Runs retain the stricter position
+    # identity checks below.
+    if source_type == "task":
+        if message_id != cutoff_id:
+            raise ContextBuildError(
+                "invalid_group_context_cutoff",
+                "Project Task payload must retain its triggering Message Position",
+            )
+        return MessagePosition(created_at=cutoff_created_at, message_id=cutoff_id)
     if (
         source_type != "chat"
         or source_id != str(cutoff_id)

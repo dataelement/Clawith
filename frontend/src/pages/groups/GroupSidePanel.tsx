@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconPlus, IconRobot, IconSettings, IconUser, IconX } from '@tabler/icons-react';
+import { IconCheck, IconCircleDot, IconPlus, IconRobot, IconSettings, IconSparkles, IconUser, IconX } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
 import GroupTextFileEditor from './GroupTextFileEditor';
 import GroupWorkspaceTab from './GroupWorkspaceTab';
 import GroupMemoryTab from './GroupMemoryTab';
-import type { GroupMember } from '../../types/group';
+import type { GroupMember, ProjectGroupDecision, ProjectGroupTask } from '../../types/group';
 
-type PanelTab = 'members' | 'announcement' | 'workspace' | 'memory';
+type PanelTab = 'members' | 'tasks' | 'decisions' | 'announcement' | 'workspace' | 'memory';
 
 const PANEL_WIDTH_KEY = 'groups.panelWidth';
 // Default sized by measurement, not taste: a long realistic member name — 12 CJK chars plus the
@@ -45,6 +45,45 @@ export default function GroupSidePanel({
 }: GroupSidePanelProps) {
     const { t } = useTranslation();
     const [tab, setTab] = useState<PanelTab>('members');
+    const [tasks, setTasks] = useState<ProjectGroupTask[] | null>(null);
+    const [tasksError, setTasksError] = useState(false);
+    const [startingTasks, setStartingTasks] = useState(false);
+    const [decisions, setDecisions] = useState<ProjectGroupDecision[] | null>(null);
+    const [decisionsError, setDecisionsError] = useState(false);
+    const [decisionDrafts, setDecisionDrafts] = useState<Record<string, string>>({});
+    const [generatingDecisionId, setGeneratingDecisionId] = useState<string | null>(null);
+    const [replyingDecisionId, setReplyingDecisionId] = useState<string | null>(null);
+    const [decisionReplyErrors, setDecisionReplyErrors] = useState<Record<string, string>>({});
+
+    const reloadProjectTasks = () => {
+        setTasksError(false);
+        return groupApi.projectTasks(groupId)
+            .then(setTasks)
+            .catch(() => {
+                setTasks([]);
+                setTasksError(true);
+            });
+    };
+
+    const reloadProjectDecisions = () => {
+        setDecisionsError(false);
+        return groupApi.projectDecisions(groupId)
+            .then(setDecisions)
+            .catch(() => {
+                setDecisions([]);
+                setDecisionsError(true);
+            });
+    };
+
+    useEffect(() => {
+        if (tab !== 'tasks') return;
+        void reloadProjectTasks();
+    }, [groupId, tab]);
+
+    useEffect(() => {
+        if (tab !== 'decisions') return;
+        void reloadProjectDecisions();
+    }, [groupId, tab]);
 
     // The panel's left edge is a resize handle; the width is remembered across sessions.
     const [width, setWidth] = useState(() => {
@@ -76,6 +115,63 @@ export default function GroupSidePanel({
     const people = members.filter((member) => member.participant_type === 'user');
     const agents = members.filter((member) => member.participant_type === 'agent');
 
+    const clearDecisionError = (decisionId: string) => {
+        setDecisionReplyErrors((current) => {
+            if (!current[decisionId]) return current;
+            const next = { ...current };
+            delete next[decisionId];
+            return next;
+        });
+    };
+
+    const generateDecisionDraft = (decision: ProjectGroupDecision) => {
+        if (generatingDecisionId || replyingDecisionId) return;
+        setGeneratingDecisionId(decision.id);
+        clearDecisionError(decision.id);
+        void groupApi.generateProjectDecisionDraft(
+            groupId,
+            decision.id,
+            (decisionDrafts[decision.id] || '').trim(),
+        )
+            .then(({ draft }) => {
+                setDecisionDrafts((current) => ({ ...current, [decision.id]: draft }));
+            })
+            .catch((error: unknown) => {
+                setDecisionReplyErrors((current) => ({
+                    ...current,
+                    [decision.id]: error instanceof Error
+                        ? error.message
+                        : t('groups.decisionDraftFailed', 'AI 建议生成失败，请重试。'),
+                }));
+            })
+            .finally(() => setGeneratingDecisionId(null));
+    };
+
+    const submitDecisionModification = (decision: ProjectGroupDecision) => {
+        const instruction = (decisionDrafts[decision.id] || '').trim();
+        if (!instruction || replyingDecisionId || generatingDecisionId) return;
+        setReplyingDecisionId(decision.id);
+        clearDecisionError(decision.id);
+        void groupApi.replyProjectDecision(groupId, decision.id, instruction, 'modification')
+            .then(() => {
+                setDecisionDrafts((current) => {
+                    const next = { ...current };
+                    delete next[decision.id];
+                    return next;
+                });
+                return reloadProjectDecisions();
+            })
+            .catch((error: unknown) => {
+                setDecisionReplyErrors((current) => ({
+                    ...current,
+                    [decision.id]: error instanceof Error
+                        ? error.message
+                        : t('groups.decisionReplyFailed', 'AI 修改指令提交失败，请重试。'),
+                }));
+            })
+            .finally(() => setReplyingDecisionId(null));
+    };
+
     const renderMember = (member: GroupMember) => (
         <div key={member.id} className="group-member-row">
             <span className={`group-avatar sm ${member.participant_type === 'agent' ? 'agent' : ''}`}>
@@ -88,6 +184,9 @@ export default function GroupSidePanel({
                     {member.display_name}
                     {member.role === 'manager' && (
                         <span className="group-badge-manager">{t('groups.manager', '群管理')}</span>
+                    )}
+                    {member.role === 'owner' && (
+                        <span className="group-badge-manager">{t('groups.owner', '项目群主')}</span>
                     )}
                     {member.is_deleted && (
                         <span className="group-badge-deleted">{t('groups.deletedBadge', '已删除')}</span>
@@ -102,6 +201,8 @@ export default function GroupSidePanel({
 
     const TABS: { key: PanelTab; label: string }[] = [
         { key: 'members', label: `${t('groups.members', '成员')} · ${members.length}` },
+        { key: 'tasks', label: t('groups.tasks', '任务') },
+        { key: 'decisions', label: t('groups.decisions', '待决') },
         { key: 'announcement', label: t('groups.announcement', '群公告') },
         { key: 'workspace', label: t('groups.workspace', '文件') },
         { key: 'memory', label: t('groups.memory', '记忆') },
@@ -173,6 +274,122 @@ export default function GroupSidePanel({
                         </div>
                         {people.map(renderMember)}
                     </>
+                )}
+
+                {tab === 'tasks' && (
+                    <div className="project-panel-list">
+                        {tasks === null && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
+                        {tasksError && <div className="group-member-hint">{t('groups.noProjectTasks', '此群尚未创建项目任务。')}</div>}
+                        {tasks?.map((task) => (
+                            <div key={task.id} className="group-member-row" style={{ alignItems: 'flex-start' }}>
+                                <span className="group-avatar sm agent"><IconRobot size={14} stroke={1.6} /></span>
+                                <div className="group-member-body">
+                                    <div className="group-member-name">{task.title}</div>
+                                    <div className="group-member-hint">{task.agent_name} · {task.status === 'blocked' ? '被依赖阻塞' : task.status}</div>
+                                    {task.dependency_task_ids.length > 0 && (
+                                        <div className="group-member-hint">{t('groups.taskDependencies', '依赖')} {task.dependency_task_ids.length} 项任务</div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                        {tasks?.length === 0 && !tasksError && (
+                            <>
+                                <div className="group-member-hint">{t('groups.noProjectTasks', '此群尚未创建项目任务。')}</div>
+                                <button
+                                    type="button"
+                                    className="group-invite-btn"
+                                    disabled={startingTasks}
+                                    onClick={() => {
+                                        setStartingTasks(true);
+                                        void groupApi.startProjectTasks(groupId)
+                                            .then(reloadProjectTasks)
+                                            .finally(() => setStartingTasks(false));
+                                    }}
+                                >
+                                    <IconPlus size={14} stroke={1.8} />
+                                    {startingTasks ? t('groups.startingTasks', '正在启动...') : t('groups.startProjectTasks', '启动任务流')}
+                                </button>
+                            </>
+                        )}
+                    </div>
+                )}
+
+                {tab === 'decisions' && (
+                    <div className="project-panel-list">
+                        {decisions === null && <div className="group-member-hint">{t('common.loading', '加载中...')}</div>}
+                        {decisionsError && <div className="group-member-hint">{t('groups.noProjectDecisions', '此群没有待你决策的事项。')}</div>}
+                        {decisions?.map((decision) => {
+                            const draft = decisionDrafts[decision.id] || '';
+                            const isGenerating = generatingDecisionId === decision.id;
+                            const isReplying = replyingDecisionId === decision.id;
+                            const replyError = decisionReplyErrors[decision.id];
+                            return (
+                                <article key={decision.id} className="project-decision-card">
+                                    <div className="project-decision-kicker">
+                                        <IconCircleDot size={13} stroke={1.8} />
+                                        <span>{decision.requesting_agent_name || t('groups.projectLeader', '项目群主')} {t('groups.decisionRequested', '请求决策')}</span>
+                                    </div>
+                                    <h4>{decision.title}</h4>
+                                    <p>{decision.context}</p>
+                                    <div className="project-decision-ai-hint">
+                                        <IconSparkles size={13} stroke={1.8} />
+                                        {t('groups.decisionAiHint', 'AI 会生成建议内容；审阅后发送给群主执行。')}
+                                    </div>
+                                    <div className="project-decision-input-wrap">
+                                        <textarea
+                                            className="project-decision-input"
+                                            value={draft}
+                                            disabled={isGenerating || isReplying}
+                                            aria-label={t('groups.decisionAiInputLabel', '给群主的修改指令')}
+                                            placeholder={t('groups.decisionAiPlaceholder', '例如：将测试预算改为 300 美元，优先验证美国市场，并暂停其他渠道。')}
+                                            onChange={(event) => {
+                                                setDecisionDrafts((current) => ({
+                                                    ...current,
+                                                    [decision.id]: event.target.value,
+                                                }));
+                                                clearDecisionError(decision.id);
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                                                    event.preventDefault();
+                                                    submitDecisionModification(decision);
+                                                }
+                                            }}
+                                        />
+                                        <button
+                                            type="button"
+                                            className="project-decision-ai-action"
+                                            disabled={isGenerating || isReplying}
+                                            title={t('groups.generateDecisionDraft', 'AI 生成建议')}
+                                            aria-label={t('groups.generateDecisionDraft', 'AI 生成建议')}
+                                            onClick={() => generateDecisionDraft(decision)}
+                                        >
+                                            <IconSparkles size={13} />
+                                            {isGenerating ? t('groups.generatingDecisionDraft', '生成中…') : 'AI'}
+                                        </button>
+                                    </div>
+                                    {replyError && <div className="project-decision-error">{replyError}</div>}
+                                    <button
+                                        type="button"
+                                        className="project-decision-submit"
+                                        disabled={!draft.trim() || isGenerating || isReplying}
+                                        onClick={() => submitDecisionModification(decision)}
+                                    >
+                                        <IconCheck size={14} stroke={1.8} />
+                                        {t('groups.sendToProjectLeader', '发送给群主')}
+                                    </button>
+                                    {isGenerating && <div className="project-decision-sending"><IconSparkles size={13} /> {t('groups.generatingDecisionDraft', '正在生成建议…')}</div>}
+                                    {isReplying && <div className="project-decision-sending"><IconCheck size={13} /> {t('groups.sendingDecision', '正在提交…')}</div>}
+                                </article>
+                            );
+                        })}
+                        {decisions?.length === 0 && !decisionsError && (
+                            <div className="project-decision-empty">
+                                <IconCheck size={18} stroke={1.8} />
+                                <span>{t('groups.noProjectDecisions', '此群没有待你决策的事项。')}</span>
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {tab === 'announcement' && (

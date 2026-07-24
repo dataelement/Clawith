@@ -3,7 +3,7 @@
 import uuid
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 
@@ -21,6 +21,8 @@ from app.models.identity import IdentityProvider
 from app.models.user import User
 from app.services.org_sync_adapter import derive_member_department_paths
 from app.models.agent import Agent
+from app.models.agent_run import AgentRun
+from app.models.agent_run_event import AgentRunEvent
 from app.models.llm import LLMModel
 from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
 from app.schemas.schemas import (
@@ -702,6 +704,160 @@ async def get_enterprise_stats(
         "running_agents": running_agents.scalar() or 0,
         "total_users": total_users.scalar() or 0,
         "pending_approvals": pending_approvals.scalar() or 0,
+    }
+
+
+# ─── AI Operations Center ──────────────────────────────
+
+_AI_OPERATIONS_PERIODS = frozenset({7, 30, 90})
+
+
+def _percentage(numerator: int, denominator: int) -> float:
+    return round((numerator / denominator) * 100, 1) if denominator else 0.0
+
+
+@router.get("/ai-operations")
+async def get_ai_operations(
+    days: int = 30,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return tenant-scoped AI Run reliability, failure, and report records.
+
+    The center is built entirely from the immutable AgentRunEvent ledger, so
+    success rates and failure details remain auditable even after a chat or
+    project view has changed.
+    """
+    if days not in _AI_OPERATIONS_PERIODS:
+        raise HTTPException(status_code=422, detail="days must be one of 7, 30, or 90")
+    if current_user.tenant_id is None:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=days)
+    terminal_events = ("run_completed", "run_failed", "run_cancelled")
+    result = await db.execute(
+        select(AgentRunEvent, AgentRun, Agent, LLMModel)
+        .join(
+            AgentRun,
+            (AgentRun.tenant_id == AgentRunEvent.tenant_id)
+            & (AgentRun.id == AgentRunEvent.run_id),
+        )
+        .outerjoin(Agent, Agent.id == AgentRun.agent_id)
+        .outerjoin(LLMModel, LLMModel.id == AgentRun.model_id)
+        .where(
+            AgentRunEvent.tenant_id == current_user.tenant_id,
+            AgentRunEvent.event_type.in_(terminal_events),
+            AgentRunEvent.created_at >= period_start,
+        )
+        .order_by(AgentRunEvent.created_at.desc(), AgentRunEvent.id.desc())
+    )
+    rows = result.all()
+
+    daily: dict[str, dict[str, int | str]] = {}
+    for offset in range(days - 1, -1, -1):
+        day = (now - timedelta(days=offset)).date().isoformat()
+        daily[day] = {"date": day, "success": 0, "failed": 0, "cancelled": 0}
+
+    totals = {"success": 0, "failed": 0, "cancelled": 0}
+    agent_metrics: dict[str, dict] = {}
+    model_metrics: dict[str, dict] = {}
+    failures: list[dict] = []
+    reports: list[dict] = []
+
+    for event, run, agent, model in rows:
+        outcome = {
+            "run_completed": "success",
+            "run_failed": "failed",
+            "run_cancelled": "cancelled",
+        }[event.event_type]
+        totals[outcome] += 1
+        day = event.created_at.date().isoformat()
+        if day in daily:
+            daily[day][outcome] = int(daily[day][outcome]) + 1
+
+        agent_id = str(run.agent_id) if run.agent_id is not None else "orchestration"
+        agent_name = agent.name if agent is not None else "群组规划器"
+        agent_row = agent_metrics.setdefault(
+            agent_id,
+            {
+                "agent_id": None if run.agent_id is None else agent_id,
+                "agent_name": agent_name,
+                "success": 0,
+                "failed": 0,
+                "cancelled": 0,
+            },
+        )
+        agent_row[outcome] += 1
+
+        model_name = model.label or model.model if model is not None else "未记录模型"
+        model_row = model_metrics.setdefault(
+            str(run.model_id) if run.model_id is not None else "unknown",
+            {
+                "model_id": None if run.model_id is None else str(run.model_id),
+                "model_name": model_name,
+                "provider": model.provider if model is not None else "unknown",
+                "success": 0,
+                "failed": 0,
+                "cancelled": 0,
+            },
+        )
+        model_row[outcome] += 1
+
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if outcome == "failed" and len(failures) < 50:
+            failures.append(
+                {
+                    "run_id": str(run.id),
+                    "agent_id": None if run.agent_id is None else str(run.agent_id),
+                    "agent_name": agent_name,
+                    "model_name": model_name,
+                    "error_code": payload.get("error_code") or payload.get("reason") or "runtime_failed",
+                    "error_message": payload.get("error_message") or "任务执行未完成。",
+                    "goal": run.goal,
+                    "created_at": event.created_at.isoformat(),
+                }
+            )
+        if outcome == "success" and len(reports) < 50:
+            reports.append(
+                {
+                    "run_id": str(run.id),
+                    "agent_id": None if run.agent_id is None else str(run.agent_id),
+                    "agent_name": agent_name,
+                    "title": run.goal[:120] or "AI 任务结果",
+                    "report_type": (
+                        "HR 团队方案"
+                        if payload.get("report_type") == "hr_team_plan"
+                        else {
+                        "chat": "对话交付",
+                        "task": "任务报告",
+                        "trigger": "触发器报告",
+                        "heartbeat": "自动巡检报告",
+                        "a2a": "协作交付",
+                        }.get(run.source_type, "AI 生成报告")
+                    ),
+                    "created_at": event.created_at.isoformat(),
+                }
+            )
+
+    def with_rate(row: dict) -> dict:
+        completed = int(row["success"]) + int(row["failed"])
+        return {**row, "total": completed + int(row["cancelled"]), "success_rate": _percentage(int(row["success"]), completed)}
+
+    completed = totals["success"] + totals["failed"]
+    return {
+        "period": {"days": days, "from": period_start.isoformat(), "to": now.isoformat()},
+        "overview": {
+            "total_runs": sum(totals.values()),
+            **totals,
+            "success_rate": _percentage(totals["success"], completed),
+            "failure_rate": _percentage(totals["failed"], completed),
+        },
+        "daily": list(daily.values()),
+        "agents": sorted((with_rate(row) for row in agent_metrics.values()), key=lambda row: (-row["total"], row["agent_name"]))[:12],
+        "models": sorted((with_rate(row) for row in model_metrics.values()), key=lambda row: (-row["total"], row["model_name"]))[:12],
+        "failures": failures,
+        "reports": reports,
     }
 
 

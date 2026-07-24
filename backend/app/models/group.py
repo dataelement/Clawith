@@ -47,6 +47,14 @@ class Group(Base):
         ),
         nullable=False,
     )
+    # A project group may designate one Agent as its business owner (group leader).
+    # This is deliberately separate from GroupMember.role="manager", which
+    # remains a human-facing administration permission.
+    owner_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", name="fk_groups_owner_agent_id_agents", ondelete="SET NULL"),
+        nullable=True,
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -62,7 +70,7 @@ class GroupMember(Base):
     __tablename__ = "group_members"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_group_members"),
-        CheckConstraint("role IN ('manager', 'member')", name="ck_group_members_role"),
+        CheckConstraint("role IN ('manager', 'owner', 'member')", name="ck_group_members_role"),
         UniqueConstraint("group_id", "participant_id", name="uq_group_members_group_participant"),
         Index("ix_group_members_participant_id", "participant_id"),
     )

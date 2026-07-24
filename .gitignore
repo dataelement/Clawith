@@ -46,3 +46,4 @@ backend/tests/test_agent_api_live.py
 backend/app/scripts/toolathlon_benchmark.py
 backend/app/services/agent_runtime/benchmark/
 backend/tests/test_agent_runtime_benchmark.py
+clawithdata/

@@ -148,7 +148,10 @@ class TaskRuntimeCompletionHandler:
                     label = "督办" if is_supervision else "任务"
                     content = f"⏹️ {label}执行已取消：{detail}"
                 else:
-                    task.status = "pending"
+                    # A project task needs a leader decision after a real
+                    # failure; putting it back to pending silently retried it
+                    # without changing the failed dependency chain.
+                    task.status = "failed" if task.project_workflow_id is not None else "pending"
                     task.completed_at = None
                     label = "督办" if is_supervision else "任务"
                     content = f"❌ {label}执行失败：{detail}"
@@ -160,6 +163,16 @@ class TaskRuntimeCompletionHandler:
                     )
                 )
                 await db.flush()
+                if task.project_workflow_id is not None:
+                    from app.services.project_task_service import advance_project_task
+
+                    await advance_project_task(
+                        db,
+                        task=task,
+                        tenant_id=run.tenant_id,
+                        succeeded=status == "completed",
+                        detail=detail,
+                    )
 
 
 __all__ = [

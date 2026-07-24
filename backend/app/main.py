@@ -174,6 +174,7 @@ async def lifespan(app: FastAPI):
             import app.models.participant    # noqa
             import app.models.chat_session   # noqa
             import app.models.group          # noqa
+            import app.models.project        # noqa
             import app.models.trigger        # noqa
             import app.models.trigger_execution  # noqa
             import app.models.focus          # noqa
@@ -418,6 +419,7 @@ from app.api.agent_credentials import router as credentials_router
 from app.api.agentbay_control import router as agentbay_control_router
 from app.api.okr import router as okr_router
 from app.api.onboarding import router as onboarding_router
+from app.api.projects import router as projects_router
 
 app.include_router(auth_router, prefix=settings.API_PREFIX)
 app.include_router(agents_router, prefix=settings.API_PREFIX)
@@ -454,6 +456,7 @@ app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)
 app.include_router(chat_sessions_router)
 app.include_router(groups_router)
+app.include_router(projects_router)
 app.include_router(plaza_router)
 app.include_router(experience_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)

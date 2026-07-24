@@ -25,7 +25,7 @@ class Task(Base):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(
-        Enum("pending", "doing", "done", name="task_status_enum"),
+        Enum("pending", "doing", "blocked", "done", "failed", name="task_status_enum"),
         default="pending",
         nullable=False,
     )
@@ -50,8 +50,31 @@ class Task(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Optional project-workflow scope.  Keeping these columns nullable preserves
+    # the existing personal Task product while allowing a project group to use
+    # the same durable Runtime and audit trail.
+    project_workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_workflows.id", ondelete="CASCADE"), nullable=True
+    )
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    trigger_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    dependency_task_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    report_to_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
+    )
+    # A final task is owned by the group leader and publishes the project
+    # closure to the human instead of recursively reporting to the leader.
+    is_project_closure: Mapped[bool] = mapped_column(nullable=False, default=False)
+
     # Relationships
-    agent: Mapped["Agent"] = relationship(back_populates="tasks")
+    agent: Mapped["Agent"] = relationship(back_populates="tasks", foreign_keys=[agent_id])
     creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
     logs: Mapped[list["TaskLog"]] = relationship(back_populates="task", cascade="all, delete-orphan")
 

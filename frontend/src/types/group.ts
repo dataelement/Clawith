@@ -6,12 +6,13 @@ export interface Group {
     name: string;
     description: string | null;
     created_by_participant_id: string;
+    owner_agent_id: string | null;
     created_at: string;
     updated_at: string;
 }
 
 export type ParticipantType = 'user' | 'agent';
-export type GroupRole = 'manager' | 'member';
+export type GroupRole = 'manager' | 'owner' | 'member';
 
 export interface GroupMember {
     id: string;
@@ -125,4 +126,32 @@ export interface GroupSessionSummary {
     evidence_refs: unknown[];
     workspace_refs: unknown[];
     covered_through_message_id: string | null;
+}
+
+export interface ProjectGroupTask {
+    id: string;
+    agent_id: string;
+    agent_name: string;
+    title: string;
+    description: string | null;
+    status: 'pending' | 'doing' | 'blocked' | 'done' | 'failed';
+    priority: string;
+    dependency_task_ids: string[];
+    report_to_agent_id: string | null;
+    is_project_closure: boolean;
+    completed_at: string | null;
+    updated_at: string | null;
+}
+
+export interface ProjectGroupDecision {
+    id: string;
+    task_id: string | null;
+    requesting_agent_id: string | null;
+    requesting_agent_name: string | null;
+    title: string;
+    context: string;
+    status: 'pending' | 'answered' | 'cancelled';
+    response: string | null;
+    created_at: string;
+    responded_at: string | null;
 }

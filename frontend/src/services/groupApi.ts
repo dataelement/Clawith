@@ -12,6 +12,8 @@ import type {
     GroupSessionSummary,
     GroupTextFile,
     GroupWorkspaceEntry,
+    ProjectGroupTask,
+    ProjectGroupDecision,
     ParticipantType,
 } from '../types/group';
 
@@ -39,6 +41,39 @@ export const groupApi = {
     list: () => fetchJson<Group[]>('/groups'),
 
     get: (groupId: string) => fetchJson<Group>(`/groups/${groupId}`),
+
+    projectTasks: (groupId: string) =>
+        fetchJson<ProjectGroupTask[]>(`/projects/groups/${groupId}/tasks`),
+
+    startProjectTasks: (groupId: string) =>
+        fetchJson<{ message_id: string; run_ids: string[]; status: string }>(
+            `/projects/groups/${groupId}/task-flows`,
+            { method: 'POST' },
+        ),
+
+    projectDecisions: (groupId: string) =>
+        fetchJson<ProjectGroupDecision[]>(`/projects/groups/${groupId}/decisions`),
+
+    generateProjectDecisionDraft: (
+        groupId: string,
+        decisionId: string,
+        instruction = '',
+    ) =>
+        fetchJson<{ draft: string }>(`/projects/groups/${groupId}/decisions/${decisionId}/draft`, {
+            method: 'POST',
+            body: JSON.stringify({ instruction }),
+        }),
+
+    replyProjectDecision: (
+        groupId: string,
+        decisionId: string,
+        response: string,
+        intent: 'decision' | 'modification' = 'decision',
+    ) =>
+        fetchJson<ProjectGroupDecision>(`/projects/groups/${groupId}/decisions/${decisionId}/reply`, {
+            method: 'POST',
+            body: JSON.stringify({ response, intent }),
+        }),
 
     create: (data: { name: string; description?: string; member_participant_ids?: string[] }) =>
         fetchJson<Group>('/groups', { method: 'POST', body: JSON.stringify(data) }),

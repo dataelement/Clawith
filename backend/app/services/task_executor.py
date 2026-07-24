@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.database import async_session
 from app.models.agent import Agent
+from app.models.audit import ChatMessage
 from app.models.task import Task, TaskLog
 from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
@@ -36,6 +37,13 @@ def _task_goal(task: Task) -> str:
         if task.supervision_target_name:
             goal += f"\n督办对象: {task.supervision_target_name}"
         return goal + "\n\n请执行此督办任务：联系督办对象，了解进展，并汇报结果。"
+    if task.project_workflow_id is not None:
+        return goal + (
+            "\n\n这是项目群中的一个持久化工作包。请以任务验收和依赖为推进条件，"
+            "不要用第几天、固定时间线或等待定时器替代工作完成。"
+            "完成后提交可验证交付、关键假设、风险和需要项目总负责人决策的事项。"
+            "若必须由用户拍板，请单独使用“【需要用户决策】事项、选项和你的建议”标记。"
+        )
     return goal + "\n\n请认真完成此任务，给出详细的执行结果。"
 
 
@@ -78,7 +86,30 @@ async def enqueue_task_runtime(
             "Runtime Task Agent has no configured primary model",
         )
 
-    if task.type == "supervision":
+    context_cutoff: dict[str, str] | None = None
+    if task.group_id is not None:
+        if task.trigger_message_id is None:
+            raise TaskRuntimeIntakeError(
+                "project_task_trigger_missing",
+                "Project group Tasks require their triggering group message",
+            )
+        trigger = await db.get(ChatMessage, task.trigger_message_id)
+        if trigger is None or trigger.created_at is None:
+            raise TaskRuntimeIntakeError(
+                "project_task_trigger_missing",
+                "Project group Task trigger message is unavailable",
+            )
+        context_cutoff = {
+            "message_id": str(trigger.id),
+            "created_at": trigger.created_at.isoformat(),
+        }
+
+    if task.project_workflow_id is not None:
+        # Project Task retries must create a fresh Run so the original failed
+        # attempt remains in the audit ledger for the group leader.
+        occurrence_id = execution_id or uuid.uuid4()
+        source_execution_id = f"task:{task.id}:project:{occurrence_id}"
+    elif task.type == "supervision":
         occurrence_id = execution_id or uuid.uuid4()
         source_execution_id = f"task:{task.id}:supervision:{occurrence_id}"
     else:
@@ -91,6 +122,7 @@ async def enqueue_task_runtime(
         StartRunCommand(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
+            session_id=task.session_id,
             source_type="task",
             source_id=str(task.id),
             source_execution_id=source_execution_id,
@@ -104,6 +136,14 @@ async def enqueue_task_runtime(
                 "task_type": task.type,
                 "title": task.title,
                 "description": task.description,
+                "project_workflow_id": (
+                    str(task.project_workflow_id) if task.project_workflow_id is not None else None
+                ),
+                "group_id": str(task.group_id) if task.group_id is not None else None,
+                "message_id": (
+                    str(task.trigger_message_id) if task.trigger_message_id is not None else None
+                ),
+                **({"context_cutoff": context_cutoff} if context_cutoff is not None else {}),
             },
             origin_user_id=task.created_by,
             actor_user_id=task.created_by,

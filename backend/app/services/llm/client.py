@@ -29,6 +29,117 @@ class LLMRequestShapeError(LLMError):
     """The final provider request violates a portable message-shape invariant."""
 
 
+_THINK_TAG_RE = re.compile(r"</?think(?:ing)?\s*>", re.IGNORECASE)
+_THINK_OPEN_TAGS = ("<think>", "<thinking>")
+_THINK_CLOSE_TAGS = ("</think>", "</thinking>")
+
+
+def _join_text(parts: list[str]) -> str:
+    """Join provider text fragments without coercing JSON-like content."""
+    return "".join(part for part in parts if part)
+
+
+def _content_parts(value: object) -> tuple[str, str]:
+    """Extract text and structured reasoning from common provider content shapes."""
+    if isinstance(value, str):
+        return value, ""
+    if isinstance(value, list):
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        for item in value:
+            text, reasoning = _content_parts(item)
+            text_parts.append(text)
+            reasoning_parts.append(reasoning)
+        return _join_text(text_parts), _join_text(reasoning_parts)
+    if not isinstance(value, dict):
+        return "", ""
+
+    block_type = str(value.get("type") or "").lower()
+    if block_type in {"reasoning", "thinking", "analysis"}:
+        for key in ("reasoning_content", "reasoning", "thinking", "text", "content", "value"):
+            if key in value:
+                text, nested_reasoning = _content_parts(value[key])
+                return "", _join_text([text, nested_reasoning])
+        return "", ""
+
+    for key in ("text", "output_text", "content", "value"):
+        if key in value:
+            return _content_parts(value[key])
+    return "", ""
+
+
+def _separate_thinking_tags(text: str) -> tuple[str, str]:
+    """Move `<think>`/`<thinking>` blocks out of response text.
+
+    Models sometimes place chain-of-thought markup directly before a JSON
+    payload.  Keeping the markup in ``content`` makes otherwise valid JSON
+    unparsable, so it is kept only as reasoning metadata instead.
+    """
+    visible: list[str] = []
+    reasoning: list[str] = []
+    cursor = 0
+    in_think = False
+
+    for match in _THINK_TAG_RE.finditer(text):
+        target = reasoning if in_think else visible
+        target.append(text[cursor:match.start()])
+        in_think = not match.group(0).startswith("</")
+        cursor = match.end()
+
+    (reasoning if in_think else visible).append(text[cursor:])
+    return _join_text(visible), _join_text(reasoning)
+
+
+def _normalize_response_text(content: object, reasoning_content: object = None) -> tuple[str, str]:
+    """Normalize textual response variants into display text plus reasoning."""
+    text, structured_reasoning = _content_parts(content)
+    visible, tagged_reasoning = _separate_thinking_tags(text)
+    explicit_text, explicit_structured_reasoning = _content_parts(reasoning_content)
+    structured_reasoning = _THINK_TAG_RE.sub("", structured_reasoning)
+    explicit_reasoning = _THINK_TAG_RE.sub("", _join_text([explicit_text, explicit_structured_reasoning]))
+    reasoning = _join_text([structured_reasoning, tagged_reasoning, explicit_reasoning])
+    return visible, reasoning
+
+
+def _split_streaming_think_tags(text: str, in_think: bool, tag_buffer: str) -> tuple[str, str, bool, str]:
+    """Route streamed think-tag content to reasoning while preserving tag boundaries."""
+    tag_buffer += text
+    visible = ""
+    reasoning = ""
+    i = 0
+
+    while i < len(tag_buffer):
+        if not in_think:
+            if tag_buffer[i] == "<":
+                candidate = tag_buffer[i:]
+                lower_candidate = candidate.lower()
+                opening = next((tag for tag in _THINK_OPEN_TAGS if lower_candidate.startswith(tag)), None)
+                if opening:
+                    in_think = True
+                    i += len(opening)
+                    continue
+                if any(tag.startswith(lower_candidate) for tag in _THINK_OPEN_TAGS):
+                    break
+            visible += tag_buffer[i]
+            i += 1
+            continue
+
+        if tag_buffer[i] == "<":
+            candidate = tag_buffer[i:]
+            lower_candidate = candidate.lower()
+            closing = next((tag for tag in _THINK_CLOSE_TAGS if lower_candidate.startswith(tag)), None)
+            if closing:
+                in_think = False
+                i += len(closing)
+                continue
+            if any(tag.startswith(lower_candidate) for tag in _THINK_CLOSE_TAGS):
+                break
+        reasoning += tag_buffer[i]
+        i += 1
+
+    return visible, reasoning, in_think, tag_buffer[i:]
+
+
 # ============================================================================
 # Data Models
 # ============================================================================
@@ -565,16 +676,20 @@ class OpenAICompatibleClient(LLMClient):
         if choice.get("finish_reason"):
             chunk.finish_reason = choice["finish_reason"]
 
-        # Reasoning content (DeepSeek R1)
-        if delta.get("reasoning_content"):
-            chunk.reasoning_content = delta["reasoning_content"]
+        # Providers use several names and shapes for reasoning deltas.
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            if delta.get(key) is not None:
+                reasoning_text, structured_reasoning = _content_parts(delta[key])
+                chunk.reasoning_content += _join_text([reasoning_text, structured_reasoning])
 
-        # Regular content with think tag filtering
-        if delta.get("content"):
-            text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
+        # Regular content may be a string or structured content blocks.
+        if delta.get("content") is not None:
+            text, structured_reasoning = _content_parts(delta["content"])
+            chunk.reasoning_content += structured_reasoning
+            chunk.content, tagged_reasoning, in_think, tag_buffer = self._filter_think_tags(
                 text, in_think, tag_buffer
             )
+            chunk.reasoning_content += tagged_reasoning
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -586,48 +701,14 @@ class OpenAICompatibleClient(LLMClient):
 
     def _filter_think_tags(
         self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
-        """Filter out <think>...</think> tags from content.
+    ) -> tuple[str, str, bool, str]:
+        """Split streamed `<think>` blocks into normal and reasoning text.
 
-        Returns (filtered_content, new_in_think, new_tag_buffer).
+        Partial tags are buffered so they never leak into a user-visible JSON
+        fragment.  The text inside a complete tag is retained as reasoning for
+        the UI's existing collapsed thinking disclosure.
         """
-        tag_buffer += text
-        emit = ""
-        i = 0
-        buf = tag_buffer
-
-        while i < len(buf):
-            if not in_think:
-                # Look for <think open tag
-                if buf[i] == "<":
-                    tag_candidate = buf[i:]
-                    if tag_candidate.startswith("<think>"):
-                        in_think = True
-                        i += len("<think>")
-                        continue
-                    elif "<think>".startswith(tag_candidate):
-                        # Partial match - keep in buffer
-                        break
-                    else:
-                        emit += buf[i]
-                        i += 1
-                else:
-                    emit += buf[i]
-                    i += 1
-            else:
-                # Inside think - look for </think> close tag
-                if buf[i] == "<":
-                    tag_candidate = buf[i:]
-                    if tag_candidate.startswith("</think>"):
-                        in_think = False
-                        i += len("</think>")
-                        continue
-                    elif "</think>".startswith(tag_candidate):
-                        break
-                i += 1
-
-        tag_buffer = buf[i:]
-        return emit, in_think, tag_buffer
+        return _split_streaming_think_tags(text, in_think, tag_buffer)
 
     async def complete(
         self,
@@ -656,9 +737,14 @@ class OpenAICompatibleClient(LLMClient):
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
 
+        content, structured_reasoning = _normalize_response_text(
+            msg.get("content", ""),
+            [msg.get("reasoning_content"), msg.get("reasoning"), msg.get("thinking")],
+        )
         return LLMResponse(
-            content=msg.get("content", ""),
+            content=content,
             tool_calls=msg.get("tool_calls", []),
+            reasoning_content=structured_reasoning or None,
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
@@ -769,8 +855,18 @@ class OpenAICompatibleClient(LLMClient):
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
-        # Clean up any remaining think tags
-        full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
+        # The filter normally drains every character.  If a provider ends the
+        # stream mid-tag, preserve its text as collapsed reasoning rather than
+        # exposing a partial tag in the assistant response.
+        if tag_buffer and in_think:
+            pending_reasoning = _THINK_TAG_RE.sub("", tag_buffer)
+            full_reasoning += pending_reasoning
+            if pending_reasoning and on_thinking:
+                await on_thinking(pending_reasoning)
+        elif tag_buffer and not tag_buffer.lstrip().lower().startswith("<think"):
+            full_content += tag_buffer
+            if on_chunk:
+                await on_chunk(tag_buffer)
 
         return LLMResponse(
             content=full_content,
@@ -1042,10 +1138,11 @@ class OpenAIResponsesClient(LLMClient):
         usage = data.get("usage")
         finish_reason = "tool_calls" if tool_calls else "stop"
 
+        content, tagged_reasoning = _normalize_response_text("".join(content_parts))
         return LLMResponse(
-            content="".join(content_parts),
+            content=content,
             tool_calls=tool_calls,
-            reasoning_content="".join(reasoning_parts) or None,
+            reasoning_content=_join_text(["".join(reasoning_parts), tagged_reasoning]) or None,
             finish_reason=finish_reason,
             usage=usage if isinstance(usage, dict) else None,
             model=data.get("model"),
@@ -1494,9 +1591,11 @@ class GeminiClient(LLMClient):
 
         usage = self._normalize_usage(data.get("usageMetadata"))
 
+        content, tagged_reasoning = _normalize_response_text("".join(content_chunks))
         return LLMResponse(
-            content="".join(content_chunks),
+            content=content,
             tool_calls=tool_calls,
+            reasoning_content=tagged_reasoning or None,
             finish_reason=self._normalize_finish_reason(finish_reason, tool_calls),
             usage=usage,
             model=data.get("modelVersion") or self.model,
@@ -1568,10 +1667,13 @@ class GeminiClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, **kwargs)
 
         full_text = ""
+        full_reasoning = ""
         tool_calls: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         final_usage: dict[str, int] | None = None
         final_finish_reason: str | None = None
+        in_think = False
+        tag_buffer = ""
 
         client = await self._get_client()
 
@@ -1617,9 +1719,15 @@ class GeminiClient(LLMClient):
                     for part in content_obj.get("parts", []) or []:
                         text = part.get("text")
                         if text:
-                            full_text += text
-                            if on_chunk:
-                                await on_chunk(text)
+                            visible, tagged_reasoning, in_think, tag_buffer = _split_streaming_think_tags(
+                                text, in_think, tag_buffer
+                            )
+                            full_text += visible
+                            full_reasoning += tagged_reasoning
+                            if visible and on_chunk:
+                                await on_chunk(visible)
+                            if tagged_reasoning and on_thinking:
+                                await on_thinking(tagged_reasoning)
 
                         function_call = part.get("functionCall")
                         if function_call:
@@ -1646,9 +1754,20 @@ class GeminiClient(LLMClient):
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
             raise LLMError(f"Connection failed: {e}")
 
+        if tag_buffer and in_think:
+            pending_reasoning = _THINK_TAG_RE.sub("", tag_buffer)
+            full_reasoning += pending_reasoning
+            if pending_reasoning and on_thinking:
+                await on_thinking(pending_reasoning)
+        elif tag_buffer and not tag_buffer.lstrip().lower().startswith("<think"):
+            full_text += tag_buffer
+            if on_chunk:
+                await on_chunk(tag_buffer)
+
         return LLMResponse(
             content=full_text,
             tool_calls=tool_calls,
+            reasoning_content=full_reasoning or None,
             finish_reason=self._normalize_finish_reason(final_finish_reason, tool_calls),
             usage=final_usage,
             model=self.model,
@@ -1849,10 +1968,11 @@ class AnthropicClient(LLMClient):
                 "cache_read_input_tokens": data["usage"].get("cache_read_input_tokens", 0),
             }
 
+        content, tagged_reasoning = _normalize_response_text(full_content)
         return LLMResponse(
-            content=full_content,
+            content=content,
             tool_calls=tool_calls,
-            reasoning_content=full_reasoning or None,
+            reasoning_content=_join_text([full_reasoning, tagged_reasoning]) or None,
             reasoning_signature=full_signature,
             finish_reason=data.get("stop_reason"),
             usage=usage,
@@ -1882,6 +2002,8 @@ class AnthropicClient(LLMClient):
         last_finish_reason: str | None = None
         final_usage = None
         final_model = self.model
+        in_think = False
+        tag_buffer = ""
 
         client = await self._get_client()
 
@@ -1950,9 +2072,15 @@ class AnthropicClient(LLMClient):
 
                         if delta_type == "text_delta":
                             text = delta.get("text", "")
-                            full_content += text
-                            if on_chunk:
-                                await on_chunk(text)
+                            visible, tagged_reasoning, in_think, tag_buffer = _split_streaming_think_tags(
+                                text, in_think, tag_buffer
+                            )
+                            full_content += visible
+                            full_reasoning += tagged_reasoning
+                            if visible and on_chunk:
+                                await on_chunk(visible)
+                            if tagged_reasoning and on_thinking:
+                                await on_thinking(tagged_reasoning)
 
                         elif delta_type == "thinking_delta":
                             thought = delta.get("thinking", "")
@@ -2000,6 +2128,16 @@ class AnthropicClient(LLMClient):
             last_finish_reason = "stop"
         elif last_finish_reason == "tool_use":
             last_finish_reason = "tool_calls"
+
+        if tag_buffer and in_think:
+            pending_reasoning = _THINK_TAG_RE.sub("", tag_buffer)
+            full_reasoning += pending_reasoning
+            if pending_reasoning and on_thinking:
+                await on_thinking(pending_reasoning)
+        elif tag_buffer and not tag_buffer.lstrip().lower().startswith("<think"):
+            full_content += tag_buffer
+            if on_chunk:
+                await on_chunk(tag_buffer)
 
         return LLMResponse(
             content=full_content,

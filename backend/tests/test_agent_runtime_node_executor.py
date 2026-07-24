@@ -354,6 +354,52 @@ def _executor(
 
 
 @pytest.mark.asyncio
+async def test_model_provider_recovery_continues_the_same_run_once() -> None:
+    run_id = uuid.uuid4()
+    state = _state(run_id)
+    executor = _executor(
+        ModelService(
+            ModelStepResult(
+                intent="text",
+                repair_code="model_provider_retry",
+                repair_instruction="Retry the same task automatically.",
+            )
+        )
+    )
+
+    update = await executor.execute("model", state, _context(run_id, executor, "provider-retry"))
+
+    lifecycle = update["lifecycle"]
+    assert lifecycle["status"] == "running"
+    assert lifecycle["next_route"] == "compact"
+    assert lifecycle["model_protocol_repairs"] == {"model_provider_retry": 1}
+    assert update["messages"][0]["content"] == "Retry the same task automatically."
+
+
+@pytest.mark.asyncio
+async def test_model_provider_recovery_fails_only_after_its_bounded_retry() -> None:
+    run_id = uuid.uuid4()
+    state = _state(run_id)
+    state["lifecycle"]["model_protocol_repairs"] = {"model_provider_retry": 1}
+    executor = _executor(
+        ModelService(
+            ModelStepResult(
+                intent="text",
+                repair_code="model_provider_retry",
+                repair_instruction="Retry the same task automatically.",
+            )
+        )
+    )
+
+    update = await executor.execute("model", state, _context(run_id, executor, "provider-retry-final"))
+
+    lifecycle = update["lifecycle"]
+    assert lifecycle["status"] == "failed"
+    assert lifecycle["next_route"] == "terminal"
+    assert lifecycle["error"]["code"] == "model_provider_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_compact_atomically_replaces_thread_summary_and_covered_messages() -> None:
     run_id = uuid.uuid4()
     retained = {"id": "recent-1", "role": "user", "content": "recent"}
