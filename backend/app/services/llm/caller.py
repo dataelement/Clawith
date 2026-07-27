@@ -65,10 +65,12 @@ WRITE_FILE_PROTOCOL_REPAIR_LIMIT = 3
 WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY = "invalid_tool_call:write_file"
 WRITE_FILE_PROTOCOL_REPAIR_INSTRUCTION = (
     "Your previous `write_file` call was not executed because `function.arguments` "
-    "was invalid JSON or was truncated. Retry `write_file` with "
-    "`function.arguments` as one valid JSON object string. Do not repeat the same "
-    "oversized whole-file content; reduce the content in this call and continue with "
-    "later normal tool calls if needed. Do not explain; only retry with a valid tool call."
+    "was invalid JSON or was truncated. Do not retry the entire file. Retry now with "
+    "one valid JSON object containing only the first content chunk, at most 6000 "
+    "characters, and set mode=overwrite. After that tool call succeeds, continue in "
+    "later turns with exactly one smaller chunk per call using mode=append. Escape "
+    "quotes and newlines in each chunk. Do not explain; only issue the first smaller "
+    "tool call."
 )
 WRITE_FILE_PROTOCOL_FAILURE_MESSAGE = (
     "本次文件生成未完成：write_file 工具参数无效或被截断，连续重试后仍无法执行。"
