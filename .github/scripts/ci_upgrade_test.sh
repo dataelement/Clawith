@@ -76,13 +76,25 @@ docker image inspect "$OLD_IMAGE" --format '{{ index .Config.Labels "org.opencon
 OLD_VERSION=$(cat /tmp/old_version | tr -d '\r')
 echo "启动升级源 version=$OLD_VERSION revision=$OLD_REVISION"
 
-if [ "$OLD_VERSION" = "v1.11.2" ]; then
-  echo "v1.11.2 无法从空库执行最终 migration，先建立其父 revision"
-  run_schema_command "$OLD_IMAGE" \
-    "alembic upgrade add_experience_revision_drafts"
-  echo "使用目标镜像执行修复后的最终 migration"
-  run_schema_command "$NEW_IMAGE" \
-    "alembic upgrade head && python -m app.scripts.setup_langgraph_checkpoints"
+echo "使用升级源镜像建立旧版本 schema"
+if ! run_schema_command "$OLD_IMAGE" "alembic upgrade head"; then
+  echo "升级源镜像无法从空库完成 migration，使用目标镜像修复到升级源可识别的 head"
+  OLD_SCHEMA_HEADS=$(run_schema_command "$OLD_IMAGE" "alembic heads" | awk '$NF == "(head)" { print $1 }')
+  if [ -z "$OLD_SCHEMA_HEADS" ]; then
+    echo "无法识别升级源 Alembic head"
+    exit 1
+  fi
+
+  for OLD_SCHEMA_HEAD in $OLD_SCHEMA_HEADS; do
+    case "$OLD_SCHEMA_HEAD" in
+      *[!A-Za-z0-9_.-]*)
+        echo "升级源 Alembic head 格式无效: $OLD_SCHEMA_HEAD"
+        exit 1
+        ;;
+    esac
+    echo "使用目标镜像迁移到升级源 head=$OLD_SCHEMA_HEAD"
+    run_schema_command "$NEW_IMAGE" "alembic upgrade $OLD_SCHEMA_HEAD"
+  done
 fi
 
 docker run -d \
