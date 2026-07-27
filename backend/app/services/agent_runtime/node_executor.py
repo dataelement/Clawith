@@ -26,7 +26,6 @@ from app.services.llm.caller import (
     WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY,
     WRITE_FILE_PROTOCOL_REPAIR_LIMIT,
 )
-from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.llm.multimodal_content import parse_multimodal_content
 
 
@@ -86,6 +85,8 @@ class ToolStepResult:
     messages: tuple[JsonObject, ...] = ()
     waiting_request: JsonObject | None = None
     pending_tool_calls: tuple[JsonObject, ...] = ()
+    pending_group_at_changed: bool = False
+    pending_group_at: JsonObject | None = None
     cancel_signal: CancelSignal | None = None
     error: JsonObject | None = None
 
@@ -586,6 +587,7 @@ class DeterministicRuntimeNodeExecutor:
                 "Runtime Context model_turn_limit must be a positive integer",
             )
         if step_count > model_step_limit:
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "failed",
@@ -687,20 +689,28 @@ class DeterministicRuntimeNodeExecutor:
                     else repair_code
                 )
                 if repairs.get(repair_counter_key, 0) >= repair_limit:
-                    violation_code = (
-                        "finish_protocol_violation"
-                        if repair_code == "missing_finish"
-                        else "model_tool_protocol_violation"
-                    )
-                    error_message = (
-                        WRITE_FILE_PROTOCOL_FAILURE_MESSAGE
-                        if is_write_file_repair
-                        else (
-                            f"The model repeated the {repair_code!r} protocol "
-                            f"error after {repair_limit} bounded repair attempt(s). "
+                    violation_code = {
+                        "empty_output": "model_empty_output",
+                        "incomplete_output": "model_incomplete_output",
+                        "missing_finish": "finish_protocol_violation",
+                    }.get(repair_code, "model_tool_protocol_violation")
+                    if is_write_file_repair:
+                        error_message = WRITE_FILE_PROTOCOL_FAILURE_MESSAGE
+                    elif repair_code == "incomplete_output":
+                        error_message = (
+                            "The model output remained truncated after one bounded repair."
+                        )
+                    elif repair_code == "empty_output":
+                        error_message = (
+                            "The model repeated an empty final response after one bounded repair."
+                        )
+                    else:
+                        error_message = (
+                            f"The model repeated the {repair_code!r} protocol error "
+                            f"after {repair_limit} bounded repair attempt(s). "
                             "Native tool calling is not working for this Run."
                         )
-                    )
+                    lifecycle.pop("pending_group_at", None)
                     lifecycle.update(
                         {
                             "status": "failed",
@@ -726,7 +736,7 @@ class DeterministicRuntimeNodeExecutor:
                             "role": "user",
                             "content": (
                                 result.repair_instruction
-                                or FINISH_PROTOCOL_REMINDER
+                                or "Return one complete, non-empty final response."
                             ),
                             "runtime_intent": "repair",
                             "runtime_run_id": context.run_id,
@@ -765,11 +775,18 @@ class DeterministicRuntimeNodeExecutor:
                 _schedule_compact(lifecycle)
         elif result.intent == "error":
             error = result.error or _error("model_call_failed", "The model call failed.")
+            error_code = error.get("code")
+            reason = (
+                error_code
+                if isinstance(error_code, str) and error_code
+                else "model_call_failed"
+            )
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "failed",
                     "next_route": "terminal",
-                    "reason": "model_call_failed",
+                    "reason": reason,
                     "error": dict(error),
                 }
             )
@@ -804,6 +821,7 @@ class DeterministicRuntimeNodeExecutor:
             or len(set(call_ids)) != len(call_ids)
         ):
             lifecycle = dict(state["lifecycle"])
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "failed",
@@ -833,6 +851,16 @@ class DeterministicRuntimeNodeExecutor:
                 "pending_tool_calls": [dict(call) for call in pending_calls],
             }
         )
+        if result.pending_group_at_changed:
+            if result.pending_group_at is None:
+                lifecycle.pop("pending_group_at", None)
+            elif not isinstance(result.pending_group_at, Mapping):
+                raise RuntimeNodeTransitionError(
+                    "invalid_pending_group_at",
+                    "tool result pending_group_at must be an object",
+                )
+            else:
+                lifecycle["pending_group_at"] = dict(result.pending_group_at)
         if result.cancel_signal is not None:
             cancel = result.cancel_signal
             if not cancel.command_id:
@@ -853,6 +881,7 @@ class DeterministicRuntimeNodeExecutor:
                 }
             )
         elif result.error is not None:
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "failed",
@@ -963,6 +992,7 @@ class DeterministicRuntimeNodeExecutor:
                     raw_finish_delivery_intent
                 )
             lifecycle.pop("finish_delivery_intent", None)
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "completed",
@@ -981,6 +1011,7 @@ class DeterministicRuntimeNodeExecutor:
             attempts = _counter(state["lifecycle"], "verification_attempt_count") + 1
             lifecycle["verification_attempt_count"] = attempts
             if attempts > self._max_verification_repairs:
+                lifecycle.pop("pending_group_at", None)
                 lifecycle.update(
                     {
                         "status": "failed",
@@ -1018,6 +1049,7 @@ class DeterministicRuntimeNodeExecutor:
                 }
         elif verification.outcome == "fail":
             lifecycle.pop("finish_delivery_intent", None)
+            lifecycle.pop("pending_group_at", None)
             lifecycle.update(
                 {
                     "status": "failed",

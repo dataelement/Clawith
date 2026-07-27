@@ -263,6 +263,29 @@ class LLMResponse:
     model: str | None = None
 
 
+def normalize_llm_finish_reason(
+    finish_reason: str | None,
+    tool_calls: list[dict] | tuple[dict, ...],
+) -> str | None:
+    """Normalize provider stop metadata without treating unknown values as success."""
+    if tool_calls:
+        return "tool_calls"
+    if not isinstance(finish_reason, str) or not finish_reason.strip():
+        return None
+    normalized = finish_reason.strip().lower()
+    if normalized in {"stop", "end_turn", "stop_sequence"}:
+        return "stop"
+    if normalized in {"tool_calls", "tool_use"}:
+        return "tool_calls"
+    if normalized in {"length", "max_tokens"}:
+        return "length"
+    if normalized in {"content_filter", "safety", "recitation"}:
+        return "content_filter"
+    if normalized == "refusal":
+        return "refusal"
+    return "unknown"
+
+
 @dataclass
 class LLMStreamChunk:
     """Stream chunk format."""
@@ -1011,6 +1034,7 @@ class OpenAIResponsesClient(LLMClient):
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        refusal_seen = False
 
         for item in data.get("output", []) or []:
             item_type = item.get("type")
@@ -1021,6 +1045,8 @@ class OpenAIResponsesClient(LLMClient):
                         content_parts.append(c.get("text", ""))
                     elif c_type == "reasoning":
                         reasoning_parts.append(c.get("summary", "") or c.get("text", ""))
+                    elif c_type == "refusal":
+                        refusal_seen = True
             elif item_type == "function_call":
                 args = item.get("arguments", "{}")
                 if isinstance(args, dict):
@@ -1040,7 +1066,32 @@ class OpenAIResponsesClient(LLMClient):
             content_parts.append(str(data.get("output_text", "")))
 
         usage = data.get("usage")
-        finish_reason = "tool_calls" if tool_calls else "stop"
+        status = str(data.get("status") or "").lower()
+        incomplete_details = data.get("incomplete_details")
+        incomplete_reason = (
+            str(incomplete_details.get("reason") or "").lower()
+            if isinstance(incomplete_details, dict)
+            else ""
+        )
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif refusal_seen:
+            finish_reason = "refusal"
+        elif status == "incomplete" and incomplete_reason in {
+            "max_output_tokens",
+            "max_tokens",
+        }:
+            finish_reason = "length"
+        elif status == "incomplete" and incomplete_reason in {
+            "content_filter",
+            "safety",
+            "recitation",
+        }:
+            finish_reason = "content_filter"
+        elif status in {"", "completed"}:
+            finish_reason = "stop"
+        else:
+            finish_reason = "unknown"
 
         return LLMResponse(
             content="".join(content_parts),
@@ -1071,6 +1122,21 @@ class OpenAIResponsesClient(LLMClient):
             return str(err)
 
         status = str(data.get("status") or "").lower()
+        if status == "incomplete":
+            incomplete = data.get("incomplete_details")
+            reason = (
+                str(incomplete.get("reason") or "").lower()
+                if isinstance(incomplete, dict)
+                else ""
+            )
+            if reason in {
+                "max_output_tokens",
+                "max_tokens",
+                "content_filter",
+                "safety",
+                "recitation",
+            }:
+                return None
         if status in {"failed", "incomplete", "cancelled"}:
             last_error = data.get("last_error")
             incomplete = data.get("incomplete_details")
@@ -1442,17 +1508,7 @@ class GeminiClient(LLMClient):
 
     def _normalize_finish_reason(self, finish_reason: str | None, tool_calls: list[dict]) -> str | None:
         """Normalize Gemini finish reason to OpenAI-style labels."""
-        if tool_calls:
-            return "tool_calls"
-        if not finish_reason:
-            return None
-        mapping = {
-            "STOP": "stop",
-            "MAX_TOKENS": "length",
-            "SAFETY": "content_filter",
-            "RECITATION": "content_filter",
-        }
-        return mapping.get(finish_reason, "stop")
+        return normalize_llm_finish_reason(finish_reason, tool_calls)
 
     def _parse_response_data(self, data: dict[str, Any]) -> LLMResponse:
         """Convert Gemini native response into canonical LLMResponse."""

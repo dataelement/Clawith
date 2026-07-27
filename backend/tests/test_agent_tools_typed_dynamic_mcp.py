@@ -55,6 +55,7 @@ async def test_runtime_resolver_exposes_only_enabled_assigned_non_reserved_mcp(
     tools = [
         _tool("mcp_visible_lookup"),
         _tool("mcp_disabled_lookup"),
+        _tool("at"),
         _tool("finish"),
         _tool("wait"),
         _tool("group_private_lookup"),
@@ -69,6 +70,7 @@ async def test_runtime_resolver_exposes_only_enabled_assigned_non_reserved_mcp(
         # AgentTool records are both enabled.
         return {
             "mcp_visible_lookup",
+            "at",
             "finish",
             "wait",
             "group_private_lookup",

@@ -582,7 +582,6 @@ RUNTIME_TYPED_APPLICATION_TOOL_NAMES = frozenset(
 # to avoid sending duplicate tool definitions to the LLM.
 _ALWAYS_INCLUDE_CORE = {
     "complete_focus_item",
-    FINISH_TOOL_NAME,
     "list_focus_items",
     "query_directory",
     "send_channel_file",

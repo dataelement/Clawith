@@ -107,6 +107,7 @@ class RuntimeLifecycle(TypedDict):
     model_protocol_repairs: NotRequired[JsonObject]
     verification_attempt_count: NotRequired[int]
     pending_tool_calls: NotRequired[list[JsonObject]]
+    pending_group_at: NotRequired[JsonObject | None]
     deferred_resume_messages: NotRequired[list[JsonObject]]
     waiting_request: NotRequired[JsonObject | None]
     verification_result: NotRequired[JsonObject | None]

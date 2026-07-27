@@ -281,7 +281,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                     {
                         type: 'error',
                         title: t('enterprise.llm.agentCompatibilityTest', 'Agent 兼容性测试'),
-                        details: String(result.tool_calling_error || result.error || 'Model did not return a valid finish tool call.'),
+                        details: String(result.tool_calling_error || result.error || 'Model did not return a valid native capability probe.'),
                     },
                 );
                 if (btn) btn.textContent = origText;
@@ -573,7 +573,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                         <span
                                             className="badge"
                                             title={m.tool_calling_capability_source === 'probe'
-                                                ? t('enterprise.llm.toolsVerifiedTitle', 'This exact model configuration passed the native finish-tool probe.')
+                                                ? t('enterprise.llm.toolsVerifiedTitle', 'This exact model configuration passed the native tool-calling probe.')
                                                 : t('enterprise.llm.toolsRegistryTitle', 'Preserved from the built-in cloud provider registry; rerun the test to verify this exact configuration.')}
                                             style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}
                                         >

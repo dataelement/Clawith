@@ -118,6 +118,40 @@ def test_provider_payloads_preserve_static_and_dynamic_system_context_once() -> 
         assert system_content.count("Dynamic Runtime Context") == 1
 
 
+def test_openai_responses_preserves_truncation_and_refusal_stop_reasons() -> None:
+    client = OpenAIResponsesClient(api_key="test", model="responses-test")
+    incomplete = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "partial"}],
+            }
+        ],
+    }
+    refusal = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "refusal", "refusal": "cannot comply"}],
+            }
+        ],
+    }
+    filtered = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "content_filter"},
+        "output": [],
+    }
+
+    assert client._extract_api_error(incomplete) is None
+    assert client._parse_response_data(incomplete).finish_reason == "length"
+    assert client._parse_response_data(refusal).finish_reason == "refusal"
+    assert client._extract_api_error(filtered) is None
+    assert client._parse_response_data(filtered).finish_reason == "content_filter"
+
+
 @pytest.mark.asyncio
 async def test_complete_once_normalizes_tools_and_records_usage_without_executing_them(
     monkeypatch,
@@ -163,6 +197,7 @@ async def test_complete_once_normalizes_tools_and_records_usage_without_executin
 
     assert result.content == ""
     assert result.reasoning_content == "inspect the file"
+    assert result.finish_reason == "tool_calls"
     assert result.retry_instruction is None
     assert result.tool_calls == (
         {
@@ -181,6 +216,46 @@ async def test_complete_once_normalizes_tools_and_records_usage_without_executin
     assert client.closed is True
     assert recorded[0][0] == agent_id
     assert recorded[0][1].total_tokens == 25
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_reason", "expected_reason"),
+    [
+        ("stop", "stop"),
+        ("end_turn", "stop"),
+        ("max_tokens", "length"),
+        ("content_filter", "content_filter"),
+        ("refusal", "refusal"),
+        ("provider_specific_reason", "unknown"),
+        (None, None),
+    ],
+)
+async def test_complete_once_normalizes_provider_finish_reason(
+    monkeypatch,
+    provider_reason,
+    expected_reason,
+) -> None:
+    client = _Client(
+        LLMResponse(
+            content="Final response",
+            tool_calls=[],
+            finish_reason=provider_reason,
+        )
+    )
+    _patch_client(monkeypatch, client)
+    monkeypatch.setattr(
+        single_step,
+        "record_token_usage",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = await single_step.complete_llm_once(
+        _model(),
+        [LLMMessage(role="user", content="Hello")],
+    )
+
+    assert result.finish_reason == expected_reason
 
 
 @pytest.mark.asyncio

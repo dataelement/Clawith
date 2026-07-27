@@ -115,7 +115,7 @@ def test_known_schema_contracts_match_handler_validation() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["finish", "wait", "group_query_members", "group_future_tool"],
+    ["at", "finish", "wait", "group_query_members", "group_future_tool"],
 )
 def test_runtime_reserved_tool_names_cannot_be_overridden(name: str) -> None:
     assert is_reserved_custom_tool_name(name)

@@ -14,7 +14,7 @@ from .caller import (
     _sanitize_tool_calls_for_context,
     _usage_from_response_or_estimate,
 )
-from .client import LLMMessage
+from .client import LLMMessage, normalize_llm_finish_reason
 from .utils import create_llm_client, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
@@ -31,6 +31,7 @@ class LLMCompletionStep:
     retry_instruction: str | None
     usage: TokenUsage
     retry_tool_name: str | None = None
+    finish_reason: str | None = None
 
 
 async def complete_llm_once(
@@ -86,6 +87,10 @@ async def complete_llm_once(
         retry_instruction=retry_instruction,
         usage=usage,
         retry_tool_name=retry_tool_name,
+        finish_reason=normalize_llm_finish_reason(
+            response.finish_reason,
+            tuple(sanitized_tool_calls or ()),
+        ),
     )
 
 
