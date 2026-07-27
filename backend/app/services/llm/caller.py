@@ -32,9 +32,14 @@ from app.services.token_tracker import (
 from app.services.llm.multimodal_content import estimate_multimodal_tokens
 from app.services.llm.model_resolution import active_agent_model_candidates
 
-from .client import LLMError
+from .client import (
+    LLMError,
+    extract_embedded_reasoning,
+    normalize_llm_finish_reason,
+    normalize_textual_tool_protocol,
+)
 from .failover import classify_error, FailoverErrorType
-from .finish import FINISH_PROTOCOL_REMINDER, FINISH_TOOL_DEFINITION, find_finish_call
+from .finish import find_finish_call
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
@@ -520,13 +525,18 @@ async def call_llm(
 
     # Resolve the effective Tool Schema before the prompt so capability policies
     # and Skill discovery cannot advertise tools absent from this model step.
-    # `skip_tools=True` is set by the WS handler on the onboarding greeting turn;
-    # keep `finish` available so the turn still has an explicit stop signal.
+    # `skip_tools=True` is set by the WS handler on the onboarding greeting turn.
+    # Natural provider completion does not require any model-facing control tool.
     if skip_tools:
-        tools_for_llm = [FINISH_TOOL_DEFINITION]
+        tools_for_llm = []
     else:
         from app.services.agent_tools import AGENT_TOOLS
         tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+        tools_for_llm = [
+            tool
+            for tool in tools_for_llm
+            if ((tool.get("function") or {}).get("name") != "finish")
+        ]
     allowed_tool_names = _allowed_tool_names(tools_for_llm)
 
     from app.services.agent_context import build_agent_context
@@ -594,6 +604,12 @@ async def call_llm(
             "Native tool calling is not working for this request."
         )
 
+    async def _completion_failure(code: str, message: str) -> str:
+        if agent_id and _unsaved_usage.total_tokens > 0:
+            await record_token_usage(agent_id, _unsaved_usage)
+        await client.close()
+        return f"[Error] {code}: {message}"
+
     # Tool-calling loop
     for round_i in range(_max_tool_rounds):
         # Dynamic tool-call limit warning
@@ -638,7 +654,8 @@ async def call_llm(
         try:
             # Use streaming API for real-time responses
             async def _buffer_chunk(_text: str) -> None:
-                # Final user-facing text must come through finish(content=...).
+                # Tool-round drafts and truncated output are not user-visible.
+                # The completed final response is emitted after stop validation.
                 return None
 
             response = await client.stream(
@@ -663,20 +680,101 @@ async def call_llm(
             await client.close()
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
 
-        # Track tokens for this round
+        # Account for the provider's raw output before protocol normalization
+        # removes control envelopes from user-visible content.
         _usage_this_round = _usage_from_response_or_estimate(response, api_messages)
         _accumulated_usage.add(_usage_this_round)
         _unsaved_usage.add(_usage_this_round)
 
-        # Plain assistant text is not a stop condition. The model must finish
-        # explicitly via finish(content=...).
+        _, embedded_reasoning = extract_embedded_reasoning(
+            response.content,
+            None,
+        )
+        response.content, response.reasoning_content = extract_embedded_reasoning(
+            response.content,
+            response.reasoning_content,
+        )
+        if embedded_reasoning and on_thinking is not None:
+            await on_thinking(embedded_reasoning)
+
+        textual_retry_instruction = None
         if not response.tool_calls:
+            (
+                response.content,
+                textual_tool_calls,
+                textual_retry_instruction,
+            ) = normalize_textual_tool_protocol(
+                response.content,
+                tools_for_llm,
+            )
+            if textual_tool_calls:
+                response.tool_calls = textual_tool_calls
+
+        if textual_retry_instruction is not None:
+            if _protocol_repairs.get("invalid_textual_tool_protocol", 0) >= 1:
+                return await _protocol_violation("invalid_tool_call")
+            _protocol_repairs["invalid_textual_tool_protocol"] = 1
+            api_messages.append(
+                LLMMessage(role="user", content=textual_retry_instruction)
+            )
+            continue
+
+        # A tool-free natural stop is the final Assistant response. Explicit
+        # truncation, filtering, refusal, and unknown reasons are never delivered.
+        if not response.tool_calls:
+            content = (response.content or "").strip()
+            finish_reason = normalize_llm_finish_reason(
+                response.finish_reason,
+                response.tool_calls,
+            )
+            if finish_reason in {"stop", None} and content:
+                if agent_id and _unsaved_usage.total_tokens > 0:
+                    await record_token_usage(agent_id, _unsaved_usage)
+                if on_chunk is not None:
+                    await on_chunk(content)
+                await client.close()
+                return content
+            if finish_reason == "content_filter":
+                return await _completion_failure(
+                    "model_content_filtered",
+                    "The provider filtered the model response before completion.",
+                )
+            if finish_reason == "refusal":
+                return await _completion_failure(
+                    "model_refusal",
+                    "The provider returned a refusal.",
+                )
+            if finish_reason in {"unknown", "tool_calls"}:
+                return await _completion_failure(
+                    "model_completion_unknown",
+                    "The provider returned an unusable completion reason.",
+                )
+            repair_code = "incomplete_output" if finish_reason == "length" else "empty_output"
+            if repair_code in _protocol_repairs:
+                return await _completion_failure(
+                    "model_incomplete_output"
+                    if repair_code == "incomplete_output"
+                    else "model_empty_output",
+                    "The model repeated a truncated response after one bounded repair."
+                    if repair_code == "incomplete_output"
+                    else "The model repeated an empty response after one bounded repair.",
+                )
             if response.content:
-                api_messages.append(LLMMessage(role="assistant", content=response.content))
-            if _protocol_repairs.get("missing_finish", 0) >= 1:
-                return await _protocol_violation("missing_finish")
-            api_messages.append(LLMMessage(role="user", content=FINISH_PROTOCOL_REMINDER))
-            _protocol_repairs["missing_finish"] = 1
+                api_messages.append(
+                    LLMMessage(role="assistant", content=response.content)
+                )
+            api_messages.append(
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "The previous response was truncated. Regenerate one complete "
+                        "final answer from the beginning."
+                        if repair_code == "incomplete_output"
+                        else "Return one complete, non-empty final answer."
+                    ),
+                )
+            )
+            _protocol_repairs[repair_code] = 1
             continue
 
         # Execute tool calls

@@ -13,12 +13,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
-from app.services.llm.finish import FINISH_TOOL_SEED
-
-
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
 _BUILTIN_TOOL_SOURCE = [
-    FINISH_TOOL_SEED,
     {
         "name": "list_files",
         "display_name": "List Files",
@@ -3966,7 +3962,7 @@ def builtin_readiness(name: str) -> str | None:
 
 def is_reserved_custom_tool_name(name: str) -> bool:
     """Prevent custom tools from replacing Runtime control/group contracts."""
-    return name in {"finish", "wait"} or name.startswith("group_")
+    return name in {"at", "finish", "wait"} or name.startswith("group_")
 
 
 def validate_builtin_tool_definitions() -> None:

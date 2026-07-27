@@ -14,7 +14,12 @@ from .caller import (
     _sanitize_tool_calls_for_context,
     _usage_from_response_or_estimate,
 )
-from .client import LLMMessage
+from .client import (
+    LLMMessage,
+    extract_embedded_reasoning,
+    normalize_llm_finish_reason,
+    normalize_textual_tool_protocol,
+)
 from .utils import create_llm_client, get_max_tokens, get_model_api_key
 
 if TYPE_CHECKING:
@@ -31,6 +36,7 @@ class LLMCompletionStep:
     retry_instruction: str | None
     usage: TokenUsage
     retry_tool_name: str | None = None
+    finish_reason: str | None = None
 
 
 async def complete_llm_once(
@@ -72,20 +78,39 @@ async def complete_llm_once(
     if agent_id is not None and usage.total_tokens > 0:
         await record_token_usage(agent_id, usage)
 
+    content, reasoning_content = extract_embedded_reasoning(
+        response.content,
+        response.reasoning_content,
+    )
+    textual_tool_calls: list[dict] = []
+    textual_retry_instruction = None
+    if not response.tool_calls:
+        content, textual_tool_calls, textual_retry_instruction = (
+            normalize_textual_tool_protocol(content, tools)
+        )
+
+    proposed_tool_calls = response.tool_calls or textual_tool_calls
     sanitized_tool_calls: list[dict] | None = []
     retry_instruction = None
     retry_tool_name = None
-    if response.tool_calls:
+    if proposed_tool_calls:
         sanitized_tool_calls, retry_instruction, retry_tool_name = (
-            _sanitize_tool_calls_for_context(response.tool_calls)
+            _sanitize_tool_calls_for_context(proposed_tool_calls)
         )
+    if textual_retry_instruction is not None:
+        retry_instruction = textual_retry_instruction
+        retry_tool_name = None
     return LLMCompletionStep(
-        content=response.content,
+        content=content,
         tool_calls=tuple(sanitized_tool_calls or ()),
-        reasoning_content=response.reasoning_content,
+        reasoning_content=reasoning_content,
         retry_instruction=retry_instruction,
         usage=usage,
         retry_tool_name=retry_tool_name,
+        finish_reason=normalize_llm_finish_reason(
+            response.finish_reason,
+            tuple(sanitized_tool_calls or ()),
+        ),
     )
 
 

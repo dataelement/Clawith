@@ -291,6 +291,119 @@ def _service(
     )
 
 
+def _at_call(call_id: str, participant_ids: list[str]) -> dict:
+    import json
+
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "at",
+            "arguments": json.dumps({"participant_ids": participant_ids}),
+        },
+    }
+
+
+async def _unexpected_executor(*args, **kwargs):
+    raise AssertionError(f"at must not reach the application tool executor: {args}, {kwargs}")
+
+
+@pytest.mark.asyncio
+async def test_group_at_stages_participants_without_external_tool_execution() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    target_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    call = _at_call("call-at", target_ids)
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.pending_group_at_changed is True
+    assert result.pending_group_at == {
+        "participant_ids": target_ids,
+        "tool_call_id": "call-at",
+        "staged_at_model_step": 0,
+    }
+    assert result.messages[0]["name"] == "at"
+    assert result.messages[0]["execution_status"] == "succeeded"
+    assert '"participant_count":2' in str(result.messages[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_group_at_empty_target_set_clears_prior_staging() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-clear", [])
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+    state["lifecycle"]["pending_group_at"] = {
+        "participant_ids": [str(uuid.uuid4())],
+        "tool_call_id": "prior-at",
+        "staged_at_model_step": 1,
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.pending_group_at_changed is True
+    assert result.pending_group_at is None
+    assert result.messages[0]["execution_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-invalid", ["Target Agent"])
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.pending_group_at_changed is False
+    assert result.messages[0]["execution_status"] == "failed"
+    assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_private_run_rejects_group_at() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-private", [str(uuid.uuid4())])
+    state = _state(tenant_id, agent, (call,))
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error == {
+        "code": "group_at_unavailable",
+        "message": "the at tool is available only in a validated Group Agent Run",
+    }
+
+
 @pytest.mark.asyncio
 async def test_success_is_reserved_before_execution_and_settled_afterwards(
     monkeypatch,

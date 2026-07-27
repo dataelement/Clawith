@@ -31,7 +31,6 @@ from app.schemas.schemas import (
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm import get_provider_manifest, get_model_api_key, create_llm_client, LLMMessage
-from app.services.llm.finish import FINISH_TOOL_DEFINITION, find_finish_call
 from app.services.platform_service import platform_service
 from app.services.sso_service import sso_service
 from app.services.agent_runtime.runtime_model_settings import (
@@ -42,6 +41,41 @@ from app.services.agent_runtime.runtime_model_settings import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 settings = get_settings()
+
+_CAPABILITY_PROBE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "capability_probe",
+        "description": "Return the fixed value through a native structured tool call.",
+        "parameters": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["ok"]}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _has_valid_capability_probe(tool_calls: list[dict]) -> bool:
+    for call in tool_calls:
+        function = call.get("function")
+        if not isinstance(function, dict) or function.get("name") != "capability_probe":
+            continue
+        raw_arguments = function.get("arguments", "{}")
+        try:
+            arguments = (
+                json.loads(raw_arguments)
+                if isinstance(raw_arguments, str)
+                else dict(raw_arguments)
+                if isinstance(raw_arguments, dict)
+                else None
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if arguments == {"value": "ok"}:
+            return True
+    return False
 
 
 def _is_platform_admin_user(user: User) -> bool:
@@ -215,7 +249,7 @@ async def test_llm_model(
     data: LLMTestRequest,
     current_user: User = Depends(get_current_admin),
 ):
-    """Test connectivity and native ``finish`` tool calling independently."""
+    """Test connectivity and native structured tool calling independently."""
     import time
 
     start = time.time()
@@ -269,32 +303,27 @@ async def test_llm_model(
                         role="system",
                         content=(
                             "This is a native tool-calling protocol test. Call the "
-                            "provided finish tool exactly once and do not answer in text."
+                            "provided capability_probe tool with value set to ok."
                         ),
                     ),
                     LLMMessage(
                         role="user",
-                        content="Call finish now with content set to ok.",
+                        content="Call capability_probe now with value set to ok.",
                     ),
                 ],
-                tools=[FINISH_TOOL_DEFINITION],
+                tools=[_CAPABILITY_PROBE_TOOL_DEFINITION],
                 max_tokens=128,
             )
             tool_calls = list(tool_response.tool_calls or [])
-            finish_call = find_finish_call(tool_calls)
-            tool_supported = bool(
-                len(tool_calls) == 1
-                and finish_call is not None
-                and finish_call.valid
-            )
+            tool_supported = _has_valid_capability_probe(tool_calls)
             if not tool_supported:
                 tool_error = (
                     "Model returned plain text or an invalid tool call instead of "
-                    "exactly one valid finish tool call."
+                    "a valid capability_probe(value=ok) tool call."
                 )
         except Exception as exc:
             tool_supported = None
-            tool_error = f"Native finish tool probe failed: {type(exc).__name__}: {exc}"[:500]
+            tool_error = f"Native tool probe failed: {type(exc).__name__}: {exc}"[:500]
         tool_latency_ms = int((time.time() - tool_start) * 1000)
         capability_recorded = await _record_llm_tool_capability(
             target,
