@@ -7,6 +7,7 @@ Provides a consistent interface for all LLM operations across the application.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from abc import ABC, abstractmethod
@@ -27,6 +28,203 @@ class LLMError(Exception):
 
 class LLMRequestShapeError(LLMError):
     """The final provider request violates a portable message-shape invariant."""
+
+
+_LEADING_THINK_TAG = re.compile(r"^\s*<think>", re.IGNORECASE)
+_CLOSING_THINK_TAG = re.compile(r"</think>", re.IGNORECASE)
+_TEXTUAL_TOOL_CALL = re.compile(
+    r"^\s*<tool_call>\s*(.*?)\s*</tool_call>\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_TEXTUAL_TOOL_CALL_MARKER = re.compile(r"<tool_call(?:\s[^>]*)?>", re.IGNORECASE)
+_TEXTUAL_TOOL_RESULT = re.compile(
+    r"<(?:result|tool_result)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def extract_embedded_reasoning(
+    content: str | None,
+    reasoning_content: str | None,
+) -> tuple[str, str | None]:
+    """Move leading ``<think>`` blocks into the structured reasoning channel.
+
+    Only leading blocks are treated as model protocol. Literal tags later in a
+    user-facing answer remain visible.
+    """
+    visible = content or ""
+    extracted: list[str] = []
+
+    while (opening := _LEADING_THINK_TAG.match(visible)) is not None:
+        remainder = visible[opening.end() :]
+        closing = _CLOSING_THINK_TAG.search(remainder)
+        if closing is None:
+            thought = remainder.strip()
+            if thought:
+                extracted.append(thought)
+            visible = ""
+            break
+        thought = remainder[: closing.start()].strip()
+        if thought:
+            extracted.append(thought)
+        visible = remainder[closing.end() :]
+
+    reasoning_parts: list[str] = []
+    for part in (reasoning_content, *extracted):
+        normalized = (part or "").strip()
+        if normalized and normalized not in reasoning_parts:
+            reasoning_parts.append(normalized)
+    return visible.strip(), "\n\n".join(reasoning_parts) or None
+
+
+def _available_tool_names(tools: list[dict] | None) -> frozenset[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return frozenset(names)
+
+
+def normalize_textual_tool_protocol(
+    content: str | None,
+    tools: list[dict] | None,
+) -> tuple[str, list[dict], str | None]:
+    """Convert an exact textual tool envelope or reject an invented result.
+
+    Ordinary JSON remains ordinary Assistant content. Conversion is limited to
+    an exact ``<tool_call>`` envelope (or a strict bare call object) naming a
+    tool that is actually enabled for this model step.
+    """
+    text = content or ""
+    available_names = _available_tool_names(tools)
+    protocol_visible_text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    protocol_visible_text = re.sub(r"`[^`]*`", "", protocol_visible_text)
+
+    if _TEXTUAL_TOOL_RESULT.search(protocol_visible_text):
+        next_action = (
+            "Use a native tool call to an enabled tool, wait for its Tool "
+            "Result, and only then answer from that result."
+            if available_names
+            else (
+                "No tool is enabled for this step, so answer normally from the "
+                "available context without inventing a Tool Result."
+            )
+        )
+        return (
+            "",
+            [],
+            (
+                "No tool was executed. Your previous response encoded a tool "
+                "result in Assistant text, which cannot be trusted or published. "
+                + next_action
+            ),
+        )
+
+    wrapped = _TEXTUAL_TOOL_CALL.match(text)
+    if wrapped is None and _TEXTUAL_TOOL_CALL_MARKER.search(protocol_visible_text):
+        return (
+            "",
+            [],
+            (
+                "The previous response mixed a textual <tool_call> with Assistant "
+                "content. Retry using only a native tool call."
+            ),
+        )
+    raw_payload = wrapped.group(1) if wrapped is not None else text.strip()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> envelope was not valid JSON. Retry with "
+                "a native tool call to one enabled tool."
+            ),
+        )
+    if not isinstance(payload, dict):
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            "The textual <tool_call> envelope must contain one native tool call object.",
+        )
+
+    function_payload = payload.get("function")
+    if isinstance(function_payload, dict):
+        if set(payload) - {"id", "type", "function"}:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> contains unsupported control fields.",
+            )
+        name = function_payload.get("name")
+        arguments = function_payload.get("arguments", {})
+    else:
+        if set(payload) - {"id", "name", "arguments"} or "name" not in payload:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> must contain one named native tool call.",
+            )
+        name = payload.get("name")
+        arguments = payload.get("arguments", {})
+
+    if not isinstance(name, str) or name.strip() not in available_names:
+        return (
+            "",
+            [],
+            (
+                "The textual tool call named a tool that is not enabled. Retry "
+                "with a native tool call to one tool from the current Tool Schema."
+            ),
+        )
+
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    if not isinstance(arguments, dict):
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> arguments must be one JSON object. Retry "
+                "with a native tool call."
+            ),
+        )
+
+    normalized_name = name.strip()
+    call_id = payload.get("id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+        call_id = f"call_text_{digest}"
+    return (
+        "",
+        [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        ],
+        None,
+    )
 
 
 # ============================================================================
@@ -592,12 +790,19 @@ class OpenAICompatibleClient(LLMClient):
         if delta.get("reasoning_content"):
             chunk.reasoning_content = delta["reasoning_content"]
 
-        # Regular content with think tag filtering
+        # Regular content with embedded think routing
         if delta.get("content"):
             text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
+            (
+                chunk.content,
+                embedded_reasoning,
+                in_think,
+                tag_buffer,
+            ) = self._filter_think_tags(
                 text, in_think, tag_buffer
             )
+            if embedded_reasoning:
+                chunk.reasoning_content += embedded_reasoning
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -609,13 +814,14 @@ class OpenAICompatibleClient(LLMClient):
 
     def _filter_think_tags(
         self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
-        """Filter out <think>...</think> tags from content.
+    ) -> tuple[str, str, bool, str]:
+        """Route ``<think>`` text away from visible content.
 
-        Returns (filtered_content, new_in_think, new_tag_buffer).
+        Returns visible content, reasoning content, state, and partial tag buffer.
         """
         tag_buffer += text
-        emit = ""
+        visible_emit = ""
+        reasoning_emit = ""
         i = 0
         buf = tag_buffer
 
@@ -632,10 +838,10 @@ class OpenAICompatibleClient(LLMClient):
                         # Partial match - keep in buffer
                         break
                     else:
-                        emit += buf[i]
+                        visible_emit += buf[i]
                         i += 1
                 else:
-                    emit += buf[i]
+                    visible_emit += buf[i]
                     i += 1
             else:
                 # Inside think - look for </think> close tag
@@ -647,10 +853,11 @@ class OpenAICompatibleClient(LLMClient):
                         continue
                     elif "</think>".startswith(tag_candidate):
                         break
+                reasoning_emit += buf[i]
                 i += 1
 
         tag_buffer = buf[i:]
-        return emit, in_think, tag_buffer
+        return visible_emit, reasoning_emit, in_think, tag_buffer
 
     async def complete(
         self,
@@ -682,6 +889,7 @@ class OpenAICompatibleClient(LLMClient):
         return LLMResponse(
             content=msg.get("content", ""),
             tool_calls=msg.get("tool_calls", []),
+            reasoning_content=msg.get("reasoning_content"),
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
@@ -792,13 +1000,20 @@ class OpenAICompatibleClient(LLMClient):
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
-        # Clean up any remaining think tags
-        full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
+        if tag_buffer:
+            if in_think:
+                full_reasoning += tag_buffer
+            else:
+                full_content += tag_buffer
+        full_content, normalized_reasoning = extract_embedded_reasoning(
+            full_content,
+            full_reasoning or None,
+        )
 
         return LLMResponse(
             content=full_content,
             tool_calls=tool_calls_data,
-            reasoning_content=full_reasoning or None,
+            reasoning_content=normalized_reasoning,
             finish_reason=last_finish_reason,
             usage=final_usage,
             model=self.model,

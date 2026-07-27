@@ -32,7 +32,12 @@ from app.services.token_tracker import (
 from app.services.llm.multimodal_content import estimate_multimodal_tokens
 from app.services.llm.model_resolution import active_agent_model_candidates
 
-from .client import LLMError, normalize_llm_finish_reason
+from .client import (
+    LLMError,
+    extract_embedded_reasoning,
+    normalize_llm_finish_reason,
+    normalize_textual_tool_protocol,
+)
 from .failover import classify_error, FailoverErrorType
 from .finish import find_finish_call
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
@@ -675,10 +680,44 @@ async def call_llm(
             await client.close()
             return f"[LLM call error] {type(e).__name__}: {str(e)[:200]}"
 
-        # Track tokens for this round
+        # Account for the provider's raw output before protocol normalization
+        # removes control envelopes from user-visible content.
         _usage_this_round = _usage_from_response_or_estimate(response, api_messages)
         _accumulated_usage.add(_usage_this_round)
         _unsaved_usage.add(_usage_this_round)
+
+        _, embedded_reasoning = extract_embedded_reasoning(
+            response.content,
+            None,
+        )
+        response.content, response.reasoning_content = extract_embedded_reasoning(
+            response.content,
+            response.reasoning_content,
+        )
+        if embedded_reasoning and on_thinking is not None:
+            await on_thinking(embedded_reasoning)
+
+        textual_retry_instruction = None
+        if not response.tool_calls:
+            (
+                response.content,
+                textual_tool_calls,
+                textual_retry_instruction,
+            ) = normalize_textual_tool_protocol(
+                response.content,
+                tools_for_llm,
+            )
+            if textual_tool_calls:
+                response.tool_calls = textual_tool_calls
+
+        if textual_retry_instruction is not None:
+            if _protocol_repairs.get("invalid_textual_tool_protocol", 0) >= 1:
+                return await _protocol_violation("invalid_tool_call")
+            _protocol_repairs["invalid_textual_tool_protocol"] = 1
+            api_messages.append(
+                LLMMessage(role="user", content=textual_retry_instruction)
+            )
+            continue
 
         # A tool-free natural stop is the final Assistant response. Explicit
         # truncation, filtering, refusal, and unknown reasons are never delivered.

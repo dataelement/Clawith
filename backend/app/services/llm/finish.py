@@ -188,3 +188,54 @@ def find_finish_call(
         )
 
     return None
+
+
+def parse_legacy_finish_content(
+    content: str,
+    *,
+    allow_group_mentions: bool = False,
+) -> FinishCall | None:
+    """Decode only unmistakable legacy finish JSON from Assistant content.
+
+    A plain ``{"content": ...}`` object may be a user-requested JSON answer, so
+    it remains visible. The legacy group field or an explicit finish envelope
+    is required before content is interpreted as Runtime control data.
+    """
+    try:
+        payload = json.loads(content.strip())
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    arguments: Any
+    if "mention_participant_ids" in payload:
+        arguments = payload
+    elif payload.get("name") == FINISH_TOOL_NAME and "arguments" in payload:
+        if set(payload) - {"id", "name", "arguments"}:
+            return None
+        arguments = payload.get("arguments")
+    else:
+        function = payload.get("function")
+        if (
+            isinstance(function, dict)
+            and function.get("name") == FINISH_TOOL_NAME
+            and not (set(payload) - {"id", "type", "function"})
+        ):
+            arguments = function.get("arguments")
+        else:
+            return None
+
+    return find_finish_call(
+        [
+            {
+                "id": str(payload.get("id") or "legacy_finish_content"),
+                "type": "function",
+                "function": {
+                    "name": FINISH_TOOL_NAME,
+                    "arguments": arguments,
+                },
+            }
+        ],
+        allow_group_mentions=allow_group_mentions,
+    )

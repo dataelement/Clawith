@@ -312,6 +312,37 @@ def test_find_finish_call_validates_arguments():
     assert "valid JSON" in malformed.error
 
 
+def test_legacy_group_finish_json_is_decoded_without_exposing_control_fields() -> None:
+    from app.services.llm.finish import parse_legacy_finish_content
+
+    target = uuid.uuid4()
+    parsed = parse_legacy_finish_content(
+        json.dumps(
+            {
+                "content": "@Reviewer please confirm.",
+                "mention_participant_ids": [str(target)],
+            }
+        ),
+        allow_group_mentions=True,
+    )
+
+    assert parsed is not None and parsed.valid is True
+    assert parsed.content == "@Reviewer please confirm."
+    assert parsed.mention_participant_ids == (str(target),)
+
+
+def test_plain_content_json_is_not_mistaken_for_legacy_finish_control() -> None:
+    from app.services.llm.finish import parse_legacy_finish_content
+
+    assert (
+        parse_legacy_finish_content(
+            '{"content":"This is the JSON shape the user requested."}',
+            allow_group_mentions=False,
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_call_llm_returns_natural_assistant_stop_without_finish(monkeypatch):
     from app.services.llm import caller
@@ -362,6 +393,218 @@ async def test_call_llm_returns_natural_assistant_stop_without_finish(monkeypatc
         for tool in fake_client.tools_seen[0]
     )
     assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_call_llm_routes_embedded_thinking_before_final_content(monkeypatch):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [_plain_response("<think>Inspect the evidence.</think>\nFinal answer.")]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return([]),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    chunks = []
+    thoughts = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "hello"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_chunk=lambda text: _async_append(chunks, text),
+        on_thinking=lambda text: _async_append(thoughts, text),
+    )
+
+    assert result == "Final answer."
+    assert chunks == ["Final answer."]
+    assert thoughts == ["Inspect the evidence."]
+
+
+@pytest.mark.asyncio
+async def test_call_llm_executes_exact_textual_tool_call_before_finishing(
+    monkeypatch,
+):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [
+            _plain_response(
+                '<tool_call>{"name":"web_search",'
+                '"arguments":{"query":"tariffs"}}</tool_call>'
+            ),
+            _plain_response("Verified result."),
+        ]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        caller,
+        "execute_tool",
+        lambda *_args, **_kwargs: _async_return('{"verified":true}'),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    tool_events = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "search"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_tool_call=lambda event: _async_append(tool_events, event),
+    )
+
+    assert result == "Verified result."
+    assert [event["status"] for event in tool_events] == ["running", "done"]
+    assert all(event["name"] == "web_search" for event in tool_events)
+    assert any(
+        message.role == "assistant" and message.tool_calls
+        for message in fake_client.messages_seen[1]
+    )
+    assert any(
+        message.role == "tool" and message.content == '{"verified":true}'
+        for message in fake_client.messages_seen[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_call_llm_repairs_textual_result_instead_of_publishing_it(monkeypatch):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [
+            _plain_response(
+                "I will search now.\n"
+                '<result>{"results":[{"title":"fake"}]}</result>'
+            ),
+            _plain_response("Recovered final."),
+        ]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    chunks = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "search"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_chunk=lambda text: _async_append(chunks, text),
+    )
+
+    assert result == "Recovered final."
+    assert chunks == ["Recovered final."]
+    assert any(
+        message.role == "user"
+        and "No tool was executed" in str(message.content)
+        for message in fake_client.messages_seen[1]
+    )
 
 
 @pytest.mark.asyncio

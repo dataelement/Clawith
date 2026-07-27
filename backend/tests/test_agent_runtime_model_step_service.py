@@ -4,6 +4,7 @@ import base64
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+import json
 from unittest.mock import AsyncMock, patch
 import uuid
 
@@ -1661,6 +1662,82 @@ async def test_staged_group_at_is_preflighted_with_natural_final_response() -> N
     assert result.finish_content == "My review is complete. @Target Agent please approve."
     assert result.finish_delivery_intent == frozen.payload()
     assert preflight.await_count == 1
+    assert preflight.await_args.kwargs["mention_participant_ids"] == (
+        str(target_participant_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_group_finish_json_is_unwrapped_before_delivery() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    target_participant_id = uuid.uuid4()
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 1, "summary": "shared"},
+        session_context_version=1,
+        recent_session_messages=state["snapshots"].recent_session_messages,
+        related_run_summaries=(),
+        initial_input={"group_context": {"group": {"group_id": str(uuid.uuid4())}}},
+    )
+    run_id = uuid.UUID(_context(state).run_id)
+    frozen = GroupAgentHandoffIntent(
+        source_run_id=run_id,
+        source_agent_id=agent.id,
+        sender_participant_id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        child_parent_run_id=run_id,
+        child_root_run_id=run_id,
+        mention_participant_ids=(target_participant_id,),
+        trigger_message_id=uuid.uuid4(),
+        cutoff_created_at=datetime(2026, 7, 16, 14, 0, tzinfo=UTC),
+        idempotency_key=f"run:{run_id}:terminal:completed",
+        origin_user_id=uuid.uuid4(),
+        mode=None,
+        plan_prompt=None,
+    )
+
+    async def complete(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content=json.dumps(
+                {
+                    "content": "@Target Agent please approve.",
+                    "mention_participant_ids": [str(target_participant_id)],
+                }
+            ),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=10),
+            finish_reason="stop",
+        )
+
+    with (
+        patch(
+            "app.services.agent_runtime.model_step_service._group_mention_mismatches",
+            new=AsyncMock(return_value=((), ())),
+        ),
+        patch(
+            "app.services.agent_runtime.model_step_service.preflight_group_agent_handoff",
+            new=AsyncMock(return_value=frozen),
+        ) as preflight,
+    ):
+        result = await _service(
+            model,
+            agent,
+            _ContextBuilder(_build(initial_input=state["snapshots"].initial_input)),
+            complete,
+        ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.finish_content == "@Target Agent please approve."
+    assert result.assistant_message is not None
+    assert result.assistant_message["content"] == result.finish_content
+    assert "mention_participant_ids" not in result.finish_content
+    assert result.finish_delivery_intent == frozen.payload()
     assert preflight.await_args.kwargs["mention_participant_ids"] == (
         str(target_participant_id),
     )

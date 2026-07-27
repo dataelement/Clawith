@@ -65,6 +65,7 @@ from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.llm.finish import (
     content_claims_group_handoff,
     find_finish_call,
+    parse_legacy_finish_content,
     parse_tool_arguments,
 )
 from app.services.llm.multimodal_content import (
@@ -820,6 +821,32 @@ def _parse_step(
     if not step.tool_calls:
         content = (step.content or "").strip()
         if step.finish_reason in {"stop", None} and content:
+            legacy_finish = parse_legacy_finish_content(
+                content,
+                allow_group_mentions=allow_group_handoff,
+            )
+            if legacy_finish is not None:
+                if not legacy_finish.valid:
+                    return _repair(
+                        state,
+                        context,
+                        step,
+                        legacy_finish.error or "Retry with a valid final response.",
+                        repair_code="invalid_finish",
+                    )
+                return ModelStepResult(
+                    intent="finish",
+                    assistant_message=_assistant_message(
+                        state,
+                        context,
+                        replace(step, content=legacy_finish.content),
+                        runtime_intent="finish",
+                    ),
+                    finish_content=legacy_finish.content,
+                    finish_mention_participant_ids=(
+                        legacy_finish.mention_participant_ids
+                    ),
+                )
             return ModelStepResult(
                 intent="finish",
                 assistant_message=_assistant_message(
