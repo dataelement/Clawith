@@ -456,7 +456,10 @@ async def test_complete_once_returns_a_bounded_repair_instruction_for_invalid_ar
     assert result.retry_instruction is not None
     assert "valid JSON" in result.retry_instruction
     assert "not executed" in result.retry_instruction
-    assert "same oversized whole-file content" in result.retry_instruction
+    assert "Do not retry the entire file" in result.retry_instruction
+    assert "6000 characters" in result.retry_instruction
+    assert "mode=overwrite" in result.retry_instruction
+    assert "mode=append" in result.retry_instruction
     assert result.retry_tool_name == "write_file"
     assert client.closed is True
 

@@ -80,6 +80,7 @@ from app.services.llm.finish import (
 from app.services.builtin_tool_definitions import (
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
+    WRITE_FILE_MAX_CONTENT_CHARS,
     builtin_model_definition,
     builtin_model_definitions,
     builtin_readiness,
@@ -1689,10 +1690,20 @@ async def _execute_workspace_mutation(
     if tool_name == "write_file":
         path = arguments.get("path")
         content = arguments.get("content")
+        mode = arguments.get("mode", "overwrite")
         if not path:
             return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
         if content is None:
             return "❌ Missing required argument 'content' for write_file"
+        if not isinstance(content, str):
+            return "❌ write_file content must be a string"
+        if mode not in {"overwrite", "append"}:
+            return "❌ write_file mode must be overwrite or append"
+        if len(content) > WRITE_FILE_MAX_CONTENT_CHARS:
+            return (
+                "❌ write_file content exceeds 6000 characters. Write the first "
+                "chunk with mode=overwrite, then append one smaller chunk per later turn."
+            )
         if is_focus_file_path(path):
             return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
         if _is_enterprise_info_path(path):
@@ -1709,13 +1720,10 @@ async def _execute_workspace_mutation(
                 operation="write",
                 session_id=session_id,
                 enforce_human_lock=True,
+                append=mode == "append",
             )
             await _wdb.commit()
-        return (
-            f"✅ Written to {write_result.path} ({len(content)} chars)"
-            if write_result.ok
-            else f"❌ {write_result.message}"
-        )
+        return f"✅ {write_result.message}" if write_result.ok else f"❌ {write_result.message}"
 
     if tool_name == "move_file":
         source_path = arguments.get("source_path")
@@ -2102,6 +2110,7 @@ async def _write_file_outcome(
     """Write one workspace file using the structured collaboration result."""
     path = arguments.get("path")
     content = arguments.get("content")
+    mode = arguments.get("mode", "overwrite")
     if not isinstance(path, str) or not path.strip() or content is None:
         return _typed_failure(
             "write_file requires non-empty path and content.",
@@ -2111,6 +2120,17 @@ async def _write_file_outcome(
         return _typed_failure(
             "write_file content must be a string.",
             "invalid_tool_arguments",
+        )
+    if mode not in {"overwrite", "append"}:
+        return _typed_failure(
+            "write_file mode must be overwrite or append.",
+            "invalid_tool_arguments",
+        )
+    if len(content) > WRITE_FILE_MAX_CONTENT_CHARS:
+        return _typed_failure(
+            "write_file content exceeds 6000 characters. Write the first chunk "
+            "with mode=overwrite, then append one smaller chunk per later turn.",
+            "write_file_content_too_large",
         )
     if is_focus_file_path(path):
         return _typed_failure(
@@ -2137,6 +2157,7 @@ async def _write_file_outcome(
                 operation="write",
                 session_id=session_id,
                 enforce_human_lock=True,
+                append=mode == "append",
             )
             if not write_result.ok:
                 return _typed_failure(
@@ -2154,9 +2175,7 @@ async def _write_file_outcome(
             f"Workspace write failed: {type(exc).__name__}",
             "workspace_write_failed",
         )
-    return _typed_success(
-        f"Written to {write_result.path} ({len(content)} chars)."
-    )
+    return _typed_success(f"{write_result.message}.")
 
 
 async def _list_files_outcome(

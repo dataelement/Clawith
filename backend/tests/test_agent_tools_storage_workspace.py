@@ -213,6 +213,96 @@ async def test_write_workspace_file_does_not_mirror_to_local_for_non_local_stora
 
 
 @pytest.mark.asyncio
+async def test_write_workspace_file_appends_with_version_guard(monkeypatch, tmp_path):
+    agent_id = uuid.uuid4()
+    storage = MemoryStorageBackend({
+        f"{agent_id}/workspace/page.html": b"<main>",
+    })
+    monkeypatch.setattr(workspace_collaboration, "get_storage_backend", lambda: storage)
+    revisions = []
+
+    async def _record_revision(*args, **kwargs):
+        revisions.append(kwargs)
+        return None
+
+    monkeypatch.setattr(workspace_collaboration, "record_revision", _record_revision)
+
+    result = await workspace_collaboration.write_workspace_file(
+        db=None,
+        agent_id=agent_id,
+        base_dir=tmp_path / str(agent_id),
+        path="workspace/page.html",
+        content="content</main>",
+        actor_type="agent",
+        actor_id=agent_id,
+        enforce_human_lock=False,
+        append=True,
+    )
+
+    assert result.ok is True
+    assert result.message == "Appended to workspace/page.html (14 chars; 20 total)"
+    assert storage.files[f"{agent_id}/workspace/page.html"] == b"<main>content</main>"
+    assert revisions[0]["before_content"] == "<main>"
+    assert revisions[0]["after_content"] == "<main>content</main>"
+
+
+@pytest.mark.asyncio
+async def test_write_workspace_file_rejects_append_to_missing_file(monkeypatch, tmp_path):
+    agent_id = uuid.uuid4()
+    storage = MemoryStorageBackend()
+    monkeypatch.setattr(workspace_collaboration, "get_storage_backend", lambda: storage)
+
+    result = await workspace_collaboration.write_workspace_file(
+        db=None,
+        agent_id=agent_id,
+        base_dir=tmp_path / str(agent_id),
+        path="workspace/page.html",
+        content="content",
+        actor_type="agent",
+        actor_id=agent_id,
+        enforce_human_lock=False,
+        append=True,
+    )
+
+    assert result.ok is False
+    assert result.message == "Cannot append to missing file: workspace/page.html"
+    assert storage.files == {}
+
+
+@pytest.mark.asyncio
+async def test_write_workspace_file_append_does_not_overwrite_a_concurrent_change(
+    monkeypatch,
+    tmp_path,
+):
+    agent_id = uuid.uuid4()
+    key = f"{agent_id}/workspace/page.html"
+
+    class RacingStorageBackend(MemoryStorageBackend):
+        async def write_bytes_if_match(self, storage_key, data, **kwargs):
+            await self.write_bytes(storage_key, b"concurrent")
+            return await super().write_bytes_if_match(storage_key, data, **kwargs)
+
+    storage = RacingStorageBackend({key: b"first"})
+    monkeypatch.setattr(workspace_collaboration, "get_storage_backend", lambda: storage)
+
+    result = await workspace_collaboration.write_workspace_file(
+        db=None,
+        agent_id=agent_id,
+        base_dir=tmp_path / str(agent_id),
+        path="workspace/page.html",
+        content=" second",
+        actor_type="agent",
+        actor_id=agent_id,
+        enforce_human_lock=False,
+        append=True,
+    )
+
+    assert result.ok is False
+    assert result.message == "Conflict detected while writing workspace/page.html"
+    assert storage.files[key] == b"concurrent"
+
+
+@pytest.mark.asyncio
 async def test_flush_temp_workspace_only_writes_changed_files(monkeypatch):
     agent_id = uuid.uuid4()
     storage = MemoryStorageBackend({
