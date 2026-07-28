@@ -266,6 +266,10 @@ steps:
             fi
           done
         - |
+          if [ -d ss-nodes.json ]; then
+            rmdir ss-nodes.json
+            echo "已清理 Docker 自动创建的空目录 ss-nodes.json"
+          fi
           if [ ! -f ss-nodes.json ]; then
             printf '[]\n' > ss-nodes.json
             echo "未配置 SS 节点，已创建空的 ss-nodes.json"
