@@ -23,6 +23,7 @@ from app.services.agent_runtime.command_worker import (
 )
 from app.services.agent_runtime.group_runtime_tools import (
     GROUP_WORKSPACE_MUTATION_TOOL_NAMES,
+    SCOPED_GROUP_WORKSPACE_MUTATION_TOOL_NAMES,
     GroupRuntimeToolService,
     GroupWorkspaceReconciliationPending,
 )
@@ -142,8 +143,19 @@ class RuntimeProductReconciler:
                         & (ChatSession.id == AgentRun.session_id),
                     )
                     .where(
-                        AgentToolExecution.tool_name.in_(
-                            GROUP_WORKSPACE_MUTATION_TOOL_NAMES
+                        or_(
+                            AgentToolExecution.tool_name.in_(
+                                GROUP_WORKSPACE_MUTATION_TOOL_NAMES
+                            ),
+                            and_(
+                                AgentToolExecution.tool_name.in_(
+                                    SCOPED_GROUP_WORKSPACE_MUTATION_TOOL_NAMES
+                                ),
+                                AgentToolExecution.sanitized_arguments[
+                                    "workspace_scope"
+                                ].astext
+                                == "group",
+                            ),
                         ),
                         or_(
                             and_(
@@ -293,7 +305,11 @@ class RuntimeProductReconciler:
                         "operation": (
                             "write"
                             if candidate.execution.tool_name
-                            == "group_write_workspace_file"
+                            in {
+                                "group_write_workspace_file",
+                                "write_file",
+                                "edit_file",
+                            }
                             else "delete"
                         ),
                     },

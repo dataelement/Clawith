@@ -2428,8 +2428,11 @@ export default function AgentDetailPage() {
                 }),
             }));
             setChatMessages(parsed);
+            // Round-trip the backend's compound `<created_at>|<id>` cursor. A bare
+            // created_at cannot page past a batch of messages that share one timestamp
+            // (e.g. a burst of tool_call rows), so older messages would never load.
             setChatOldestTimestamp(
-                messages.length > 0 ? messages[0].created_at : null,
+                messages.length > 0 ? (messages[0].cursor ?? messages[0].created_at) : null,
             );
             setChatHistoryHasMore(messages.length >= HISTORY_PAGE_SIZE);
             setMessagesLoadedRuntimeKey(buildSessionRuntimeKey(agentId, sessionId));
@@ -2753,8 +2756,9 @@ export default function AgentDetailPage() {
                 }),
             }));
 
-            // Set the oldest message timestamp for cursor-based pagination
-            const oldestTimestamp = msgs.length > 0 ? msgs[0].created_at : null;
+            // Set the oldest message cursor for pagination. Use the backend's compound
+            // `<created_at>|<id>` cursor so a batch of equal-timestamp messages can be paged past.
+            const oldestTimestamp = msgs.length > 0 ? (msgs[0].cursor ?? msgs[0].created_at) : null;
 
             if (writable) {
                 setChatMessages(preParsed);
@@ -3991,8 +3995,9 @@ export default function AgentDetailPage() {
             const el = historyContainerRef.current;
             const oldScrollHeight = el?.scrollHeight ?? 0;
             setHistoryMsgs(prev => [...preParsed, ...prev]);
-            // Update the oldest timestamp (first message in the new batch, since messages are in chronological order)
-            setHistoryOldestTimestamp(msgs[0].created_at);
+            // Update the oldest cursor (first message in the new batch, since messages are in chronological order).
+            // Round-trip the compound `<created_at>|<id>` cursor so equal-timestamp batches don't stall pagination.
+            setHistoryOldestTimestamp(msgs[0].cursor ?? msgs[0].created_at);
             setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
             // Restore scroll position after new messages are prepended
             requestAnimationFrame(() => {
@@ -4040,8 +4045,9 @@ export default function AgentDetailPage() {
             const el = chatContainerRef.current;
             const oldScrollHeight = el?.scrollHeight ?? 0;
             setChatMessages(prev => [...preParsed, ...prev]);
-            // Update the oldest timestamp (first message in the new batch, since messages are in chronological order)
-            setChatOldestTimestamp(msgs[0].created_at);
+            // Update the oldest cursor (first message in the new batch, since messages are in chronological order).
+            // Round-trip the compound `<created_at>|<id>` cursor so equal-timestamp batches don't stall pagination.
+            setChatOldestTimestamp(msgs[0].cursor ?? msgs[0].created_at);
             setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
             // Restore scroll position after new messages are prepended
             requestAnimationFrame(() => {

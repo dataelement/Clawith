@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 import asyncio
 import hashlib
 import json
 import logging
 import math
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
+    resolve_multi_agent_compact_model,
 )
 from app.services.agent_runtime.session_context_completion import (
     SessionCompactRequest,
@@ -36,10 +37,9 @@ from app.services.agent_runtime.session_context_service import (
     SessionContextService,
     SessionContextSnapshot,
 )
-from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.agent_runtime.state import JsonObject
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.llm.utils import get_max_tokens
-
 
 logger = logging.getLogger(__name__)
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
@@ -173,12 +173,15 @@ class SessionCompactPolicyResolver:
         models: dict[uuid.UUID, LLMModel] = {}
         for agent in agents:
             model = await resolve_active_agent_model(db, agent)
-            if model is None:
-                raise SessionContextBackgroundError(
-                    "session_compact_budget_unavailable",
-                    "At least one active group Agent has no usable model",
-                )
-            models[model.id] = model
+            if model is not None:
+                models[model.id] = model
+        if not models:
+            compact_model = await resolve_multi_agent_compact_model(
+                db,
+                self._settings,
+                tenant_id=tenant_id,
+            )
+            models[compact_model.id] = compact_model
         try:
             thresholds = {
                 model.id: _model_threshold(model, self._settings)

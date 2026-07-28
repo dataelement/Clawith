@@ -42,11 +42,15 @@ class AgentRunEvent(Base):
             ondelete="CASCADE",
         ),
         UniqueConstraint("run_id", "idempotency_key", name="uq_agent_run_events_run_idempotency"),
-        UniqueConstraint(
+        Index(
+            "uq_agent_run_events_checkpoint_type_non_delivery",
             "run_id",
             "source_checkpoint_id",
             "event_type",
-            name="uq_agent_run_events_checkpoint_type",
+            unique=True,
+            postgresql_where=text(
+                "event_type NOT IN ('delivery_succeeded', 'delivery_failed')"
+            ),
         ),
         Index("ix_agent_run_events_run_created", "run_id", "created_at"),
         Index(

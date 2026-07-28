@@ -80,6 +80,7 @@ from app.services.llm.finish import (
 from app.services.builtin_tool_definitions import (
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
+    WRITE_FILE_MAX_CONTENT_CHARS,
     builtin_model_definition,
     builtin_model_definitions,
     builtin_readiness,
@@ -129,6 +130,19 @@ _READ_FILE_BINARY_EXTENSIONS = frozenset(
         ".xlsm",
         ".xlsx",
         ".zip",
+    }
+)
+_WORKSPACE_SCOPED_FILE_TOOL_NAMES = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "read_document",
+        "search_files",
+        "find_files",
+        "write_file",
+        "edit_file",
+        "move_file",
+        "delete_file",
     }
 )
 
@@ -569,7 +583,6 @@ RUNTIME_TYPED_APPLICATION_TOOL_NAMES = frozenset(
 # to avoid sending duplicate tool definitions to the LLM.
 _ALWAYS_INCLUDE_CORE = {
     "complete_focus_item",
-    FINISH_TOOL_NAME,
     "list_focus_items",
     "query_directory",
     "send_channel_file",
@@ -1677,10 +1690,20 @@ async def _execute_workspace_mutation(
     if tool_name == "write_file":
         path = arguments.get("path")
         content = arguments.get("content")
+        mode = arguments.get("mode", "overwrite")
         if not path:
             return "❌ Missing required argument 'path' for write_file. Please provide a file path like 'skills/my-skill/SKILL.md'"
         if content is None:
             return "❌ Missing required argument 'content' for write_file"
+        if not isinstance(content, str):
+            return "❌ write_file content must be a string"
+        if mode not in {"overwrite", "append"}:
+            return "❌ write_file mode must be overwrite or append"
+        if len(content) > WRITE_FILE_MAX_CONTENT_CHARS:
+            return (
+                "❌ write_file content exceeds 6000 characters. Write the first "
+                "chunk with mode=overwrite, then append one smaller chunk per later turn."
+            )
         if is_focus_file_path(path):
             return "❌ Focus is no longer stored in focus.md. Use upsert_focus_item or complete_focus_item."
         if _is_enterprise_info_path(path):
@@ -1697,13 +1720,10 @@ async def _execute_workspace_mutation(
                 operation="write",
                 session_id=session_id,
                 enforce_human_lock=True,
+                append=mode == "append",
             )
             await _wdb.commit()
-        return (
-            f"✅ Written to {write_result.path} ({len(content)} chars)"
-            if write_result.ok
-            else f"❌ {write_result.message}"
-        )
+        return f"✅ {write_result.message}" if write_result.ok else f"❌ {write_result.message}"
 
     if tool_name == "move_file":
         source_path = arguments.get("source_path")
@@ -2090,6 +2110,7 @@ async def _write_file_outcome(
     """Write one workspace file using the structured collaboration result."""
     path = arguments.get("path")
     content = arguments.get("content")
+    mode = arguments.get("mode", "overwrite")
     if not isinstance(path, str) or not path.strip() or content is None:
         return _typed_failure(
             "write_file requires non-empty path and content.",
@@ -2099,6 +2120,17 @@ async def _write_file_outcome(
         return _typed_failure(
             "write_file content must be a string.",
             "invalid_tool_arguments",
+        )
+    if mode not in {"overwrite", "append"}:
+        return _typed_failure(
+            "write_file mode must be overwrite or append.",
+            "invalid_tool_arguments",
+        )
+    if len(content) > WRITE_FILE_MAX_CONTENT_CHARS:
+        return _typed_failure(
+            "write_file content exceeds 6000 characters. Write the first chunk "
+            "with mode=overwrite, then append one smaller chunk per later turn.",
+            "write_file_content_too_large",
         )
     if is_focus_file_path(path):
         return _typed_failure(
@@ -2125,6 +2157,7 @@ async def _write_file_outcome(
                 operation="write",
                 session_id=session_id,
                 enforce_human_lock=True,
+                append=mode == "append",
             )
             if not write_result.ok:
                 return _typed_failure(
@@ -2142,9 +2175,7 @@ async def _write_file_outcome(
             f"Workspace write failed: {type(exc).__name__}",
             "workspace_write_failed",
         )
-    return _typed_success(
-        f"Written to {write_result.path} ({len(content)} chars)."
-    )
+    return _typed_success(f"{write_result.message}.")
 
 
 async def _list_files_outcome(
@@ -2488,6 +2519,14 @@ async def execute_builtin_tool_outcome(
     Durable Runtime rejects those as ``untyped_tool_outcome``; this function
     never infers success from display text or from a non-raising handler.
     """
+    if (
+        tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
+        and arguments.get("workspace_scope", "agent") != "agent"
+    ):
+        return _typed_failure(
+            "workspace_scope=group is only available in a validated Group Run.",
+            "workspace_scope_unavailable",
+        )
     tenant_id: str | None = None
     if tool_name in {
         "list_files",
@@ -6786,7 +6825,9 @@ def _read_document_sync(
             from pptx import Presentation
             prs = Presentation(str(file_path))
             slides = []
-            for i, slide in enumerate(prs.slides[:50]):
+            for i, slide in enumerate(prs.slides):
+                if i >= 50:
+                    break
                 texts = []
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
@@ -7054,6 +7095,31 @@ async def _read_document_result(
     tenant_id: str | None = None,
 ) -> DocumentReadResult:
     return await asyncio.to_thread(_read_document_with_timeout, ws, rel_path, max_chars, tenant_id)
+
+
+async def read_document_bytes(
+    file_bytes: bytes,
+    filename: str,
+    *,
+    max_chars: int = 8000,
+) -> DocumentReadResult:
+    """Run the shared document extractor for bytes from any authorized workspace."""
+    safe_name = Path(filename).name
+    if not safe_name:
+        return DocumentReadResult(
+            False,
+            "Document filename is required.",
+            "invalid_tool_arguments",
+        )
+    with tempfile.TemporaryDirectory(prefix="clawith-document-") as temp_dir:
+        root = Path(temp_dir)
+        (root / safe_name).write_bytes(file_bytes)
+        return await _read_document_result(
+            root,
+            safe_name,
+            max_chars=max_chars,
+            tenant_id=None,
+        )
 
 
 async def _read_document(

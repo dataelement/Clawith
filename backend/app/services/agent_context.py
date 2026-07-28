@@ -326,8 +326,8 @@ that you are authorized and able to perform.
 
 # Runtime Protocol
 
-- When the task is complete, call `finish` with the exact final answer for the user.
-- Do not call `finish` with another tool or while required work is incomplete.
+- When the task is complete, return the exact final answer as normal Assistant content.
+- Do not return a final answer while required work or Tool Calls are still incomplete.
 - When progress genuinely requires user input, approval, another Agent result, or
   an external event, call `wait` with a concise reason.
 - Do not simulate Runtime control tools in plain text.
@@ -360,7 +360,7 @@ _BASE_PROMPT_OUTPUT = """
 
 # Verification
 
-Before calling `finish`, verify that:
+Before returning the final Assistant response, verify that:
 - Every material user requirement has been addressed.
 - Required tool actions actually succeeded.
 - Required files, records, messages, or other artifacts exist.

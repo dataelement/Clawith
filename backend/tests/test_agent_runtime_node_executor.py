@@ -302,6 +302,11 @@ async def test_group_finish_intent_is_frozen_into_terminal_delivery_request() ->
         "idempotency_key": f"run:{run_id}:terminal:completed",
     }
     state = _state(run_id)
+    state["lifecycle"]["pending_group_at"] = {
+        "participant_ids": list(intent["mention_participant_ids"]),
+        "tool_call_id": "call-at",
+        "staged_at_model_step": 1,
+    }
     executor = DeterministicRuntimeNodeExecutor(
         cancel_source=CancelSource(),
         model_service=ModelService(
@@ -322,6 +327,7 @@ async def test_group_finish_intent_is_frozen_into_terminal_delivery_request() ->
         {**state, "lifecycle": model_update["lifecycle"]},
     )
     assert verifying_state["lifecycle"]["finish_delivery_intent"] == intent
+    assert "pending_group_at" in verifying_state["lifecycle"]
 
     verify_update = await executor.execute("verify", verifying_state, context)
     lifecycle = verify_update["lifecycle"]
@@ -331,6 +337,58 @@ async def test_group_finish_intent_is_frozen_into_terminal_delivery_request() ->
         "group_handoff": intent,
     }
     assert "finish_delivery_intent" not in lifecycle
+    assert "pending_group_at" not in lifecycle
+
+
+@pytest.mark.asyncio
+async def test_tool_node_checkpoints_group_at_staging_with_tool_result() -> None:
+    run_id = uuid.uuid4()
+    target_id = str(uuid.uuid4())
+    call: JsonObject = {
+        "id": "call-at",
+        "type": "function",
+        "function": {
+            "name": "at",
+            "arguments": '{"participant_ids":[]}',
+        },
+    }
+    staged: JsonObject = {
+        "participant_ids": [target_id],
+        "tool_call_id": "call-at",
+        "staged_at_model_step": 1,
+    }
+    state = _state(run_id)
+    state["lifecycle"].update(
+        {
+            "next_route": "tool",
+            "pending_tool_calls": [call],
+        }
+    )
+    tools = ToolService(
+        ToolStepResult(
+            messages=(
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-at",
+                    "name": "at",
+                    "content": '{"status":"staged","participant_count":1}',
+                },
+            ),
+            pending_group_at_changed=True,
+            pending_group_at=staged,
+        )
+    )
+    executor = _executor(ModelService(), tools=tools)
+
+    update = await executor.execute(
+        "tool",
+        state,
+        _context(run_id, executor, "command-at"),
+    )
+
+    assert update["lifecycle"]["pending_group_at"] == staged
+    assert update["lifecycle"]["pending_tool_calls"] == []
+    assert update["messages"][0]["tool_call_id"] == "call-at"
 
 
 def _executor(
@@ -683,6 +741,37 @@ async def test_duplicate_tool_call_ids_fail_before_any_provider_execution() -> N
         "message": "pending tool calls require unique non-empty IDs",
     }
     assert tools.calls == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_pending_tool_calls_discard_staged_group_at() -> None:
+    run_id = uuid.uuid4()
+    duplicate_calls: list[JsonObject] = [
+        {"id": "duplicate", "name": "read", "arguments": {}},
+        {"id": "duplicate", "name": "write", "arguments": {}},
+    ]
+    state = _state(run_id)
+    state["lifecycle"].update(
+        {
+            "next_route": "tool",
+            "pending_tool_calls": duplicate_calls,
+            "pending_group_at": {
+                "participant_ids": [str(uuid.uuid4())],
+                "tool_call_id": "call-at",
+                "staged_at_model_step": 1,
+            },
+        }
+    )
+    executor = _executor(ModelService())
+
+    update = await executor.execute(
+        "tool",
+        state,
+        _context(run_id, executor, "command-invalid-tools"),
+    )
+
+    assert update["lifecycle"]["status"] == "failed"
+    assert "pending_group_at" not in update["lifecycle"]
 
 
 @pytest.mark.asyncio
@@ -1079,18 +1168,18 @@ async def test_cancel_is_observed_before_the_model_or_a_new_tool_can_start() -> 
 
 
 @pytest.mark.asyncio
-async def test_plain_text_finish_protocol_is_repaired_once_then_fails_explicitly() -> None:
+async def test_empty_output_is_repaired_once_then_fails_explicitly() -> None:
     run_id = uuid.uuid4()
     model = ModelService(
         ModelStepResult(
             intent="text",
-            assistant_message={"role": "assistant", "content": "first plain text"},
-            repair_code="missing_finish",
+            assistant_message={"role": "assistant", "content": ""},
+            repair_code="empty_output",
         ),
         ModelStepResult(
             intent="text",
-            assistant_message={"role": "assistant", "content": "second plain text"},
-            repair_code="missing_finish",
+            assistant_message={"role": "assistant", "content": ""},
+            repair_code="empty_output",
         ),
     )
     executor = _executor(model)
@@ -1099,10 +1188,10 @@ async def test_plain_text_finish_protocol_is_repaired_once_then_fails_explicitly
 
     lifecycle = result["lifecycle"]
     assert lifecycle["status"] == "failed"
-    assert lifecycle["reason"] == "finish_protocol_violation"
-    assert lifecycle["error"]["code"] == "finish_protocol_violation"
+    assert lifecycle["reason"] == "model_empty_output"
+    assert lifecycle["error"]["code"] == "model_empty_output"
     assert lifecycle["model_step_count"] == 2
-    assert lifecycle["model_protocol_repairs"] == {"missing_finish": 1}
+    assert lifecycle["model_protocol_repairs"] == {"empty_output": 1}
     assert model.calls == 2
     messages = runtime_messages_as_json(cast(RuntimeGraphState, result))
     assert [message["role"] for message in messages] == [
@@ -1117,7 +1206,7 @@ async def test_plain_text_finish_protocol_is_repaired_once_then_fails_explicitly
         "repair_draft",
     ]
     assert sum(
-        "must either call another available tool" in str(message.get("content", ""))
+        "complete, non-empty final response" in str(message.get("content", ""))
         for message in messages
     ) == 1
 

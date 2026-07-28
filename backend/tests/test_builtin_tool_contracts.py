@@ -87,6 +87,7 @@ def test_builtin_model_definition_ignores_stale_database_contract() -> None:
 
 
 def test_known_schema_contracts_match_handler_validation() -> None:
+    write_file = builtin_model_definition("write_file")["function"]["parameters"]
     send_channel = builtin_model_definition("send_channel_message")["function"]["parameters"]
     send_platform = builtin_model_definition("send_platform_message")["function"]["parameters"]
     upload_image = builtin_model_definition("upload_image")["function"]["parameters"]
@@ -94,6 +95,10 @@ def test_known_schema_contracts_match_handler_validation() -> None:
     set_trigger = builtin_model_definition("set_trigger")["function"]["parameters"]
     import_mcp = builtin_model_definition("import_mcp_server")["function"]["parameters"]
 
+    assert write_file["properties"]["content"]["maxLength"] == 6_000
+    assert write_file["properties"]["mode"]["enum"] == ["overwrite", "append"]
+    assert write_file["properties"]["mode"]["default"] == "overwrite"
+    assert write_file["required"] == ["path", "content"]
     assert send_channel["required"] == ["target_member_id", "message"]
     assert send_platform["required"] == ["message"]
     assert send_platform["anyOf"] == [
@@ -115,7 +120,7 @@ def test_known_schema_contracts_match_handler_validation() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["finish", "wait", "group_query_members", "group_future_tool"],
+    ["at", "finish", "wait", "group_query_members", "group_future_tool"],
 )
 def test_runtime_reserved_tool_names_cannot_be_overridden(name: str) -> None:
     assert is_reserved_custom_tool_name(name)
@@ -128,8 +133,22 @@ def test_group_runtime_tools_are_served_from_the_canonical_data_module() -> None
     names = {
         tool["function"]["name"] for tool in GROUP_RUNTIME_TOOL_DEFINITIONS
     }
-    assert names == group_runtime_tools.GROUP_TOOL_NAMES
+    assert names == group_runtime_tools.GROUP_BUSINESS_TOOL_NAMES
+    assert names.isdisjoint(group_runtime_tools.GROUP_SCOPED_WORKSPACE_TOOL_NAMES)
     assert "agent_id" in builtin_model_definition("group_query_members")["function"]["description"]
+
+
+def test_removed_group_workspace_tools_keep_legacy_execution_policy() -> None:
+    assert builtin_policy("group_list_workspace") == {
+        "effect": "read",
+        "retry_policy": "safe",
+        "parallel_safe": True,
+    }
+    assert builtin_policy("group_write_workspace_file") == {
+        "effect": "write",
+        "retry_policy": "conditional",
+        "parallel_safe": False,
+    }
 
 
 def test_non_reserved_dynamic_tool_keeps_conservative_policy() -> None:
@@ -289,6 +308,82 @@ async def test_typed_builtin_validation_failure_is_explicit_not_unknown() -> Non
     assert isinstance(outcome, ToolExecutionOutcome)
     assert outcome.status == "failed"
     assert outcome.error_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("arguments", "error_code"),
+    [
+        (
+            {"path": "workspace/page.html", "content": "x" * 6_001},
+            "write_file_content_too_large",
+        ),
+        (
+            {
+                "path": "workspace/page.html",
+                "content": "chunk",
+                "mode": "replace",
+            },
+            "invalid_tool_arguments",
+        ),
+    ],
+)
+async def test_write_file_enforces_incremental_write_contract(
+    arguments: dict,
+    error_code: str,
+) -> None:
+    outcome = await agent_tools.execute_builtin_tool_outcome(
+        "write_file",
+        arguments,
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == error_code
+    assert "append" in (outcome.result_summary or "")
+
+
+@pytest.mark.asyncio
+async def test_write_file_append_mode_reaches_the_workspace_boundary(monkeypatch, tmp_path) -> None:
+    agent_id = uuid.uuid4()
+    recorded = {}
+
+    class _WriteSession:
+        async def commit(self) -> None:
+            recorded["committed"] = True
+
+    @asynccontextmanager
+    async def _session_factory():
+        yield _WriteSession()
+
+    async def _write_workspace_file(db, **kwargs):
+        recorded.update(kwargs)
+        return SimpleNamespace(
+            ok=True,
+            path=kwargs["path"],
+            message="Appended to workspace/page.html (5 chars; 10 total)",
+        )
+
+    monkeypatch.setattr(agent_tools, "async_session", _session_factory)
+    monkeypatch.setattr(agent_tools, "write_workspace_file", _write_workspace_file)
+
+    outcome = await agent_tools._write_file_outcome(
+        agent_id,
+        {
+            "path": "workspace/page.html",
+            "content": "later",
+            "mode": "append",
+        },
+        base_dir=tmp_path,
+        session_id="session-1",
+    )
+
+    assert outcome.status == "succeeded"
+    assert recorded["append"] is True
+    assert recorded["operation"] == "write"
+    assert recorded["session_id"] == "session-1"
+    assert recorded["committed"] is True
 
 
 @pytest.mark.asyncio

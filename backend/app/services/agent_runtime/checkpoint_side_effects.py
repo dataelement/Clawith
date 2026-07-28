@@ -694,6 +694,7 @@ class RuntimeCheckpointSideEffects:
                 "reason": command.payload.get("reason") or "cancelled_by_command",
                 "waiting_request": None,
             }
+            lifecycle.pop("pending_group_at", None)
             product_checkpoint = replace(
                 checkpoint,
                 state={**checkpoint.state, "lifecycle": lifecycle},
