@@ -1,81 +1,80 @@
 # Production release deployment
 
-Merging an automated `release/vX.Y.Z` pull request publishes the GitHub Release
-and then deploys that exact tag to production. GitHub Actions does not build or
-upload application artifacts. The production server fetches the tag in its
-source checkout, builds versioned backend and frontend images, points the
-deployment's `latest` image tags to them, and restarts the existing Compose
-project. Success requires the API and worker containers to use the newly built
-backend image, the frontend container to use the newly built frontend image,
-and `/api/health` to report both `status: ok` and the released version.
+Production releases are proposed and published by GitHub Actions, while Drone
+owns CI validation, artifact transfer, and production deployment.
 
-The deployment keeps the server's ignored `.env`, `ss-nodes.json`,
-`backend/agent_data`, and Docker volumes in place. It refuses to overwrite
-tracked local changes. If the build, restart, or health check fails after the
-checkout, it checks out the previous commit and rebuilds the previous version.
+## Release flow
 
-## GitHub production configuration
+1. Manually run the `Release` GitHub Actions workflow.
+2. GitHub Actions calculates the next version, updates the version files, drafts
+   release notes, and opens a `release/vX.Y.Z` pull request.
+3. Merging that pull request creates and pushes the annotated `vX.Y.Z` tag.
+4. Drone receives the tag webhook and runs the complete pipeline:
+   - build the previous and target backend/frontend images;
+   - validate fresh-database migrations;
+   - validate a fresh application deployment;
+   - validate upgrading from the previous stable release;
+   - export and transfer the target images;
+   - load the images and recreate the production application services;
+   - verify the proxied API health endpoint.
+5. GitHub Actions waits for the
+   `continuous-integration/drone/tag` commit status. It publishes the GitHub
+   Release only after Drone reports success.
 
-Configure these under **Settings > Environments > production**. Environment
-protection rules can require approval before the deployment job starts.
+Only tags matching `refs/tags/v*` enter the Drone release pipeline. Branch
+pushes and pull requests still run CI, but never export or deploy images.
 
-### Variables
+## Drone configuration
 
-| Name | Current production value |
+The repository must be trusted by Drone because the CI steps use privileged
+containers and the host Docker socket.
+
+Configure these Drone repository secrets:
+
+| Name | Purpose |
 | --- | --- |
-| `CLAWITH_DEPLOY_HOST` | `82.156.53.84` |
-| `CLAWITH_DEPLOY_USER` | `qinrui` |
-| `CLAWITH_DEPLOY_PORT` | `10022` |
-| `CLAWITH_DEPLOY_PATH` | `clawith_new` |
-| `CLAWITH_SOURCE_PATH` | `Clawith` |
-| `CLAWITH_PIP_INDEX_URL` | `https://mirrors.aliyun.com/pypi/simple/` (optional default) |
-| `CLAWITH_PIP_TRUSTED_HOST` | Optional; only for a mirror that requires pip trusted-host handling |
+| `PROXY` | Optional HTTP/HTTPS proxy used during clone and image builds |
+| `PRIVATE_SERVER_IP` | Production server hostname or IP address |
+| `sshpwd` | Password for the production deployment user |
 
-### Secrets
+The deployment currently connects as `qinrui` on port `10022` and writes
+release artifacts to `/home/qinrui/clawith_new`.
 
-| Name | Value |
-| --- | --- |
-| `CLAWITH_DEPLOY_SSH_KEY` | Private key for a dedicated deployment identity |
-| `CLAWITH_DEPLOY_KNOWN_HOSTS` | Verified OpenSSH `known_hosts` entry for the production server |
-
-The SSH key must be authorized for the deployment user and should be dedicated
-to GitHub Actions. Verify the server fingerprint through a trusted channel
-before storing the `known_hosts` entry; do not blindly trust an `ssh-keyscan`
-result.
+GitHub Actions no longer requires the production SSH key, known-hosts entry, or
+the former `CLAWITH_DEPLOY_*` production environment variables.
 
 ## Server prerequisites
 
-The source directory must be a Git checkout whose `origin` points to this
-repository. The deployment directory keeps the production `.env`, Compose
-file, Nginx configuration, and other environment-specific files. The server
-also needs:
+The production server must provide:
 
-- Docker with the Compose plugin
-- `curl`
-- read access to the repository
-- permission for the deployment user to run Docker directly or with
-  passwordless `sudo`
-- an existing `.env` in `clawith_new`
+- Docker with the Compose plugin;
+- permission for `qinrui` to use Docker;
+- `/home/qinrui/clawith_new/.env`;
+- `/home/qinrui/clawith_new/nginx/default.conf`;
+- the external Docker network named by
+  `CLAWITH_DOCKER_NETWORK` (default: `clawith_network`);
+- existing PostgreSQL, Redis, and MinIO services reachable on that network as
+  `postgres`, `redis`, and `minio`;
+- `/data/agent_data` for persistent agent data.
 
-Validate the server once before enabling automatic deployments:
+`ss-nodes.json` is optional. If it is absent, Drone creates a safe empty JSON
+array and the application starts without the optional SS/Discord proxy. An
+existing real configuration is preserved.
 
-```bash
-ssh clawith
-cd Clawith
-git status --short
-git remote -v
-cd ../clawith_new
-test -f .env
-docker compose config --quiet
-docker compose ps
-curl -fsS http://127.0.0.1:3008/api/health
-```
+## Deployment behavior
 
-The PyPI mirror defaults to Aliyun and can be overridden with the two optional
-production Environment variables above. Docker's existing image-layer cache
-continues to skip dependency installation when `backend/pyproject.toml` has not
-changed.
+Drone uploads:
 
-The server checkout is intentionally left at a detached release tag after a
-successful deployment. Never move or reuse a published tag; publish a new
-version to roll forward.
+- `clawith-backend-new.tar`;
+- `clawith-frontend-new.tar`;
+- `docker-compose.cd.yml`;
+- `image-tag.txt`.
+
+The remote deployment loads the transferred images and force-recreates only
+`backend-api`, `backend-worker`, and `frontend`. PostgreSQL, Redis, and MinIO
+are not recreated. Deployment succeeds only after the frontend proxy returns an
+API health response whose status is `ok`.
+
+If Drone fails, the GitHub tag remains for investigation, but the GitHub
+Release is not published. Fix or rerun the Drone build for that tag; do not move
+or reuse a published release tag.

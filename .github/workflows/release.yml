@@ -33,6 +33,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: read
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -461,11 +462,12 @@ jobs:
         id: release_info
         shell: bash
         env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
-          branch_name="${{ github.event.pull_request.head.ref }}"
+          branch_name="$HEAD_REF"
           tag_name="${branch_name#release/}"
 
           python <<'PY'
@@ -488,8 +490,77 @@ jobs:
         run: |
           set -euo pipefail
 
-          git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
-          git push origin "$TARGET_TAG"
+          release_commit="$(git rev-parse HEAD)"
+          git fetch --force --tags
+
+          if existing_commit="$(git rev-parse "$TARGET_TAG^{commit}" 2>/dev/null)"; then
+            if [ "$existing_commit" != "$release_commit" ]; then
+              echo "::error::Tag $TARGET_TAG already points to $existing_commit, expected $release_commit"
+              exit 1
+            fi
+            echo "Tag $TARGET_TAG already points to $release_commit; reusing it."
+          else
+            git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
+            git push origin "$TARGET_TAG"
+          fi
+
+      - name: Wait for Drone deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_TAG: ${{ steps.release_info.outputs.tag }}
+          DRONE_STATUS_CONTEXT: continuous-integration/drone/tag
+        run: |
+          set -euo pipefail
+
+          release_commit="$(git rev-list -n 1 "$TARGET_TAG")"
+          echo "Waiting for Drone deployment of $TARGET_TAG ($release_commit)"
+
+          for attempt in $(seq 1 180); do
+            status_payload="$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${GITHUB_REPOSITORY}/commits/${release_commit}/status"
+            )"
+
+            read -r drone_state drone_url drone_description < <(
+              STATUS_PAYLOAD="$status_payload" python3 <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["STATUS_PAYLOAD"])
+          context = os.environ["DRONE_STATUS_CONTEXT"]
+          status = next(
+              (item for item in payload.get("statuses", []) if item.get("context") == context),
+              {},
+          )
+          values = (
+              status.get("state", "waiting"),
+              status.get("target_url", "-"),
+              status.get("description", "Drone has not reported a status yet"),
+          )
+          print(*(str(value).replace("\n", " ") for value in values))
+          PY
+            )
+
+            echo "Drone status: state=$drone_state description=$drone_description url=$drone_url"
+
+            case "$drone_state" in
+              success)
+                echo "Drone deployed $TARGET_TAG successfully."
+                exit 0
+                ;;
+              error|failure)
+                echo "::error::Drone deployment failed: $drone_url"
+                exit 1
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          echo "::error::Timed out after 30 minutes waiting for Drone deployment"
+          exit 1
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -499,77 +570,3 @@ jobs:
           body_path: release-notes.extracted.md
           prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
-
-  deploy_release:
-    name: Deploy release to production
-    needs: publish_release
-    if: ${{ needs.publish_release.result == 'success' }}
-    runs-on: ubuntu-latest
-    environment: production
-    env:
-      DEPLOY_HOST: ${{ vars.CLAWITH_DEPLOY_HOST }}
-      DEPLOY_USER: ${{ vars.CLAWITH_DEPLOY_USER }}
-      DEPLOY_PORT: ${{ vars.CLAWITH_DEPLOY_PORT || '10022' }}
-      DEPLOY_PATH: ${{ vars.CLAWITH_DEPLOY_PATH || 'clawith_new' }}
-      SOURCE_PATH: ${{ vars.CLAWITH_SOURCE_PATH || 'Clawith' }}
-      PIP_INDEX_URL: ${{ vars.CLAWITH_PIP_INDEX_URL || 'https://mirrors.aliyun.com/pypi/simple/' }}
-      PIP_TRUSTED_HOST: ${{ vars.CLAWITH_PIP_TRUSTED_HOST }}
-      RELEASE_TAG: ${{ needs.publish_release.outputs.tag }}
-      SSH_PRIVATE_KEY: ${{ secrets.CLAWITH_DEPLOY_SSH_KEY }}
-      SSH_KNOWN_HOSTS: ${{ secrets.CLAWITH_DEPLOY_KNOWN_HOSTS }}
-    steps:
-      - name: Checkout deployment tooling
-        uses: actions/checkout@v7
-
-      - name: Validate deployment configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          required=(
-            DEPLOY_HOST DEPLOY_USER DEPLOY_PORT DEPLOY_PATH SOURCE_PATH RELEASE_TAG
-            SSH_PRIVATE_KEY SSH_KNOWN_HOSTS
-          )
-          for name in "${required[@]}"; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing required production deployment setting: $name"
-              exit 1
-            fi
-          done
-
-          if ! [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || [ "$DEPLOY_PORT" -lt 1 ] || [ "$DEPLOY_PORT" -gt 65535 ]; then
-            echo "::error::CLAWITH_DEPLOY_PORT must be a valid TCP port"
-            exit 1
-          fi
-
-      - name: Configure SSH
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          install -d -m 0700 "$HOME/.ssh"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 0600 "$HOME/.ssh/known_hosts"
-
-          key_file="$RUNNER_TEMP/clawith-deploy-key"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$key_file"
-          chmod 0600 "$key_file"
-          echo "SSH_KEY_FILE=$key_file" >> "$GITHUB_ENV"
-
-      - name: Update, build, and restart production
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          printf -v remote_command 'bash -s -- %q %q %q %q %q' \
-            "$RELEASE_TAG" "$DEPLOY_PATH" "$SOURCE_PATH" \
-            "$PIP_INDEX_URL" "$PIP_TRUSTED_HOST"
-          ssh \
-            -i "$SSH_KEY_FILE" \
-            -p "$DEPLOY_PORT" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            "$remote_command" \
-            < .github/scripts/deploy-release.sh

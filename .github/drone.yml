@@ -336,7 +336,7 @@ trigger:
     - refs/heads/ci/test-drone-3010
     - refs/heads/feature/unified-chat-directory-pr760-regression
     - refs/pull/**
-    - refs/tags/**
+    - refs/tags/v*
 
 volumes:
   - name: docker-socket
