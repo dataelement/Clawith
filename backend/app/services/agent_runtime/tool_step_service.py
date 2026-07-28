@@ -24,13 +24,21 @@ from app.services.agent_runtime.a2a_runtime import (
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.group_runtime_tools import (
     GROUP_READ_TOOL_NAMES,
+    GROUP_SCOPED_WORKSPACE_TOOL_NAMES,
     GROUP_TOOL_NAMES,
     GROUP_WORKSPACE_MUTATION_TOOL_NAMES,
     GROUP_WRITE_TOOL_NAMES,
+    SCOPED_GROUP_WORKSPACE_MUTATION_TOOL_NAMES,
+    SCOPED_WORKSPACE_TOOL_NAMES,
     GroupRuntimeToolError,
     GroupRuntimeToolService,
     GroupWorkspaceReconciliationPending,
     with_group_runtime_tools,
+)
+from app.services.agent_runtime.group_at import (
+    AT_TOOL_NAME,
+    GroupAtArgumentsError,
+    parse_group_at_participant_ids,
 )
 from app.services.agent_runtime.node_executor import (
     RuntimeCancelSource,
@@ -445,6 +453,29 @@ def _is_group_agent_run(state: RuntimeGraphState) -> bool:
     return isinstance(
         state["snapshots"].initial_input.get("group_context"),
         Mapping,
+    )
+
+
+def _is_group_scoped_workspace_call(
+    state: RuntimeGraphState,
+    tool_name: str,
+    arguments: Mapping[str, object],
+) -> bool:
+    return (
+        _is_group_agent_run(state)
+        and tool_name in SCOPED_WORKSPACE_TOOL_NAMES
+        and arguments.get("workspace_scope", "group") == "group"
+    )
+
+
+def _is_group_workspace_mutation_call(
+    state: RuntimeGraphState,
+    tool_name: str,
+    arguments: Mapping[str, object],
+) -> bool:
+    return tool_name in GROUP_WORKSPACE_MUTATION_TOOL_NAMES or (
+        tool_name in SCOPED_GROUP_WORKSPACE_MUTATION_TOOL_NAMES
+        and _is_group_scoped_workspace_call(state, tool_name, arguments)
     )
 
 
@@ -1077,7 +1108,13 @@ class RuntimeToolStepService:
                     state,
                 )
             )
+            if _is_group_agent_run(state):
+                # Historical checkpoints may still contain hidden legacy calls.
+                # Keep them executable without exposing the names to new model turns.
+                allowed_names = allowed_names | GROUP_SCOPED_WORKSPACE_TOOL_NAMES
             messages: list[JsonObject] = []
+            pending_group_at_changed = False
+            pending_group_at: JsonObject | None = None
             for index, call in enumerate(tool_calls):
                 cancel = await self._cancel_source.get_cancel(state, context)
                 if cancel is not None:
@@ -1086,6 +1123,66 @@ class RuntimeToolStepService:
                         cancel_signal=cancel,
                     )
                 call_id, tool_name, arguments = _call_fields(call)
+                if tool_name == AT_TOOL_NAME:
+                    if not _is_group_agent_run(state):
+                        raise ToolExecutionError(
+                            "group_at_unavailable",
+                            "the at tool is available only in a validated Group Agent Run",
+                        )
+                    try:
+                        participant_ids = parse_group_at_participant_ids(arguments)
+                    except GroupAtArgumentsError as exc:
+                        messages.append(
+                            _result_message(
+                                run_id=run_id,
+                                call_id=call_id,
+                                tool_name=tool_name,
+                                outcome=ToolExecutionOutcome(
+                                    status="failed",
+                                    result_summary=str(exc),
+                                    result_ref=None,
+                                    error_code="group_at_arguments_invalid",
+                                ),
+                            )
+                        )
+                        continue
+                    pending_group_at_changed = True
+                    pending_group_at = (
+                        {
+                            "participant_ids": list(participant_ids),
+                            "tool_call_id": call_id,
+                            "staged_at_model_step": int(
+                                state["lifecycle"].get("model_step_count", 0)
+                            ),
+                        }
+                        if participant_ids
+                        else None
+                    )
+                    messages.append(
+                        _result_message(
+                            run_id=run_id,
+                            call_id=call_id,
+                            tool_name=tool_name,
+                            outcome=ToolExecutionOutcome(
+                                status="succeeded",
+                                result_summary=json.dumps(
+                                    {
+                                        "status": "staged",
+                                        "participant_count": len(participant_ids),
+                                    },
+                                    separators=(",", ":"),
+                                ),
+                                result_ref=None,
+                            ),
+                        )
+                    )
+                    continue
+                if (
+                    _is_group_agent_run(state)
+                    and tool_name in SCOPED_WORKSPACE_TOOL_NAMES
+                ):
+                    arguments = dict(arguments)
+                    arguments.setdefault("workspace_scope", "group")
                 if tool_name in _CONTROL_TOOL_NAMES or tool_name not in allowed_names:
                     raise ToolExecutionError(
                         "tool_not_enabled",
@@ -1244,7 +1341,11 @@ class RuntimeToolStepService:
                             defer_without_attempt=True,
                         )
                     if (
-                        tool_name in GROUP_WORKSPACE_MUTATION_TOOL_NAMES
+                        _is_group_workspace_mutation_call(
+                            state,
+                            tool_name,
+                            arguments,
+                        )
                         and reservation.execution.status == "started"
                     ):
                         takeover = await self._takeover_for_reconciliation(
@@ -1512,6 +1613,33 @@ class RuntimeToolStepService:
                                 tool_name,
                                 arguments,
                             )
+                    elif _is_group_scoped_workspace_call(
+                        state,
+                        tool_name,
+                        arguments,
+                    ):
+                        if tool_name in SCOPED_GROUP_WORKSPACE_MUTATION_TOOL_NAMES:
+                            raw_result = (
+                                await self._group_tool_service.execute_scoped_workspace_tool(
+                                    state,
+                                    context,
+                                    agent,
+                                    tool_name,
+                                    arguments,
+                                    operation_id=reservation.execution.id,
+                                    lease_owner=lease_owner,
+                                )
+                            )
+                        else:
+                            raw_result = (
+                                await self._group_tool_service.execute_scoped_workspace_tool(
+                                    state,
+                                    context,
+                                    agent,
+                                    tool_name,
+                                    arguments,
+                                )
+                            )
                     else:
                         agentbay_run_token = None
                         if tool_name.startswith("agentbay_"):
@@ -1592,7 +1720,11 @@ class RuntimeToolStepService:
                             outcome=proposed_outcome,
                         )
                     except Exception as exc:
-                        if tool_name in GROUP_WORKSPACE_MUTATION_TOOL_NAMES:
+                        if _is_group_workspace_mutation_call(
+                            state,
+                            tool_name,
+                            arguments,
+                        ):
                             raise GroupWorkspaceReconciliationPending(
                                 "Group workspace ledger settlement requires reconciliation"
                             ) from exc
@@ -1636,7 +1768,11 @@ class RuntimeToolStepService:
                         outcome=outcome,
                     )
                 )
-            return ToolStepResult(messages=tuple(messages))
+            return ToolStepResult(
+                messages=tuple(messages),
+                pending_group_at_changed=pending_group_at_changed,
+                pending_group_at=pending_group_at,
+            )
         except (
             GroupWorkspaceReconciliationPending,
             RetryableToolNodeError,

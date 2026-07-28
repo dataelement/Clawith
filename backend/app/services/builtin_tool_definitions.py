@@ -13,12 +13,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
-from app.services.llm.finish import FINISH_TOOL_SEED
+WRITE_FILE_MAX_CONTENT_CHARS = 6_000
 
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
 _BUILTIN_TOOL_SOURCE = [
-    FINISH_TOOL_SEED,
     {
         "name": "list_files",
         "display_name": "List Files",
@@ -119,7 +118,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "write_file",
         "display_name": "Write File",
-        "description": "Write or update a file in the workspace. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, create documents in workspace/, create skills in skills/.",
+        "description": "Write or incrementally append UTF-8 text to a file in the workspace. Each call accepts at most 6000 content characters. For a longer generated file such as HTML, CSS, JavaScript, or markdown, call write_file once with mode=overwrite for the first chunk, then use one mode=append call per later model turn for each remaining chunk; never emit the whole file or multiple large chunks in one response. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, create documents in workspace/, create skills in skills/.",
         "category": "file",
         "icon": "✏️",
         "is_default": True,
@@ -127,7 +126,17 @@ _BUILTIN_TOOL_SOURCE = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File path, e.g.: memory/memory.md, workspace/reports/report.md, workspace/knowledge_base/notes.md. Prefer a meaningful subfolder instead of writing loose files into workspace/ root."},
-                "content": {"type": "string", "description": "File content to write"},
+                "content": {
+                    "type": "string",
+                    "maxLength": WRITE_FILE_MAX_CONTENT_CHARS,
+                    "description": "One file-content chunk, at most 6000 characters. Keep long generated content split across later tool turns.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["overwrite", "append"],
+                    "default": "overwrite",
+                    "description": "overwrite creates or replaces the file (default); append adds this chunk to an existing file after the previous write succeeds.",
+                },
             },
             "required": ["path", "content"],
         },
@@ -3648,82 +3657,17 @@ _GROUP_BUILTIN_TOOL_SOURCE = [
         "config": {},
         "config_schema": {},
     },
-    {
-        "name": "group_list_workspace",
-        "display_name": "List Group Workspace",
-        "description": "List one directory in the current group's shared workspace. Use an empty path for the root.",
-        "category": "group",
-        "icon": "📁",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {"path": {"type": "string", "default": ""}},
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_read_workspace_file",
-        "display_name": "Read Group Workspace File",
-        "description": "Read a bounded chunk of one UTF-8 text file from the current group's shared workspace. Continue with next_offset when has_more is true.",
-        "category": "group",
-        "icon": "📄",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                **deepcopy(_GROUP_TEXT_READ_WINDOW),
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_write_workspace_file",
-        "display_name": "Write Group Workspace File",
-        "description": "Create or replace one UTF-8 text file in the current group's shared workspace. Use expected_version_token after reading an existing file.",
-        "category": "group",
-        "icon": "📝",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-                "expected_version_token": {"type": "string"},
-            },
-            "required": ["path", "content"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
-    {
-        "name": "group_delete_workspace_file",
-        "display_name": "Delete Group Workspace File",
-        "description": "Delete one file from the current group's shared workspace. Use expected_version_token after reading the file.",
-        "category": "group",
-        "icon": "🗑️",
-        "is_default": False,
-        "parameters_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "expected_version_token": {"type": "string"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "config": {},
-        "config_schema": {},
-    },
 ]
 
 
+_LEGACY_GROUP_WORKSPACE_TOOL_NAMES = frozenset(
+    {
+        "group_list_workspace",
+        "group_read_workspace_file",
+        "group_write_workspace_file",
+        "group_delete_workspace_file",
+    }
+)
 
 
 _READ_TOOL_NAMES = frozenset(
@@ -3990,6 +3934,13 @@ def builtin_policy(name: str) -> dict[str, Any]:
     """Return the persisted execution policy, conservatively for dynamics."""
     definition = _ALL_BUILTIN_TOOL_BY_NAME.get(name)
     if definition is None:
+        if name in _LEGACY_GROUP_WORKSPACE_TOOL_NAMES:
+            effect, retry_policy, parallel_safe = _policy_for_name(name)
+            return {
+                "effect": effect,
+                "retry_policy": retry_policy,
+                "parallel_safe": parallel_safe,
+            }
         return {
             "effect": "external_write",
             "retry_policy": "never",
@@ -4024,7 +3975,7 @@ def builtin_readiness(name: str) -> str | None:
 
 def is_reserved_custom_tool_name(name: str) -> bool:
     """Prevent custom tools from replacing Runtime control/group contracts."""
-    return name in {"finish", "wait"} or name.startswith("group_")
+    return name in {"at", "finish", "wait"} or name.startswith("group_")
 
 
 def validate_builtin_tool_definitions() -> None:
@@ -4098,6 +4049,7 @@ __all__ = [
     "BUILTIN_TOOL_SEEDS",
     "GROUP_BUILTIN_TOOL_DEFINITIONS",
     "GROUP_RUNTIME_TOOL_DEFINITIONS",
+    "WRITE_FILE_MAX_CONTENT_CHARS",
     "builtin_model_definition",
     "builtin_model_definitions",
     "builtin_cross_space_action",

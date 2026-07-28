@@ -140,6 +140,31 @@ def test_document_reader_returns_structured_parse_fact(tmp_path: Path) -> None:
     assert failure.error_code == "document_format_unsupported"
 
 
+def test_document_reader_extracts_pptx_slides_without_slicing(
+    tmp_path: Path,
+) -> None:
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    for text in ("First slide", "Second slide"):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        text_box = slide.shapes.add_textbox(
+            Inches(1),
+            Inches(1),
+            Inches(5),
+            Inches(1),
+        )
+        text_box.text = text
+    presentation.save(tmp_path / "report.pptx")
+
+    result = agent_tools._read_document_sync(tmp_path, "report.pptx")
+
+    assert result.ok is True
+    assert "--- Slide 1 ---\nFirst slide" in result.content
+    assert "--- Slide 2 ---\nSecond slide" in result.content
+
+
 @pytest.mark.asyncio
 async def test_document_process_boundary_preserves_structured_result(
     tmp_path: Path,

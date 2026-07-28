@@ -10,7 +10,6 @@ from app.services.builtin_tool_definitions import BUILTIN_TOOL_SEEDS
 from app.services.tool_config import meaningful_config, tenant_tool_config_key
 
 SYNC_IS_DEFAULT_TOOL_NAMES = {
-    "finish",
     "read_webpage",
     "duckduckgo_search",
     "jina_search",

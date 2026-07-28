@@ -1,7 +1,7 @@
 """Terminal public-mention handoff for native Group Agent Runs.
 
-The model submits participant IDs through the shared ``finish`` tool.  This
-module validates every target before the source Run can become terminal, freezes
+The model stages participant IDs through the Group-only ``at`` tool. This
+module validates the staged targets and final Assistant response, then freezes
 one immutable delivery intent, and later applies that exact intent inside the
 ordinary Runtime delivery transaction.
 """
@@ -609,7 +609,7 @@ async def preflight_group_agent_handoff(
     if state["lifecycle"].get("status") != "running":
         raise GroupAgentHandoffError(
             "group_handoff_source_invalid",
-            "A handoff finish may be submitted only by a running Group Agent Run",
+            "A Group handoff may be submitted only by a running Group Agent Run",
             repairable=False,
         )
     tenant_id = _context_uuid(context.tenant_id, field="tenant_id")

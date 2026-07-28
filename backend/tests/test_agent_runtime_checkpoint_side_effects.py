@@ -85,10 +85,12 @@ class _SessionFactory:
 class _Handler:
     def __init__(self) -> None:
         self.statuses: list[str] = []
+        self.lifecycles: list[dict] = []
 
     async def handle(self, *, run, checkpoint) -> None:
         del run
         self.statuses.append(checkpoint.state["lifecycle"]["status"])
+        self.lifecycles.append(dict(checkpoint.state["lifecycle"]))
 
 
 def _records(
@@ -484,7 +486,12 @@ async def test_cancel_uses_control_disposition_without_mutating_preserved_checkp
             "waiting_request": {
                 "waiting_type": "user",
                 "correlation_id": "confirm-1",
-            }
+            },
+            "pending_group_at": {
+                "participant_ids": [str(uuid.uuid4())],
+                "tool_call_id": "call-at",
+                "staged_at_model_step": 1,
+            },
         },
         command_type="cancel",
     )
@@ -497,8 +504,10 @@ async def test_cancel_uses_control_disposition_without_mutating_preserved_checkp
     await handler.handle(run=run, command=command, checkpoint=checkpoint)
 
     assert checkpoint.state["lifecycle"]["status"] == "waiting_user"
+    assert "pending_group_at" in checkpoint.state["lifecycle"]
     assert checkpoint.next_nodes == ("wait",)
     assert terminal.statuses == ["cancelled"]
+    assert "pending_group_at" not in terminal.lifecycles[0]
 
 
 @pytest.mark.asyncio

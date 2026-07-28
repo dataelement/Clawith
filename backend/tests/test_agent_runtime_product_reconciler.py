@@ -438,3 +438,11 @@ async def test_background_scan_reclaims_expired_started_and_delayed_unknown_rows
     assert "agent_tool_executions.lease_expires_at" in sql
     assert "agent_tool_executions.status = 'unknown'" in sql
     assert "agent_tool_executions.completed_at" in sql
+    assert "group_write_workspace_file" in sql
+    assert "group_delete_workspace_file" in sql
+    assert "write_file" in sql
+    assert "edit_file" in sql
+    assert "delete_file" in sql
+    assert "workspace_scope" in sql
+    assert "= 'group'" in sql
+    assert "chat_sessions.group_id IS NOT NULL" not in sql

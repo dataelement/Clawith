@@ -291,6 +291,119 @@ def _service(
     )
 
 
+def _at_call(call_id: str, participant_ids: list[str]) -> dict:
+    import json
+
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "at",
+            "arguments": json.dumps({"participant_ids": participant_ids}),
+        },
+    }
+
+
+async def _unexpected_executor(*args, **kwargs):
+    raise AssertionError(f"at must not reach the application tool executor: {args}, {kwargs}")
+
+
+@pytest.mark.asyncio
+async def test_group_at_stages_participants_without_external_tool_execution() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    target_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    call = _at_call("call-at", target_ids)
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.pending_group_at_changed is True
+    assert result.pending_group_at == {
+        "participant_ids": target_ids,
+        "tool_call_id": "call-at",
+        "staged_at_model_step": 0,
+    }
+    assert result.messages[0]["name"] == "at"
+    assert result.messages[0]["execution_status"] == "succeeded"
+    assert '"participant_count":2' in str(result.messages[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_group_at_empty_target_set_clears_prior_staging() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-clear", [])
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+    state["lifecycle"]["pending_group_at"] = {
+        "participant_ids": [str(uuid.uuid4())],
+        "tool_call_id": "prior-at",
+        "staged_at_model_step": 1,
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.pending_group_at_changed is True
+    assert result.pending_group_at is None
+    assert result.messages[0]["execution_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-invalid", ["Target Agent"])
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"].initial_input["group_context"] = {
+        "group": {"group_id": str(uuid.uuid4())}
+    }
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.pending_group_at_changed is False
+    assert result.messages[0]["execution_status"] == "failed"
+    assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_private_run_rejects_group_at() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _at_call("call-at-private", [str(uuid.uuid4())])
+    state = _state(tenant_id, agent, (call,))
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        _unexpected_executor,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error == {
+        "code": "group_at_unavailable",
+        "message": "the at tool is available only in a validated Group Agent Run",
+    }
+
+
 @pytest.mark.asyncio
 async def test_success_is_reserved_before_execution_and_settled_afterwards(
     monkeypatch,
@@ -1278,6 +1391,105 @@ async def test_group_write_tool_uses_checkpoint_scoped_executor_and_conditional_
 
 
 @pytest.mark.asyncio
+async def test_ordinary_write_file_routes_group_scope_through_group_executor(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = {
+        "id": "call-scoped-group-write",
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "arguments": '{"path":"workspace/report.md","content":"final"}',
+        },
+    }
+    state = _state(tenant_id, agent, (call,))
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 0},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={
+            "group_id": str(uuid.uuid4()),
+            "target_participant_id": str(uuid.uuid4()),
+            "group_context": {"agent": {"agent_id": str(agent.id)}},
+        },
+    )
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(state["registry"].run_id),
+        "call-scoped-group-write",
+        "write_file",
+    )
+    execution.effect = "write"
+    execution.retry_policy = "conditional"
+    group_calls = []
+
+    async def reserve(db, **kwargs):
+        del db
+        assert kwargs["arguments"]["workspace_scope"] == "group"
+        return _reservation(execution)
+
+    async def mark(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    async def generic_executor(*_args, **_kwargs):
+        raise AssertionError("Group-scoped file tools must not use Agent storage")
+
+    class _GroupToolService:
+        async def execute_scoped_workspace_tool(
+            self,
+            state_arg,
+            context_arg,
+            agent_arg,
+            tool_name,
+            arguments,
+            **kwargs,
+        ):
+            group_calls.append(
+                (
+                    state_arg,
+                    context_arg,
+                    agent_arg,
+                    tool_name,
+                    arguments,
+                    kwargs,
+                )
+            )
+            return ToolExecutionOutcome(
+                status="succeeded",
+                result_summary='{"path":"report.md"}',
+                result_ref=None,
+            )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=_tools,
+        tool_executor=generic_executor,
+        group_tool_service=_GroupToolService(),  # type: ignore[arg-type]
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert group_calls[0][3] == "write_file"
+    assert group_calls[0][4] == {
+        "path": "workspace/report.md",
+        "content": "final",
+        "workspace_scope": "group",
+    }
+    assert group_calls[0][5]["operation_id"] == execution.id
+    assert group_calls[0][5]["lease_owner"]
+
+
+@pytest.mark.asyncio
 async def test_group_workspace_write_uses_ledger_id_and_reconciles_without_reexecution(
     monkeypatch,
 ) -> None:
@@ -1724,6 +1936,7 @@ async def test_group_preflight_confirmation_is_typed_failure_for_public_finish(
     tenant_id = uuid.uuid4()
     agent = _agent(tenant_id)
     call = _call("call-group-confirm", "write_file")
+    call["function"]["arguments"] = '{"workspace_scope":"agent"}'
     state = _state(tenant_id, agent, (call,))
     state["snapshots"] = RunInputSnapshots(
         session_context={"version": 0},
@@ -1784,6 +1997,8 @@ async def test_group_unknown_outcome_fails_run_without_user_interrupt(
     agent = _agent(tenant_id)
     first = _call("call-group-unknown", "write_file")
     second = _call("call-group-after", "read_file")
+    first["function"]["arguments"] = '{"workspace_scope":"agent"}'
+    second["function"]["arguments"] = '{"workspace_scope":"agent"}'
     state = _state(tenant_id, agent, (first, second))
     state["snapshots"] = RunInputSnapshots(
         session_context={"version": 0},

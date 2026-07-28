@@ -52,11 +52,11 @@ async def test_unsaved_draft_test_separates_capabilities_but_does_not_record_the
             content="",
             tool_calls=[
                 {
-                    "id": "probe-finish",
+                    "id": "probe-tool-call",
                     "type": "function",
                     "function": {
-                        "name": "finish",
-                        "arguments": json.dumps({"content": "ok"}),
+                        "name": "capability_probe",
+                        "arguments": json.dumps({"value": "ok"}),
                     },
                 }
             ],
@@ -86,7 +86,7 @@ async def test_unsaved_draft_test_separates_capabilities_but_does_not_record_the
     assert len(client.calls) == 2
     assert client.calls[0]["tools"] is None
     assert [tool["function"]["name"] for tool in client.calls[1]["tools"]] == [
-        "finish"
+        "capability_probe"
     ]
     assert client.closed is True
 

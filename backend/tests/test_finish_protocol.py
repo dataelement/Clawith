@@ -60,10 +60,14 @@ def _finish_response_with_arguments(arguments):
     )
 
 
-def _plain_response(content: str):
+def _plain_response(content: str, *, finish_reason: str | None = "stop"):
     from app.services.llm.client import LLMResponse
 
-    return LLMResponse(content=content, tool_calls=[])
+    return LLMResponse(
+        content=content,
+        tool_calls=[],
+        finish_reason=finish_reason,
+    )
 
 
 def _model():
@@ -79,51 +83,53 @@ def _model():
     )
 
 
-def test_finish_tool_schema_is_default_and_requires_content():
-    from app.services.llm.finish import (
-        FINISH_TOOL_DEFINITION,
-        FINISH_TOOL_SEED,
-        group_finish_tool_definition,
+def test_finish_is_not_seeded_or_model_facing():
+    from app.services import tool_seeder
+    from app.services.builtin_tool_definitions import (
+        BUILTIN_TOOL_NAMES,
+        BUILTIN_TOOL_SEEDS,
+    )
+    assert "finish" not in BUILTIN_TOOL_NAMES
+    assert all(seed["name"] != "finish" for seed in BUILTIN_TOOL_SEEDS)
+    assert "finish" not in tool_seeder.SYNC_IS_DEFAULT_TOOL_NAMES
+
+
+def test_group_at_schema_contains_only_bounded_participant_ids() -> None:
+    from app.services.agent_runtime.group_at import AT_TOOL_DEFINITION
+
+    function = AT_TOOL_DEFINITION["function"]
+    assert function["name"] == "at"
+    parameters = function["parameters"]
+    assert parameters["required"] == ["participant_ids"]
+    assert parameters["additionalProperties"] is False
+    assert set(parameters["properties"]) == {"participant_ids"}
+    participant_ids = parameters["properties"]["participant_ids"]
+    assert participant_ids["type"] == "array"
+    assert participant_ids["maxItems"] == 100
+    assert participant_ids["uniqueItems"] is True
+    assert participant_ids["items"]["format"] == "uuid"
+
+
+def test_group_at_parser_accepts_uuid_sets_and_rejects_ambiguous_targets() -> None:
+    from app.services.agent_runtime.group_at import (
+        GroupAtArgumentsError,
+        parse_group_at_participant_ids,
     )
 
-    assert FINISH_TOOL_DEFINITION["function"]["name"] == "finish"
-    description = FINISH_TOOL_DEFINITION["function"]["description"]
-    assert "user's requested outcome is complete" in description
-    assert "required verification has passed" in description
-    assert "progress update" in description
-    assert FINISH_TOOL_DEFINITION["function"]["parameters"]["required"] == ["content"]
-    assert FINISH_TOOL_SEED["name"] == "finish"
-    assert FINISH_TOOL_SEED["is_default"] is True
-    assert FINISH_TOOL_SEED["parameters_schema"]["required"] == ["content"]
-    assert "mention_participant_ids" not in (
-        FINISH_TOOL_DEFINITION["function"]["parameters"]["properties"]
-    )
-    assert FINISH_TOOL_DEFINITION["function"]["parameters"]["additionalProperties"] is False
+    target_id = uuid.uuid4()
+    assert parse_group_at_participant_ids(
+        {"participant_ids": [str(target_id)]}
+    ) == (str(target_id),)
+    assert parse_group_at_participant_ids({"participant_ids": []}) == ()
 
-    group_finish = group_finish_tool_definition()
-    mention_schema = group_finish["function"]["parameters"]["properties"][
-        "mention_participant_ids"
-    ]
-    assert mention_schema["type"] == "array"
-    assert mention_schema["maxItems"] == 100
-    assert mention_schema["uniqueItems"] is True
-    assert "same finish call" in mention_schema["description"]
-    assert "reply publicly in the same group session" in mention_schema["description"]
-    assert "concrete question, request, or responsibility" in mention_schema[
-        "description"
-    ]
-    assert "not limited to ownership transfer" in mention_schema["description"]
-    assert "requires a new reply now" in mention_schema["description"]
-    assert "regardless of topic, wording, tone, or intent" in mention_schema["description"]
-    assert "includes, but is not limited to" in mention_schema["description"]
-    assert "write the display name without @" in mention_schema["description"]
-    assert "each target as the literal @display name" in mention_schema["description"]
-    assert "concrete question or request" in mention_schema["description"]
-    assert "never explain IDs, tools, routing, Runtime, or child Runs" in mention_schema[
-        "description"
-    ]
-    assert "Textual @names in content do not wake Agents" in mention_schema["description"]
-    assert group_finish["function"]["parameters"]["required"] == ["content"]
+    with pytest.raises(GroupAtArgumentsError, match="unique"):
+        parse_group_at_participant_ids(
+            {"participant_ids": [str(target_id), str(target_id)]}
+        )
+    with pytest.raises(GroupAtArgumentsError, match="unsupported"):
+        parse_group_at_participant_ids(
+            {"participant_ids": [str(target_id)], "content": "not allowed"}
+        )
 
 
 def test_group_finish_parser_accepts_only_bounded_stable_participant_ids() -> None:
@@ -306,14 +312,43 @@ def test_find_finish_call_validates_arguments():
     assert "valid JSON" in malformed.error
 
 
+def test_legacy_group_finish_json_is_decoded_without_exposing_control_fields() -> None:
+    from app.services.llm.finish import parse_legacy_finish_content
+
+    target = uuid.uuid4()
+    parsed = parse_legacy_finish_content(
+        json.dumps(
+            {
+                "content": "@Reviewer please confirm.",
+                "mention_participant_ids": [str(target)],
+            }
+        ),
+        allow_group_mentions=True,
+    )
+
+    assert parsed is not None and parsed.valid is True
+    assert parsed.content == "@Reviewer please confirm."
+    assert parsed.mention_participant_ids == (str(target),)
+
+
+def test_plain_content_json_is_not_mistaken_for_legacy_finish_control() -> None:
+    from app.services.llm.finish import parse_legacy_finish_content
+
+    assert (
+        parse_legacy_finish_content(
+            '{"content":"This is the JSON shape the user requested."}',
+            allow_group_mentions=False,
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
-async def test_call_llm_requires_finish_tool_to_stop(monkeypatch):
+async def test_call_llm_returns_natural_assistant_stop_without_finish(monkeypatch):
     from app.services.llm import caller
-    from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 
     fake_client = FakeStreamClient([
-        _plain_response("This should not stop."),
-        _finish_response("Final answer."),
+        _plain_response("Final answer."),
     ])
 
     monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((3, None)))
@@ -351,13 +386,225 @@ async def test_call_llm_requires_finish_tool_to_stop(monkeypatch):
     )
 
     assert result == "Final answer."
-    assert chunks == []
-    second_round_messages = fake_client.messages_seen[1]
-    assert any(
-        msg.role == "user" and msg.content == FINISH_PROTOCOL_REMINDER
-        for msg in second_round_messages
+    assert chunks == ["Final answer."]
+    assert len(fake_client.messages_seen) == 1
+    assert all(
+        tool["function"]["name"] != "finish"
+        for tool in fake_client.tools_seen[0]
     )
     assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_call_llm_routes_embedded_thinking_before_final_content(monkeypatch):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [_plain_response("<think>Inspect the evidence.</think>\nFinal answer.")]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return([]),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    chunks = []
+    thoughts = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "hello"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_chunk=lambda text: _async_append(chunks, text),
+        on_thinking=lambda text: _async_append(thoughts, text),
+    )
+
+    assert result == "Final answer."
+    assert chunks == ["Final answer."]
+    assert thoughts == ["Inspect the evidence."]
+
+
+@pytest.mark.asyncio
+async def test_call_llm_executes_exact_textual_tool_call_before_finishing(
+    monkeypatch,
+):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [
+            _plain_response(
+                '<tool_call>{"name":"web_search",'
+                '"arguments":{"query":"tariffs"}}</tool_call>'
+            ),
+            _plain_response("Verified result."),
+        ]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        caller,
+        "execute_tool",
+        lambda *_args, **_kwargs: _async_return('{"verified":true}'),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    tool_events = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "search"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_tool_call=lambda event: _async_append(tool_events, event),
+    )
+
+    assert result == "Verified result."
+    assert [event["status"] for event in tool_events] == ["running", "done"]
+    assert all(event["name"] == "web_search" for event in tool_events)
+    assert any(
+        message.role == "assistant" and message.tool_calls
+        for message in fake_client.messages_seen[1]
+    )
+    assert any(
+        message.role == "tool" and message.content == '{"verified":true}'
+        for message in fake_client.messages_seen[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_call_llm_repairs_textual_result_instead_of_publishing_it(monkeypatch):
+    from app.services.llm import caller
+
+    fake_client = FakeStreamClient(
+        [
+            _plain_response(
+                "I will search now.\n"
+                '<result>{"results":[{"title":"fake"}]}</result>'
+            ),
+            _plain_response("Recovered final."),
+        ]
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_agent_config",
+        lambda _agent_id: _async_return((3, None)),
+    )
+    monkeypatch.setattr(
+        caller,
+        "_get_user_name",
+        lambda _user_id: _async_return("Ray"),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_context.build_agent_context",
+        lambda *_args, **_kwargs: _async_return(("static", "dynamic")),
+    )
+    monkeypatch.setattr(
+        caller,
+        "get_agent_tools_for_llm",
+        lambda _agent_id: _async_return(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        caller,
+        "create_llm_client",
+        lambda **_kwargs: fake_client,
+    )
+    monkeypatch.setattr(
+        caller,
+        "record_token_usage",
+        lambda *_args, **_kwargs: _async_return(None),
+    )
+    chunks = []
+
+    result = await caller.call_llm(
+        _model(),
+        [{"role": "user", "content": "search"}],
+        "Agent",
+        "",
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        on_chunk=lambda text: _async_append(chunks, text),
+    )
+
+    assert result == "Recovered final."
+    assert chunks == ["Recovered final."]
+    assert any(
+        message.role == "user"
+        and "No tool was executed" in str(message.content)
+        for message in fake_client.messages_seen[1]
+    )
 
 
 @pytest.mark.asyncio
@@ -404,13 +651,12 @@ async def test_legacy_tool_loop_calls_saved_model_without_verified_tool_calling(
 
 
 @pytest.mark.asyncio
-async def test_call_llm_plain_text_finish_repair_is_bounded(monkeypatch):
+async def test_call_llm_truncated_output_repair_is_bounded(monkeypatch):
     from app.services.llm import caller
-    from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 
     fake_client = FakeStreamClient([
-        _plain_response("First plain response."),
-        _plain_response("Second plain response."),
+        _plain_response("First partial response.", finish_reason="length"),
+        _plain_response("Second partial response.", finish_reason="length"),
     ])
 
     monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
@@ -436,6 +682,7 @@ async def test_call_llm_plain_text_finish_repair_is_bounded(monkeypatch):
     monkeypatch.setattr(caller, "create_llm_client", lambda **_kwargs: fake_client)
     monkeypatch.setattr(caller, "record_token_usage", lambda *_args, **_kwargs: _async_return(None))
 
+    chunks = []
     result = await caller.call_llm(
         _model(),
         [{"role": "user", "content": "hello"}],
@@ -443,14 +690,17 @@ async def test_call_llm_plain_text_finish_repair_is_bounded(monkeypatch):
         "",
         agent_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
+        on_chunk=lambda text: _async_append(chunks, text),
     )
 
-    assert result.startswith("[Error] finish_protocol_violation:")
+    assert result.startswith("[Error] model_incomplete_output:")
     assert len(fake_client.messages_seen) == 2
-    assert sum(
-        message.role == "user" and message.content == FINISH_PROTOCOL_REMINDER
+    assert any(
+        message.role == "user"
+        and "truncated" in str(message.content).lower()
         for message in fake_client.messages_seen[-1]
-    ) == 1
+    )
+    assert chunks == []
     assert fake_client.closed is True
 
 
@@ -652,10 +902,10 @@ async def test_invalid_write_file_json_gets_three_bounded_repairs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skip_tools_still_exposes_finish(monkeypatch):
+async def test_skip_tools_uses_natural_completion_without_any_tools(monkeypatch):
     from app.services.llm import caller
 
-    fake_client = FakeStreamClient([_finish_response("Onboarding done.")])
+    fake_client = FakeStreamClient([_plain_response("Onboarding done.")])
 
     monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((1, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
@@ -678,7 +928,7 @@ async def test_skip_tools_still_exposes_finish(monkeypatch):
 
     assert result == "Onboarding done."
     tool_names = [tool["function"]["name"] for tool in fake_client.tools_seen[0]]
-    assert tool_names == ["finish"]
+    assert tool_names == []
 
 
 @pytest.mark.asyncio
@@ -695,10 +945,10 @@ async def test_execute_tool_finish_is_noop_control_signal(monkeypatch):
     assert result == "Visible answer"
 
 
-def test_finish_is_in_always_available_core_tools():
+def test_finish_is_not_in_always_available_core_tools():
     from app.services.agent_tools import _ALWAYS_INCLUDE_CORE
 
-    assert "finish" in _ALWAYS_INCLUDE_CORE
+    assert "finish" not in _ALWAYS_INCLUDE_CORE
 
 
 def test_tool_round_warning_only_names_tools_present_in_current_schema():
