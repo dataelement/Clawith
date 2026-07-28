@@ -246,7 +246,6 @@ steps:
         from_secret: sshpwd
       port: 10022
       command_timeout: 15m
-      script_stop: true
       script:
         - set -eu
         - cd /home/qinrui/clawith_new
