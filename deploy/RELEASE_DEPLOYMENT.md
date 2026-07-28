@@ -17,7 +17,7 @@ owns CI validation, artifact transfer, and production deployment.
    - export and transfer the target images;
    - load the images and recreate the production application services;
    - verify the proxied API health endpoint;
-   - send a Feishu notification after deployment succeeds.
+   - send a Feishu notification when the release succeeds or fails.
 5. GitHub Actions publishes the GitHub Release and finishes without waiting for
    Drone. Drone continues the deployment asynchronously and reports its status
    on the tagged commit.
@@ -77,9 +77,12 @@ The remote deployment loads the transferred images and force-recreates only
 are not recreated. Deployment succeeds only after the frontend proxy returns an
 API health response whose status is `ok`.
 
-After the health check succeeds, Drone sends the deployed tag, build link, and
-short commit SHA to the configured Feishu custom bot. A notification API error
-fails the Drone step so the missing notification is visible.
+Drone sends the release result, tag, build link, and short commit SHA to the
+configured Feishu custom bot. The success message is sent only after the health
+check passes. Any failure during a tag pipeline, including build, test,
+transfer, restart, or health-check failures, sends a failure message. A
+notification API error fails the Drone step so the missing notification is
+visible.
 
 If Drone fails, the GitHub tag and Release remain published for investigation.
 Fix or rerun the Drone build for that tag; do not move or reuse a published
