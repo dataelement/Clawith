@@ -258,9 +258,13 @@ steps:
               exit 1
               ;;
           esac
-        - test -f .env
-        - test -f ss-nodes.json
-        - test -f nginx/default.conf
+        - |
+          for REQUIRED_FILE in .env ss-nodes.json nginx/default.conf; do
+            if [ ! -f "$REQUIRED_FILE" ]; then
+              echo "服务器缺少部署文件: $REQUIRED_FILE" >&2
+              exit 1
+            fi
+          done
         - |
           IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml \
             config --quiet
