@@ -1,6 +1,6 @@
 # ============================================================
 # Clawith CI/CD Pipeline
-# 基于 Drone CI 的自动化构建、本地部署测试和升级测试
+# 基于 Drone CI 的自动化构建、迁移测试、部署测试和发布
 #
 # 流程:
 #   1. 代码克隆 (获取完整历史和 tags)
@@ -8,7 +8,7 @@
 #   3. 空数据库迁移测试
 #   4. 本地部署测试 (直接利用本地 docker socket 和 docker-compose.ci.yml)
 #   5. 本地升级测试 (测试旧版到新版的迁移)
-#   6. 打包传输到服务器 (可选)
+#   6. tag 构建通过后，打包镜像并部署到服务器
 # ============================================================
 kind: pipeline
 type: docker
@@ -190,8 +190,8 @@ steps:
       - .github/scripts/ci_upgrade_test.sh
 
   # --------------------------------------------------------
-  # Step 6: (可选) 导出镜像并传输到私有服务器
-  # 只有在部署测试通过后才会执行到这一步
+  # Step 6: CD - 导出镜像并部署到私有服务器
+  # 仅 tag 事件执行，且必须等待前面的 CI 测试全部通过
   # --------------------------------------------------------
   - name: save-images
     image: docker:24.0.6
@@ -205,14 +205,12 @@ steps:
         COMMIT_SHORT="$(printf '%.8s' "$DRONE_COMMIT")"
         docker save -o clawith-backend-new.tar "clawith-backend:ci-$DRONE_BUILD_NUMBER-$COMMIT_SHORT"
         docker save -o clawith-frontend-new.tar "clawith-frontend:ci-$DRONE_BUILD_NUMBER-$COMMIT_SHORT"
-        chmod 644 clawith-backend-new.tar clawith-frontend-new.tar
-        ls -lh clawith-backend-new.tar clawith-frontend-new.tar
+        printf '%s\n' "ci-$DRONE_BUILD_NUMBER-$COMMIT_SHORT" > image-tag.txt
+        chmod 644 clawith-backend-new.tar clawith-frontend-new.tar image-tag.txt
+        ls -lh clawith-backend-new.tar clawith-frontend-new.tar image-tag.txt
     when:
-      branch:
-        - main
-        - release
       event:
-        - push
+        - tag
 
   - name: scp-images
     image: appleboy/drone-scp
@@ -220,23 +218,81 @@ steps:
     settings:
       host:
         from_secret: PRIVATE_SERVER_IP
-      username: root
+      username: qinrui
       password:
         from_secret: sshpwd
-      port: 22
+      port: 10022
       command_timeout: 15m
-      target: /opt/server/clawith-ci/
+      target: /home/qinrui/clawith_new
       source:
         - clawith-backend-new.tar
         - clawith-frontend-new.tar
-        - docker-compose.ci.yml
+        - docker-compose.cd.yml
+        - image-tag.txt
       rm: false
+      overwrite: true
     when:
-      branch:
-        - main
-        - release
       event:
-        - push
+        - tag
+
+  - name: restart-services
+    image: appleboy/drone-ssh
+    pull: if-not-exists
+    settings:
+      host:
+        from_secret: PRIVATE_SERVER_IP
+      username: qinrui
+      password:
+        from_secret: sshpwd
+      port: 10022
+      command_timeout: 15m
+      script_stop: true
+      script:
+        - set -eu
+        - cd /home/qinrui/clawith_new
+        - IMAGE_TAG="$(cat image-tag.txt)"
+        - |
+          case "$IMAGE_TAG" in
+            ci-[0-9]*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *)
+              echo "非法镜像标签: $IMAGE_TAG" >&2
+              exit 1
+              ;;
+          esac
+        - test -f .env
+        - test -f ss-nodes.json
+        - test -f nginx/default.conf
+        - |
+          IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml \
+            config --quiet
+        - docker load -i clawith-backend-new.tar
+        - docker load -i clawith-frontend-new.tar
+        # PostgreSQL 和 Redis 不参与重建，避免发布过程影响持久化服务。
+        - |
+          IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml \
+            up -d --no-deps --force-recreate \
+            backend-api backend-worker frontend
+        - |
+          ATTEMPT=0
+          until IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml \
+            exec -T backend-api \
+            curl -fsS --max-time 5 http://frontend:3000/api/health |
+            grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; do
+            ATTEMPT=$((ATTEMPT + 1))
+            if [ "$ATTEMPT" -ge 24 ]; then
+              echo "部署后健康检查超时" >&2
+              IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml ps >&2
+              IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml \
+                logs --tail=200 backend-api backend-worker frontend >&2
+              exit 1
+            fi
+            sleep 5
+          done
+        - IMAGE_TAG="$IMAGE_TAG" docker compose -f docker-compose.cd.yml ps
+        - echo "服务重启完成"
+    when:
+      event:
+        - tag
 
   - name: cleanup-ci-images
     image: docker:24.0.6
@@ -257,15 +313,18 @@ steps:
         - failure
 
 trigger:
-  branch:
-    - main
-    - release
-    - ci/test-drone  # 临时添加，测试完成后删除
-    - ci/test-drone-3010  # 本次 3010 隔离与升级流程验证
-    - feature/unified-chat-directory-pr760-regression
   event:
     - push
     - pull_request
+    - tag
+  ref:
+    - refs/heads/main
+    - refs/heads/release
+    - refs/heads/ci/test-drone
+    - refs/heads/ci/test-drone-3010
+    - refs/heads/feature/unified-chat-directory-pr760-regression
+    - refs/pull/**
+    - refs/tags/**
 
 volumes:
   - name: docker-socket
