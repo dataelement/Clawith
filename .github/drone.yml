@@ -306,6 +306,33 @@ steps:
       event:
         - tag
 
+  - name: notify-deployment-success
+    image: curlimages/curl:8.10.1
+    pull: if-not-exists
+    environment:
+      FEISHU_DEPLOY_WEBHOOK:
+        from_secret: FEISHU_DEPLOY_WEBHOOK
+    commands:
+      - |
+        set -eu
+        PAYLOAD="$(
+          printf \
+            '{"msg_type":"text","content":{"text":"✅ Clawith 部署成功\\n版本：%s\\n构建：%s\\n提交：%.8s"}}' \
+            "$DRONE_TAG" "$DRONE_BUILD_LINK" "$DRONE_COMMIT"
+        )"
+        RESPONSE="$(
+          curl --fail-with-body --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "$PAYLOAD" \
+            "$FEISHU_DEPLOY_WEBHOOK"
+        )"
+        echo "飞书通知响应: $RESPONSE"
+        printf '%s' "$RESPONSE" |
+          grep -Eq '"code"[[:space:]]*:[[:space:]]*0([,}])'
+    when:
+      event:
+        - tag
+
   - name: cleanup-ci-images
     image: docker:24.0.6
     privileged: true
