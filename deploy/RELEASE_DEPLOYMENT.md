@@ -17,9 +17,9 @@ owns CI validation, artifact transfer, and production deployment.
    - export and transfer the target images;
    - load the images and recreate the production application services;
    - verify the proxied API health endpoint.
-5. GitHub Actions waits for the
-   `continuous-integration/drone/tag` commit status. It publishes the GitHub
-   Release only after Drone reports success.
+5. GitHub Actions publishes the GitHub Release and finishes without waiting for
+   Drone. Drone continues the deployment asynchronously and reports its status
+   on the tagged commit.
 
 Only tags matching `refs/tags/v*` enter the Drone release pipeline. Branch
 pushes and pull requests still run CI, but never export or deploy images.
@@ -75,6 +75,6 @@ The remote deployment loads the transferred images and force-recreates only
 are not recreated. Deployment succeeds only after the frontend proxy returns an
 API health response whose status is `ok`.
 
-If Drone fails, the GitHub tag remains for investigation, but the GitHub
-Release is not published. Fix or rerun the Drone build for that tag; do not move
-or reuse a published release tag.
+If Drone fails, the GitHub tag and Release remain published for investigation.
+Fix or rerun the Drone build for that tag; do not move or reuse a published
+release tag.

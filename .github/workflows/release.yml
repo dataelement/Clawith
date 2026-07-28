@@ -33,7 +33,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  statuses: read
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -503,64 +502,6 @@ jobs:
             git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
             git push origin "$TARGET_TAG"
           fi
-
-      - name: Wait for Drone deployment
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET_TAG: ${{ steps.release_info.outputs.tag }}
-          DRONE_STATUS_CONTEXT: continuous-integration/drone/tag
-        run: |
-          set -euo pipefail
-
-          release_commit="$(git rev-list -n 1 "$TARGET_TAG")"
-          echo "Waiting for Drone deployment of $TARGET_TAG ($release_commit)"
-
-          for attempt in $(seq 1 180); do
-            status_payload="$(
-              gh api \
-                -H "Accept: application/vnd.github+json" \
-                "repos/${GITHUB_REPOSITORY}/commits/${release_commit}/status"
-            )"
-
-            read -r drone_state drone_url drone_description < <(
-              STATUS_PAYLOAD="$status_payload" python3 <<'PY'
-          import json
-          import os
-
-          payload = json.loads(os.environ["STATUS_PAYLOAD"])
-          context = os.environ["DRONE_STATUS_CONTEXT"]
-          status = next(
-              (item for item in payload.get("statuses", []) if item.get("context") == context),
-              {},
-          )
-          values = (
-              status.get("state", "waiting"),
-              status.get("target_url", "-"),
-              status.get("description", "Drone has not reported a status yet"),
-          )
-          print(*(str(value).replace("\n", " ") for value in values))
-          PY
-            )
-
-            echo "Drone status: state=$drone_state description=$drone_description url=$drone_url"
-
-            case "$drone_state" in
-              success)
-                echo "Drone deployed $TARGET_TAG successfully."
-                exit 0
-                ;;
-              error|failure)
-                echo "::error::Drone deployment failed: $drone_url"
-                exit 1
-                ;;
-            esac
-
-            sleep 10
-          done
-
-          echo "::error::Timed out after 30 minutes waiting for Drone deployment"
-          exit 1
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
