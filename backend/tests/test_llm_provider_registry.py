@@ -1,7 +1,9 @@
+import pytest
+
 from app.services.llm.client import (
+    PROVIDER_REGISTRY,
     AnthropicClient,
     OpenAICompatibleClient,
-    PROVIDER_REGISTRY,
     create_llm_client,
     get_provider_manifest,
 )
@@ -54,3 +56,25 @@ def test_minimax_openai_base_uses_openai_compatible_client():
     )
 
     assert isinstance(client, OpenAICompatibleClient)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.minimax.io/anthropic",
+        "https://api.minimax.io/anthropic/v1/messages",
+        "https://api.minimax.io/anthropic/v1",
+        "https://api.minimax.io/anthropic/",
+    ],
+)
+def test_minimax_anthropic_endpoint_variants_route_to_anthropic_client(base_url):
+    """Full Anthropic endpoint variants entered by admins must route to AnthropicClient."""
+    client = create_llm_client(
+        provider="minimax",
+        api_key="test-key",
+        model="MiniMax-M3",
+        base_url=base_url,
+    )
+
+    assert isinstance(client, AnthropicClient)
+    assert client._normalize_base_url() == "https://api.minimax.io/anthropic"

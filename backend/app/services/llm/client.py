@@ -2268,13 +2268,30 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     return MAX_TOKENS_BY_PROVIDER.get(normalize_provider(provider), 4096)
 
 
+_ANTHROPIC_BASE_URL_SUFFIXES = ("/v1/messages", "/v1/chat/completions", "/v1")
+
+
+def _normalize_anthropic_base_url(base_url: str) -> str:
+    """Strip trailing Anthropic API path suffixes before endpoint matching.
+
+    Mirrors :meth:`AnthropicClient._normalize_base_url` so admin-entered full
+    endpoints (``/v1/messages``, ``/v1``) compare against the registry bases.
+    """
+    url = base_url.rstrip("/")
+    for suffix in _ANTHROPIC_BASE_URL_SUFFIXES:
+        if url.endswith(suffix) and url != suffix:
+            url = url[: -len(suffix)]
+            break
+    return url
+
+
 def _uses_anthropic_endpoint(spec: ProviderSpec | None, base_url: str | None) -> bool:
     """Detect a configured native Anthropic-compatible endpoint for a provider."""
     if not spec or not base_url:
         return False
-    normalized_base_url = base_url.rstrip("/")
+    normalized_base_url = _normalize_anthropic_base_url(base_url)
     return any(
-        normalized_base_url == endpoint.anthropic_base_url.rstrip("/")
+        normalized_base_url == _normalize_anthropic_base_url(endpoint.anthropic_base_url)
         for endpoint in spec.endpoints
     )
 
