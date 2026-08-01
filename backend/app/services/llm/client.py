@@ -2306,6 +2306,8 @@ class ProviderSpec:
 
 # Provider aliases accepted for compatibility
 PROVIDER_ALIASES: dict[str, str] = {
+    "claude-relay": "claude-relay-service",
+    "crs": "claude-relay-service",
     "openai_response": "openai-response",
     "openairesponses": "openai-response",
 }
@@ -2318,6 +2320,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Anthropic",
         protocol="anthropic",
         default_base_url="https://api.anthropic.com",
+        supports_tool_choice=False,
+        default_max_tokens=8192,
+    ),
+    "claude-relay-service": ProviderSpec(
+        provider="claude-relay-service",
+        display_name="Claude Relay Service",
+        protocol="anthropic",
+        default_base_url=None,
         supports_tool_choice=False,
         default_max_tokens=8192,
     ),
