@@ -14,6 +14,18 @@ def test_minimax_registry_contains_target_models_and_endpoints():
 
     assert spec.default_model_id == "MiniMax-M3"
     assert [model.model_id for model in spec.models] == ["MiniMax-M3", "MiniMax-M2.7"]
+    assert spec.models[0].pricing_usd_per_million_tokens == {
+        "input": 0.6,
+        "output": 2.4,
+        "cache_read": 0.12,
+        "cache_write": None,
+    }
+    assert spec.models[1].pricing_usd_per_million_tokens == {
+        "input": 0.3,
+        "output": 1.2,
+        "cache_read": 0.06,
+        "cache_write": 0.375,
+    }
     assert {endpoint.region for endpoint in spec.endpoints} == {"global_en", "cn_zh"}
     assert {
         (endpoint.openai_base_url, endpoint.anthropic_base_url)

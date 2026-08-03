@@ -1903,7 +1903,6 @@ class ProviderModelSpec:
     model_id: str
     context_window: int | None = None
     pricing_usd_per_million_tokens: dict[str, float | None] = field(default_factory=dict)
-    pricing_tiers_usd_per_million_tokens: tuple[dict[str, Any], ...] = ()
     input_modalities: tuple[str, ...] = ()
     thinking: tuple[str, ...] = ()
 
@@ -2004,45 +2003,11 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
                 model_id="MiniMax-M3",
                 context_window=1000000,
                 pricing_usd_per_million_tokens={
-                    "input": 0.3,
-                    "output": 1.2,
-                    "cache_read": 0.06,
+                    "input": 0.6,
+                    "output": 2.4,
+                    "cache_read": 0.12,
                     "cache_write": None,
                 },
-                pricing_tiers_usd_per_million_tokens=(
-                    {
-                        "service_tier": "standard",
-                        "input_tokens_lte": 512000,
-                        "input": 0.3,
-                        "output": 1.2,
-                        "cache_read": 0.06,
-                        "cache_write": None,
-                    },
-                    {
-                        "service_tier": "standard",
-                        "input_tokens_gt": 512000,
-                        "input": 0.6,
-                        "output": 2.4,
-                        "cache_read": 0.12,
-                        "cache_write": None,
-                    },
-                    {
-                        "service_tier": "priority",
-                        "input_tokens_lte": 512000,
-                        "input": 0.45,
-                        "output": 1.8,
-                        "cache_read": 0.09,
-                        "cache_write": None,
-                    },
-                    {
-                        "service_tier": "priority",
-                        "input_tokens_gt": 512000,
-                        "input": 0.9,
-                        "output": 3.6,
-                        "cache_read": 0.18,
-                        "cache_write": None,
-                    },
-                ),
                 input_modalities=("text", "image", "video"),
                 thinking=("adaptive", "disabled"),
             ),
@@ -2172,7 +2137,6 @@ def get_provider_manifest() -> list[dict[str, Any]]:
                     "model_id": model.model_id,
                     "context_window": model.context_window,
                     "pricing_usd_per_million_tokens": model.pricing_usd_per_million_tokens,
-                    "pricing_tiers_usd_per_million_tokens": list(model.pricing_tiers_usd_per_million_tokens),
                     "input_modalities": list(model.input_modalities),
                     "thinking": list(model.thinking),
                 }
