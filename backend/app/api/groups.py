@@ -43,6 +43,7 @@ from app.services.group_message_service import GroupMessageServiceError
 from app.services.group_realtime import publish_group_message_created
 from app.services.participant_identity import get_or_create_user_participant
 from app.services.storage import guess_content_type
+from app.dao import agent_dao, user_dao
 
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -414,11 +415,11 @@ async def _member_outputs(
     agents: dict[uuid.UUID, Agent] = {}
     users: dict[uuid.UUID, User] = {}
     if agent_ref_ids:
-        agent_result = await db.execute(select(Agent).where(Agent.id.in_(agent_ref_ids)))
-        agents = {agent.id: agent for agent in agent_result.scalars().all()}
+        agent_list = await agent_dao.list_by_ids(list(agent_ref_ids), db=db)
+        agents = {agent.id: agent for agent in agent_list}
     if user_ref_ids:
-        user_result = await db.execute(select(User).where(User.id.in_(user_ref_ids)))
-        users = {user.id: user for user in user_result.scalars().all()}
+        user_list = await user_dao.list_by_ids(list(user_ref_ids), db=db)
+        users = {user.id: user for user in user_list}
 
     output: list[GroupMemberOut] = []
     for membership in memberships:
@@ -1544,8 +1545,7 @@ async def _download_user(
         parsed_user_id = uuid.UUID(user_id)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
-    result = await db.execute(select(User).where(User.id == parsed_user_id))
-    user = result.scalar_one_or_none()
+    user = await user_dao.get(parsed_user_id)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

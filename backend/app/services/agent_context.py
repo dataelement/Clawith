@@ -157,7 +157,7 @@ async def _load_relationships_from_db(db, agent_id: uuid.UUID) -> str:
     )
     rows = []
     for relationship, provider_name, provider_type in result.all():
-        status = await evaluate_human_relationship_status(db, relationship)
+        status = await evaluate_human_relationship_status(relationship)
         if status["access_status"] != "active" or relationship.member is None:
             continue
         if (provider_type or "").lower() in {"web", "platform"} or (

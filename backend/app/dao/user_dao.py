@@ -104,4 +104,26 @@ class UserDAO(BaseDAO[User]):
             return result.scalar_one_or_none()
 
 
+    async def list_admin_users(self, tenant_id: Any) -> Sequence[User]:
+        """Fetch all active org/platform admin users in a tenant."""
+        if not tenant_id:
+            return []
+        async with self.session(readonly=True) as db:
+            query = select(User).where(
+                User.tenant_id == tenant_id,
+                User.is_active == True,  # noqa: E712
+                User.role.in_(["platform_admin", "org_admin"]),
+            )
+            return (await db.execute(query)).scalars().all()
+
+    async def list_by_ids(self, user_ids: Sequence[Any], db: Any = None) -> Sequence[User]:
+        """Fetch users by a list of user IDs."""
+        if not user_ids:
+            return []
+        async with self.session(db=db, readonly=True) as session_db:
+            query = select(User).where(User.id.in_(user_ids))
+            return (await session_db.execute(query)).scalars().all()
+
+
 user_dao = UserDAO()
+

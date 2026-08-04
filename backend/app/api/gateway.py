@@ -163,7 +163,7 @@ async def poll_messages(
         .options(selectinload(AgentRelationship.member))
     )
     for r in h_result.scalars().all():
-        status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+        status_info = await evaluate_human_relationship_status(r, source_agent=agent)
         if r.member and status_info["access_status"] == "active":
             channels = []
             if getattr(r.member, 'external_id', None) or getattr(r.member, 'open_id', None):
@@ -186,7 +186,7 @@ async def poll_messages(
     )
     related_agent_ids = set()
     for r in a_result.scalars().all():
-        status_info = await evaluate_agent_relationship_status(db, r)
+        status_info = await evaluate_agent_relationship_status(r)
         if r.target_agent and status_info["access_status"] == "active":
             related_agent_ids.add(r.target_agent.id)
             rel_items.append(GatewayRelationshipItem(
@@ -415,7 +415,7 @@ async def send_message(
             candidate = rel.target_agent
             if not candidate:
                 continue
-            status_info = await evaluate_agent_relationship_status(db, rel)
+            status_info = await evaluate_agent_relationship_status(rel)
             if status_info["access_status"] != "active":
                 continue
             if candidate.name.lower() == target_name.lower() or target_name.lower() in candidate.name.lower():
@@ -491,14 +491,14 @@ async def send_message(
 
     target_member = None
     for r in rels:
-        status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+        status_info = await evaluate_human_relationship_status(r, source_agent=agent)
         if r.member and status_info["access_status"] == "active" and r.member.name == target_name:
             target_member = r.member
             break
     # Fuzzy match if exact match fails
     if not target_member:
         for r in rels:
-            status_info = await evaluate_human_relationship_status(db, r, source_agent=agent)
+            status_info = await evaluate_human_relationship_status(r, source_agent=agent)
             if r.member and status_info["access_status"] == "active" and target_name.lower() in r.member.name.lower():
                 target_member = r.member
                 break

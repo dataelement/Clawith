@@ -663,7 +663,7 @@ async def wecom_callback(
 
 
     # Standard login
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     if state:
         try:

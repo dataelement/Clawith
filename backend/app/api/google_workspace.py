@@ -112,7 +112,7 @@ async def _handle_google_sso_callback(
         logger.error(f"Google Workspace login error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
 
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     if sid:
         try:

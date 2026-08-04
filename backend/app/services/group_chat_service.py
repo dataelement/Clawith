@@ -145,6 +145,27 @@ async def _valid_participant(
     return participant
 
 
+async def _active_group(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    group_id: uuid.UUID,
+    lock: bool = False,
+) -> Group:
+    statement = select(Group).where(
+        Group.id == group_id,
+        Group.tenant_id == tenant_id,
+        Group.deleted_at.is_(None),
+    )
+    if lock:
+        statement = statement.with_for_update()
+    result = await db.execute(statement)
+    group = result.scalar_one_or_none()
+    if group is None:
+        raise GroupChatServiceError("group_not_found", "Group not found")
+    return group
+
+
 async def _active_membership(
     db: AsyncSession,
     *,

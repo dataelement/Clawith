@@ -238,7 +238,7 @@ async def register_init(
             user.identity = identity
 
     # 5. Generate token outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
 
     # 6. Send verification email if not verified (outside transaction)
     if not identity.email_verified:
@@ -294,7 +294,7 @@ async def register_sso(
                 await query_dao.flush(session)
 
     # Move token generation outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
 
     logger.info(f"[REGISTER_SSO] SSO successful: user_id={user.id}, is_new={is_new}")
 
@@ -401,7 +401,7 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         await _send_verification_email_task(user, background_tasks, settings)
 
     # 7. Generate access token and build response payload outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
     response_data = RegisterInitResponse(
         user_id=user.id,
         email=user.email,
@@ -585,7 +585,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks):
         tenant_processing_ms = (perf_counter() - stage_start) * 1000
 
         # 6. Generate Token
-        token = create_access_token(str(user.id), user.role)
+        token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
         outcome = "success"
         return TokenResponse(
             access_token=token,
@@ -824,7 +824,7 @@ async def switch_tenant(
         )
 
     # 3. Generate new token
-    token = create_access_token(str(target_user.id), target_user.role)
+    token = create_access_token(str(target_user.id), target_user.role, tenant_id=str(getattr(target_user, "tenant_id", None)) if getattr(target_user, "tenant_id", None) else None)
 
     # 4. Determine redirect URL
     from app.services.platform_service import platform_service
@@ -1015,7 +1015,7 @@ async def oauth_callback(
             if not user.is_active:
                 raise HTTPException(status_code=403, detail="Account is disabled")
 
-        jwt_token = create_access_token(str(user.id), user.role)
+        jwt_token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
         return TokenResponse(
             access_token=jwt_token,
             user=UserOut.model_validate(user),
@@ -1104,7 +1104,7 @@ async def oauth_callback(
         )
 
     # Single tenant (or new user with no tenant yet) — issue token directly
-    jwt_token = create_access_token(str(user.id), user.role)
+    jwt_token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
     return TokenResponse(
         access_token=jwt_token,
         user=UserOut.model_validate(user),
@@ -1233,7 +1233,11 @@ async def verify_email(data: VerifyEmailRequest):
     # 4. Generate token and return full response outside transaction
     effective_id = str(user.id) if user else str(identity.id)
     effective_role = user.role if user else "user"
-    token = create_access_token(effective_id, effective_role)
+    token = create_access_token(
+        effective_id,
+        effective_role,
+        tenant_id=str(user.tenant_id) if user and user.tenant_id else None,
+    )
 
     return TokenResponse(
         access_token=token,

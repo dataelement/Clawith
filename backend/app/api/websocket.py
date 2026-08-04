@@ -330,7 +330,7 @@ class WebSocketChatHandler:
                     return False
 
                 logger.info(f"[WS] Checking agent access for {self.agent_id}")
-                self.agent, _ = await check_agent_access(db, self.user, self.agent_id)
+                self.agent, _ = await check_agent_access(self.user, self.agent_id)
                 if is_agent_expired(self.agent):
                     await self.websocket.send_json(
                         _runtime_error_packet(

@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.core.error_contract import register_error_handlers
 from app.core.events import close_redis
 from app.core.logging_config import configure_logging, intercept_standard_logging
-from app.core.middleware import TraceIdMiddleware
+from app.core.middleware import TenantContextMiddleware, TraceIdMiddleware
 from app.schemas.schemas import HealthResponse
 from app.services.realtime import realtime_router
 
@@ -357,6 +357,14 @@ register_error_handlers(app)
 
 # Add TraceIdMiddleware first so it's executed for all requests
 app.add_middleware(TraceIdMiddleware)
+
+# Inject tenant_id from JWT into ContextVar so TenantScopedBaseDAO methods
+# automatically receive the correct tenant without explicit passing.
+app.add_middleware(
+    TenantContextMiddleware,
+    jwt_secret=settings.JWT_SECRET_KEY,
+    jwt_algorithm=settings.JWT_ALGORITHM,
+)
 
 # CORS
 _cors_origins = settings.CORS_ORIGINS

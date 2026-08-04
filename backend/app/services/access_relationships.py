@@ -33,7 +33,7 @@ async def ensure_access_granted_platform_relationships(
     if access_mode != "private" or not agent.tenant_id:
         return False
 
-    user_ids = await get_agent_accessible_user_ids(db, agent)
+    user_ids = await get_agent_accessible_user_ids(agent)
     if not user_ids:
         return False
 

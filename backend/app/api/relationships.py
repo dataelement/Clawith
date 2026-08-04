@@ -64,7 +64,7 @@ def _display_provider_name(provider_name: str | None, provider_type: str | None)
 
 
 async def _can_manage_agent(db: AsyncSession, user_id: uuid.UUID, agent: Agent) -> bool:
-    return (await get_agent_access_level_for_user_id(db, user_id, agent)) == "manage"
+    return (await get_agent_access_level_for_user_id(user_id, agent)) == "manage"
 
 
 async def _get_valid_member_user_id(
@@ -166,7 +166,7 @@ async def get_relationships(
             "relation": r.relation,
             "relation_label": RELATION_LABELS.get(r.relation, r.relation),
             "description": r.description,
-            **(await evaluate_human_relationship_status(db, r, source_agent=source_agent)),
+            **(await evaluate_human_relationship_status(r, source_agent=source_agent)),
             "member": {
                 "name": r.member.name,
                 "title": r.member.title,
@@ -235,7 +235,7 @@ async def search_human_relationship_candidates(
 
     allowed_user_ids: set[uuid.UUID] | None = None
     if access_mode != "company":
-        allowed_user_ids = await get_agent_accessible_user_ids(db, agent)
+        allowed_user_ids = await get_agent_accessible_user_ids(agent)
         query = query.where(
             or_(
                 OrgMember.user_id.is_(None),
@@ -282,7 +282,7 @@ async def search_human_relationship_candidates(
             "user_id": str(linked_user_id) if linked_user_id else None,
             "is_platform_user": bool(linked_user_id),
             "platform_access_level": (
-                await get_agent_access_level_for_user_id(db, linked_user_id, agent)
+                await get_agent_access_level_for_user_id(linked_user_id, agent)
                 if linked_user_id
                 else None
             ),
@@ -322,7 +322,7 @@ async def save_relationships(
             platform_user = user_result.scalar_one_or_none()
             if not platform_user:
                 raise HTTPException(status_code=400, detail="Platform user is not available")
-            if not await get_agent_access_level_for_user_id(db, platform_user.id, _agent):
+            if not await get_agent_access_level_for_user_id(platform_user.id, _agent):
                 raise HTTPException(status_code=403, detail="Platform user does not have access to this agent")
             member_result = await db.execute(select(OrgMember).where(
                 OrgMember.tenant_id == _agent.tenant_id,
@@ -354,7 +354,7 @@ async def save_relationships(
         linked_user_id = await _get_valid_member_user_id(db, member, _agent.tenant_id)
         if member.user_id and not linked_user_id:
             raise HTTPException(status_code=400, detail="Relationship member is linked to an unavailable platform user")
-        if linked_user_id and not await get_agent_access_level_for_user_id(db, linked_user_id, _agent):
+        if linked_user_id and not await get_agent_access_level_for_user_id(linked_user_id, _agent):
             raise HTTPException(status_code=403, detail="Platform user does not have access to this agent")
         existing = existing_by_member.get(member_id)
         db.add(AgentRelationship(
@@ -425,7 +425,7 @@ async def search_visible_agents(
     agents = [
         agent
         for agent in result.scalars().all()
-        if await _can_manage_agent(db, current_user.id, agent)
+        if await _can_manage_agent(current_user.id, agent)
     ]
     return [
         {
@@ -457,7 +457,7 @@ async def get_agent_relationships(
     rels = result.scalars().all()
     out = []
     for r in rels:
-        status_info = await evaluate_agent_relationship_status(db, r, current_user_id=current_user.id)
+        status_info = await evaluate_agent_relationship_status(r, current_user_id=current_user.id)
         out.append({
             "id": str(r.id),
             "target_agent_id": str(r.target_agent_id),
@@ -518,7 +518,7 @@ async def save_agent_relationships(
         target_agent = target_result.scalar_one_or_none()
         if not target_agent:
             raise HTTPException(status_code=403, detail="Target agent is not visible to the current user")
-        if not await _can_manage_agent(db, current_user.id, target_agent):
+        if not await _can_manage_agent(current_user.id, target_agent):
             raise HTTPException(status_code=403, detail="You must manage both agents to create this relationship")
         existing = existing_by_target.get(target_id)
         db.add(AgentAgentRelationship(

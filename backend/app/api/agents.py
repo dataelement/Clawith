@@ -35,6 +35,7 @@ from app.models.skill import Skill
 from app.services.resource_discovery import import_mcp_from_smithery
 from app.services.agent_runtime.persistence import enqueue_cancel
 from app.services.llm.model_resolution import load_active_model
+from app.dao import agent_dao, tenant_dao, user_dao
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 settings = get_settings()
@@ -43,14 +44,7 @@ settings = get_settings()
 async def _get_active_admin_users(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[User]:
     if not tenant_id:
         return []
-    result = await db.execute(
-        select(User).where(
-            User.tenant_id == tenant_id,
-            User.is_active == True,  # noqa: E712
-            User.role.in_(["platform_admin", "org_admin"]),
-        )
-    )
-    return result.scalars().all()
+    return list(await user_dao.list_admin_users(tenant_id))
 
 
 async def _validate_active_agent_model(
@@ -251,13 +245,7 @@ async def _background_agent_setup(
     # 1. Initialize agent file system from template
     try:
         async with async_session() as db:
-            agent_result = await db.execute(
-                select(Agent).where(
-                    Agent.id == agent_id,
-                    Agent.deleted_at.is_(None),
-                )
-            )
-            agent = agent_result.scalar_one_or_none()
+            agent = await agent_dao.get(agent_id)
             if not agent:
                 logger.error(f"[background_agent_setup] Agent {agent_id} not found")
                 return
@@ -610,22 +598,13 @@ async def get_agent(
     # We must eagerly load the identity relationship (selectinload) to avoid
     # async lazy-loading errors (SQLAlchemy raises MissingGreenlet in async context).
     if agent.creator_id:
-        from sqlalchemy.orm import selectinload
-        from app.models.user import Identity  # noqa: F401
-
-        creator_result = await db.execute(
-            select(User).where(User.id == agent.creator_id).options(selectinload(User.identity))
-        )
-        creator = creator_result.scalar_one_or_none()
+        creator = await user_dao.get_with_identity(agent.creator_id)
         out["creator_username"] = creator.username if creator else None
 
     # Resolve effective timezone (agent → tenant → UTC)
     effective_tz = agent.timezone
     if not effective_tz and agent.tenant_id:
-        from app.models.tenant import Tenant
-
-        t_result = await db.execute(select(Tenant).where(Tenant.id == agent.tenant_id))
-        tenant = t_result.scalar_one_or_none()
+        tenant = await tenant_dao.get(agent.tenant_id)
         if tenant:
             effective_tz = tenant.timezone or "UTC"
     out["effective_timezone"] = effective_tz or "UTC"
@@ -641,8 +620,7 @@ async def get_agent_permissions(
 ):
     """Get agent permission scope."""
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
-    perms = result.scalars().all()
+    perms = await agent_dao.list_permissions(agent_id)
     can_manage = access_level == "manage"
     is_owner = is_agent_creator(current_user, agent)
     access_mode = getattr(agent, "access_mode", None) or "company"
@@ -676,8 +654,8 @@ async def get_agent_permissions(
         display_user_ids.update(admin.id for admin in await _get_active_admin_users(db, agent.tenant_id))
 
     if display_user_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(display_user_ids)))
-        users_by_id = {str(u.id): u for u in users_result.scalars().all()}
+        users = await user_dao.list_by_ids(list(display_user_ids))
+        users_by_id = {str(u.id): u for u in users}
         access_by_user_id = {
             str(perm.scope_id): (perm.access_level or "use")
             for perm in perms

@@ -713,8 +713,6 @@ async def delete_session(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     _authorize_session_owner(current_user, agent, session)
-    if session.user_id is None:
-        raise HTTPException(status_code=404, detail="Session not found")
 
     deleted = await soft_delete_direct_session(
         db,

@@ -216,7 +216,7 @@ async def self_create_company(
         await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
-        access_token = create_access_token(str(new_user.id), new_user.role)
+        access_token = create_access_token(str(new_user.id), new_user.role, tenant_id=str(new_user.tenant_id) if new_user.tenant_id else None)
     else:
         # Registration flow: user has no tenant yet, assign directly
         current_user.tenant_id = tenant.id
@@ -344,7 +344,7 @@ async def join_company(
         await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
-        access_token = create_access_token(str(new_user.id), new_user.role)
+        access_token = create_access_token(str(new_user.id), new_user.role, tenant_id=str(new_user.tenant_id) if new_user.tenant_id else None)
         final_role = new_user.role
     else:
         # Registration flow: user has no tenant yet, assign directly

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.dao.base import tenant_context
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.task import Task, TaskLog
@@ -152,12 +153,13 @@ async def _try_enqueue_runtime_task(
                     "agent_not_found",
                     "Task Agent does not exist",
                 )
-            return await enqueue_task_runtime(
-                db,
-                task=task,
-                agent=agent,
-                execution_id=execution_id,
-            )
+            with tenant_context(agent.tenant_id):
+                return await enqueue_task_runtime(
+                    db,
+                    task=task,
+                    agent=agent,
+                    execution_id=execution_id,
+                )
 
 
 async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:

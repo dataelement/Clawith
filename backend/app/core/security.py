@@ -126,16 +126,31 @@ def decrypt_data(ciphertext: str, key: str) -> str:
 
 
 
-def create_access_token(user_id: str, role: str, expires_delta: timedelta | None = None) -> str:
-    """Create a JWT access token."""
+def create_access_token(
+    user_id: str,
+    role: str,
+    expires_delta: timedelta | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Create a JWT access token.
+
+    Args:
+        user_id: The subject user's UUID as a string.
+        role: The user's role (e.g. 'member', 'org_admin', 'platform_admin').
+        expires_delta: Optional override for token lifetime.
+        tenant_id: The user's tenant UUID as a string, or None for platform_admin
+                   accounts that are not bound to a specific tenant.
+    """
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode = {
+    to_encode: dict = {
         "sub": user_id,
         "role": role,
         "exp": expire,
     }
+    if tenant_id is not None:
+        to_encode["tenant_id"] = tenant_id
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

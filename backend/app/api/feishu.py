@@ -94,7 +94,7 @@ async def feishu_oauth_callback(
 
         # Generate JWT token
         from app.core.security import create_access_token
-        token = create_access_token(str(user.id), user.role)
+        token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Feishu auth failed: {e}")
