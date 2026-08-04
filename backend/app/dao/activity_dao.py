@@ -1,5 +1,6 @@
 """DAO for activity logs and conversation summaries."""
 
+import re
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -221,8 +222,6 @@ class ActivityDAO(BaseDAO[AgentActivityLog]):
                 for message in result.scalars().all():
                     content = message.content
                     if content.startswith("[发送者:"):
-                        import re
-
                         content = re.sub(r"^\[发送者:[^\]]*\]\s*", "", content)
                     messages.append(
                         {
