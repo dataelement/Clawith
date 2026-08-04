@@ -1,5 +1,6 @@
 """Local docker-based sandbox backend."""
 
+import os
 import time
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
@@ -108,6 +109,18 @@ class DockerBackend(BaseSandboxBackend):
             "HOME": "/root",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        http_proxy = self.config.http_proxy or os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY")
+        https_proxy = self.config.https_proxy or os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+        no_proxy = self.config.no_proxy or os.environ.get("no_proxy") or os.environ.get("NO_PROXY")
+        if http_proxy:
+            env["http_proxy"] = http_proxy
+            env["HTTP_PROXY"] = http_proxy
+        if https_proxy:
+            env["https_proxy"] = https_proxy
+            env["HTTPS_PROXY"] = https_proxy
+        if no_proxy:
+            env["no_proxy"] = no_proxy
+            env["NO_PROXY"] = no_proxy
 
         # Build docker run command
         if language == "python":
@@ -178,7 +191,7 @@ class DockerBackend(BaseSandboxBackend):
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
             error_msg = str(e)
-            logger.exception(f"[Docker] Execution error")
+            logger.exception("[Docker] Execution error")
 
             # Handle timeout specifically
             if "timeout" in error_msg.lower():

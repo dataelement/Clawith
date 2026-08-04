@@ -60,6 +60,8 @@ _RESULT_METADATA_KEYS = frozenset(
         "size",
         "archive_status",
         "archive_error_code",
+        "approval_id",
+        "autonomy_level",
         "message_id",
         "accepted_recipients",
         "refused_recipients",

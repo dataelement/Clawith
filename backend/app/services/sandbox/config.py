@@ -38,6 +38,11 @@ class SandboxConfig(BaseModel):
     default_timeout: int = Field(default=30, ge=1, le=3600)
     max_timeout: int = Field(default=60, ge=1, le=3600)
 
+    # Proxy options
+    http_proxy: Optional[str] = None
+    https_proxy: Optional[str] = None
+    no_proxy: Optional[str] = None
+
     # Language mapping for API sandboxes
     # Maps our internal language names to API-specific language IDs
     language_mapping: dict[str, str] = Field(default_factory=lambda: {
@@ -113,5 +118,8 @@ class SandboxConfig(BaseModel):
             ),
             default_timeout=get_value("default_timeout", 30),
             max_timeout=get_value("max_timeout", 60),
+            http_proxy=get_value("http_proxy", None),
+            https_proxy=get_value("https_proxy", None),
+            no_proxy=get_value("no_proxy", None),
         )
         return result
