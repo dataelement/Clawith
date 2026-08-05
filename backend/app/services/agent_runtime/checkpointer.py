@@ -128,7 +128,7 @@ def _to_psycopg_url(database_url: str) -> str:
         if explicit_sslmode is None:
             other_query_parts.append(f"sslmode={quote(asyncpg_sslmode, safe='')}")
 
-    search_path_option = f"-csearch_path={_CHECKPOINT_SCHEMA}"
+    search_path_option = f"-c search_path={_CHECKPOINT_SCHEMA},public"
     options = " ".join([option for option in existing_options if option] + [search_path_option])
     encoded_options = quote(options, safe="")
     query = "&".join([*other_query_parts, f"options={encoded_options}"])

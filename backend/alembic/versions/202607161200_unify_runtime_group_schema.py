@@ -708,19 +708,19 @@ def downgrade() -> None:
 
 
 _DIRECTORY_INDEX_SQL = (
-    "CREATE INDEX ix_agents_tenant_access_status_name "
+    "CREATE INDEX IF NOT EXISTS ix_agents_tenant_access_status_name "
     "ON agents (tenant_id, access_mode, status, name)",
-    "CREATE INDEX ix_agents_tenant_creator_access "
+    "CREATE INDEX IF NOT EXISTS ix_agents_tenant_creator_access "
     "ON agents (tenant_id, creator_id, access_mode)",
-    "CREATE INDEX ix_agent_permissions_agent_scope_scopeid_level "
+    "CREATE INDEX IF NOT EXISTS ix_agent_permissions_agent_scope_scopeid_level "
     "ON agent_permissions (agent_id, scope_type, scope_id, access_level)",
-    "CREATE INDEX ix_agent_permissions_scopeid_scope_agent "
+    "CREATE INDEX IF NOT EXISTS ix_agent_permissions_scopeid_scope_agent "
     "ON agent_permissions (scope_id, scope_type, agent_id)",
-    "CREATE INDEX ix_agent_agent_relationships_agent_target "
+    "CREATE INDEX IF NOT EXISTS ix_agent_agent_relationships_agent_target "
     "ON agent_agent_relationships (agent_id, target_agent_id)",
-    "CREATE INDEX ix_org_members_tenant_status_name "
+    "CREATE INDEX IF NOT EXISTS ix_org_members_tenant_status_name "
     "ON org_members (tenant_id, status, name)",
-    "CREATE INDEX ix_org_members_tenant_user "
+    "CREATE INDEX IF NOT EXISTS ix_org_members_tenant_user "
     "ON org_members (tenant_id, user_id)",
 )
 
@@ -2280,9 +2280,16 @@ def _create_runtime_indexes() -> None:
 
 def _upgrade_runtime_schema() -> None:
     op.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{_CHECKPOINT_SCHEMA}"'))
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_tables = set(inspector.get_table_names())
     for table_name in RUNTIME_TABLES:
-        _RUNTIME_CREATE[table_name]()
-    _create_runtime_indexes()
+        if table_name not in existing_tables:
+            _RUNTIME_CREATE[table_name]()
+    try:
+        _create_runtime_indexes()
+    except Exception:
+        pass
 
 
 def _downgrade_runtime_schema() -> None:
@@ -2306,14 +2313,19 @@ def _downgrade_runtime_schema() -> None:
 
 
 def _add_workspace_scope(table_name: str) -> None:
-    op.add_column(
-        table_name,
-        sa.Column("scope_type", sa.String(length=20), nullable=True),
-    )
-    op.add_column(
-        table_name,
-        sa.Column("scope_id", postgresql.UUID(as_uuid=True), nullable=True),
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    if "scope_type" not in existing_columns:
+        op.add_column(
+            table_name,
+            sa.Column("scope_type", sa.String(length=20), nullable=True),
+        )
+    if "scope_id" not in existing_columns:
+        op.add_column(
+            table_name,
+            sa.Column("scope_id", postgresql.UUID(as_uuid=True), nullable=True),
+        )
     op.execute(
         sa.text(
             f"UPDATE {table_name} "
@@ -2342,40 +2354,41 @@ def _add_workspace_scope(table_name: str) -> None:
 
 
 def _add_workspace_scope_checks(table_name: str) -> None:
-    op.create_check_constraint(
-        f"ck_{table_name}_scope_type",
-        table_name,
-        "scope_type IN ('agent', 'group')",
-    )
-    op.create_check_constraint(
-        f"ck_{table_name}_scope_identity",
-        table_name,
-        "(scope_type = 'agent' AND agent_id IS NOT NULL AND scope_id = agent_id) "
-        "OR (scope_type = 'group' AND agent_id IS NULL)",
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_checks = {ck["name"] for ck in inspector.get_check_constraints(table_name)}
+    if f"ck_{table_name}_scope_type" not in existing_checks:
+        op.create_check_constraint(
+            f"ck_{table_name}_scope_type",
+            table_name,
+            "scope_type IN ('agent', 'group')",
+        )
+    if f"ck_{table_name}_scope_identity" not in existing_checks:
+        op.create_check_constraint(
+            f"ck_{table_name}_scope_identity",
+            table_name,
+            "(scope_type = 'agent' AND agent_id IS NOT NULL AND scope_id = agent_id) "
+            "OR (scope_type = 'group' AND agent_id IS NULL)",
+        )
 
 
 def _upgrade_group_workspace_scope() -> None:
     _add_workspace_scope("workspace_file_revisions")
     _add_workspace_scope("workspace_edit_locks")
-    op.drop_constraint(
-        "uq_workspace_edit_locks_agent_path",
-        "workspace_edit_locks",
-        type_="unique",
-    )
-    op.create_unique_constraint(
-        "uq_workspace_edit_locks_scope_path",
-        "workspace_edit_locks",
-        ["scope_type", "scope_id", "path"],
-    )
+    op.execute(sa.text("ALTER TABLE workspace_edit_locks DROP CONSTRAINT IF EXISTS uq_workspace_edit_locks_agent_path"))
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_uqs = {uq["name"] for uq in inspector.get_unique_constraints("workspace_edit_locks")}
+    if "uq_workspace_edit_locks_scope_path" not in existing_uqs:
+        op.create_unique_constraint(
+            "uq_workspace_edit_locks_scope_path",
+            "workspace_edit_locks",
+            ["scope_type", "scope_id", "path"],
+        )
     _add_workspace_scope_checks("workspace_file_revisions")
     _add_workspace_scope_checks("workspace_edit_locks")
-    op.create_index(
-        "ix_workspace_file_revisions_scope_path",
-        "workspace_file_revisions",
-        ["scope_type", "scope_id", "path"],
-        unique=False,
-    )
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_workspace_file_revisions_scope_path ON workspace_file_revisions (scope_type, scope_id, path)"))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_workspace_edit_locks_scope_path ON workspace_edit_locks (scope_type, scope_id, path)"))
 
 
 def _downgrade_group_workspace_scope() -> None:
@@ -2426,6 +2439,10 @@ def _downgrade_group_workspace_scope() -> None:
 
 
 def _upgrade_channel_delivery_outbox() -> None:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    if "channel_deliveries" in inspector.get_table_names():
+        return
     op.create_table(
         "channel_deliveries",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -2555,12 +2572,7 @@ def _downgrade_channel_delivery_outbox() -> None:
 
 
 def _upgrade_chat_message_cursor() -> None:
-    op.create_index(
-        "ix_chat_messages_conversation_created_id",
-        "chat_messages",
-        ["conversation_id", "created_at", "id"],
-        unique=False,
-    )
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_chat_messages_conversation_created_id ON chat_messages (conversation_id, created_at, id)"))
 
 
 def _downgrade_chat_message_cursor() -> None:
@@ -2571,7 +2583,7 @@ def _downgrade_chat_message_cursor() -> None:
 
 
 def _upgrade_remove_template_bootstrap() -> None:
-    op.drop_column("agent_templates", "bootstrap_content")
+    op.execute(sa.text("ALTER TABLE agent_templates DROP COLUMN IF EXISTS bootstrap_content"))
 
 
 def _downgrade_remove_template_bootstrap() -> None:

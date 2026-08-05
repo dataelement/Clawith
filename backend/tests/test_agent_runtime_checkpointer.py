@@ -42,13 +42,13 @@ def test_dedicated_checkpoint_url_wins_and_is_normalized_for_psycopg() -> None:
     )
 
     assert checkpoint_database_url(settings) == (
-        "postgresql://checkpoint:secret@db.example/checkpoints?options=-csearch_path%3Dlanggraph_checkpoint"
+        "postgresql://checkpoint:secret@db.example/checkpoints?options=-c%20search_path%3Dlanggraph_checkpoint%2Cpublic"
     )
 
 
 def test_primary_asyncpg_url_is_the_checkpoint_fallback() -> None:
     assert checkpoint_database_url(_settings()) == (
-        "postgresql://app:secret@db.example/clawith?options=-csearch_path%3Dlanggraph_checkpoint"
+        "postgresql://app:secret@db.example/clawith?options=-c%20search_path%3Dlanggraph_checkpoint%2Cpublic"
     )
 
 
@@ -77,7 +77,7 @@ def test_primary_asyncpg_ssl_query_is_normalized_for_psycopg(
     parsed = conninfo_to_dict(url)
 
     assert parsed["sslmode"] == psycopg_value
-    assert parsed["options"] == "-csearch_path=langgraph_checkpoint"
+    assert parsed["options"] == "-c search_path=langgraph_checkpoint,public"
 
 
 def test_conflicting_asyncpg_ssl_and_psycopg_sslmode_fails_closed() -> None:
@@ -101,7 +101,7 @@ def test_checkpoint_url_preserves_existing_options_and_forces_isolated_schema() 
 
     assert checkpoint_database_url(settings) == (
         "postgresql://checkpoint:secret@db.example/checkpoints?sslmode=require&"
-        "options=-cstatement_timeout%3D5000%20-csearch_path%3Dlanggraph_checkpoint"
+        "options=-cstatement_timeout%3D5000%20-c%20search_path%3Dlanggraph_checkpoint%2Cpublic"
     )
 
 
@@ -114,7 +114,7 @@ def test_psycopg_parses_search_path_as_a_separate_server_option() -> None:
 
     parsed = conninfo_to_dict(checkpoint_database_url(settings))
 
-    assert parsed["options"] == ("-cstatement_timeout=5000 -csearch_path=langgraph_checkpoint")
+    assert parsed["options"] == ("-cstatement_timeout=5000 -c search_path=langgraph_checkpoint,public")
 
 
 def test_installed_saver_uses_unqualified_checkpoint_tables() -> None:
@@ -202,6 +202,6 @@ async def test_factory_is_lazy_and_never_runs_checkpointer_setup() -> None:
 
     factory.assert_called_once()
     call = factory.call_args
-    assert call.args == ("postgresql://app:secret@db.example/clawith?options=-csearch_path%3Dlanggraph_checkpoint",)
+    assert call.args == ("postgresql://app:secret@db.example/clawith?options=-c%20search_path%3Dlanggraph_checkpoint%2Cpublic",)
     assert isinstance(call.kwargs["serde"], JsonPlusSerializer)
     saver.setup.assert_not_awaited()

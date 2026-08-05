@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 import uuid
 
 from sqlalchemy.dialects import postgresql
@@ -279,7 +280,8 @@ async def test_create_group_rejects_an_invisible_agent_before_staging_the_group(
         _Result(),
     )
 
-    with pytest.raises(group_chat_service.GroupChatServiceError) as excinfo:
+    with patch("app.dao.agent_dao.agent_dao.get_user_permission", AsyncMock(return_value=None)), \
+         pytest.raises(group_chat_service.GroupChatServiceError) as excinfo:
         await group_chat_service.create_group(
             db,
             tenant_id=tenant_id,

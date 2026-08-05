@@ -6953,7 +6953,15 @@ export default function AgentDetailPage() {
                                                                 continue;
                                                             }
                                                             flushGroup();
-                                                            grouped.push({ type: 'msg', msg, i });
+                                                            const isAssistantEmpty = msg.role === 'assistant'
+                                                                && !msg.content?.trim()
+                                                                && !msg.thinking?.trim()
+                                                                && !msg.runtimeError
+                                                                && !msg.fileName
+                                                                && !msg.imageUrl;
+                                                            if (!isAssistantEmpty) {
+                                                                grouped.push({ type: 'msg', msg, i });
+                                                            }
                                                         }
                                                     }
                                                     flushGroup(); // flush any trailing group

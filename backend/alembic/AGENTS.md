@@ -78,7 +78,7 @@ uv run alembic merge heads -m "merge_feature_branches"
 - [ ] `down_revision` equals the head that existed *before* this change.
 - [ ] `upgrade()` and `downgrade()` are DDL-only (no inline `SELECT`→`UPDATE`/`INSERT` data loops).
 - [ ] Migration filename follows `v{Major}_{Minor}_{Patch}_f{Feature_Num}_{description}.py` convention (e.g., `v1_0_0_f060_tenant_id_backfill.py`).
-- [ ] Revision ID follows `f{Feature_Num}_{description}` convention (e.g., `f060_add_tenant_id_missing_tables`).
+- [ ] Revision ID follows `f{Feature_Num}_{description}` convention (e.g., `f060_tenant_id_backfill`, <=32 chars).
 - [ ] Tested rollbacks locally: `uv run alembic downgrade -1` followed by `uv run alembic upgrade head`.
 
 ---

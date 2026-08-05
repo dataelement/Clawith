@@ -25,7 +25,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "f060_add_tenant_id_missing_tables"
+revision: str = "f060_tenant_id_backfill"
 down_revision: str | None = "allow_checkpoint_deliveries"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

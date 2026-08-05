@@ -36,7 +36,10 @@ class BaseDAO(Generic[ModelType]):
                         await session.rollback()
                     raise
                 finally:
-                    _session_ctx.reset(token)
+                    try:
+                        _session_ctx.reset(token)
+                    except ValueError:
+                        _session_ctx.set(None)
 
     async def get(self, id: Any, db: Any = None) -> ModelType | None:
         """Fetch a single record by its primary key ID."""
