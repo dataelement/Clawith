@@ -1067,10 +1067,10 @@ async def get_notification_bar_public(
 @router.get("/system-settings/{key}")
 async def get_system_setting(
     key: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a system setting by key."""
+    """Get a platform-level system setting (platform admin only)."""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if not setting:
@@ -1082,13 +1082,10 @@ async def get_system_setting(
 async def update_system_setting(
     key: str,
     data: SettingUpdate,
-    current_user: User = Depends(get_current_admin),
+    current_user: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create or update a system setting."""
-    # Platform-level settings (e.g. PUBLIC_BASE_URL) require platform_admin
-    if key == "platform" and not _is_platform_admin_user(current_user):
-        raise HTTPException(status_code=403, detail="Only platform admin can modify platform settings")
+    """Create or update a platform-level system setting (platform admin only)."""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if setting:
