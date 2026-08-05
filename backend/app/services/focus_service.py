@@ -361,6 +361,10 @@ async def _upsert_focus_item_impl(
         await db.refresh(item)
     else:
         await db.flush()
+        # The caller may serialize this item before committing its outer
+        # transaction. Load database-generated timestamps first so async ORM
+        # attribute access cannot trigger an implicit lazy-load.
+        await db.refresh(item)
     return _serialize_focus_item(item)
 
 
