@@ -247,10 +247,9 @@ def _agent_directory_conditions(
         AgentModel.id != source.id,
     ]
     if source_mode == "private":
-        conditions.extend([
-            AgentModel.access_mode == "private",
-            AgentModel.creator_id == source.creator_id,
-        ])
+        # Keep the query in sync with evaluate_roster_agent_visibility:
+        # a private Agent can only initiate contact with company-visible Agents.
+        conditions.append(AgentModel.access_mode == "company")
     else:
         conditions.append(or_(
             AgentModel.access_mode == "company",

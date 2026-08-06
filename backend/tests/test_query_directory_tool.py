@@ -209,6 +209,29 @@ async def test_query_directory_agent_list_uses_sql_offset_and_limit():
     assert "OFFSET" in statement
 
 
+@pytest.mark.asyncio
+async def test_private_agent_directory_queries_company_agents_only():
+    tenant_id = uuid.uuid4()
+    source = _make_agent(tenant_id=tenant_id, access_mode="private")
+    db = RecordingDB(
+        responses=[
+            DummyResult(scalar_value=source),
+            DummyResult(values=[]),
+        ]
+    )
+
+    result = await agent_directory.query_agent_directory(
+        db,
+        source_agent_id=source.id,
+        member_type="agent",
+    )
+
+    assert result["members"] == []
+    compiled = db.statements[1].compile()
+    assert "agents.access_mode = :access_mode_1" in str(compiled)
+    assert compiled.params["access_mode_1"] == "company"
+
+
 def test_format_roster_agent_returns_stable_id_and_contact_tool():
     tenant_id = uuid.uuid4()
     source = _make_agent(tenant_id=tenant_id)

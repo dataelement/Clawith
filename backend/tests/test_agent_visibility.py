@@ -254,7 +254,7 @@ def test_evaluate_roster_human_visibility_limits_custom_to_authorized_members():
     assert authorized_custom_visibility.can_contact is True
 
 
-def test_evaluate_roster_agent_visibility_allows_same_creator_private_only():
+def test_evaluate_roster_agent_visibility_enforces_private_to_company_only():
     tenant_id = uuid.uuid4()
     creator_id = uuid.uuid4()
     source = make_agent(tenant_id=tenant_id, creator_id=creator_id, access_mode="private")
@@ -262,9 +262,27 @@ def test_evaluate_roster_agent_visibility_allows_same_creator_private_only():
     other_private = make_agent(tenant_id=tenant_id, creator_id=uuid.uuid4(), access_mode="private")
     company_agent = make_agent(tenant_id=tenant_id, creator_id=creator_id, access_mode="company")
 
-    assert permissions.evaluate_roster_agent_visibility(source, same_creator_private).visible is True
-    assert permissions.evaluate_roster_agent_visibility(source, other_private).visible is False
-    assert permissions.evaluate_roster_agent_visibility(source, company_agent).visible is False
+    same_owner_private = permissions.evaluate_roster_agent_visibility(source, same_creator_private)
+    other_owner_private = permissions.evaluate_roster_agent_visibility(source, other_private)
+    company_visibility = permissions.evaluate_roster_agent_visibility(source, company_agent)
+
+    assert same_owner_private.visible is False
+    assert same_owner_private.can_contact is False
+    assert other_owner_private.visible is False
+    assert other_owner_private.can_contact is False
+    assert company_visibility.visible is True
+    assert company_visibility.can_contact is True
+
+
+def test_evaluate_roster_agent_visibility_blocks_company_to_private():
+    tenant_id = uuid.uuid4()
+    source = make_agent(tenant_id=tenant_id, access_mode="company")
+    private_target = make_agent(tenant_id=tenant_id, access_mode="private")
+
+    visibility = permissions.evaluate_roster_agent_visibility(source, private_target)
+
+    assert visibility.visible is False
+    assert visibility.can_contact is False
 
 
 def test_evaluate_roster_agent_visibility_reports_uncontactable_reason():

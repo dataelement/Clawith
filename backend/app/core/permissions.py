@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import false, or_, select, exists
 
 from app.models.agent import Agent, AgentPermission
-from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
+from app.models.org import OrgMember
 from app.models.user import User
 
 
@@ -178,10 +178,9 @@ def evaluate_roster_agent_visibility(
     visible = False
 
     if source_mode == "private":
-        visible = (
-            target_mode == "private"
-            and getattr(source_agent, "creator_id", None) == getattr(target_agent, "creator_id", None)
-        )
+        # Private Agents may initiate contact with company-visible Agents, but
+        # never expose another private Agent (including one with the same owner).
+        visible = target_mode == "company"
     else:
         visible = target_mode == "company" or (target_mode == "custom" and authorized_custom_target)
 
