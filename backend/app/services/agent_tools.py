@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Optional, Any, cast
 import re
 
+from croniter import croniter
 from loguru import logger
 from sqlalchemy import select, or_
 
@@ -10494,7 +10495,6 @@ async def _handle_set_trigger_outcome(
                 "invalid_tool_arguments",
             )
         try:
-            from croniter import croniter
             croniter(expr)
         except Exception:
             return _typed_failure(
@@ -10790,7 +10790,22 @@ async def _handle_update_trigger_outcome(
                     for key, value in new_config.items()
                     if key != "token" and not key.startswith("_")
                 }
-                trigger.config = {**old_config, **user_patch, **protected}
+                updated_config = {**old_config, **user_patch, **protected}
+                if trigger.type == "cron":
+                    expr = updated_config.get("expr")
+                    if not isinstance(expr, str) or not expr.strip():
+                        return _typed_failure(
+                            "cron trigger requires config.expr.",
+                            "invalid_tool_arguments",
+                        )
+                    try:
+                        croniter(expr)
+                    except Exception:
+                        return _typed_failure(
+                            f"Invalid cron expression: '{expr}'.",
+                            "invalid_tool_arguments",
+                        )
+                trigger.config = updated_config
                 changes.append(f"config fields patched: {sorted(user_patch)}")
             if new_reason is not None:
                 if not isinstance(new_reason, str) or not new_reason.strip():

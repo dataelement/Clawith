@@ -2,6 +2,7 @@
 
 import uuid
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -91,6 +92,20 @@ async def update_trigger(
             raise HTTPException(404, "Trigger not found")
 
         if body.config is not None:
+            if trigger.type == "cron":
+                expr = body.config.get("expr")
+                if not isinstance(expr, str) or not expr.strip():
+                    raise HTTPException(
+                        400,
+                        "cron trigger requires config.expr",
+                    )
+                try:
+                    croniter(expr)
+                except Exception as exc:
+                    raise HTTPException(
+                        400,
+                        f"Invalid cron expression: '{expr}'.",
+                    ) from exc
             trigger.config = body.config
         if body.reason is not None:
             trigger.reason = body.reason

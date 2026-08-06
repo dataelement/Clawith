@@ -38,7 +38,11 @@ class Tenant(Base):
     min_heartbeat_interval_minutes: Mapped[int] = mapped_column(Integer, default=240)
 
     # Default timezone for all agents in this company (IANA format, e.g. "Asia/Shanghai")
-    timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+    timezone: Mapped[str] = mapped_column(
+        String(50),
+        default="Asia/Shanghai",
+        nullable=False,
+    )
     # Company country/region code used to derive default timezone and business calendar.
     country_region: Mapped[str] = mapped_column(String(10), default="001")
 

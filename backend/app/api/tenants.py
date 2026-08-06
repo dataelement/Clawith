@@ -14,7 +14,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.storage import ensure_local_path, get_storage_backend, normalize_storage_key
+from app.services.timezone_utils import validate_timezone_name
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -40,7 +41,7 @@ class TenantOut(BaseModel):
     name: str
     slug: str
     im_provider: str
-    timezone: str = "UTC"
+    timezone: str = "Asia/Shanghai"
     country_region: str = "001"
     is_active: bool
     sso_enabled: bool = False
@@ -62,6 +63,13 @@ class TenantUpdate(BaseModel):
     sso_enabled: bool | None = None
     sso_domain: str | None = None
     a2a_async_enabled: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Tenant timezone is required")
+        return validate_timezone_name(value)
 
 
 def _tenant_logo_key(tenant_id: uuid.UUID) -> str:
@@ -266,7 +274,7 @@ async def join_company(
     ic_result = await query_dao.execute(db, 
         select(InvitationCode).where(
             InvitationCode.code == data.invitation_code,
-            InvitationCode.is_active == True,
+            InvitationCode.is_active.is_(True),
             InvitationCode.tenant_id.is_not(None),
         )
     )

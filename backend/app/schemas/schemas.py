@@ -3,7 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.services.timezone_utils import validate_timezone_name
 
 
 # ─── Auth ───────────────────────────────────────────────
@@ -322,6 +324,13 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_timezone_name(value)
 
 
 class AgentStatusOut(BaseModel):

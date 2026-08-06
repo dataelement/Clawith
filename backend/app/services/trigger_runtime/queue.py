@@ -57,18 +57,39 @@ def _fail_runtime_execution(
     execution.last_error = f"{error.code}: {error}"[:2000]
 
 
+async def _handle_intake_failure(
+    db: AsyncSession,
+    *,
+    execution: TriggerExecution,
+    error: TriggerRuntimeIntakeError,
+    now: datetime,
+    persist_intake_failure: bool,
+) -> None:
+    if not persist_intake_failure:
+        await db.rollback()
+        raise error
+    _fail_runtime_execution(execution, error, now)
+
+
 async def enqueue_trigger_execution(
     db: AsyncSession,
     *,
     trigger: AgentTrigger,
     source: str,
     idempotency_key: str,
+    scheduled_at: datetime | None = None,
+    persist_intake_failure: bool = False,
     payload_text: str = "",
     payload_obj: dict | None = None,
 ) -> tuple[TriggerExecution | None, bool]:
     """Atomically insert an occurrence and its required Runtime command."""
     normalized_key = idempotency_key[:255]
     now = datetime.now(timezone.utc)
+    scheduled_at_utc = scheduled_at or now
+    if scheduled_at_utc.tzinfo is None:
+        scheduled_at_utc = scheduled_at_utc.replace(tzinfo=timezone.utc)
+    else:
+        scheduled_at_utc = scheduled_at_utc.astimezone(timezone.utc)
     execution = TriggerExecution(
         id=uuid.uuid4(),
         trigger_id=trigger.id,
@@ -78,7 +99,7 @@ async def enqueue_trigger_execution(
         idempotency_key=normalized_key,
         payload=payload_obj if isinstance(payload_obj, dict) else {},
         payload_text=payload_text[:8000],
-        scheduled_at=now,
+        scheduled_at=scheduled_at_utc,
     )
     try:
         async with db.begin_nested():
@@ -106,25 +127,29 @@ async def enqueue_trigger_execution(
             "Trigger disappeared while its execution was being registered",
         )
     if not stored_trigger.is_enabled:
-        _fail_runtime_execution(
-            execution,
-            TriggerRuntimeIntakeError(
+        await _handle_intake_failure(
+            db,
+            execution=execution,
+            error=TriggerRuntimeIntakeError(
                 "trigger_disabled",
                 "Trigger was disabled before its execution was accepted",
             ),
-            now,
+            now=now,
+            persist_intake_failure=persist_intake_failure,
         )
         await db.commit()
         return execution, True
     agent: Agent | None = await load_trigger_agent(db, trigger=stored_trigger)
     if agent is None:
-        _fail_runtime_execution(
-            execution,
-            TriggerRuntimeIntakeError(
+        await _handle_intake_failure(
+            db,
+            execution=execution,
+            error=TriggerRuntimeIntakeError(
                 "agent_not_found",
                 "Runtime Trigger Agent does not exist",
             ),
-            now,
+            now=now,
+            persist_intake_failure=persist_intake_failure,
         )
     else:
         try:
@@ -147,7 +172,13 @@ async def enqueue_trigger_execution(
                 _mark_trigger_fired(stored_trigger, now)
                 await db.flush()
         except TriggerRuntimeIntakeError as error:
-            _fail_runtime_execution(execution, error, now)
+            await _handle_intake_failure(
+                db,
+                execution=execution,
+                error=error,
+                now=now,
+                persist_intake_failure=persist_intake_failure,
+            )
 
     await db.commit()
     return execution, True
@@ -180,6 +211,7 @@ async def enqueue_webhook_execution(
         trigger=trigger,
         source="webhook",
         idempotency_key=delivery_key,
+        persist_intake_failure=True,
         payload_text=payload_text,
         payload_obj=payload_obj,
     )
