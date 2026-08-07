@@ -22,6 +22,7 @@ import math
 import multiprocessing as mp
 import os
 import queue
+import re
 import tempfile
 import uuid
 import unicodedata
@@ -29,8 +30,9 @@ from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Any, cast
-import re
+from urllib.parse import quote
 
+import httpx
 from loguru import logger
 from sqlalchemy import select, or_
 
@@ -40,6 +42,8 @@ from app.core.permissions import (
 )
 from app.database import async_session
 from app.models.agent import Agent as AgentModel
+from app.models.agent_run import AgentRun
+from app.models.agent_tool_execution import AgentToolExecution
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
@@ -91,12 +95,30 @@ from app.services.agent_runtime.tool_execution import (
     ToolExecutionOutcome,
     sanitize_tool_arguments,
 )
+from app.services.agent_runtime.feishu_approval_authorization import (
+    FeishuApprovalCreateAuthorization,
+    feishu_approval_create_arguments_hash,
+    verify_feishu_approval_create_authorization,
+)
 
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.STORAGE_LOCAL_ROOT or _settings.AGENT_DATA_DIR)
 TOOL_MATERIALIZE_MAX_FILE_BYTES = 10 * 1024 * 1024
 TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
+FEISHU_APPROVAL_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+FEISHU_APPROVAL_CODE_MAX_CHARS = 256
+FEISHU_APPROVAL_FORM_MAX_CHARS = 100_000
+FEISHU_APPROVAL_FORM_MAX_CONTROLS = 200
+_FEISHU_APPROVAL_IMAGE_MEDIA_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 TEMP_WORKSPACE_DEFAULT_PATHS = ["workspace", "memory", "skills", "focus.md", "soul.md", "HEARTBEAT.md"]
 MAX_EXEC_STDOUT_CAPTURE_BYTES = 1_000_000
 MAX_EXEC_STDERR_CAPTURE_BYTES = 500_000
@@ -553,6 +575,9 @@ RUNTIME_TYPED_APPLICATION_TOOL_NAMES = frozenset(
         "feishu_drive_share",
         "feishu_drive_delete",
         "feishu_user_search",
+        "feishu_approval_definition_get",
+        "feishu_approval_file_upload",
+        "feishu_approval_create",
         "feishu_approval_query",
         "feishu_approval_get",
         "read_emails",
@@ -1368,6 +1393,7 @@ async def _prepare_temp_workspace(
     agent_id: uuid.UUID,
     tenant_id: str | None = None,
     paths: list[str] | None = None,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> TempWorkspace:
     tmp = tempfile.TemporaryDirectory(prefix=f"clawith-agent-{str(agent_id)[:8]}-")
     temp_ws = Path(tmp.name)
@@ -1382,7 +1408,15 @@ async def _prepare_temp_workspace(
         storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
         if is_enterprise:
             continue
-        await _materialize_storage_path_with_budget(storage, storage_key, normalized, temp_ws, budget, manifest)
+        await _materialize_storage_path_with_budget(
+            storage,
+            storage_key,
+            normalized,
+            temp_ws,
+            budget,
+            manifest,
+            max_file_bytes=max_file_bytes,
+        )
     return TempWorkspace(
         temp_dir=tmp,
         root=temp_ws,
@@ -1400,10 +1434,12 @@ async def _materialize_storage_path_with_budget(
     local_root: Path,
     budget: dict,
     manifest: dict[str, TempWorkspaceManifestEntry],
+    *,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> None:
     if await storage.is_file(storage_key):
         version = await storage.get_version(storage_key)
-        if version.size > TOOL_MATERIALIZE_MAX_FILE_BYTES:
+        if version.size > max_file_bytes:
             return
         if budget["total"] + version.size > TOOL_MATERIALIZE_MAX_TOTAL_BYTES:
             return
@@ -1427,7 +1463,15 @@ async def _materialize_storage_path_with_budget(
         (local_root / rel_path).mkdir(parents=True, exist_ok=True)
         for entry in await storage.list_dir(storage_key):
             child_rel = f"{rel_path.rstrip('/')}/{entry.name}" if rel_path else entry.name
-            await _materialize_storage_path_with_budget(storage, entry.key, child_rel, local_root, budget, manifest)
+            await _materialize_storage_path_with_budget(
+                storage,
+                entry.key,
+                child_rel,
+                local_root,
+                budget,
+                manifest,
+                max_file_bytes=max_file_bytes,
+            )
 
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
@@ -1597,9 +1641,15 @@ async def _run_with_temp_workspace(
     *,
     paths: list[str] | None = None,
     sync_back: bool = False,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> str:
     """Materialize a temporary workspace for tools that require local files."""
-    temp_workspace = await _prepare_temp_workspace(agent_id, tenant_id=tenant_id, paths=paths)
+    temp_workspace = await _prepare_temp_workspace(
+        agent_id,
+        tenant_id=tenant_id,
+        paths=paths,
+        max_file_bytes=max_file_bytes,
+    )
     try:
         result = await runner(temp_workspace.root)
         if sync_back:
@@ -1624,6 +1674,7 @@ async def _run_with_temp_workspace_outcome(
     paths: list[str] | None = None,
     sync_back: bool = False,
     sync_back_on_non_success: bool = False,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> ToolExecutionOutcome:
     """Run a typed local-content tool and preserve explicit sync facts."""
     try:
@@ -1631,6 +1682,7 @@ async def _run_with_temp_workspace_outcome(
             agent_id,
             tenant_id=tenant_id,
             paths=paths,
+            max_file_bytes=max_file_bytes,
         )
     except Exception as exc:
         return _typed_failure(
@@ -2512,6 +2564,13 @@ async def execute_builtin_tool_outcome(
     user_id: uuid.UUID,
     session_id: str = "",
     on_output=None,
+    *,
+    runtime_authorization: FeishuApprovalCreateAuthorization | None = None,
+    runtime_run_id: str | None = None,
+    runtime_tool_call_id: str | None = None,
+    runtime_execution_id: str | None = None,
+    runtime_lease_owner: str | None = None,
+    runtime_tenant_id: str | None = None,
 ) -> ToolExecutionOutcome | str:
     """Execute only explicitly migrated builtin branches as typed outcomes.
 
@@ -2834,6 +2893,42 @@ async def execute_builtin_tool_outcome(
         return await _feishu_drive_delete_outcome(agent_id, arguments)
     if tool_name == "feishu_user_search":
         return await _feishu_user_search_outcome(agent_id, arguments)
+    if tool_name == "feishu_approval_definition_get":
+        return await _feishu_approval_definition_get_outcome(
+            agent_id,
+            arguments,
+        )
+    if tool_name == "feishu_approval_file_upload":
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return _typed_failure(
+                "feishu_approval_file_upload requires file_path.",
+                "invalid_tool_arguments",
+            )
+        tenant_id = await _get_agent_tenant_id(agent_id)
+        return await _run_with_temp_workspace_outcome(
+            agent_id,
+            tenant_id,
+            lambda temp_ws: _feishu_approval_file_upload_outcome(
+                agent_id,
+                temp_ws,
+                arguments,
+            ),
+            paths=[file_path],
+            max_file_bytes=FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES,
+        )
+    if tool_name == "feishu_approval_create":
+        return await _feishu_approval_create_outcome(
+            agent_id,
+            arguments,
+            actor_user_id=user_id,
+            authorization=runtime_authorization,
+            runtime_run_id=runtime_run_id,
+            runtime_tool_call_id=runtime_tool_call_id,
+            runtime_execution_id=runtime_execution_id,
+            runtime_lease_owner=runtime_lease_owner,
+            runtime_tenant_id=runtime_tenant_id,
+        )
     if tool_name == "feishu_approval_query":
         return await _feishu_approval_query_outcome(agent_id, arguments)
     if tool_name == "feishu_approval_get":
@@ -2975,6 +3070,11 @@ async def execute_tool(
     if tool_name == FINISH_TOOL_NAME:
         content = arguments.get("content", "")
         return content if isinstance(content, str) else str(content)
+    if tool_name == "feishu_approval_create":
+        return (
+            "Feishu approval creation is blocked outside Durable Runtime "
+            "conversation confirmation."
+        )
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -3324,8 +3424,21 @@ async def execute_tool(
             result = await _feishu_calendar_update(agent_id, arguments)
         elif tool_name == "feishu_calendar_delete":
             result = await _feishu_calendar_delete(agent_id, arguments)
-        elif tool_name == "feishu_approval_create":
-            result = await _feishu_approval_create(agent_id, arguments)
+        elif tool_name == "feishu_approval_definition_get":
+            result = await _feishu_approval_definition_get(agent_id, arguments)
+        elif tool_name == "feishu_approval_file_upload":
+            file_path = arguments.get("file_path")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _feishu_approval_file_upload(
+                    agent_id,
+                    temp_ws,
+                    arguments,
+                ),
+                paths=[file_path] if isinstance(file_path, str) and file_path else None,
+                max_file_bytes=FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES,
+            )
         elif tool_name == "feishu_approval_query":
             result = await _feishu_approval_query(agent_id, arguments)
         elif tool_name == "feishu_approval_get":
@@ -16077,6 +16190,326 @@ def _bounded_feishu_json(payload: Mapping, *, max_bytes: int = 8192) -> str:
     return '{"truncated":true}'
 
 
+async def _feishu_approval_definition_get_outcome(
+    agent_id: uuid.UUID,
+    arguments: dict,
+) -> ToolExecutionOutcome:
+    """Read one bounded section of the current approval definition."""
+    approval_code = arguments.get("approval_code")
+    section = arguments.get("section", "summary")
+    offset = arguments.get("offset", 0)
+    limit = arguments.get("limit", 20)
+    if not isinstance(approval_code, str) or not approval_code.strip():
+        return _typed_failure(
+            "feishu_approval_definition_get requires approval_code.",
+            "invalid_tool_arguments",
+        )
+    if not isinstance(section, str) or section not in {
+        "summary",
+        "form",
+        "nodes",
+    }:
+        return _typed_failure(
+            "feishu_approval_definition_get section is invalid.",
+            "invalid_tool_arguments",
+        )
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= 50
+    ):
+        return _typed_failure(
+            "feishu_approval_definition_get requires offset >= 0 and limit 1..50.",
+            "invalid_tool_arguments",
+        )
+
+    token, token_error = await _feishu_access_token_outcome(agent_id)
+    if token_error is not None or token is None:
+        return token_error or _typed_failure(
+            "Feishu credentials are unavailable.",
+            "feishu_channel_not_configured",
+        )
+    stable_code = approval_code.strip()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                "https://open.feishu.cn/open-apis/approval/v4/approvals/"
+                + quote(stable_code, safe=""),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as exc:
+        return _feishu_read_exception_outcome("approval_definition_get", exc)
+
+    data, response_error = _feishu_approval_read_response(
+        response,
+        "approval_definition_get",
+    )
+    if response_error is not None or data is None:
+        return response_error or _typed_failure(
+            "Feishu approval_definition_get returned no data.",
+            "feishu_approval_definition_get_response_invalid",
+            retryable=True,
+        )
+
+    raw_form = data.get("form", [])
+    if isinstance(raw_form, str):
+        try:
+            raw_form = json.loads(raw_form)
+        except (TypeError, ValueError):
+            return _typed_failure(
+                "Feishu approval_definition_get returned an invalid form.",
+                "feishu_approval_definition_get_response_invalid",
+                retryable=True,
+            )
+    raw_nodes = data.get("node_list", [])
+    if not isinstance(raw_form, list) or not isinstance(raw_nodes, list):
+        return _typed_failure(
+            "Feishu approval_definition_get returned invalid form or node structure.",
+            "feishu_approval_definition_get_response_invalid",
+            retryable=True,
+        )
+
+    if section == "summary":
+        summary: dict[str, object] = {
+            "approval_code": stable_code,
+            "form_control_count": len(raw_form),
+            "node_count": len(raw_nodes),
+        }
+        for key in ("approval_name", "status"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                summary[key] = value
+        return _typed_success(
+            _bounded_feishu_json(summary),
+            result_ref=stable_code,
+            metadata={"section": "summary"},
+        )
+
+    items = raw_form if section == "form" else raw_nodes
+    selected = items[offset : offset + limit]
+    next_offset = offset + len(selected)
+    has_more = next_offset < len(items)
+    return _typed_success(
+        _bounded_feishu_json(
+            {
+                "approval_code": stable_code,
+                "section": section,
+                "offset": offset,
+                "returned_count": len(selected),
+                "items": selected,
+            }
+        ),
+        result_ref=stable_code,
+        metadata={
+            "section": section,
+            "offset": offset,
+            "returned_count": len(selected),
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
+        },
+    )
+
+
+def _feishu_approval_file_path(
+    workspace_root: Path,
+    file_path: object,
+) -> tuple[Path | None, ToolExecutionOutcome | None]:
+    """Resolve one regular workspace file without following an escape path."""
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None, _typed_failure(
+            "feishu_approval_file_upload requires file_path.",
+            "invalid_tool_arguments",
+        )
+    relative_text = file_path.strip()
+    relative_path = Path(relative_text)
+    if (
+        len(relative_text.encode("utf-8")) > 1024
+        or relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or "\\" in relative_text
+    ):
+        return None, _typed_failure(
+            "Approval file_path must be a contained workspace-relative path.",
+            "feishu_approval_file_path_rejected",
+        )
+    root = workspace_root.resolve()
+    unresolved = root / relative_path
+    try:
+        resolved = unresolved.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError):
+        return None, _typed_failure(
+            "The approval upload source does not exist inside the workspace.",
+            "feishu_approval_file_not_found",
+        )
+    if unresolved.is_symlink() or not resolved.is_file():
+        return None, _typed_failure(
+            "The approval upload source must be a regular workspace file.",
+            "feishu_approval_file_rejected",
+        )
+    if not resolved.suffix:
+        return None, _typed_failure(
+            "The approval upload source name must include a file extension.",
+            "feishu_approval_file_type_rejected",
+        )
+    return resolved, None
+
+
+async def _feishu_approval_file_upload_outcome(
+    agent_id: uuid.UUID,
+    workspace_root: Path,
+    arguments: dict,
+) -> ToolExecutionOutcome:
+    """Upload one validated workspace file and settle its Provider receipt."""
+    file_type = arguments.get("file_type")
+    if file_type not in {"image", "attachment"}:
+        return _typed_failure(
+            "feishu_approval_file_upload file_type must be image or attachment.",
+            "invalid_tool_arguments",
+        )
+    file_path, path_error = _feishu_approval_file_path(
+        workspace_root,
+        arguments.get("file_path"),
+    )
+    if path_error is not None or file_path is None:
+        return path_error or _typed_failure(
+            "The approval upload source is unavailable.",
+            "feishu_approval_file_not_found",
+        )
+    suffix = file_path.suffix.lower()
+    if file_type == "image" and suffix not in _FEISHU_APPROVAL_IMAGE_MEDIA_TYPES:
+        return _typed_failure(
+            "Approval image uploads require a BMP, GIF, JPEG, PNG, or WebP file.",
+            "feishu_approval_file_type_rejected",
+        )
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return _typed_failure(
+            "The approval upload source could not be inspected.",
+            "feishu_approval_file_rejected",
+        )
+    max_bytes = (
+        FEISHU_APPROVAL_IMAGE_MAX_BYTES
+        if file_type == "image"
+        else FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES
+    )
+    if size <= 0 or size > max_bytes:
+        return _typed_failure(
+            f"Approval {file_type} must be non-empty and no larger than {max_bytes // (1024 * 1024)} MiB.",
+            "feishu_approval_file_size_rejected",
+        )
+    try:
+        content = file_path.read_bytes()
+    except OSError:
+        return _typed_failure(
+            "The approval upload source could not be read.",
+            "feishu_approval_file_rejected",
+        )
+    if len(content) != size:
+        return _typed_failure(
+            "The approval upload source changed while it was being read.",
+            "feishu_approval_file_rejected",
+        )
+
+    token, token_error = await _feishu_access_token_outcome(agent_id)
+    if token_error is not None or token is None:
+        return token_error or _typed_failure(
+            "Feishu credentials are unavailable.",
+            "feishu_channel_not_configured",
+        )
+    media_type = _FEISHU_APPROVAL_IMAGE_MEDIA_TYPES.get(
+        suffix,
+        "application/octet-stream",
+    )
+    receipt_metadata = {
+        "file_name": file_path.name,
+        "file_type": file_type,
+        "size_bytes": size,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://www.feishu.cn/approval/openapi/v2/file/upload",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": file_path.name, "type": file_type},
+                files={"content": (file_path.name, content, media_type)},
+            )
+    except Exception as exc:
+        return _feishu_write_exception_outcome(
+            "approval_file_upload",
+            exc,
+            metadata=receipt_metadata,
+        )
+
+    status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int) or isinstance(status_code, bool):
+        return _typed_unknown(
+            "Feishu approval_file_upload returned no HTTP receipt; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=receipt_metadata,
+        )
+    if status_code == 429 or status_code >= 500:
+        return _typed_unknown(
+            "Feishu approval_file_upload may have taken effect; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=receipt_metadata,
+        )
+    if not 200 <= status_code < 300:
+        return _typed_failure(
+            "Feishu rejected approval_file_upload.",
+            "feishu_approval_file_upload_rejected",
+            metadata=receipt_metadata,
+        )
+    try:
+        payload = response.json()
+    except Exception:
+        return _typed_unknown(
+            "Feishu approval_file_upload returned an unreadable receipt; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=receipt_metadata,
+        )
+    if not isinstance(payload, Mapping):
+        return _typed_unknown(
+            "Feishu approval_file_upload returned an invalid receipt; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=receipt_metadata,
+        )
+    code = payload.get("code")
+    if isinstance(code, bool) or not isinstance(code, int):
+        return _typed_unknown(
+            "Feishu approval_file_upload returned no business receipt; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=receipt_metadata,
+        )
+    if code != 0:
+        return _typed_failure(
+            "Feishu rejected approval_file_upload.",
+            "feishu_approval_file_upload_rejected",
+            metadata=receipt_metadata,
+        )
+    data = payload.get("data")
+    file_code = (
+        str(data.get("code") or "").strip()
+        if isinstance(data, Mapping)
+        else ""
+    )
+    if not file_code:
+        return _typed_unknown(
+            "Feishu accepted approval_file_upload but returned no file code; reconcile before retrying.",
+            "feishu_approval_file_upload_receipt_missing",
+            metadata=receipt_metadata,
+        )
+    return _typed_success(
+        _bounded_feishu_json({**receipt_metadata, "file_code": file_code}),
+        result_ref=file_code,
+        metadata=receipt_metadata,
+    )
+
+
 async def _feishu_user_search_outcome(
     agent_id: uuid.UUID,
     arguments: dict,
@@ -16455,48 +16888,275 @@ async def _feishu_approval_get_outcome(
     )
 
 
-async def _feishu_approval_create_outcome(
-    agent_id: uuid.UUID,
+def validate_feishu_approval_create_arguments(
     arguments: dict,
-) -> ToolExecutionOutcome:
-    """Hidden external-write adapter retained behind the future confirmation gate."""
-    import httpx
-
+) -> tuple[dict[str, object] | None, ToolExecutionOutcome | None]:
+    """Validate approval-create arguments without credentials or Provider I/O."""
+    allowed_keys = {
+        "approval_code",
+        "target_member_id",
+        "form_data",
+        "department_id",
+        "uuid",
+    }
+    if any(key not in allowed_keys for key in arguments):
+        return None, _typed_failure(
+            "feishu_approval_create received unsupported arguments.",
+            "invalid_tool_arguments",
+        )
     approval_code = arguments.get("approval_code")
     target_member_id = arguments.get("target_member_id")
     form_data = arguments.get("form_data")
     if not (
         isinstance(approval_code, str)
         and approval_code.strip()
+        and len(approval_code.strip()) <= FEISHU_APPROVAL_CODE_MAX_CHARS
         and isinstance(target_member_id, str)
         and target_member_id.strip()
         and isinstance(form_data, str)
         and form_data.strip()
+        and len(form_data) <= FEISHU_APPROVAL_FORM_MAX_CHARS
     ):
-        return _typed_failure(
+        return None, _typed_failure(
             "feishu_approval_create requires approval_code, target_member_id, and form_data.",
+            "invalid_tool_arguments",
+        )
+    try:
+        normalized_target_member_id = str(uuid.UUID(target_member_id.strip()))
+    except (TypeError, ValueError):
+        return None, _typed_failure(
+            "feishu_approval_create target_member_id must be a UUID.",
             "invalid_tool_arguments",
         )
     try:
         parsed_form = json.loads(form_data)
     except (TypeError, ValueError):
-        return _typed_failure(
+        return None, _typed_failure(
             "feishu_approval_create form_data must be a JSON array.",
             "invalid_tool_arguments",
         )
-    if not isinstance(parsed_form, list):
-        return _typed_failure(
-            "feishu_approval_create form_data must be a JSON array.",
+    if (
+        not isinstance(parsed_form, list)
+        or len(parsed_form) > FEISHU_APPROVAL_FORM_MAX_CONTROLS
+    ):
+        return None, _typed_failure(
+            "feishu_approval_create form_data must be a bounded JSON array.",
             "invalid_tool_arguments",
         )
+    for control in parsed_form:
+        if not isinstance(control, Mapping) or any(
+            key not in control for key in ("id", "type", "value")
+        ):
+            return None, _typed_failure(
+                "feishu_approval_create form_data controls require id, type, and value.",
+                "invalid_tool_arguments",
+            )
+        if not all(
+            isinstance(control.get(key), str) and control.get(key)
+            for key in ("id", "type")
+        ):
+            return None, _typed_failure(
+                "feishu_approval_create form_data control id and type must be non-empty strings.",
+                "invalid_tool_arguments",
+            )
+
+    optional_strings: dict[str, str] = {}
+    for key in ("department_id", "uuid"):
+        value = arguments.get(key)
+        if value is None:
+            continue
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > (64 if key == "uuid" else 128)
+        ):
+            return None, _typed_failure(
+                f"feishu_approval_create {key} must be a non-empty string when provided.",
+                "invalid_tool_arguments",
+            )
+        optional_strings[key] = value.strip()
+    return {
+        "approval_code": approval_code.strip(),
+        "target_member_id": normalized_target_member_id,
+        "form_data": form_data,
+        "parsed_form": parsed_form,
+        "optional_strings": optional_strings,
+    }, None
+
+
+async def _consume_feishu_approval_create_authorization(
+    authorization: FeishuApprovalCreateAuthorization | None,
+    *,
+    agent_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    arguments: Mapping[str, object],
+    runtime_run_id: str | None,
+    runtime_tool_call_id: str | None,
+    runtime_execution_id: str | None,
+    runtime_lease_owner: str | None,
+    runtime_tenant_id: str | None,
+) -> ToolExecutionOutcome | None:
+    """Atomically consume confirmation against the live Tool Ledger row."""
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (
+            runtime_run_id,
+            runtime_tool_call_id,
+            runtime_execution_id,
+            runtime_lease_owner,
+            runtime_tenant_id,
+        )
+    ):
+        return _typed_failure(
+            "Feishu approval creation requires a live Runtime tool receipt.",
+            "tool_confirmation_required",
+        )
+    assert isinstance(runtime_run_id, str)
+    assert isinstance(runtime_tool_call_id, str)
+    assert isinstance(runtime_execution_id, str)
+    assert isinstance(runtime_lease_owner, str)
+    assert isinstance(runtime_tenant_id, str)
+    try:
+        run_id = uuid.UUID(runtime_run_id)
+        execution_id = uuid.UUID(runtime_execution_id)
+        tenant_id = uuid.UUID(runtime_tenant_id)
+        arguments_hash = feishu_approval_create_arguments_hash(arguments)
+    except (TypeError, ValueError):
+        return _typed_failure(
+            "Feishu approval creation received an invalid Runtime receipt.",
+            "tool_confirmation_required",
+        )
+    if not verify_feishu_approval_create_authorization(
+        authorization,
+        run_id=str(run_id),
+        tool_call_id=runtime_tool_call_id,
+        execution_id=str(execution_id),
+        lease_owner=runtime_lease_owner,
+        tenant_id=str(tenant_id),
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=arguments,
+    ):
+        return _typed_failure(
+            "Feishu approval creation requires a valid Runtime confirmation proof.",
+            "tool_confirmation_required",
+        )
+    try:
+        async with async_session() as db:
+            async with db.begin():
+                result = await db.execute(
+                    select(AgentToolExecution)
+                    .join(
+                        AgentRun,
+                        (
+                            (AgentRun.id == AgentToolExecution.run_id)
+                            & (
+                                AgentRun.tenant_id
+                                == AgentToolExecution.tenant_id
+                            )
+                        ),
+                    )
+                    .where(
+                        AgentToolExecution.id == execution_id,
+                        AgentToolExecution.tenant_id == tenant_id,
+                        AgentToolExecution.run_id == run_id,
+                        AgentToolExecution.tool_call_id
+                        == runtime_tool_call_id,
+                        AgentToolExecution.tool_name
+                        == "feishu_approval_create",
+                        AgentRun.agent_id == agent_id,
+                        AgentRun.tenant_id == tenant_id,
+                        AgentRun.origin_user_id == actor_user_id,
+                        AgentRun.source_type == "chat",
+                    )
+                    .with_for_update()
+                )
+                execution = result.scalar_one_or_none()
+                metadata = (
+                    dict(execution.result_metadata or {})
+                    if execution is not None
+                    else {}
+                )
+                if (
+                    execution is None
+                    or execution.status != "started"
+                    or execution.lease_owner != runtime_lease_owner
+                    or execution.arguments_hash != arguments_hash
+                    or execution.effect != "external_write"
+                    or execution.retry_policy != "never"
+                    or metadata.get(
+                        "feishu_approval_confirmation_consumed"
+                    )
+                    is True
+                ):
+                    return _typed_failure(
+                        "Feishu approval confirmation is stale or already consumed.",
+                        "tool_confirmation_required",
+                    )
+                metadata["feishu_approval_confirmation_consumed"] = True
+                metadata["feishu_approval_confirmation_proof"] = (
+                    hashlib.sha256(
+                        authorization.signature.encode("utf-8")
+                    ).hexdigest()
+                    if authorization is not None
+                    else None
+                )
+                execution.result_metadata = metadata
+    except Exception:
+        return _typed_failure(
+            "Feishu approval confirmation receipt could not be consumed.",
+            "tool_confirmation_required",
+        )
+    return None
+
+
+async def _feishu_approval_create_outcome(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    actor_user_id: uuid.UUID,
+    authorization: FeishuApprovalCreateAuthorization | None,
+    runtime_run_id: str | None,
+    runtime_tool_call_id: str | None,
+    runtime_execution_id: str | None,
+    runtime_lease_owner: str | None,
+    runtime_tenant_id: str | None,
+) -> ToolExecutionOutcome:
+    """Create one approval instance after the Runtime confirmation gate."""
+    authorization_error = await _consume_feishu_approval_create_authorization(
+        authorization,
+        agent_id=agent_id,
+        actor_user_id=actor_user_id,
+        arguments=arguments,
+        runtime_run_id=runtime_run_id,
+        runtime_tool_call_id=runtime_tool_call_id,
+        runtime_execution_id=runtime_execution_id,
+        runtime_lease_owner=runtime_lease_owner,
+        runtime_tenant_id=runtime_tenant_id,
+    )
+    if authorization_error is not None:
+        return authorization_error
+    validated, validation_error = validate_feishu_approval_create_arguments(
+        arguments
+    )
+    if validation_error is not None or validated is None:
+        return validation_error or _typed_failure(
+            "feishu_approval_create arguments are invalid.",
+            "invalid_tool_arguments",
+        )
+    approval_code = cast(str, validated["approval_code"])
+    target_member_id = cast(str, validated["target_member_id"])
+    form_data = cast(str, validated["form_data"])
+    optional_strings = cast(dict[str, str], validated["optional_strings"])
 
     try:
         async with async_session() as db:
             target, target_error = await _resolve_roster_human_target(
                 db,
                 agent_id,
-                target_member_id=target_member_id.strip(),
+                target_member_id=target_member_id,
                 provider_type="feishu",
+                require_platform_user=True,
                 require_provider_identity=True,
             )
     except Exception as exc:
@@ -16514,6 +17174,11 @@ async def _feishu_approval_create_outcome(
             "The approval applicant is not a Feishu member.",
             "feishu_approval_target_provider_mismatch",
         )
+    if getattr(target.member, "user_id", None) != actor_user_id:
+        return _typed_failure(
+            "The approval applicant must be the authenticated confirming user.",
+            "feishu_approval_applicant_mismatch",
+        )
     provider_user_id = str(
         getattr(target.member, "external_id", "") or ""
     ).strip()
@@ -16529,16 +17194,18 @@ async def _feishu_approval_create_outcome(
             "Feishu credentials are unavailable.",
             "feishu_channel_not_configured",
         )
+    request_body: dict[str, object] = {
+        "approval_code": approval_code,
+        "user_id": provider_user_id,
+        "form": form_data,
+        **optional_strings,
+    }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 "https://open.feishu.cn/open-apis/approval/v4/instances",
                 headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "approval_code": approval_code.strip(),
-                    "user_id": provider_user_id,
-                    "form": form_data,
-                },
+                json=request_body,
             )
     except Exception as exc:
         return _feishu_write_exception_outcome(
@@ -16580,6 +17247,13 @@ async def _feishu_approval_create_outcome(
             "Feishu approval_create returned no business receipt; reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
         )
+    reconciliation_ref = optional_strings.get("uuid")
+    if code == 60012:
+        return _typed_unknown(
+            "Feishu reported an approval_create uuid conflict; reconcile the existing instance before retrying.",
+            "feishu_approval_create_uuid_conflict",
+            result_ref=reconciliation_ref,
+        )
     if code != 0:
         return _typed_failure(
             "Feishu rejected approval_create.",
@@ -16595,19 +17269,55 @@ async def _feishu_approval_create_outcome(
         return _typed_unknown(
             "Feishu accepted approval_create but returned no instance receipt; reconcile before retrying.",
             "feishu_approval_create_receipt_missing",
+            result_ref=reconciliation_ref,
         )
+    instance_link = (
+        str(data.get("instance_link") or "").strip()
+        if isinstance(data, Mapping)
+        else ""
+    )
     return _typed_success(
         f"Feishu approval instance {instance_code} was created.",
         result_ref=instance_code,
+        metadata={"instance_link": instance_link} if instance_link else {},
     )
 
 
 async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Legacy display adapter; Durable Runtime keeps this write hidden."""
-    outcome = await _feishu_approval_create_outcome(agent_id, arguments)
+    """Fail closed: approval creation requires a Runtime-issued proof."""
+    del agent_id, arguments
+    return (
+        "Feishu approval creation is blocked outside Durable Runtime "
+        "conversation confirmation."
+    )
+
+
+async def _feishu_approval_definition_get(
+    agent_id: uuid.UUID,
+    arguments: dict,
+) -> str:
+    """Legacy display adapter for a bounded approval definition read."""
+    outcome = await _feishu_approval_definition_get_outcome(agent_id, arguments)
     return _legacy_tool_outcome_text(
         outcome,
-        fallback="Feishu approval creation returned no summary.",
+        fallback="Feishu approval definition read returned no summary.",
+    )
+
+
+async def _feishu_approval_file_upload(
+    agent_id: uuid.UUID,
+    workspace_root: Path,
+    arguments: dict,
+) -> str:
+    """Legacy display adapter for a typed approval file upload."""
+    outcome = await _feishu_approval_file_upload_outcome(
+        agent_id,
+        workspace_root,
+        arguments,
+    )
+    return _legacy_tool_outcome_text(
+        outcome,
+        fallback="Feishu approval file upload returned no summary.",
     )
 
 

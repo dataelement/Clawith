@@ -75,11 +75,17 @@ from app.services.agent_runtime.tool_result_store import (
     ToolResultReconciler,
     ToolResultStore,
 )
+from app.services.agent_runtime.feishu_approval_authorization import (
+    FeishuApprovalCreateAuthorization,
+    feishu_approval_create_arguments_hash,
+    issue_feishu_approval_create_authorization,
+)
 from app.services.autonomy_service import autonomy_service
 from app.services.agent_tools import (
     agentbay_run_scope_id,
     execute_builtin_tool_outcome,
     get_runtime_agent_tools_for_llm,
+    validate_feishu_approval_create_arguments,
 )
 from app.services.builtin_tool_definitions import (
     builtin_cross_space_action,
@@ -94,6 +100,26 @@ _HEARTBEAT_PLAZA_LIMITS = {
     "plaza_create_post": 1,
     "plaza_add_comment": 2,
 }
+_FEISHU_APPROVAL_CREATE_TOOL = "feishu_approval_create"
+_FEISHU_APPROVAL_CONFIRMATION_REASON = (
+    "feishu_approval_create_confirmation"
+)
+_FEISHU_APPROVAL_CONFIRMATION_REJECT = frozenset(
+    {
+        "不确认",
+        "不同意",
+        "不要发起",
+        "取消",
+        "取消发起",
+        "拒绝",
+        "停止",
+        "cancel",
+        "no",
+        "reject",
+        "rejected",
+        "stop",
+    }
+)
 
 
 async def _insert_runtime_activity(
@@ -134,6 +160,13 @@ class ToolExecutor(Protocol):
         user_id: uuid.UUID,
         session_id: str = "",
         on_output: object | None = None,
+        *,
+        runtime_authorization: FeishuApprovalCreateAuthorization | None = None,
+        runtime_run_id: str | None = None,
+        runtime_tool_call_id: str | None = None,
+        runtime_execution_id: str | None = None,
+        runtime_lease_owner: str | None = None,
+        runtime_tenant_id: str | None = None,
     ) -> ToolExecutionOutcome | str: ...
 
 
@@ -564,6 +597,193 @@ def _delete_autonomy_details(
         "requested_by": actor_user_id,
         "runtime_scope": runtime_scope,
     }
+
+
+def _feishu_approval_confirmation_correlation(
+    *,
+    run_id: uuid.UUID,
+    call_id: str,
+    arguments: Mapping[str, object],
+) -> tuple[str, str]:
+    digest = feishu_approval_create_arguments_hash(arguments)
+    correlation_id = str(
+        uuid.uuid5(
+            run_id,
+            f"feishu-approval-confirm:{call_id}:{digest}",
+        )
+    )
+    return correlation_id, digest
+
+
+def _feishu_approval_confirmation_summary(
+    validated: Mapping[str, object],
+) -> str:
+    approval_code = cast(str, validated["approval_code"])
+    target_member_id = cast(str, validated["target_member_id"])
+    parsed_form = cast(list, validated["parsed_form"])
+    approval_fingerprint = hashlib.sha256(
+        approval_code.encode("utf-8")
+    ).hexdigest()[:8].upper()
+    return (
+        f"审批定义标识 {approval_fingerprint}；"
+        f"发起成员 ID {target_member_id[:8]}…；"
+        f"表单字段 {len(parsed_form)} 项"
+    )
+
+
+def _feishu_approval_confirmation_reply(
+    state: RuntimeGraphState,
+) -> str | None:
+    messages = state["lifecycle"].get("deferred_resume_messages")
+    if not isinstance(messages, list) or not messages:
+        return None
+    latest = messages[-1]
+    if (
+        not isinstance(latest, Mapping)
+        or latest.get("role") != "user"
+        or latest.get("runtime_input") != "resume"
+    ):
+        return None
+    content = latest.get("runtime_confirmation_text")
+    return content if isinstance(content, str) and content.strip() else None
+
+
+def _feishu_approval_confirmation_gate(
+    *,
+    state: RuntimeGraphState,
+    context: RuntimeContext,
+    call_id: str,
+    tool_name: str,
+    arguments: Mapping[str, object],
+) -> tuple[
+    ToolExecutionOutcome | None,
+    JsonObject | None,
+    bool,
+]:
+    if tool_name != _FEISHU_APPROVAL_CREATE_TOOL:
+        return None, None, False
+    if (
+        context.source_type != "chat"
+        or not context.session_id
+        or not context.actor_user_id
+    ):
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Feishu approval creation requires an authenticated human "
+                "confirmation in the active Chat Run; no approval instance "
+                "was created."
+            ),
+            result_ref=None,
+            error_code="tool_confirmation_unavailable",
+            retryable=False,
+            metadata={"confirmation_status": "unavailable"},
+        ), None, False
+    validated, validation_error = validate_feishu_approval_create_arguments(
+        dict(arguments)
+    )
+    if validation_error is not None or validated is None:
+        return validation_error or ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Feishu approval creation arguments are invalid; no approval "
+                "instance was created."
+            ),
+            result_ref=None,
+            error_code="invalid_tool_arguments",
+            retryable=False,
+        ), None, False
+    try:
+        correlation_id, arguments_hash = (
+            _feishu_approval_confirmation_correlation(
+                run_id=uuid.UUID(context.run_id),
+                call_id=call_id,
+                arguments=arguments,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ToolExecutionError(
+            "invalid_tool_call",
+            "Feishu approval confirmation requires serializable arguments.",
+        ) from exc
+
+    resumed_request = state["lifecycle"].get("resumed_waiting_request")
+    confirmation_nonce = correlation_id.replace("-", "")[:6].upper()
+    confirmation_phrase = f"确认发起 {confirmation_nonce}"
+    confirming_actor_hash = hashlib.sha256(
+        context.actor_user_id.encode("utf-8")
+    ).hexdigest()
+    if not isinstance(resumed_request, Mapping):
+        summary = _feishu_approval_confirmation_summary(validated)
+        return None, {
+            "waiting_type": "user",
+            "correlation_id": correlation_id,
+            "reason": _FEISHU_APPROVAL_CONFIRMATION_REASON,
+            "question": (
+                "即将发起正式飞书审批，提交后会进入审批流程。\n"
+                f"确认摘要：{summary}\n"
+                f"请整句回复“{confirmation_phrase}”继续；"
+                "回复其他内容不会提交，"
+                "Agent 会按你的新指示继续处理。"
+            ),
+            "tool_call_id": call_id,
+            "arguments_hash": arguments_hash,
+            "confirming_actor_hash": confirming_actor_hash,
+            "confirmation_phrase": confirmation_phrase,
+            "discard_remaining_tool_calls_on_resume": True,
+        }, False
+
+    expected_request = {
+        "reason": _FEISHU_APPROVAL_CONFIRMATION_REASON,
+        "correlation_id": correlation_id,
+        "tool_call_id": call_id,
+        "arguments_hash": arguments_hash,
+        "confirming_actor_hash": confirming_actor_hash,
+    }
+    if any(
+        resumed_request.get(key) != value
+        for key, value in expected_request.items()
+    ):
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "The Feishu approval was not created because the confirmed "
+                "proposal no longer matches the pending tool call."
+            ),
+            result_ref=None,
+            error_code="tool_confirmation_mismatch",
+            retryable=False,
+            metadata={"confirmation_status": "mismatch"},
+        ), None, False
+
+    reply = _feishu_approval_confirmation_reply(state)
+    trimmed_reply = reply.strip() if reply is not None else ""
+    if trimmed_reply == confirmation_phrase:
+        return None, None, True
+    if trimmed_reply.casefold() in _FEISHU_APPROVAL_CONFIRMATION_REJECT:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "The user rejected the Feishu approval proposal; no approval "
+                "instance was created."
+            ),
+            result_ref=None,
+            error_code="tool_confirmation_rejected",
+            retryable=False,
+            metadata={"confirmation_status": "rejected"},
+        ), None, False
+    return ToolExecutionOutcome(
+        status="failed",
+        result_summary=(
+            "The Feishu approval proposal did not receive an explicit "
+            "confirmation; no approval instance was created. Treat the user's "
+            "reply as a new instruction before preparing another proposal."
+        ),
+        result_ref=None,
+        error_code="tool_confirmation_not_granted",
+        retryable=False,
+        metadata={"confirmation_status": "not_granted"},
+    ), None, False
 
 
 def _heartbeat_blocked_summary(
@@ -1379,6 +1599,25 @@ class RuntimeToolStepService:
                         "tool_not_enabled",
                         f"tool {tool_name!r} is not enabled for this Agent",
                     )
+                (
+                    confirmation_outcome,
+                    confirmation_wait,
+                    confirmation_granted,
+                ) = (
+                    _feishu_approval_confirmation_gate(
+                        state=state,
+                        context=context,
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                    )
+                )
+                if confirmation_wait is not None:
+                    return ToolStepResult(
+                        messages=tuple(messages),
+                        waiting_request=confirmation_wait,
+                        pending_tool_calls=tool_calls[index:],
+                    )
                 autonomy_outcome, approval_wait = (
                     await self._delete_autonomy_gate(
                         state=state,
@@ -1395,6 +1634,8 @@ class RuntimeToolStepService:
                         waiting_request=approval_wait,
                         pending_tool_calls=tool_calls[index:],
                     )
+                if autonomy_outcome is None:
+                    autonomy_outcome = confirmation_outcome
                 policy = _policy(tool_name)
                 lease_owner = _tool_execution_lease_owner(
                     context.command_id,
@@ -1872,12 +2113,43 @@ class RuntimeToolStepService:
                                 context.run_id
                             )
                         try:
+                            executor_arguments = {}
+                            if confirmation_granted:
+                                runtime_authorization = (
+                                    issue_feishu_approval_create_authorization(
+                                        run_id=context.run_id,
+                                        tool_call_id=call_id,
+                                        execution_id=str(
+                                            reservation.execution.id
+                                        ),
+                                        lease_owner=lease_owner,
+                                        tenant_id=context.tenant_id,
+                                        agent_id=str(agent.id),
+                                        actor_user_id=(
+                                            context.actor_user_id or ""
+                                        ),
+                                        arguments=arguments,
+                                    )
+                                )
+                                executor_arguments = {
+                                    "runtime_authorization": (
+                                        runtime_authorization
+                                    ),
+                                    "runtime_run_id": context.run_id,
+                                    "runtime_tool_call_id": call_id,
+                                    "runtime_execution_id": str(
+                                        reservation.execution.id
+                                    ),
+                                    "runtime_lease_owner": lease_owner,
+                                    "runtime_tenant_id": context.tenant_id,
+                                }
                             raw_result = await self._tool_executor(
                                 tool_name,
                                 arguments,
                                 agent.id,
                                 context.actor_user_id and uuid.UUID(context.actor_user_id) or agent.creator_id,
                                 context.session_id or "",
+                                **executor_arguments,
                             )
                         finally:
                             if agentbay_run_token is not None:
