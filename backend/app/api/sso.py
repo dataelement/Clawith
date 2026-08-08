@@ -111,7 +111,16 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: Any = None):
         from app.models.tenant import Tenant
         tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == session.tenant_id))
         tenant_obj = tenant_result.scalar_one_or_none()
-        public_base = await platform_service.get_tenant_sso_base_url(db, tenant_obj, request)
+        # get_tenant_sso_base_url() expects the caller to pre-resolve this flag
+        # (see its docstring); app/api/auth.py does so already. Without it the
+        # default of True is used and the admin-facing
+        # `sso_custom_domain_redirect_enabled` setting is silently ignored.
+        from app.dao import system_setting_dao
+
+        sso_redirect_enabled = await system_setting_dao.is_sso_custom_domain_redirect_enabled()
+        public_base = await platform_service.get_tenant_sso_base_url(
+            db, tenant_obj, request, sso_redirect_enabled=sso_redirect_enabled
+        )
     else:
         public_base = await platform_service.get_public_base_url(db, request)
     
