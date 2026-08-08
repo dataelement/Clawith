@@ -1,3 +1,4 @@
+from typing import Any
 """Google Workspace OAuth callback routes."""
 
 import uuid
@@ -9,6 +10,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.security import create_access_token, encrypt_data, get_current_admin
 from app.database import get_db
@@ -37,7 +39,7 @@ async def get_google_workspace_sync_authorize_url(
     provider_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     provider = await get_google_provider(db, provider_id)
     if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
@@ -63,7 +65,7 @@ async def _handle_google_sso_callback(
 ):
     tenant_id = None
     if sid:
-        s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+        s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
         session = s_res.scalar_one_or_none()
         if session:
             tenant_id = session.tenant_id
@@ -111,11 +113,11 @@ async def _handle_google_sso_callback(
         logger.error(f"Google Workspace login error: {e}")
         return HTMLResponse(f"Auth failed: {str(e)}")
 
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     if sid:
         try:
-            s_res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+            s_res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
             session = s_res.scalar_one_or_none()
             if session:
                 session.status = "authorized"
@@ -123,7 +125,7 @@ async def _handle_google_sso_callback(
                 session.user_id = user.id
                 session.access_token = token
                 session.error_msg = None
-                await db.commit()
+                await query_dao.commit(db)
                 return HTMLResponse(
                     f"""<html><head><meta charset="utf-8" /></head>
                     <body style="font-family: sans-serif; padding: 24px;">
@@ -164,10 +166,10 @@ async def _handle_google_admin_sync_callback(
         new_config["google_admin_authorized_email"] = profile.get("email", "")
         new_config["google_admin_authorized_at"] = datetime.now(timezone.utc).isoformat()
         provider.config = new_config
-        await db.commit()
+        await query_dao.commit(db)
     except Exception as e:
         logger.error(f"Google Workspace admin sync authorization failed: {e}")
-        await db.rollback()
+        await query_dao.rollback(db)
         return HTMLResponse(
             f"""<html><head><meta charset="utf-8" /></head>
             <body style="font-family: sans-serif; padding: 24px;">
@@ -193,7 +195,7 @@ async def google_workspace_callback(
     code: str,
     state: str | None = None,
     request: Request = None,
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Unified callback for Google Workspace SSO login and admin authorization."""
     parsed_state = parse_google_oauth_state(state) if state else None

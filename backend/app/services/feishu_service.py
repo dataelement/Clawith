@@ -12,11 +12,12 @@ try:
 except ImportError:
     lark = None  # type: ignore
     _HAS_LARK = False
-from sqlalchemy import select, or_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.user import User, Identity
 from app.models.identity import IdentityProvider
 
@@ -107,21 +108,36 @@ class FeishuService:
                 f"[Feishu] {stage} returned non-JSON response "
                 f"(http_status={resp.status_code}, message_id={message_id}): {e}"
             )
-            raise RuntimeError(f"Feishu {stage} returned invalid JSON")
+            raise FeishuAPIError(
+                stage=stage,
+                http_status=resp.status_code,
+                msg="Provider returned invalid JSON",
+                message_id=message_id,
+            ) from e
 
         error_info = data.get("error") if isinstance(data, dict) else {}
         log_id = error_info.get("log_id") if isinstance(error_info, dict) else None
         troubleshooter = error_info.get("troubleshooter") if isinstance(error_info, dict) else None
 
-        if resp.status_code >= 400:
+        code = data.get("code") if isinstance(data, dict) else None
+        msg = data.get("msg", "") if isinstance(data, dict) else ""
+
+        if not 200 <= resp.status_code < 300:
             logger.warning(
                 f"[Feishu] {stage} HTTP failure "
                 f"(http_status={resp.status_code}, message_id={message_id}, body={str(data)[:300]})"
             )
+            raise FeishuAPIError(
+                stage=stage,
+                http_status=resp.status_code,
+                code=code,
+                msg=msg or "Provider rejected the HTTP request",
+                log_id=log_id,
+                troubleshooter=troubleshooter,
+                message_id=message_id,
+            )
 
-        code = data.get("code")
-        msg = data.get("msg", "")
-        if code is not None and code != 0:
+        if code != 0:
             logger.warning(
                 f"[Feishu] {stage} business failure "
                 f"(message_id={message_id}, code={code}, msg={msg})"
@@ -130,7 +146,7 @@ class FeishuService:
                 stage=stage,
                 http_status=resp.status_code,
                 code=code,
-                msg=msg,
+                msg=msg or "Provider response omitted a successful business code",
                 log_id=log_id,
                 troubleshooter=troubleshooter,
                 message_id=message_id,
@@ -209,7 +225,7 @@ class FeishuService:
         # Resolve provider (needed for OrgMember.provider_id scoping)
         provider_query = select(IdentityProvider).where(IdentityProvider.provider_type == "feishu")
         provider_query = provider_query.where(IdentityProvider.tenant_id == tenant_id)
-        provider_result = await db.execute(provider_query)
+        provider_result = await query_dao.execute(db, provider_query)
         provider = provider_result.scalars().first()
         if not provider:
             provider = IdentityProvider(
@@ -219,14 +235,14 @@ class FeishuService:
                 config={"app_id": self.app_id, "app_secret": self.app_secret},
                 tenant_id=tenant_id,
             )
-            db.add(provider)
-            await db.flush()
+            query_dao.add(db, provider)
+            await query_dao.flush(db)
 
         # 1. Look up OrgMember by open_id (primary) or external_id (user_id)
         #    Also filter by tenant_id and provider_id for accuracy
         member = None
         if open_id:
-            member_r = await db.execute(
+            member_r = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.open_id == open_id,
                     OrgMember.provider_id == provider.id,
@@ -235,7 +251,7 @@ class FeishuService:
             )
             member = member_r.scalars().first()
         if not member and user_id:
-            member_r = await db.execute(
+            member_r = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.external_id == user_id,
                     OrgMember.provider_id == provider.id,
@@ -247,7 +263,7 @@ class FeishuService:
         # 2. Resolve User from OrgMember
         user = None
         if member and member.user_id:
-            u_result = await db.execute(select(User).where(User.id == member.user_id))
+            u_result = await query_dao.execute(db, select(User).where(User.id == member.user_id))
             user = u_result.scalars().first()
 
         # 3. Fallback: find by email matching (exact match)
@@ -255,7 +271,7 @@ class FeishuService:
             query = select(User).join(User.identity).where(Identity.email == fs_email)
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
-            result = await db.execute(query)
+            result = await query_dao.execute(db, query)
             user = result.scalars().first()
 
         if user:
@@ -287,7 +303,7 @@ class FeishuService:
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
             
-            existing = await db.execute(query)
+            existing = await query_dao.execute(db, query)
             if existing.scalar_one_or_none():
                 import uuid
                 username = f"{username}_{uuid.uuid4().hex[:6]}"
@@ -312,16 +328,16 @@ class FeishuService:
                 is_active=True,
             )
 
-            db.add(user)
-            await db.flush()
+            query_dao.add(db, user)
+            await query_dao.flush(db)
 
             # Link back to OrgMember if found
             if member:
                 member.user_id = user.id
 
-        await db.flush()
+        await query_dao.flush(db)
 
-        token = create_access_token(str(user.id), user.role)
+        token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
         return user, token
 
 
@@ -596,7 +612,10 @@ class FeishuService:
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables",
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_list_tables",
+            )
 
     async def bitable_list_fields(self, app_id: str, app_secret: str, app_token: str, table_id: str) -> dict:
         """List all fields in a specific table."""
@@ -606,21 +625,41 @@ class FeishuService:
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_list_fields",
+            )
 
-    async def bitable_query_records(self, app_id: str, app_secret: str, app_token: str, table_id: str, filters: dict | None = None) -> dict:
+    async def bitable_query_records(
+        self,
+        app_id: str,
+        app_secret: str,
+        app_token: str,
+        table_id: str,
+        filters: dict | None = None,
+        *,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> dict:
         """Query records in a specific table."""
         tenant_token = await self.get_tenant_access_token(app_id, app_secret)
-        body = {}
-        if filters:
-            body = filters
+        body = dict(filters) if filters else {}
+        params: dict[str, object] = {
+            "page_size": max(1, min(page_size, 500)),
+        }
+        if page_token:
+            params["page_token"] = page_token
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/search",
                 json=body,
+                params=params,
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_query_records",
+            )
 
     async def bitable_create_record(self, app_id: str, app_secret: str, app_token: str, table_id: str, fields: dict) -> dict:
         """Create a new record in a specific table."""
@@ -631,7 +670,10 @@ class FeishuService:
                 json={"fields": fields},
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_create_record",
+            )
 
     async def bitable_update_record(self, app_id: str, app_secret: str, app_token: str, table_id: str, record_id: str, fields: dict) -> dict:
         """Update an existing record in a specific table."""
@@ -642,7 +684,10 @@ class FeishuService:
                 json={"fields": fields},
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_update_record",
+            )
             
     async def bitable_delete_record(self, app_id: str, app_secret: str, app_token: str, table_id: str, record_id: str) -> dict:
         """Delete an existing record in a specific table."""
@@ -652,7 +697,10 @@ class FeishuService:
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_delete_record",
+            )
 
     async def bitable_create_app(self, app_id: str, app_secret: str, name: str, folder_token: str = "") -> dict:
         """Create a new Bitable (多维表格) app.
@@ -676,7 +724,10 @@ class FeishuService:
                 json=body,
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )
-            return resp.json()
+            return self._parse_api_response(
+                resp,
+                stage="bitable_create_app",
+            )
 
 
     # --- Docs API ---
@@ -688,7 +739,7 @@ class FeishuService:
                 f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/raw_content",
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(resp, stage="doc_read")
 
     async def create_feishu_doc(self, app_id: str, app_secret: str, folder_token: str | None = None, title: str = "Untitled Document") -> dict:
         """Create a new Feishu Doc (docx)."""
@@ -702,7 +753,7 @@ class FeishuService:
                 json=body,
                 headers={"Authorization": f"Bearer {tenant_token}"}
             )
-            return resp.json()
+            return self._parse_api_response(resp, stage="doc_create")
 
     async def append_feishu_doc(self, app_id: str, app_secret: str, document_id: str, content: str) -> dict:
         """Append text to the end of a Feishu Doc (document_id is also the root block_id)."""

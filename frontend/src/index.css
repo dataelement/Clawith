@@ -1177,6 +1177,7 @@ select:focus {
 }
 
 .sidebar-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -1188,6 +1189,35 @@ select:focus {
   cursor: pointer;
   text-decoration: none;
   white-space: nowrap;
+}
+
+.sidebar-item-badge {
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Collapsed sidebar hides the text and the number; keep just a dot so the signal survives. */
+.sidebar.collapsed .sidebar-item-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin: 0;
+  min-width: 8px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
 }
 
 .sidebar-item:hover {
@@ -5906,7 +5936,15 @@ select:focus {
 }
 
 .analysis-trace--running .analysis-trace-signal span:first-child {
+  background: var(--success);
   animation: analysis-tool-running-dot 1.25s ease-in-out infinite;
+}
+
+/* Stopped responding: a tool is still marked running but the chat is no longer streaming. */
+.analysis-trace--stopped .analysis-trace-signal span:first-child {
+  background: var(--error);
+  opacity: 1;
+  animation: none;
 }
 
 .analysis-trace-chevron {
@@ -7233,6 +7271,46 @@ select:focus {
   border-color: var(--border-strong);
   box-shadow: 0 0 0 3px rgba(58, 58, 66, 0.08);
 }
+
+.chat-tool-reconciliation {
+  margin: 8px;
+  padding: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.chat-tool-reconciliation__title,
+.chat-tool-reconciliation__detail,
+.chat-tool-reconciliation__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-tool-reconciliation__title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-tool-reconciliation__detail {
+  align-items: flex-start;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.chat-tool-reconciliation__actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.chat-tool-reconciliation__unsupported {
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
 [data-theme="dark"] .chat-composer:focus-within {
   border-color: rgba(255, 255, 255, 0.18);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
@@ -8024,3 +8102,187 @@ select:focus {
 .enterprise-tool-source-tabs {
   margin-bottom: 16px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Experience draft card (chat)
+
+   Paper + hairline + charcoal, carried into the chat stream. The card is a
+   document awaiting a signature, not a success banner — so the green is gone
+   and the only colour is a warm ochre rule on the left edge, which carries the
+   "unhandled draft" meaning the green frame used to fake.
+
+   The one thing deliberately lifted out of the grey: the 「适用与失效」 label.
+   It is the required field, and the one people's eyes skip.
+
+   Tokens are card-local; the app shell's cool greys are untouched.
+   ═══════════════════════════════════════════════════════════════ */
+.exp-draft {
+  /* Night paper (default theme) — same warm family, inverted luminance. */
+  --exp-paper: #1B1917;
+  --exp-ink: #E9E5DE;
+  --exp-ink-2: #CBC5BA;
+  --exp-muted: #8C857B;
+  --exp-muted-2: #756E65;
+  --exp-hair: rgba(231, 226, 219, 0.13);
+  --exp-hair-2: rgba(231, 226, 219, 0.08);
+  --exp-accent: #C0A175;
+  --exp-accent-ink: #C3A87F;
+  --exp-chip-bg: rgba(169, 138, 94, 0.14);
+  --exp-chip-br: rgba(169, 138, 94, 0.32);
+  --exp-ghost-br: rgba(231, 226, 219, 0.16);
+
+  margin-top: 8px;
+  background: var(--exp-paper);
+  border: 1px solid var(--exp-hair);
+  border-left: 3px solid var(--exp-accent);
+  border-radius: 12px;
+  overflow: hidden;
+  color: var(--exp-ink);
+}
+
+[data-theme="light"] .exp-draft {
+  --exp-paper: #FBFAF8;
+  --exp-ink: #2E2B28;
+  --exp-ink-2: #3C3833;
+  --exp-muted: #8C857B;
+  --exp-muted-2: #A39C92;
+  --exp-hair: #E7E2DB;
+  --exp-hair-2: #EFEAE2;
+  --exp-accent: #A98A5E;
+  --exp-accent-ink: #7A6A4E;
+  --exp-chip-bg: #F6F1E8;
+  --exp-chip-br: #E7DFD1;
+  --exp-ghost-br: #E0DAD1;
+}
+
+.exp-draft-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 12px;
+}
+
+.exp-draft-head-l { min-width: 0; }
+
+.exp-draft-tagrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.exp-draft-state {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--exp-accent);
+  background: var(--exp-chip-bg);
+  border: 1px solid var(--exp-chip-br);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+
+.exp-draft-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--exp-ink);
+}
+
+/* States the promise plainly, in grey. It is a fact, not an announcement. */
+.exp-draft-pending {
+  flex: none;
+  font-size: 11px;
+  color: var(--exp-muted);
+  white-space: nowrap;
+  padding-top: 2px;
+}
+
+.exp-draft-divider {
+  height: 1px;
+  background: var(--exp-hair-2);
+  margin: 0 18px;
+}
+
+.exp-draft-fields { padding: 14px 18px 4px; }
+
+.exp-draft-grid {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  row-gap: 13px;
+  column-gap: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.exp-draft-lab {
+  color: var(--exp-muted-2);
+  font-size: 12px;
+}
+
+/* The required part — weighted and warm so it cannot be skimmed past. */
+.exp-draft-lab-key {
+  color: var(--exp-accent-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.exp-draft-val {
+  color: var(--exp-ink-2);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.exp-draft-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 18px 0;
+}
+
+.exp-draft-tag {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  color: var(--exp-muted);
+  background: var(--exp-chip-bg);
+  border: 1px solid var(--exp-chip-br);
+  border-radius: 5px;
+}
+
+.exp-draft-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px 16px;
+}
+
+/* Charcoal, not colour. The action is ordinary; the card already said what it is. */
+.exp-draft-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--exp-paper);
+  background: var(--exp-ink);
+  border: none;
+  padding: 8px 15px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.exp-draft-btn:hover { opacity: 0.85; }
+
+
+/* Distill (message → experience draft) pending state. Carries the experience
+   ochre so a running distill is legible at a glance, without hovering. */
+.distill-spinner {
+  animation: spin 0.7s linear infinite;
+  color: #C0A175;
+}
+
+[data-theme="light"] .distill-spinner { color: #A98A5E; }

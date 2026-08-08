@@ -8,8 +8,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from loguru import logger
-
 from app.services.storage_runtime.base import (
     ConditionalWriteResult,
     StorageBackend,
@@ -145,43 +143,57 @@ class S3StorageBackend(StorageBackend):
         if prefix:
             prefix += "/"
         client = self._client_or_raise()
-        response = await asyncio.to_thread(
-            client.list_objects_v2,
-            Bucket=self.bucket,
-            Prefix=prefix,
-            Delimiter="/",
-        )
         entries: list[StorageEntry] = []
-        for item in response.get("CommonPrefixes", []):
-            raw = item.get("Prefix", "").rstrip("/")
-            rel = _strip_prefix(raw, self.prefix)
-            name = rel.split("/")[-1]
-            entries.append(StorageEntry(name=name, key=rel, is_dir=True))
-        for item in response.get("Contents", []):
-            raw = item.get("Key", "")
-            if not raw or raw == prefix:
-                continue
-            rel = _strip_prefix(raw, self.prefix)
-            name = rel.split("/")[-1]
-            entries.append(
-                StorageEntry(
-                    name=name,
-                    key=rel,
-                    is_dir=False,
-                    size=int(item.get("Size", 0)),
-                    modified_at=str(item.get("LastModified") or ""),
-                    etag=_clean_etag(item.get("ETag")),
+        continuation_token: str | None = None
+        while True:
+            request: dict[str, Any] = {
+                "Bucket": self.bucket,
+                "Prefix": prefix,
+                "Delimiter": "/",
+            }
+            if continuation_token:
+                request["ContinuationToken"] = continuation_token
+            response = await asyncio.to_thread(client.list_objects_v2, **request)
+            for item in response.get("CommonPrefixes", []):
+                raw = item.get("Prefix", "").rstrip("/")
+                rel = _strip_prefix(raw, self.prefix)
+                name = rel.split("/")[-1]
+                entries.append(StorageEntry(name=name, key=rel, is_dir=True))
+            for item in response.get("Contents", []):
+                raw = item.get("Key", "")
+                if not raw or raw == prefix:
+                    continue
+                rel = _strip_prefix(raw, self.prefix)
+                name = rel.split("/")[-1]
+                entries.append(
+                    StorageEntry(
+                        name=name,
+                        key=rel,
+                        is_dir=False,
+                        size=int(item.get("Size", 0)),
+                        modified_at=str(item.get("LastModified") or ""),
+                        etag=_clean_etag(item.get("ETag")),
+                    )
                 )
-            )
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+            if not continuation_token:
+                break
         return sorted(entries, key=lambda entry: (not entry.is_dir, entry.name))
 
     async def read_bytes(self, key: str) -> bytes:
         client = self._client_or_raise()
-        response = await asyncio.to_thread(
-            client.get_object,
-            Bucket=self.bucket,
-            Key=self._object_key(key),
-        )
+        try:
+            response = await asyncio.to_thread(
+                client.get_object,
+                Bucket=self.bucket,
+                Key=self._object_key(key),
+            )
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                raise FileNotFoundError(key) from exc
+            raise
         body = response["Body"]
         return await asyncio.to_thread(body.read)
 
@@ -248,8 +260,10 @@ class S3StorageBackend(StorageBackend):
                 Bucket=self.bucket,
                 Key=object_key,
             )
-        except Exception:
-            return StorageVersion(key=normalize_storage_key(key), exists=False, is_dir=False)
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                return StorageVersion(key=normalize_storage_key(key), exists=False, is_dir=False)
+            raise
         return StorageVersion(
             key=normalize_storage_key(key),
             exists=True,
@@ -269,14 +283,88 @@ class S3StorageBackend(StorageBackend):
         condition: WriteCondition | None = None,
         content_type: str | None = None,
     ) -> ConditionalWriteResult:
+        if condition is None or (
+            not condition.require_absent and condition.version_token is None
+        ):
+            return await super().write_bytes_if_match(
+                key,
+                data,
+                condition=condition,
+                content_type=content_type,
+            )
+
+        kwargs: dict[str, Any] = {
+            "Bucket": self.bucket,
+            "Key": self._object_key(key),
+            "Body": data,
+            "ContentType": content_type or "application/octet-stream",
+        }
+        if condition.require_absent:
+            if condition.version_token is not None:
+                current = await self.get_version(key)
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+            kwargs["IfNoneMatch"] = "*"
+        else:
+            current = await self.get_version(key)
+            if not current.exists or current.token != condition.version_token:
+                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+            if not current.etag:
+                raise RuntimeError("S3 conditional write requires an ETag from HEAD")
+            kwargs["IfMatch"] = _etag_condition_header(current.etag)
+
+        try:
+            async with self._async_client() as client:
+                response = await client.put_object(**kwargs)
+        except Exception as exc:
+            if _is_conditional_conflict(exc):
+                return ConditionalWriteResult(ok=False, conflict=True)
+            raise
+        current_version = _version_from_put_response(key, data, response)
+        if current_version is None:
+            raise RuntimeError(
+                "S3 conditional write response did not include an ETag or VersionId"
+            )
+        return ConditionalWriteResult(ok=True, current_version=current_version)
+
+    async def delete_if_match(
+        self,
+        key: str,
+        *,
+        condition: WriteCondition | None = None,
+    ) -> ConditionalWriteResult:
+        if condition is None or (
+            not condition.require_absent and condition.version_token is None
+        ):
+            return await super().delete_if_match(key, condition=condition)
         current = await self.get_version(key)
-        if condition:
-            if condition.require_absent and current.exists:
+        if condition.require_absent:
+            if current.exists:
                 return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
-            if condition.version_token is not None and current.token != condition.version_token:
-                return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
-        await self.write_bytes(key, data, content_type=content_type)
-        return ConditionalWriteResult(ok=True, current_version=await self.get_version(key))
+            return ConditionalWriteResult(ok=True, current_version=current)
+        if not current.exists or current.token != condition.version_token:
+            return ConditionalWriteResult(ok=False, conflict=True, current_version=current)
+        if not current.etag:
+            raise RuntimeError("S3 conditional delete requires an ETag from HEAD")
+
+        try:
+            async with self._async_client() as client:
+                await client.delete_object(
+                    Bucket=self.bucket,
+                    Key=self._object_key(key),
+                    IfMatch=_etag_condition_header(current.etag),
+                )
+        except Exception as exc:
+            if _is_conditional_conflict(exc):
+                return ConditionalWriteResult(ok=False, conflict=True)
+            raise
+        return ConditionalWriteResult(
+            ok=True,
+            current_version=StorageVersion(
+                key=normalize_storage_key(key),
+                exists=False,
+                is_dir=False,
+            ),
+        )
 
     async def _put_succeeded(self, key: str, expected_size: int) -> bool:
         try:
@@ -340,3 +428,60 @@ def _clean_etag(raw: Any) -> str:
         return ""
     text = str(raw)
     return text.strip('"')
+
+
+def _etag_condition_header(etag: str) -> str:
+    return f'"{_clean_etag(etag)}"'
+
+
+def _version_from_put_response(
+    key: str,
+    data: bytes,
+    response: dict[str, Any],
+) -> StorageVersion | None:
+    etag = _clean_etag(response.get("ETag"))
+    version_id = str(response.get("VersionId") or "")
+    if not etag and not version_id:
+        return None
+    return StorageVersion(
+        key=normalize_storage_key(key),
+        exists=True,
+        is_dir=False,
+        size=len(data),
+        etag=etag,
+        version_id=version_id,
+        content_hash=etag,
+    )
+
+
+def _is_missing_object_error(exc: Exception) -> bool:
+    status_code, error_code = _s3_error_details(exc)
+    missing_codes = {"404", "NoSuchKey", "NotFound"}
+    if error_code in missing_codes:
+        return True
+    return status_code == 404 and not error_code
+
+
+def _is_conditional_conflict(exc: Exception) -> bool:
+    status_code, error_code = _s3_error_details(exc)
+    return status_code in {409, 412} or error_code in {
+        "409",
+        "412",
+        "ConditionalRequestConflict",
+        "PreconditionFailed",
+    }
+
+
+def _s3_error_details(exc: Exception) -> tuple[int | None, str]:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None, ""
+    metadata = response.get("ResponseMetadata")
+    raw_status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+    try:
+        status_code = int(raw_status) if raw_status is not None else None
+    except (TypeError, ValueError):
+        status_code = None
+    error = response.get("Error")
+    error_code = str(error.get("Code") or "") if isinstance(error, dict) else ""
+    return status_code, error_code

@@ -9,9 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.config import get_settings
+from app.core.error_contract import register_error_handlers
 from app.core.events import close_redis
 from app.core.logging_config import configure_logging, intercept_standard_logging
-from app.core.middleware import TraceIdMiddleware
+from app.core.middleware import TenantContextMiddleware, TraceIdMiddleware
 from app.schemas.schemas import HealthResponse
 from app.services.realtime import realtime_router
 
@@ -134,8 +135,9 @@ async def lifespan(app: FastAPI):
         )
 
     import asyncio
-    import sys
     import os
+    from contextlib import AsyncExitStack
+    from app.services.scheduler import start_scheduler
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.template_seeder import seed_agent_templates
@@ -144,6 +146,8 @@ async def lifespan(app: FastAPI):
     from app.services.wecom_stream import wecom_stream_manager
     from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
+
+    runtime_stack = AsyncExitStack()
 
     if _role_enabled("all", "bootstrap"):
         # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
@@ -168,6 +172,7 @@ async def lifespan(app: FastAPI):
             import app.models.tenant_setting  # noqa
             import app.models.participant    # noqa
             import app.models.chat_session   # noqa
+            import app.models.group          # noqa
             import app.models.trigger        # noqa
             import app.models.trigger_execution  # noqa
             import app.models.focus          # noqa
@@ -178,9 +183,12 @@ async def lifespan(app: FastAPI):
             import app.models.onboarding     # noqa
 
             import app.models.identity       # noqa
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            logger.info("[startup] Database tables ready")
+            if settings.DATABASE_AUTO_CREATE_TABLES:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                logger.warning("[startup] Legacy database auto-create is enabled")
+            else:
+                logger.info("[startup] Database auto-create disabled; schema is owned by Alembic")
         except Exception as e:
             logger.warning(f"[startup] create_all failed: {e}")
         logger.info("[startup] seeding...")
@@ -188,7 +196,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.models.tenant import Tenant
             from app.database import async_session as _session
-            from sqlalchemy import select as _select, update as _update
+            from sqlalchemy import select as _select
             async with _session() as _db:
                 _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
                 if not _existing.scalar_one_or_none():
@@ -297,7 +305,10 @@ async def lifespan(app: FastAPI):
 
         task_specs = []
         if _role_enabled("all", "worker"):
-            task_specs.append(("trigger_daemon", start_trigger_daemon()))
+            task_specs.extend([
+                ("trigger_daemon", start_trigger_daemon()),
+                ("agent_schedule_scheduler", start_scheduler()),
+            ])
         if _role_enabled("all", "connector"):
             task_specs.extend([
                 ("feishu_ws", feishu_ws_manager.start_all()),
@@ -317,15 +328,24 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
+    if _role_enabled("all", "worker"):
+        from app.services.agent_runtime.worker_service import running_runtime_worker_context
+
+        await runtime_stack.enter_async_context(running_runtime_worker_context(settings=settings))
+        logger.info("[startup] durable Agent Runtime worker started")
+
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
     ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
     ss_task.add_done_callback(_bg_task_error)
 
-    yield
-
-    # Shutdown
-    await realtime_router.stop()
-    await close_redis()
+    try:
+        yield
+    finally:
+        # Runtime shutdown cancels the active command task before closing its
+        # Checkpointer, which releases the advisory lock and claim heartbeat.
+        await runtime_stack.aclose()
+        await realtime_router.stop()
+        await close_redis()
 
 
 app = FastAPI(
@@ -333,9 +353,18 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan,
 )
+register_error_handlers(app)
 
 # Add TraceIdMiddleware first so it's executed for all requests
 app.add_middleware(TraceIdMiddleware)
+
+# Inject tenant_id from JWT into ContextVar so TenantScopedBaseDAO methods
+# automatically receive the correct tenant without explicit passing.
+app.add_middleware(
+    TenantContextMiddleware,
+    jwt_secret=settings.JWT_SECRET_KEY,
+    jwt_algorithm=settings.JWT_ALGORITHM,
+)
 
 # CORS
 _cors_origins = settings.CORS_ORIGINS
@@ -354,6 +383,7 @@ from app.api.agents import router as agents_router
 from app.api.tasks import router as tasks_router
 from app.api.files import router as files_router
 from app.api.websocket import router as ws_router
+from app.api.group_websocket import router as group_ws_router
 from app.api.feishu import router as feishu_router
 from app.api.sso import router as sso_router
 from app.api.organization import router as org_router
@@ -361,6 +391,7 @@ from app.api.enterprise import router as enterprise_router
 from app.api.advanced import router as advanced_router
 from app.api.upload import router as upload_router
 from app.api.relationships import router as relationships_router
+from app.api.directory import router as directory_router
 from app.api.files import upload_router as files_upload_router, enterprise_kb_router
 from app.api.activity import router as activity_router
 from app.api.messages import router as messages_router
@@ -368,9 +399,11 @@ from app.api.tenants import router as tenants_router
 from app.api.schedules import router as schedules_router
 from app.api.tools import router as tools_router
 from app.api.plaza import router as plaza_router
+from app.api.experience import router as experience_router
 from app.api.skills import router as skills_router
 from app.api.users import router as users_router
 from app.api.chat_sessions import router as chat_sessions_router
+from app.api.groups import router as groups_router
 from app.api.slack import router as slack_router
 from app.api.discord_bot import router as discord_router
 from app.api.dingtalk import router as dingtalk_router
@@ -404,6 +437,7 @@ app.include_router(enterprise_router, prefix=settings.API_PREFIX)
 app.include_router(advanced_router, prefix=settings.API_PREFIX)
 app.include_router(upload_router, prefix=settings.API_PREFIX)
 app.include_router(relationships_router, prefix=settings.API_PREFIX)
+app.include_router(directory_router, prefix=settings.API_PREFIX)
 app.include_router(activity_router, prefix=settings.API_PREFIX)
 app.include_router(messages_router, prefix=settings.API_PREFIX)
 app.include_router(tenants_router, prefix=settings.API_PREFIX)
@@ -426,10 +460,13 @@ app.include_router(atlassian_router, prefix=settings.API_PREFIX)
 app.include_router(triggers_router)
 app.include_router(focus_router, prefix=settings.API_PREFIX)
 app.include_router(chat_sessions_router)
+app.include_router(groups_router)
 app.include_router(plaza_router)
+app.include_router(experience_router)
 app.include_router(notification_router, prefix=settings.API_PREFIX)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
+app.include_router(group_ws_router)
 app.include_router(gateway_router, prefix=settings.API_PREFIX)
 app.include_router(admin_router, prefix=settings.API_PREFIX)
 app.include_router(pages_router, prefix=settings.API_PREFIX)
@@ -449,7 +486,7 @@ async def health_check():
 # ── Version endpoint (public, no auth required) ──
 def _load_version_info() -> dict[str, str]:
     """Read version + commit hash once at startup."""
-    import os, subprocess
+    import subprocess
     version = "unknown"
     for candidate in ["../frontend/VERSION", "frontend/VERSION", "VERSION"]:
         try:

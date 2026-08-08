@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.security import decrypt_data, encrypt_data
 from app.models.tenant_setting import TenantSetting
@@ -98,7 +99,7 @@ async def get_tenant_tool_config(
 ) -> dict:
     if not tenant_id:
         return {}
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(TenantSetting).where(
             TenantSetting.tenant_id == tenant_id,
             TenantSetting.key == tenant_tool_config_key(tool_name),
@@ -118,7 +119,7 @@ async def set_tenant_tool_config(
 ) -> None:
     encrypted = encrypt_sensitive_fields(meaningful_config(config), config_schema)
     key = tenant_tool_config_key(tool_name)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(TenantSetting).where(
             TenantSetting.tenant_id == tenant_id,
             TenantSetting.key == key,
@@ -128,11 +129,11 @@ async def set_tenant_tool_config(
     if existing:
         existing.value = {"config": encrypted}
     else:
-        db.add(TenantSetting(tenant_id=tenant_id, key=key, value={"config": encrypted}))
+        query_dao.add(db, TenantSetting(tenant_id=tenant_id, key=key, value={"config": encrypted}))
 
 
 async def delete_tenant_tool_config(db: AsyncSession, tenant_id: uuid.UUID, tool_name: str) -> None:
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(TenantSetting).where(
             TenantSetting.tenant_id == tenant_id,
             TenantSetting.key == tenant_tool_config_key(tool_name),
@@ -140,7 +141,7 @@ async def delete_tenant_tool_config(db: AsyncSession, tenant_id: uuid.UUID, tool
     )
     existing = result.scalar_one_or_none()
     if existing:
-        await db.delete(existing)
+        await query_dao.delete(db, existing)
 
 
 async def get_tool_company_config(db: AsyncSession, tool: Tool, tenant_id: uuid.UUID | None) -> dict:

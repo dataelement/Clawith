@@ -1,9 +1,9 @@
+from typing import Any
 """Discord Bot Channel API routes (slash command interactions)."""
 
-import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,11 +14,12 @@ from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
+from app.services.agent_runtime.channel_chat import (
+    channel_message_id,
+    enqueue_channel_chat_runtime,
+)
 
 router = APIRouter(tags=["discord"])
-
-DISCORD_MSG_LIMIT = 2000  # Discord message char limit
-
 
 # ─── Config CRUD ────────────────────────────────────────
 
@@ -27,7 +28,7 @@ async def configure_discord_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Configure Discord bot for an agent.
 
@@ -97,7 +98,7 @@ async def configure_discord_channel(
 async def get_discord_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
@@ -113,7 +114,7 @@ async def get_discord_channel(
 
 
 @router.get("/agents/{agent_id}/discord-channel/webhook-url")
-async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: Any = None):
     from app.services.platform_service import platform_service
     public_base = await platform_service.get_public_base_url(db, request)
     return {"webhook_url": f"{public_base}/api/channel/discord/{agent_id}/webhook"}
@@ -123,7 +124,7 @@ async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: Asy
 async def delete_discord_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -181,7 +182,6 @@ def _verify_discord_signature(public_key: str, body: bytes, headers: dict) -> bo
     """Verify Discord ed25519 signature."""
     try:
         from nacl.signing import VerifyKey
-        from nacl.exceptions import BadSignatureError
 
         timestamp = headers.get("x-signature-timestamp", "")
         signature = headers.get("x-signature-ed25519", "")
@@ -195,34 +195,11 @@ def _verify_discord_signature(public_key: str, body: bytes, headers: dict) -> bo
         return False
 
 
-async def _send_discord_followup(application_id: str, bot_token: str, interaction_token: str, text: str) -> None:
-    """Send follow-up message(s) to Discord Interactions, chunked at 2000 chars."""
-    import httpx
-    chunks = [text[i:i + DISCORD_MSG_LIMIT] for i in range(0, len(text), DISCORD_MSG_LIMIT)]
-    proxy = os.environ.get("DISCORD_PROXY") or os.environ.get("HTTPS_PROXY") or None
-    async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                # Edit the original deferred response
-                await client.patch(
-                    f"https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}/messages/@original",
-                    headers={"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"},
-                    json={"content": chunk},
-                )
-            else:
-                # Additional chunks as follow-up messages
-                await client.post(
-                    f"https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}",
-                    headers={"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"},
-                    json={"content": chunk},
-                )
-
-
 @router.post("/channel/discord/{agent_id}/webhook")
 async def discord_interaction_webhook(
     agent_id: uuid.UUID,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Handle Discord Interaction webhooks (PING + slash commands)."""
     body_bytes = await request.body()
@@ -244,7 +221,6 @@ async def discord_interaction_webhook(
         return Response(content="Invalid signature", status_code=401)
 
     import json
-    import asyncio
     body = json.loads(body_bytes)
     interaction_type = body.get("type", 0)
 
@@ -267,7 +243,6 @@ async def discord_interaction_webhook(
             return {"type": 4, "data": {"content": "⚠️ 请提供消息内容。Usage: `/ask message:<你的问题>`"}}
 
         interaction_token = body.get("token", "")
-        application_id = config.app_id or ""
         sender_id = body.get("member", {}).get("user", {}).get("id") or body.get("user", {}).get("id", "")
         channel_id = body.get("channel_id", "")
         # Discord: guild interactions are group chats, DM interactions are P2P
@@ -276,121 +251,68 @@ async def discord_interaction_webhook(
 
         logger.info(f"[Discord] /{command_name} from {sender_id}: {user_text[:80]}")
 
-        # Defer response immediately (Discord requires response within 3 seconds)
-        # We return type 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE) and reply later
-        async def handle_in_background():
-            from app.models.audit import ChatMessage
-            from app.models.agent import Agent as AgentModel
-            from app.services.channel_session import find_or_create_channel_session
-            from app.database import async_session
-            from datetime import datetime, timezone
+        from app.api.feishu import _load_agent_and_model
+        from app.models.agent import Agent as AgentModel
+        from app.services.channel_session import find_or_create_channel_session
+        from app.services.channel_user_service import channel_user_service
 
-            # ── Phase 1: Short transaction — load configs, save user message ──
-            async with async_session() as bg_db:
-                # Load agent
-                agent_r = await bg_db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-                agent_obj = agent_r.scalar_one_or_none()
-                creator_id = agent_obj.creator_id if agent_obj else agent_id
-                from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-                ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
+        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+        agent_obj = agent_r.scalar_one_or_none()
+        if agent_obj is None:
+            return Response(status_code=404)
 
-                # Find-or-create platform user for this Discord sender via unified service
-                from app.services.channel_user_service import channel_user_service
+        discord_username = (
+            body.get("member", {}).get("user", {}).get("username")
+            or body.get("user", {}).get("username", "")
+        )
+        platform_user = await channel_user_service.resolve_channel_user(
+            db=db,
+            agent=agent_obj,
+            channel_type="discord",
+            external_user_id=sender_id,
+            extra_info={"name": discord_username or f"Discord User {sender_id[:8]}"},
+        )
+        if (
+            discord_username
+            and platform_user.display_name
+            and platform_user.display_name.startswith("Discord User ")
+            and platform_user.display_name != discord_username
+        ):
+            platform_user.display_name = discord_username
+            await db.flush()
+        platform_user_id = platform_user.id
 
-                _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get("username", "")
-                _display = _discord_username or f"Discord User {sender_id[:8]}"
-                _extra_info = {"name": _display}
-
-                _platform_user = await channel_user_service.resolve_channel_user(
-                    db=bg_db,
-                    agent=agent_obj,
-                    channel_type="discord",
-                    external_user_id=sender_id,
-                    extra_info=_extra_info,
-                )
-
-                # Update display_name if we now have a better name
-                if _discord_username and _platform_user.display_name and _platform_user.display_name.startswith("Discord User ") and _platform_user.display_name != _discord_username:
-                    _platform_user.display_name = _discord_username
-                    await bg_db.flush()
-                platform_user_id = _platform_user.id
-
-                # Find-or-create ChatSession for this Discord conversation
-                sess = await find_or_create_channel_session(
-                    db=bg_db,
-                    agent_id=agent_id,
-                    user_id=creator_id if _is_group_discord else platform_user_id,
-                    external_conv_id=conv_id,
-                    source_channel="discord",
-                    first_message_title=user_text,
-                    is_group=_is_group_discord,
-                    group_name=f"Discord Channel {channel_id[:8]}" if _is_group_discord else None,
-                )
-                session_conv_id = str(sess.id)
-
-                # Load history from session
-                history_r = await bg_db.execute(
-                    select(ChatMessage)
-                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(ctx_size)
-                )
-                from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
-                history = _conv(reversed(history_r.scalars().all()))
-
-                # Save user message
-                bg_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
-                sess.last_message_at = datetime.now(timezone.utc)
-
-                # Pre-load agent/model for LLM call and extract config values
-                from app.api.feishu import _load_agent_and_model
-                _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(bg_db, agent_id)
-
-                from sqlalchemy import select as _sel
-                cfg_r = await bg_db.execute(_sel(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "discord",
-                ))
-                cfg = cfg_r.scalar_one_or_none()
-                _bot_token_bg = cfg.app_secret if cfg else ""
-                _app_id_bg = cfg.app_id if cfg else ""
-
-                await bg_db.commit()
-            # ── Phase 1 complete: release connection ──
-
-            # ── Phase 2: LLM call (no DB session needed) ──
-            from app.api.feishu import _call_llm_with_config
-            reply_text = await _call_llm_with_config(
-                _agent_model, _llm_model, _fallback_model,
+        sess = await find_or_create_channel_session(
+            db=db,
+            agent_id=agent_id,
+            user_id=agent_obj.creator_id if _is_group_discord else platform_user_id,
+            external_conv_id=conv_id,
+            source_channel="discord",
+            first_message_title=user_text,
+            is_group=_is_group_discord,
+            group_name=f"Discord Channel {channel_id[:8]}" if _is_group_discord else None,
+            created_by_user_id=platform_user_id,
+        )
+        _, model, _ = await _load_agent_and_model(db, agent_id)
+        await enqueue_channel_chat_runtime(
+            db,
+            agent=agent_obj,
+            user=platform_user,
+            session=sess,
+            model=model,
+            content=user_text,
+            source_channel="discord",
+            channel_delivery_target={
+                "channel_id": channel_id,
+                "interaction_token": interaction_token,
+            },
+            message_id=channel_message_id(
                 agent_id,
-                user_text,
-                history=history,
-                user_id=platform_user_id,
-                session_id=session_conv_id,
-            )
-            logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
-
-            # ── Phase 3: Save reply + send (new short transaction) ──
-            async with async_session() as _save_db:
-                _save_db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
-                # Reload session object to update last_message_at
-                from app.models.chat_session import ChatSession
-                _sess_r = await _save_db.execute(
-                    select(ChatSession).where(ChatSession.id == uuid.UUID(session_conv_id))
-                )
-                _sess_fresh = _sess_r.scalar_one_or_none()
-                if _sess_fresh:
-                    _sess_fresh.last_message_at = datetime.now(timezone.utc)
-                await _save_db.commit()
-
-            # Send chunked reply via Discord follow-up
-            if _bot_token_bg and interaction_token and _app_id_bg:
-                try:
-                    await _send_discord_followup(_app_id_bg, _bot_token_bg, interaction_token, reply_text)
-                except Exception as e:
-                    logger.error(f"[Discord] Failed to send follow-up: {e}")
-
-        asyncio.create_task(handle_in_background())
+                "discord",
+                str(body.get("id") or "").strip() or None,
+            ),
+        )
+        await db.commit()
         # Return DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE — shows "thinking..." to user
         return {"type": 5}
 

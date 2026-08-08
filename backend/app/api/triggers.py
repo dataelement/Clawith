@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.dao import query_dao
 from app.api.auth import get_current_user
-from app.database import async_session
 from app.models.trigger import AgentTrigger
 
 router = APIRouter(prefix="/api/agents", tags=["triggers"])
@@ -42,8 +42,8 @@ class TriggerUpdate(BaseModel):
 @router.get("/{agent_id}/triggers", response_model=list[TriggerResponse])
 async def list_agent_triggers(agent_id: uuid.UUID, user=Depends(get_current_user)):
     """List all triggers for an agent."""
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(AgentTrigger)
             .where(AgentTrigger.agent_id == agent_id)
             .order_by(AgentTrigger.created_at.desc())
@@ -79,8 +79,8 @@ async def update_trigger(
     user=Depends(get_current_user),
 ):
     """Update a trigger (from frontend management UI)."""
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.id == trigger_id,
                 AgentTrigger.agent_id == agent_id,
@@ -104,7 +104,7 @@ async def update_trigger(
             from datetime import datetime
             trigger.expires_at = datetime.fromisoformat(body.expires_at)
 
-        await db.commit()
+        await query_dao.commit(db)
 
     return {"ok": True}
 
@@ -116,8 +116,8 @@ async def delete_trigger(
     user=Depends(get_current_user),
 ):
     """Delete a trigger entirely."""
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.id == trigger_id,
                 AgentTrigger.agent_id == agent_id,
@@ -127,7 +127,7 @@ async def delete_trigger(
         if not trigger:
             raise HTTPException(404, "Trigger not found")
 
-        await db.delete(trigger)
-        await db.commit()
+        await query_dao.delete(db, trigger)
+        await query_dao.commit(db)
 
     return {"ok": True}

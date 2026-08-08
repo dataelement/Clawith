@@ -47,6 +47,7 @@ COPY . .
 RUN useradd --create-home clawith && \
     mkdir -p /data/agents && \
     chmod +x /app/entrypoint.sh && \
+    chmod u+s /usr/bin/bwrap && \
     chown -R clawith:clawith /app /data
 
 # Note: USER is removed to allow entrypoint.sh to fix permissions of mounted volumes
@@ -57,5 +58,5 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 EXPOSE 8000
-# entrypoint.sh runs `alembic upgrade head` then `uvicorn`
+# entrypoint.sh bootstraps Alembic and LangGraph checkpoints before `uvicorn`
 ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]

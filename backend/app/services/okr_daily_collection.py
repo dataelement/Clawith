@@ -20,9 +20,10 @@ from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
 from app.models.user import User
 from app.services.agent_tools import (
     _send_channel_message,
-    _send_message_to_agent,
     _send_platform_message,
 )
+
+
 def _human_request_message(target_name: str, report_day: date) -> str:
     return (
         f"你好，{target_name}！我是 OKR Agent，需要收集你今天的日报（{report_day.isoformat()}）。请回复以下内容：\n"
@@ -42,6 +43,46 @@ def _agent_request_message(target_name: str, report_day: date) -> str:
         "- next step\n\n"
         "Please keep the final reply concise so I can record it directly."
     )
+
+
+def _agent_collection_prompt(agent_member: Agent, report_day: date) -> str:
+    request = _agent_request_message(agent_member.name, report_day)
+    return f"""[SYSTEM TASK — DAILY OKR COLLECTION]
+
+Collect and store the final daily report from digital employee {agent_member.name}.
+
+1. Call send_message_to_agent with exactly:
+   - target_agent_id: {agent_member.id}
+   - msg_type: task_delegate
+   - message: {request}
+2. Wait for the durable A2A result.
+3. Distill the returned result into no more than 2000 characters.
+4. Call upsert_member_daily_report with exactly:
+   - report_date: {report_day.isoformat()}
+   - member_type: agent
+   - member_id: {agent_member.id}
+   - content: the distilled final report
+   - source: okr_agent_daily_collection
+5. Finish only after the report has been stored. If either tool reports a failure,
+   finish with a concise explanation and do not invent a report.
+"""
+
+
+async def _enqueue_agent_daily_collection(
+    okr_agent: Agent,
+    agent_member: Agent,
+    report_day: date,
+) -> bool:
+    """Register one source Run so A2A wait/resume remains checkpointed."""
+    from app.services.heartbeat import run_agent_oneshot
+
+    run_id = await run_agent_oneshot(
+        agent_id=okr_agent.id,
+        prompt=_agent_collection_prompt(agent_member, report_day),
+        triggered_by_user_id=okr_agent.creator_id,
+        max_rounds=12,
+    )
+    return bool(run_id)
 
 
 async def _cleanup_legacy_daily_reply_triggers(okr_agent_id: uuid.UUID) -> None:
@@ -75,7 +116,12 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         if not settings.okr_agent_id:
             raise ValueError("OKR Agent not found for this tenant")
 
-        okr_agent_result = await db.execute(select(Agent).where(Agent.id == settings.okr_agent_id))
+        okr_agent_result = await db.execute(
+            select(Agent).where(
+                Agent.id == settings.okr_agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         okr_agent = okr_agent_result.scalar_one_or_none()
         if not okr_agent:
             raise ValueError("OKR Agent not found for this tenant")
@@ -85,6 +131,8 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
     await _cleanup_legacy_daily_reply_triggers(okr_agent.id)
 
     async with async_session() as db:
+        # OKR still uses legacy relationship rows as an explicit tracking list.
+        # Directory visibility is intentionally not the source of truth here.
         rel_result = await db.execute(
             select(AgentRelationship, OrgMember)
             .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
@@ -105,14 +153,13 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
                 AgentAgentRelationship.agent_id == okr_agent.id,
                 Agent.is_system == False,  # noqa: E712
                 Agent.status.notin_(["stopped", "error"]),
+                Agent.deleted_at.is_(None),
             )
         )
         tracked_agents = agent_rel_result.scalars().all()
 
-        member_user_ids: dict[uuid.UUID, uuid.UUID | None] = {}
         member_user_display_names: dict[uuid.UUID, str] = {}
         for _, org_member in rel_rows:
-            member_user_ids[org_member.id] = org_member.user_id
             if org_member.user_id:
                 user_result = await db.execute(
                     select(User.display_name).where(User.id == org_member.user_id)
@@ -137,7 +184,6 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
                     )
                     found = sess_result.scalar_one_or_none()
                     if found:
-                        member_user_ids[org_member.id] = found
                         user_result = await db.execute(
                             select(User.display_name).where(User.id == found)
                         )
@@ -149,7 +195,6 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
     sent_agents = 0
 
     for _, org_member in rel_rows:
-        platform_uid = member_user_ids.get(org_member.id)
         platform_name = member_user_display_names.get(org_member.id)
         message_text = _human_request_message(org_member.name, report_day)
         has_external_channel = bool(org_member.open_id or org_member.external_id)
@@ -158,28 +203,24 @@ async def trigger_daily_collection_for_tenant(tenant_id: uuid.UUID) -> dict:
         if has_external_channel:
             send_result = await _send_channel_message(
                 okr_agent.id,
-                {"member_name": org_member.name, "message": message_text},
+                {"target_member_id": str(org_member.id), "message": message_text},
             )
         elif platform_name:
             send_result = await _send_platform_message(
                 okr_agent.id,
-                {"username": platform_name, "message": message_text},
+                {"target_member_id": str(org_member.id), "message": message_text},
             )
 
         if send_result.startswith("✅"):
             sent_humans += 1
 
     for agent_member in tracked_agents:
-        send_result = await _send_message_to_agent(
-            okr_agent.id,
-            {
-                "agent_name": agent_member.name,
-                "message": _agent_request_message(agent_member.name, report_day),
-                "msg_type": "task_delegate",
-                "force_async": True,
-            },
+        accepted = await _enqueue_agent_daily_collection(
+            okr_agent,
+            agent_member,
+            report_day,
         )
-        if send_result.startswith("✅"):
+        if accepted:
             sent_agents += 1
 
     return {

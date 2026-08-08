@@ -49,6 +49,12 @@ def _extract_wecom_chat_id(body: dict) -> str:
     return str(body.get("chatid") or body.get("chat_id") or "").strip()
 
 
+def _extract_wecom_message_id(body: dict) -> str | None:
+    value = body.get("msgid") or body.get("msg_id") or body.get("message_id")
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _build_wecom_conv_id(sender_id: str, chat_id: str, chat_type: str) -> str:
     normalized_type = (chat_type or "single").strip().lower()
     if normalized_type in {"group", "groupchat", "group_chat"} and chat_id:
@@ -158,12 +164,13 @@ class WeComStreamManager:
                         user_text=user_text,
                         chat_id=chat_id,
                         chat_type=chat_type,
+                        external_event_id=_extract_wecom_message_id(body),
                     )
 
-                    # Reply via streaming
-                    stream_id = generate_req_id("stream")
-                    await client.reply_stream(frame, stream_id, reply_text, finish=True)
-                    logger.info(f"[WeCom Stream] Replied to {sender_id}: {reply_text[:80]}")
+                    if reply_text:
+                        stream_id = generate_req_id("stream")
+                        await client.reply_stream(frame, stream_id, reply_text, finish=True)
+                        logger.info(f"[WeCom Stream] Replied to {sender_id}: {reply_text[:80]}")
 
                 except Exception as e:
                     logger.error(f"[WeCom Stream] Error handling text message: {e}")
@@ -288,6 +295,24 @@ class WeComStreamManager:
                 pass
         self._connected.pop(agent_id, None)
 
+    async def send_message(
+        self,
+        agent_id: uuid.UUID,
+        chat_id: str,
+        content: str,
+    ) -> None:
+        """Proactively deliver through the currently connected AI Bot client."""
+        client = self._clients.get(agent_id)
+        if client is None or not self._connected.get(agent_id, False):
+            raise RuntimeError("WeCom AI Bot connection is unavailable")
+        await client.send_message(
+            chat_id,
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": content},
+            },
+        )
+
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
         logger.info("[WeCom Stream] Initializing all active WeCom AI Bot channels...")
@@ -330,31 +355,31 @@ async def _process_wecom_stream_message(
     user_text: str,
     chat_id: str = "",
     chat_type: str = "single",
+    external_event_id: str | None = None,
 ) -> str:
-    """Process a WeCom message through the LLM pipeline and return the reply text."""
-    from datetime import datetime, timezone
+    """Attach a WeCom message; the durable outbox sends the eventual result."""
     from sqlalchemy import select as _select
+
+    from app.api.feishu import _load_agent_and_model
     from app.database import async_session
     from app.models.agent import Agent as AgentModel
-    from app.models.audit import ChatMessage
+    from app.services.agent_runtime.channel_chat import (
+        channel_message_id,
+        enqueue_channel_chat_runtime,
+    )
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_user_service import channel_user_service
-    from app.api.feishu import _call_llm_with_config, _load_agent_and_model
 
     async with async_session() as db:
-        # Load agent
         agent_r = await db.execute(_select(AgentModel).where(AgentModel.id == agent_id))
         agent_obj = agent_r.scalar_one_or_none()
         if not agent_obj:
             logger.warning(f"[WeCom Stream] Agent {agent_id} not found")
             return "Agent not found"
-        from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-        ctx_size = agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE
 
         normalized_chat_type = (chat_type or "single").strip().lower()
         conv_id = _build_wecom_conv_id(sender_id, chat_id, normalized_chat_type)
 
-        # Resolve or create platform user via unified channel user service.
         platform_user = await channel_user_service.resolve_channel_user(
             db=db,
             agent=agent_obj,
@@ -364,7 +389,6 @@ async def _process_wecom_stream_message(
         )
         platform_user_id = platform_user.id
 
-        # Find or create session
         _is_group = normalized_chat_type in {"group", "groupchat", "group_chat"} and bool(chat_id)
         sess = await find_or_create_channel_session(
             db=db,
@@ -375,68 +399,31 @@ async def _process_wecom_stream_message(
             first_message_title=user_text,
             is_group=_is_group,
             group_name=f"WeCom Group {chat_id[:8]}" if _is_group else None,
+            created_by_user_id=platform_user_id,
         )
-        session_conv_id = str(sess.id)
-
-        # Load history
-        history_r = await db.execute(
-            _select(ChatMessage)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(ctx_size)
+        _, model, _ = await _load_agent_and_model(db, agent_id)
+        await enqueue_channel_chat_runtime(
+            db,
+            agent=agent_obj,
+            user=platform_user,
+            session=sess,
+            model=model,
+            content=user_text,
+            source_channel="wecom",
+            channel_delivery_target={
+                "user_id": sender_id,
+                "chat_id": chat_id or sender_id,
+                "transport": "websocket",
+            },
+            message_id=channel_message_id(
+                agent_id,
+                "wecom",
+                external_event_id,
+            ),
         )
-        from app.services.llm.utils import convert_chat_messages_to_llm_format as _conv
-        history = _conv(reversed(history_r.scalars().all()))
-
-        # Save user message
-        db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="user", content=user_text,
-            conversation_id=session_conv_id,
-        ))
-        sess.last_message_at = datetime.now(timezone.utc)
-
-        # Pre-load agent/model before releasing connection
-        _agent_model, _llm_model, _fallback_model = await _load_agent_and_model(db, agent_id)
 
         await db.commit()
-        # ── Phase 1 complete: release connection before slow LLM call ──
-
-    # ── Phase 2: LLM call (no DB session) ──
-    reply_text = await _call_llm_with_config(
-        _agent_model, _llm_model, _fallback_model,
-        agent_id, user_text,
-        history=history, user_id=platform_user_id,
-        session_id=session_conv_id,
-    )
-    logger.info(f"[WeCom Stream] LLM reply: {reply_text[:100]}")
-
-    # ── Phase 3: Save assistant reply (new short transaction) ──
-    async with async_session() as _save_db:
-        _save_db.add(ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id,
-            role="assistant", content=reply_text,
-            conversation_id=session_conv_id,
-        ))
-        from app.models.chat_session import ChatSession
-        import uuid as _uuid_ws
-        _sess_r = await _save_db.execute(
-            _select(ChatSession).where(ChatSession.id == _uuid_ws.UUID(session_conv_id))
-        )
-        _sess_fresh = _sess_r.scalar_one_or_none()
-        if _sess_fresh:
-            _sess_fresh.last_message_at = datetime.now(timezone.utc)
-        await _save_db.commit()
-
-    # Log activity
-    from app.services.activity_logger import log_activity
-    await log_activity(
-        agent_id, "chat_reply",
-        f"Replied to WeCom message: {reply_text[:80]}",
-        detail={"channel": "wecom", "user_text": user_text[:200], "reply": reply_text[:500]},
-    )
-
-    return reply_text
+    return ""
 
 
 wecom_stream_manager = WeComStreamManager()

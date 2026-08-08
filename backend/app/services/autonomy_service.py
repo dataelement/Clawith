@@ -14,6 +14,8 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
+from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog
 from app.models.channel_config import ChannelConfig
@@ -23,6 +25,28 @@ from app.services.feishu_service import feishu_service
 
 class AutonomyService:
     """Enforce autonomy boundaries for agent operations."""
+
+    @staticmethod
+    def _runtime_approval_identity(
+        action_type: str,
+        details: dict,
+    ) -> tuple[uuid.UUID, str] | None:
+        runtime_scope = details.get("runtime_scope")
+        if not isinstance(runtime_scope, dict):
+            return None
+        run_id_raw = runtime_scope.get("run_id")
+        tool_call_id = runtime_scope.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return None
+        try:
+            run_id = uuid.UUID(str(run_id_raw))
+        except (TypeError, ValueError):
+            return None
+        approval_id = uuid.uuid5(
+            run_id,
+            f"runtime-approval:{action_type}:{tool_call_id}",
+        )
+        return approval_id, f"approval:{approval_id}"
 
     async def check_and_enforce(
         self, db: AsyncSession, agent: Agent, action_type: str, details: dict
@@ -39,6 +63,43 @@ class AutonomyService:
         """
         policy = agent.autonomy_policy or {}
         level = policy.get(action_type, "L2")  # Default to L2
+        runtime_identity = self._runtime_approval_identity(action_type, details)
+
+        if runtime_identity is not None:
+            approval_id, correlation_id = runtime_identity
+            existing_result = await db.execute(
+                select(ApprovalRequest).where(ApprovalRequest.id == approval_id)
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing is not None:
+                if (
+                    existing.agent_id != agent.id
+                    or existing.action_type != action_type
+                ):
+                    raise ValueError(
+                        "Runtime approval identity does not match the requested action"
+                    )
+                if existing.status == "approved":
+                    return {
+                        "allowed": True,
+                        "level": "L3",
+                        "approval_id": str(existing.id),
+                        "approval_status": "approved",
+                        "correlation_id": correlation_id,
+                        "message": "Approval granted",
+                    }
+                return {
+                    "allowed": False,
+                    "level": "L3",
+                    "approval_id": str(existing.id),
+                    "approval_status": existing.status,
+                    "correlation_id": correlation_id,
+                    "message": (
+                        "Approval requested from creator"
+                        if existing.status == "pending"
+                        else "Approval rejected"
+                    ),
+                }
 
         # Log the action regardless of level
         audit = AuditLog(
@@ -46,7 +107,7 @@ class AutonomyService:
             action=f"autonomy_check:{action_type}",
             details={"level": level, **details},
         )
-        db.add(audit)
+        query_dao.add(db, audit)
 
         if level == "L1":
             # Auto-execute, just log
@@ -69,13 +130,23 @@ class AutonomyService:
 
         elif level == "L3":
             # Create approval request and block
+            approval_details = details
+            approval_id = None
+            correlation_id = None
+            if runtime_identity is not None:
+                approval_id, correlation_id = runtime_identity
+                approval_details = dict(details)
+                runtime_scope = dict(approval_details["runtime_scope"])
+                runtime_scope["approval_correlation_id"] = correlation_id
+                approval_details["runtime_scope"] = runtime_scope
             approval = ApprovalRequest(
+                id=approval_id,
                 agent_id=agent.id,
                 action_type=action_type,
-                details=details,
+                details=approval_details,
             )
-            db.add(approval)
-            await db.flush()
+            query_dao.add(db, approval)
+            await query_dao.flush(db)
 
             logger.info(f"L3: Approval required for {action_type} by agent {agent.name}")
             await self._request_approval(db, agent, approval)
@@ -84,6 +155,8 @@ class AutonomyService:
                 "allowed": False,
                 "level": "L3",
                 "approval_id": str(approval.id),
+                "approval_status": "pending",
+                "correlation_id": correlation_id,
                 "message": "Approval requested from creator",
             }
 
@@ -93,7 +166,7 @@ class AutonomyService:
         self, db: AsyncSession, approval_id: uuid.UUID, user: User, action: str
     ) -> ApprovalRequest:
         """Approve or reject a pending approval request."""
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(ApprovalRequest).where(ApprovalRequest.id == approval_id)
         )
         approval = result.scalar_one_or_none()
@@ -104,7 +177,7 @@ class AutonomyService:
             raise ValueError("Approval already resolved")
 
         # Permission check: only agent creator or platform admin can resolve
-        agent_result = await db.execute(select(Agent).where(Agent.id == approval.agent_id))
+        agent_result = await query_dao.execute(db, select(Agent).where(Agent.id == approval.agent_id))
         agent = agent_result.scalar_one_or_none()
         if agent and agent.creator_id != user.id and user.role != "platform_admin":
             raise ValueError("Only the agent creator or platform admin can resolve approvals")
@@ -114,16 +187,49 @@ class AutonomyService:
         approval.resolved_by = user.id
 
         # Log
-        db.add(AuditLog(
+        query_dao.add(db, AuditLog(
             user_id=user.id,
             agent_id=approval.agent_id,
             action=f"approval_{approval.status}",
             details={"approval_id": str(approval.id), "action_type": approval.action_type},
         ))
 
-        # Post-processing: execute the approved action
+        # Runtime-scoped approvals resume the exact waiting Run. Legacy
+        # approvals keep their historical direct-execution behavior.
         execution_result = None
-        if approval.status == "approved" and approval.details:
+        runtime_resume = self._runtime_resume_details(approval)
+        if runtime_resume is not None:
+            from app.services.agent_runtime.adapter import RuntimeCommandIntake
+            from app.services.agent_runtime.contracts import ResumeRunCommand
+
+            await db.flush()
+            await RuntimeCommandIntake(db).resume_run(
+                ResumeRunCommand(
+                    tenant_id=runtime_resume["tenant_id"],
+                    run_id=runtime_resume["run_id"],
+                    idempotency_key=(
+                        f"approval:{approval.id}:{approval.status}"
+                    ),
+                    payload={
+                        "resume_type": "user_input",
+                        "correlation_id": runtime_resume["correlation_id"],
+                        "payload": {
+                            "content": (
+                                "Workspace deletion approved. Continue the "
+                                "pending tool call."
+                                if approval.status == "approved"
+                                else "Workspace deletion rejected. Do not "
+                                "execute the pending tool call."
+                            ),
+                            "approval_id": str(approval.id),
+                            "decision": approval.status,
+                        },
+                    },
+                    actor_user_id=user.id,
+                )
+            )
+            execution_result = "Original Agent Run queued to resume"
+        elif approval.status == "approved" and approval.details:
             execution_result = await self._execute_approved_action(
                 approval.agent_id, approval.action_type, approval.details
             )
@@ -164,8 +270,38 @@ class AutonomyService:
                 except (ValueError, AttributeError):
                     pass  # Invalid UUID, skip
 
-        await db.flush()
+        await query_dao.flush(db)
         return approval
+
+    @staticmethod
+    def _runtime_resume_details(
+        approval: ApprovalRequest,
+    ) -> dict | None:
+        details = approval.details
+        if not isinstance(details, dict):
+            return None
+        runtime_scope = details.get("runtime_scope")
+        if not isinstance(runtime_scope, dict):
+            return None
+        correlation_id = runtime_scope.get("approval_correlation_id")
+        tool_call_id = runtime_scope.get("tool_call_id")
+        if (
+            not isinstance(correlation_id, str)
+            or not correlation_id
+            or not isinstance(tool_call_id, str)
+            or not tool_call_id
+        ):
+            return None
+        try:
+            tenant_id = uuid.UUID(str(runtime_scope.get("tenant_id")))
+            run_id = uuid.UUID(str(runtime_scope.get("run_id")))
+        except (TypeError, ValueError):
+            return None
+        return {
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "correlation_id": correlation_id,
+        }
 
     async def _execute_approved_action(
         self, agent_id: uuid.UUID, action_type: str, details: dict
@@ -194,6 +330,49 @@ class AutonomyService:
             else:
                 arguments = args_raw
 
+            runtime_scope = details.get("runtime_scope")
+            if (
+                action_type == "delete_files"
+                and tool_name in {"delete_file", "group_delete_workspace_file"}
+                and isinstance(runtime_scope, dict)
+                and runtime_scope.get("workspace_scope") == "group"
+            ):
+                from app.services import group_file_service
+
+                tenant_id = uuid.UUID(str(runtime_scope["tenant_id"]))
+                group_id = uuid.UUID(str(runtime_scope["group_id"]))
+                participant_id = uuid.UUID(
+                    str(runtime_scope["actor_participant_id"])
+                )
+                session_id_raw = runtime_scope.get("session_id")
+                session_id = (
+                    uuid.UUID(str(session_id_raw))
+                    if session_id_raw
+                    else None
+                )
+                path = runtime_scope.get("workspace_path")
+                if not isinstance(path, str) or not path.strip():
+                    raise ValueError(
+                        "Approved Group Workspace delete is missing its path"
+                    )
+                expected_version_token = arguments.get(
+                    "expected_version_token"
+                )
+                if not isinstance(expected_version_token, str):
+                    expected_version_token = None
+                async with async_session() as action_db:
+                    await group_file_service.delete_workspace_file(
+                        action_db,
+                        tenant_id=tenant_id,
+                        group_id=group_id,
+                        actor_participant_id=participant_id,
+                        path=path,
+                        expected_version_token=expected_version_token,
+                        session_id=session_id,
+                    )
+                    await action_db.commit()
+                return f"✅ Deleted {path} from Group Workspace"
+
             # Import and call the tool's direct executor (no autonomy re-check)
             from app.services.agent_tools import _execute_tool_direct
             result = await _execute_tool_direct(tool_name, arguments, agent_id)
@@ -217,13 +396,13 @@ class AutonomyService:
         )
 
         # Try Feishu notification if channel is configured
-        channel_result = await db.execute(
+        channel_result = await query_dao.execute(db, 
             select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
         )
         channel = channel_result.scalars().first()
 
         if channel and channel.app_id and channel.app_secret:
-            creator_result = await db.execute(
+            creator_result = await query_dao.execute(db, 
                 select(User).where(User.id == agent.creator_id)
             )
             creator = creator_result.scalar_one_or_none()
@@ -231,7 +410,7 @@ class AutonomyService:
                 from app.models.identity import IdentityProvider
                 from app.models.org import OrgMember
 
-                provider_r = await db.execute(
+                provider_r = await query_dao.execute(db, 
                     select(IdentityProvider).where(
                         IdentityProvider.provider_type == "feishu",
                         IdentityProvider.tenant_id == creator.tenant_id,
@@ -239,7 +418,7 @@ class AutonomyService:
                 )
                 provider = provider_r.scalar_one_or_none()
                 if provider:
-                    member_r = await db.execute(
+                    member_r = await query_dao.execute(db, 
                         select(OrgMember).where(
                             OrgMember.user_id == creator.id,
                             OrgMember.provider_id == provider.id,
@@ -272,13 +451,13 @@ class AutonomyService:
         )
 
         # Try Feishu notification
-        channel_result = await db.execute(
+        channel_result = await query_dao.execute(db, 
             select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
         )
         channel = channel_result.scalars().first()
 
         if channel and channel.app_id and channel.app_secret:
-            creator_result = await db.execute(
+            creator_result = await query_dao.execute(db, 
                 select(User).where(User.id == agent.creator_id)
             )
             creator = creator_result.scalar_one_or_none()
@@ -286,7 +465,7 @@ class AutonomyService:
                 from app.models.identity import IdentityProvider
                 from app.models.org import OrgMember
 
-                provider_r = await db.execute(
+                provider_r = await query_dao.execute(db, 
                     select(IdentityProvider).where(
                         IdentityProvider.provider_type == "feishu",
                         IdentityProvider.tenant_id == creator.tenant_id,
@@ -294,7 +473,7 @@ class AutonomyService:
                 )
                 provider = provider_r.scalar_one_or_none()
                 if provider:
-                    member_r = await db.execute(
+                    member_r = await query_dao.execute(db, 
                         select(OrgMember).where(
                             OrgMember.user_id == creator.id,
                             OrgMember.provider_id == provider.id,

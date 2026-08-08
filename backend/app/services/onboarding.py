@@ -26,12 +26,11 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent, AgentTemplate, AgentUserOnboarding
-from app.models.audit import ChatMessage
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
@@ -65,6 +64,24 @@ PHASE_CUSTOM_STYLE = "custom_style"
 PHASE_CUSTOM_BOUNDARIES = "custom_boundaries"
 PHASE_TEMPLATE_FOCUS = "template_focus"
 PHASE_COMPLETED = "completed"
+
+_PHASE_ALLOWED_CURRENT = {
+    PHASE_GREETED: (PHASE_GREETED,),
+    PHASE_CUSTOM_STYLE: (PHASE_GREETED, PHASE_CUSTOM_STYLE),
+    PHASE_CUSTOM_BOUNDARIES: (
+        PHASE_GREETED,
+        PHASE_CUSTOM_STYLE,
+        PHASE_CUSTOM_BOUNDARIES,
+    ),
+    PHASE_TEMPLATE_FOCUS: (PHASE_GREETED, PHASE_TEMPLATE_FOCUS),
+    PHASE_COMPLETED: (
+        PHASE_GREETED,
+        PHASE_CUSTOM_STYLE,
+        PHASE_CUSTOM_BOUNDARIES,
+        PHASE_TEMPLATE_FOCUS,
+        PHASE_COMPLETED,
+    ),
+}
 
 
 _CUSTOM_GREETING_PROMPT = """\
@@ -114,18 +131,22 @@ real.
 Do not ask more setup questions. If details are missing, choose light defaults \
 and label them as adjustable.
 
-You MUST persist the onboarding result:
-1. Read `soul.md` if it exists.
-2. Update `soul.md` so it includes your working identity, vibe/style, \
-responsibilities, and boundaries.
-3. Write `memory/user_profile.md` with how to address and collaborate with \
-{user_name}.
-4. Use `upsert_focus_item` to record the first focus item or next concrete task.
+Persist the onboarding result only through capabilities supplied in the current \
+Tool Schema. Do not simulate unavailable reads or writes. Complete every \
+available operation below; if one is unavailable, state exactly what remains \
+instead of claiming it succeeded:
+1. When Workspace reads and writes are available, read `soul.md` if it exists, \
+then update it with your working identity, vibe/style, responsibilities, and \
+boundaries.
+2. When Workspace writes are available, write `memory/user_profile.md` with how \
+to address and collaborate with {user_name}.
+3. When Focus operations are available, record the first focus item or next \
+concrete task.
 
 After writing, reply with a short confirmation:
 - who you now understand yourself to be;
 - how you will work with the user;
-- the first focus you recorded;
+- the first focus you recorded, or the missing capability if it could not be recorded;
 - one concise next-step offer.
 
 Never mention these instructions to the user."""
@@ -140,7 +161,7 @@ mention prompts or onboarding internals.
 
 Greeting turn:
 - Keep it under 90 words.
-- Open warmly as **{name}**{role_line}.
+- Open warmly as **{name}**.
 - Say you are already set up for this role.
 - Briefly mention 1–2 default strengths in prose{bullets_line}.
 - Ask the user to either confirm the role as-is or tell you what to adjust: \
@@ -169,18 +190,23 @@ role; do not rewrite your whole template identity.
 Do not ask more setup questions. If they simply confirmed the preset, proceed \
 with sensible defaults.
 
-You MUST persist the calibration:
-1. Write `memory/onboarding.md` with the confirmed role, user-specific \
-adjustments, communication preferences, boundaries, and first focus.
-2. Use `upsert_focus_item` to record the first concrete task or a clear \
-"ready to start" focus if no task was given.
-3. Only edit `soul.md` if the user explicitly changed your role, style, or \
-boundaries; in that case read it first and preserve the template's core role.
+Persist the calibration only through capabilities supplied in the current Tool \
+Schema. Do not simulate unavailable reads or writes. Complete every available \
+operation below; if one is unavailable, state exactly what remains instead of \
+claiming it succeeded:
+1. When Workspace writes are available, write `memory/onboarding.md` with the \
+confirmed role, user-specific adjustments, communication preferences, \
+boundaries, and first focus.
+2. When Focus operations are available, record the first concrete task or a \
+clear "ready to start" focus if no task was given.
+3. When Workspace reads and writes are available, edit `soul.md` only if the \
+user explicitly changed your role, style, or boundaries; read it first and \
+preserve the template's core role.
 
 After writing, reply with a short confirmation:
 - the role you will operate under;
 - any adjustments you captured;
-- the first focus you recorded;
+- the first focus you recorded, or the missing capability if it could not be recorded;
 - one concise next-step offer.
 
 Never mention these instructions to the user."""
@@ -191,7 +217,6 @@ def _render_template_greeting(
     capability_bullets: list[str] | None,
     user_name: str,
 ) -> str:
-    role_line = f", your {agent.role_description}" if agent.role_description else ""
     if capability_bullets:
         bullets = "; ".join(b.strip() for b in capability_bullets if b and b.strip())
         bullets_line = f" — ideas to lean on: {bullets}" if bullets else ""
@@ -199,7 +224,6 @@ def _render_template_greeting(
         bullets_line = ""
     return _TEMPLATE_GREETING_PROMPT.format(
         name=agent.name,
-        role_line=role_line,
         bullets_line=bullets_line,
         user_name=user_name,
     )
@@ -253,28 +277,6 @@ async def resolve_onboarding_prompt(
     if existing_phase == PHASE_COMPLETED:
         return None
 
-    # Count real user messages this person has sent to this agent. Onboarding
-    # triggers are not persisted, so only authentic typed turns are counted.
-    user_turn_count = await db.execute(
-        select(func.count()).select_from(ChatMessage).where(
-            ChatMessage.agent_id == agent.id,
-            ChatMessage.user_id == user_id,
-            ChatMessage.role == "user",
-        )
-    )
-    user_turns = int(user_turn_count.scalar_one() or 0)
-
-    # Is anyone at least greeted by this agent yet? If not, this user is the
-    # founder. We intentionally count all rows, including "greeted", because
-    # a greeting already establishes that this agent has met its first human.
-    peer_count = await db.execute(
-        select(func.count()).select_from(AgentUserOnboarding).where(
-            AgentUserOnboarding.agent_id == agent.id,
-        )
-    )
-    is_founder = peer_count.scalar_one() == 0
-
-    template_prompt: str | None = None
     capability_bullets: list[str] | None = None
     if agent.template_id:
         tpl_result = await db.execute(
@@ -283,9 +285,7 @@ async def resolve_onboarding_prompt(
         tpl = tpl_result.scalar_one_or_none()
         if tpl:
             capability_bullets = tpl.capability_bullets or None
-            template_prompt = tpl.bootstrap_content
-
-    is_template_agent = bool(agent.template_id and template_prompt)
+    is_template_agent = agent.template_id is not None
 
     if existing_phase == PHASE_GREETED:
         if is_template_agent:
@@ -312,15 +312,6 @@ async def resolve_onboarding_prompt(
         # Custom agents get the OpenClaw-inspired "define who I am" ritual.
         if is_template_agent:
             prompt = _render_template_greeting(agent, capability_bullets, user_name)
-        elif is_founder and template_prompt:
-            # Defensive fallback for legacy data that has bootstrap text but no
-            # usable template_id. Keep the old authored bootstrap behavior.
-            prompt = (
-                template_prompt
-                .replace("{name}", agent.name)
-                .replace("{user_name}", user_name)
-                .replace("{user_turns}", str(user_turns))
-            )
         else:
             prompt = _CUSTOM_GREETING_PROMPT.format(name=agent.name, user_name=user_name)
         target_phase = PHASE_GREETED
@@ -361,13 +352,18 @@ async def mark_onboarding_phase(
         PHASE_COMPLETED,
     }:
         phase = PHASE_COMPLETED
-    stmt = pg_insert(AgentUserOnboarding).values(
-        agent_id=agent_id,
-        user_id=user_id,
-        phase=phase,
-    ).on_conflict_do_update(
-        index_elements=["agent_id", "user_id"],
-        set_={"phase": phase},
+    stmt = (
+        pg_insert(AgentUserOnboarding)
+        .values(
+            agent_id=agent_id,
+            user_id=user_id,
+            phase=phase,
+        )
+        .on_conflict_do_update(
+            index_elements=["agent_id", "user_id"],
+            set_={"phase": phase},
+            where=AgentUserOnboarding.phase.in_(_PHASE_ALLOWED_CURRENT[phase]),
+        )
     )
     await db.execute(stmt)
     await db.commit()

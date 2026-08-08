@@ -1,3 +1,4 @@
+from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,6 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -50,7 +52,7 @@ class UserOut(BaseModel):
 async def list_users(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List all users in the specified tenant (admin only)."""
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -60,7 +62,7 @@ async def list_users(
     tid = tenant_id if tenant_id and current_user.role == "platform_admin" else str(current_user.tenant_id)
 
     # Filter users by tenant — platform_admins only shown in their own tenant
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User).options(selectinload(User.identity)).where(
             User.tenant_id == tid
         ).order_by(User.created_at.asc())
@@ -70,7 +72,7 @@ async def list_users(
     out = []
     for u in users:
         # Count non-expired agents
-        count_result = await db.execute(
+        count_result = await query_dao.execute(db, 
             select(func.count()).select_from(Agent).where(
                 Agent.creator_id == u.id,
                 Agent.is_expired == False,
@@ -105,13 +107,13 @@ async def update_user_quota(
     user_id: uuid.UUID,
     data: UserQuotaUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update a user's quota settings (admin only)."""
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User).options(selectinload(User.identity)).where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
@@ -132,11 +134,11 @@ async def update_user_quota(
     if data.quota_agent_ttl_hours is not None:
         user.quota_agent_ttl_hours = data.quota_agent_ttl_hours
 
-    await db.commit()
-    await db.refresh(user)
+    await query_dao.commit(db)
+    await query_dao.refresh(db, user)
 
     # Count agents
-    count_result = await db.execute(
+    count_result = await query_dao.execute(db, 
         select(func.count()).select_from(Agent).where(
             Agent.creator_id == user.id,
             Agent.is_expired == False,
@@ -167,7 +169,7 @@ async def update_user_role(
     user_id: uuid.UUID,
     data: RoleUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Change a user's role within the same company.
 
@@ -191,7 +193,7 @@ async def update_user_role(
         raise HTTPException(status_code=400, detail=f"Invalid role. Allowed: {', '.join(allowed_roles)}")
 
     # Find target user
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(User).options(selectinload(User.identity)).where(User.id == user_id)
     )
     target_user = result.scalar_one_or_none()
@@ -208,7 +210,7 @@ async def update_user_role(
 
     # Last-admin protection: if demoting an org_admin, check they are not the only one
     if target_user.role in ("org_admin", "platform_admin") and data.role not in ("org_admin", "platform_admin"):
-        admin_count_result = await db.execute(
+        admin_count_result = await query_dao.execute(db, 
             select(func.count()).select_from(User).where(
                 User.tenant_id == target_user.tenant_id,
                 User.role.in_(["org_admin", "platform_admin"]),
@@ -222,5 +224,5 @@ async def update_user_role(
             )
 
     target_user.role = data.role
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "user_id": str(user_id), "role": data.role}

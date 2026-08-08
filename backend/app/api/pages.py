@@ -1,3 +1,4 @@
+from typing import Any
 """Public pages API — serves published HTML without authentication."""
 
 import uuid
@@ -7,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.published_page import PublishedPage
@@ -22,9 +24,9 @@ router = APIRouter(prefix="/pages", tags=["pages"])
 # ── Public render (NO auth) ────────────────────────────
 
 @public_router.get("/p/{short_id}")
-async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
+async def render_page(short_id: str, db: Any = None):
     """Serve a published HTML page. No authentication required."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(PublishedPage).where(PublishedPage.short_id == short_id)
     )
     page = result.scalar_one_or_none()
@@ -39,12 +41,12 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
     html_content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
 
     # Increment view count
-    await db.execute(
+    await query_dao.execute(db, 
         update(PublishedPage)
         .where(PublishedPage.id == page.id)
         .values(view_count=PublishedPage.view_count + 1)
     )
-    await db.commit()
+    await query_dao.commit(db)
 
     return HTMLResponse(
         content=html_content,
@@ -62,13 +64,13 @@ async def render_page(short_id: str, db: AsyncSession = Depends(get_db)):
 async def list_pages(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List published pages for an agent."""
     from app.core.permissions import check_agent_access
     await check_agent_access(db, current_user, agent_id)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(PublishedPage)
         .where(PublishedPage.agent_id == agent_id)
         .order_by(PublishedPage.created_at.desc())

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import uuid
 
 import pytest
@@ -6,6 +7,8 @@ from fastapi import HTTPException
 from app.api import files as files_api
 from app.models.agent import Agent
 from app.models.user import User
+from app.services import workspace_collaboration
+from app.services.storage_runtime.local import LocalStorageBackend
 
 
 def make_user(**overrides):
@@ -70,14 +73,40 @@ async def test_manage_access_can_delete_agent_workspace_file(monkeypatch, tmp_pa
     async def fake_check_agent_access(_db, _current_user, _agent_id):
         return agent, "manage"
 
+    @asynccontextmanager
+    async def no_workspace_lock(*_args, **_kwargs):
+        yield
+
+    async def no_revision(*_args, **_kwargs):
+        return None
+
+    class DB:
+        async def commit(self):
+            return None
+
     monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(
+        workspace_collaboration,
+        "get_storage_backend",
+        lambda: LocalStorageBackend(str(tmp_path)),
+    )
+    monkeypatch.setattr(
+        workspace_collaboration,
+        "workspace_locks",
+        no_workspace_lock,
+    )
+    monkeypatch.setattr(
+        workspace_collaboration,
+        "record_revision",
+        no_revision,
+    )
 
     result = await files_api.delete_file(
         agent_id=agent.id,
         path="workspace/obsolete.md",
         current_user=user,
-        db=object(),
+        db=DB(),
     )
 
     assert result == {"status": "ok", "path": "workspace/obsolete.md"}

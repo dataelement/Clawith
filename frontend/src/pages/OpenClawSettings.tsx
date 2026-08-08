@@ -129,8 +129,8 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
 
                 {/* API Key Display Logic */}
                 {(() => {
-                    const activeKey = apiKey || (agent?.api_key_hash?.startsWith('oc-') ? agent.api_key_hash : null);
-                    const isLegacyHash = hasKey && !activeKey;
+                    const activeKey = apiKey;
+                    const hasConfiguredKey = hasKey && !activeKey;
 
                     if (activeKey) {
                         return (
@@ -171,8 +171,8 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                 fontFamily: 'monospace', fontSize: '13px', color: 'var(--text-secondary)',
                                 letterSpacing: '0.5px',
                             }}>
-                                {isLegacyHash
-                                    ? (isChinese ? '旧版密钥（已加密隐藏），请重新生成以查看明文' : 'Legacy key (encrypted), please regenerate to view')
+                                {hasConfiguredKey
+                                    ? (isChinese ? '密钥已配置。为安全起见，无法再次显示明文。' : 'A key is configured. Its plaintext cannot be shown again for security.')
                                     : (isChinese ? '未生成' : 'Not generated')}
                             </div>
                             {canManage && <button
@@ -180,7 +180,7 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                 onClick={() => setShowConfirm(true)}
                                 style={{ padding: '6px 16px', fontSize: '12px', whiteSpace: 'nowrap' }}
                             >
-                                {isLegacyHash
+                                {hasConfiguredKey
                                     ? (isChinese ? '重新生成' : 'Regenerate')
                                     : (isChinese ? '生成' : 'Generate')}
                             </button>}
@@ -277,9 +277,9 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                             : t('agent.settings.perm.custom', 'Custom')}
                                 </div>
                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                    {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                    {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
-                                    {scope === 'custom' && t('agent.settings.perm.customDesc', 'Start private, then choose platform users in Settings')}
+                                    {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All platform users and agents can use it; Plaza is enabled')}
+                                    {scope === 'private' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use and manage it; Plaza is disabled')}
+                                    {scope === 'custom' && t('agent.settings.perm.customDesc', 'Only selected members and agents can see and use it. Plaza is disabled')}
                                 </div>
                             </div>
                         </label>
@@ -295,7 +295,7 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                         <div style={{ display: 'flex', gap: '8px' }}>
                             {[
                                 { val: 'use', label: t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') },
+                                { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, and Directory') },
                             ].map(opt => (
                                 <label key={opt.val}
                                     style={{

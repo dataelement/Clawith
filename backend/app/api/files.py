@@ -1,19 +1,21 @@
+from typing import Any
 """File management API routes for agent workspaces."""
 
+import asyncio
 import base64
 import csv
 import io
 import mimetypes
-import os
 import uuid
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File as FastFile, HTTPException, UploadFile as UploadFileType, status
 from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
@@ -27,7 +29,6 @@ from app.services.workspace_collaboration import (
     delete_workspace_file,
     list_revisions,
     read_text_if_exists,
-    record_revision,
     release_edit_lock,
     write_workspace_file,
 )
@@ -72,6 +73,24 @@ class FileWrite(BaseModel):
 class FileLockBody(BaseModel):
     path: str
     session_id: str | None = None
+
+
+async def _directory_total_size(storage, storage_key: str) -> int:
+    """Return the recursive byte size of all files below a storage directory."""
+    total = 0
+    pending = [normalize_storage_key(storage_key)]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        for entry in await storage.list_dir(current):
+            if entry.is_dir:
+                pending.append(normalize_storage_key(entry.key))
+            else:
+                total += max(0, entry.size)
+    return total
 
 
 class RestoreRevisionBody(BaseModel):
@@ -208,7 +227,7 @@ async def list_files(
     agent_id: uuid.UUID,
     path: str = "",
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
@@ -219,7 +238,7 @@ async def list_files(
     path_is_dir = await storage.is_dir(storage_key)
     if not path_exists and not path_is_dir:
         if not (
-            normalized_path == ""
+            normalized_path in {"", "workspace", "skills"}
             or (is_enterprise and normalized_path == "enterprise_info")
         ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
@@ -238,6 +257,13 @@ async def list_files(
             url=None,
         ))
     entries = await storage.list_dir(storage_key) if path_exists or path_is_dir else []
+    is_skills_path = normalized_path == "skills" or normalized_path.startswith("skills/")
+    directory_entries = [entry for entry in entries if entry.is_dir] if is_skills_path else []
+    directory_sizes = dict(zip(
+        (entry.key for entry in directory_entries),
+        await asyncio.gather(*(_directory_total_size(storage, entry.key) for entry in directory_entries)),
+        strict=True,
+    ))
     for entry in entries:
         if entry.name == '.gitkeep':
             continue
@@ -254,7 +280,7 @@ async def list_files(
             name=entry.name,
             path=rel_path,
             is_dir=entry.is_dir,
-            size=entry.size,
+            size=directory_sizes.get(entry.key, entry.size),
             modified_at=entry.modified_at,
             version_token=_entry_version_token(entry),
             url=f"/api/agents/{agent_id}/files/download?path={rel_path}" if not entry.is_dir else None
@@ -267,7 +293,7 @@ async def read_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
@@ -406,7 +432,7 @@ async def preview_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Return a browser-friendly preview payload for Workspace files."""
     await check_agent_access(db, current_user, agent_id)
@@ -537,7 +563,7 @@ async def download_file(
     token: str = "",
     inline: bool = False,
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Download / serve a file from the agent workspace (browser-friendly).
     
@@ -560,7 +586,7 @@ async def download_file(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await query_dao.execute(db, select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
@@ -598,7 +624,7 @@ async def write_file(
     path: str,
     data: FileWrite,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
@@ -634,7 +660,7 @@ async def write_file(
     )
     if not result.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": result.path, "revision_id": result.revision_id}
 
 
@@ -643,7 +669,7 @@ async def lock_file(
     agent_id: uuid.UUID,
     data: FileLockBody,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Acquire or refresh a short-lived human editing lock for a file."""
     await check_agent_access(db, current_user, agent_id)
@@ -656,7 +682,7 @@ async def lock_file(
         user_id=current_user.id,
         session_id=data.session_id,
     )
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": lock.path, "expires_at": lock.expires_at.isoformat()}
 
 
@@ -665,12 +691,12 @@ async def unlock_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Release the current user's edit lock for a file."""
     await check_agent_access(db, current_user, agent_id)
     await release_edit_lock(db, agent_id=agent_id, path=path, user_id=current_user.id)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -679,7 +705,7 @@ async def get_file_revisions(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List version history for the currently opened Workspace file."""
     await check_agent_access(db, current_user, agent_id)
@@ -710,11 +736,11 @@ async def restore_file_revision(
     agent_id: uuid.UUID,
     data: RestoreRevisionBody,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Restore a file to a previous revision's after-content."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceFileRevision).where(
             WorkspaceFileRevision.id == data.revision_id,
             WorkspaceFileRevision.agent_id == agent_id,
@@ -740,7 +766,7 @@ async def restore_file_revision(
     )
     if not restored.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=restored.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": revision.path, "revision_id": restored.revision_id}
 
 
@@ -750,7 +776,7 @@ async def delete_file(
     path: str,
     expected_version_token: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Delete a file."""
     await _require_agent_file_delete_access(db, current_user, agent_id)
@@ -759,7 +785,6 @@ async def delete_file(
             status_code=status.HTTP_410_GONE,
             detail="Focus is stored in the system database. Use the Focus API.",
         )
-    storage = get_storage_backend()
     if path.startswith("enterprise_info") and current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Only admins can delete enterprise knowledge base files")
     if path.strip("/") == "enterprise_info":
@@ -778,7 +803,7 @@ async def delete_file(
         if "not found" in result.message.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.message)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -791,7 +816,7 @@ async def import_skill_to_agent(
     agent_id: uuid.UUID,
     body: ImportSkillBody,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Import a global skill into this agent's skills/ workspace folder.
 
@@ -801,10 +826,10 @@ async def import_skill_to_agent(
     await check_agent_access(db, current_user, agent_id)
 
     from sqlalchemy.orm import selectinload
-    from app.models.skill import Skill, SkillFile
+    from app.models.skill import Skill
 
     # Load the global skill with its files
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
     )
     skill = result.scalar_one_or_none()
@@ -830,10 +855,7 @@ async def import_skill_to_agent(
     }
 
 
-# Separate router for file uploads (binary) since we need UploadFile
-from fastapi import File as FastFile, UploadFile as UploadFileType
-
-
+# Separate router for file uploads (binary).
 upload_router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 DEFAULT_UPLOAD_DIR = "workspace/uploads"
 
@@ -844,7 +866,7 @@ async def upload_file_to_workspace(
     file: UploadFileType = FastFile(...),
     path: str = "workspace/knowledge_base",
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Upload a binary file to agent workspace."""
     await check_agent_access(db, current_user, agent_id)
@@ -943,7 +965,6 @@ async def upload_enterprise_kb_file(
     current_user: User = Depends(get_current_user),
 ):
     """Upload a file to enterprise knowledge base (tenant-scoped)."""
-    from app.core.security import require_role
     # Only admin can upload to enterprise KB
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=403, detail="Only admins can upload to enterprise knowledge base")
@@ -1058,7 +1079,7 @@ async def agent_import_from_clawhub(
     agent_id: uuid.UUID,
     body: ClawhubImportBody,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Import a skill from ClawHub directly into this agent's skills/ workspace."""
     await check_agent_access(db, current_user, agent_id)
@@ -1113,7 +1134,7 @@ async def agent_import_from_url(
     agent_id: uuid.UUID,
     body: UrlImportBody,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Import a skill from a GitHub URL directly into this agent's skills/ workspace."""
     await check_agent_access(db, current_user, agent_id)

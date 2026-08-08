@@ -1,3 +1,4 @@
+from typing import Any
 """Tenant (Company) management API.
 
 Public endpoints for self-service company creation and joining.
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.dao import query_dao
 from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -84,7 +85,7 @@ async def _get_updateable_tenant(
     elif current_user.role != "platform_admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -153,7 +154,7 @@ class SelfCreateResponse(BaseModel):
 async def self_create_company(
     data: TenantCreate,
     current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Create a new company (self-service). The creator becomes org_admin.
 
@@ -167,7 +168,7 @@ async def self_create_company(
 
     # Check if self-creation is allowed
     from app.models.system_settings import SystemSetting
-    setting = await db.execute(
+    setting = await query_dao.execute(db, 
         select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
     )
     s = setting.scalar_one_or_none()
@@ -177,8 +178,8 @@ async def self_create_company(
 
     slug = _slugify(data.name)
     tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
-    db.add(tenant)
-    await db.flush()
+    query_dao.add(db, tenant)
+    await query_dao.flush(db)
 
     access_token = None
 
@@ -202,21 +203,21 @@ async def self_create_company(
             quota_max_agents=tenant.default_max_agents,
             quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
         )
-        db.add(new_user)
-        await db.flush()
+        query_dao.add(db, new_user)
+        await query_dao.flush(db)
 
         # Create Participant for the new user record
-        db.add(Participant(
+        query_dao.add(db, Participant(
             type="user",
             ref_id=new_user.id,
             display_name=new_user.display_name,
             avatar_url=new_user.avatar_url,
         ))
-        await db.flush()
+        await query_dao.flush(db)
         await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
-        access_token = create_access_token(str(new_user.id), new_user.role)
+        access_token = create_access_token(str(new_user.id), new_user.role, tenant_id=str(new_user.tenant_id) if new_user.tenant_id else None)
     else:
         # Registration flow: user has no tenant yet, assign directly
         current_user.tenant_id = tenant.id
@@ -226,10 +227,10 @@ async def self_create_company(
         current_user.quota_message_period = tenant.default_message_period
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
-        await db.flush()
+        await query_dao.flush(db)
         await registration_service.bind_org_member(current_user)
 
-    await db.commit()
+    await query_dao.commit(db)
 
     return SelfCreateResponse(
         tenant=TenantOut.model_validate(tenant),
@@ -254,7 +255,7 @@ class JoinResponse(BaseModel):
 async def join_company(
     data: JoinRequest,
     current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Join an existing company using an invitation code.
 
@@ -262,7 +263,7 @@ async def join_company(
     - Registration flow (user has no tenant yet): assigns tenant directly
     - Switch-org flow (user already has a tenant): creates a new User record"""
     from app.models.invitation_code import InvitationCode
-    ic_result = await db.execute(
+    ic_result = await query_dao.execute(db, 
         select(InvitationCode).where(
             InvitationCode.code == data.invitation_code,
             InvitationCode.is_active == True,
@@ -281,13 +282,13 @@ async def join_company(
         raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
 
     # Find the company
-    t_result = await db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id))
+    t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == code_obj.tenant_id))
     tenant = t_result.scalar_one_or_none()
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=400, detail="Company not found or is disabled")
 
     # Check if user already belongs to this specific tenant
-    existing_membership = await db.execute(
+    existing_membership = await query_dao.execute(db, 
         select(User).where(
             User.identity_id == current_user.identity_id,
             User.tenant_id == tenant.id,
@@ -297,7 +298,7 @@ async def join_company(
         raise HTTPException(status_code=400, detail="You already belong to this company")
 
     # Check if this company has an org_admin already
-    admin_check = await db.execute(
+    admin_check = await query_dao.execute(db, 
         select(sqla_func.count()).select_from(User).where(
             User.tenant_id == tenant.id,
             User.role.in_(["org_admin", "platform_admin"]),
@@ -330,21 +331,21 @@ async def join_company(
             quota_max_agents=tenant.default_max_agents,
             quota_agent_ttl_hours=tenant.default_agent_ttl_hours,
         )
-        db.add(new_user)
-        await db.flush()
+        query_dao.add(db, new_user)
+        await query_dao.flush(db)
 
         # Create Participant for the new user record
-        db.add(Participant(
+        query_dao.add(db, Participant(
             type="user",
             ref_id=new_user.id,
             display_name=new_user.display_name,
             avatar_url=new_user.avatar_url,
         ))
-        await db.flush()
+        await query_dao.flush(db)
         await registration_service.bind_org_member(new_user)
 
         # Generate token scoped to the new user so frontend can switch context
-        access_token = create_access_token(str(new_user.id), new_user.role)
+        access_token = create_access_token(str(new_user.id), new_user.role, tenant_id=str(new_user.tenant_id) if new_user.tenant_id else None)
         final_role = new_user.role
     else:
         # Registration flow: user has no tenant yet, assign directly
@@ -357,14 +358,14 @@ async def join_company(
         current_user.quota_max_agents = tenant.default_max_agents
         current_user.quota_agent_ttl_hours = tenant.default_agent_ttl_hours
         final_role = current_user.role
-        await db.flush()
+        await query_dao.flush(db)
         await registration_service.bind_org_member(current_user)
 
     # Increment invitation code usage
     code_obj.used_count += 1
-    await db.flush()
+    await query_dao.flush(db)
 
-    await db.commit()
+    await query_dao.commit(db)
 
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
@@ -376,10 +377,10 @@ async def join_company(
 # ─── Registration Config ───────────────────────────────
 
 @router.get("/registration-config")
-async def get_registration_config(db: AsyncSession = Depends(get_db)):
+async def get_registration_config(db: Any = None):
     """Public — returns whether self-creation of companies is allowed."""
     from app.models.system_settings import SystemSetting
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
     )
     s = result.scalar_one_or_none()
@@ -392,7 +393,7 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
 @router.get("/resolve-by-domain")
 async def resolve_tenant_by_domain(
     domain: str,
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Resolve a tenant by its sso_domain or subdomain slug.
 
@@ -406,7 +407,7 @@ async def resolve_tenant_by_domain(
     tenant = None
 
     from app.models.system_settings import SystemSetting
-    setting_result = await db.execute(
+    setting_result = await query_dao.execute(db, 
         select(SystemSetting).where(SystemSetting.key == "sso_custom_domain_redirect_enabled")
     )
     setting_s = setting_result.scalar_one_or_none()
@@ -416,7 +417,7 @@ async def resolve_tenant_by_domain(
         # 1. Match by stripping protocol from stored sso_domain
         # sso_domain = "https://acme.clawith.ai" → compare against "acme.clawith.ai"
         for proto in ("https://", "http://"):
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Tenant).where(Tenant.sso_domain == f"{proto}{domain}")
             )
             tenant = result.scalar_one_or_none()
@@ -427,7 +428,7 @@ async def resolve_tenant_by_domain(
         if not tenant and ":" in domain:
             domain_no_port = domain.split(":")[0]
             for proto in ("https://", "http://"):
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(Tenant).where(Tenant.sso_domain.like(f"{proto}{domain_no_port}%"))
                 )
                 tenant = result.scalar_one_or_none()
@@ -440,7 +441,7 @@ async def resolve_tenant_by_domain(
         m = re.match(r"^([a-z0-9][a-z0-9\-]*[a-z0-9])\.clawith\.ai$", domain.lower())
         if m:
             slug = m.group(1)
-            result = await db.execute(select(Tenant).where(Tenant.slug == slug))
+            result = await query_dao.execute(db, select(Tenant).where(Tenant.slug == slug))
             tenant = result.scalar_one_or_none()
 
     if not tenant or not tenant.is_active or not tenant.sso_enabled:
@@ -460,17 +461,17 @@ async def resolve_tenant_by_domain(
 @router.get("/", response_model=list[TenantOut])
 async def list_tenants(
     current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List all tenants (platform_admin only)."""
-    result = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+    result = await query_dao.execute(db, select(Tenant).order_by(Tenant.created_at.desc()))
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
 
 
 @router.get("/me", response_model=TenantOut)
 async def get_my_tenant(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Return the current user's own tenant. Any authenticated member can read
     this — the wizard and the chat model switcher need default_model_id, which
@@ -478,7 +479,7 @@ async def get_my_tenant(
     """
     if not current_user.tenant_id:
         raise HTTPException(status_code=404, detail="User is not in a tenant")
-    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == current_user.tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -488,13 +489,13 @@ async def get_my_tenant(
 @router.get("/me/token-usage")
 async def get_my_tenant_token_usage(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Return aggregate token and prompt-cache usage for the current company."""
     if not current_user.tenant_id:
         raise HTTPException(status_code=404, detail="User is not in a tenant")
 
-    row = (await db.execute(
+    row = (await query_dao.execute(db, 
         select(
             sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_today), 0).label("tokens_today"),
             sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_month), 0).label("tokens_month"),
@@ -529,7 +530,7 @@ async def get_my_tenant_token_usage(
 async def get_tenant(
     tenant_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get tenant details. Platform admins can view any; org_admins only their own."""
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -539,7 +540,7 @@ async def get_tenant(
             raise HTTPException(status_code=403, detail="Organization admin must belong to a company")
         if current_user.tenant_id != tenant_id:
             raise HTTPException(status_code=403, detail="Access denied")
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -551,7 +552,7 @@ async def update_tenant(
     tenant_id: uuid.UUID,
     data: TenantUpdate,
     current_user: User = Depends(require_role("org_admin", "platform_admin")),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update tenant settings. Platform admins can update any; org_admins only their own."""
     if current_user.role == "org_admin":
@@ -559,7 +560,7 @@ async def update_tenant(
             raise HTTPException(status_code=403, detail="Organization admin must belong to a company")
         if current_user.tenant_id != tenant_id:
             raise HTTPException(status_code=403, detail="Can only update your own company")
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -574,7 +575,7 @@ async def update_tenant(
 
     for field, value in update_data.items():
         setattr(tenant, field, value)
-    await db.flush()
+    await query_dao.flush(db)
     return TenantOut.model_validate(tenant)
 
 
@@ -594,7 +595,7 @@ async def upload_tenant_logo(
     tenant_id: uuid.UUID,
     file: UploadFile = File(...),
     current_user: User = Depends(require_role("org_admin", "platform_admin")),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Upload a cropped square company logo.
 
@@ -628,7 +629,7 @@ async def upload_tenant_logo(
     config = dict(tenant.im_config or {})
     config["logo_url"] = _tenant_logo_url(tenant_id)
     tenant.im_config = config
-    await db.flush()
+    await query_dao.flush(db)
     return TenantOut.model_validate(tenant)
 
 
@@ -636,7 +637,7 @@ async def upload_tenant_logo(
 async def delete_tenant_logo(
     tenant_id: uuid.UUID,
     current_user: User = Depends(require_role("org_admin", "platform_admin")),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Remove a custom company logo and fall back to the generated default."""
     tenant = await _get_updateable_tenant(tenant_id, current_user, db)
@@ -649,7 +650,7 @@ async def delete_tenant_logo(
     config = dict(tenant.im_config or {})
     config.pop("logo_url", None)
     tenant.im_config = config
-    await db.flush()
+    await query_dao.flush(db)
     return TenantOut.model_validate(tenant)
 
 
@@ -659,16 +660,16 @@ async def assign_user_to_tenant(
     user_id: uuid.UUID,
     role: str = "member",
     current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Assign a user to a tenant with a specific role."""
     # Verify tenant
-    t_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     if not t_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Tenant not found")
 
     # Verify user
-    u_result = await db.execute(select(User).where(User.id == user_id))
+    u_result = await query_dao.execute(db, select(User).where(User.id == user_id))
     user = u_result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -678,7 +679,7 @@ async def assign_user_to_tenant(
 
     user.tenant_id = tenant_id
     user.role = role
-    await db.flush()
+    await query_dao.flush(db)
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
 
 
@@ -688,7 +689,7 @@ async def assign_user_to_tenant(
 async def delete_tenant(
     tenant_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Permanently delete a company and ALL its data.
 
@@ -712,7 +713,7 @@ async def delete_tenant(
         raise HTTPException(status_code=403, detail="Only the org admin of this company (or a platform admin) can delete it")
 
     # ── Verify tenant exists ─────────────────────────────────────────────────
-    t_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    t_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = t_result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -727,88 +728,88 @@ async def delete_tenant(
     agent_sub = "SELECT id FROM agents WHERE tenant_id = :tid"
 
     # 1. Approval requests (has agent_id FK to agents — must delete before agents)
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM approval_requests WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 2. Notifications (has both user_id + agent_id FKs — must delete before both)
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM notifications WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
-    await db.execute(text(
+    await query_dao.execute(db, text(
         "DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE tenant_id = :tid)"
     ), {"tid": tid})
 
     # 3. Bi-directional agent-to-agent relationships
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM agent_agent_relationships "
         f"WHERE agent_id IN ({agent_sub}) OR target_agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 4. Agent-to-human relationships
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM agent_relationships WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 5. Task logs → tasks
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM task_logs "
         f"WHERE task_id IN (SELECT id FROM tasks WHERE agent_id IN ({agent_sub}))"
     ), {"tid": tid})
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM tasks WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 6. chat_messages has no session_id — delete directly via agent_id
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM chat_messages WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
     # 6b. Chat sessions
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM chat_sessions WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 7. Agent triggers  (table: agent_triggers, NOT triggers)
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM agent_triggers WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 8. Channel configs, permissions, credentials
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM channel_configs WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM agent_permissions WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
-    await db.execute(text(
+    await query_dao.execute(db, text(
         f"DELETE FROM agent_credentials WHERE agent_id IN ({agent_sub})"
     ), {"tid": tid})
 
     # 9. Agents
-    await db.execute(text("DELETE FROM agents WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM agents WHERE tenant_id = :tid"), {"tid": tid})
 
     # 10. OKR data (okr_key_results, okr_alignments, okr_progress_logs cascade from okr_objectives FK)
-    await db.execute(text("DELETE FROM okr_settings WHERE tenant_id = :tid"), {"tid": tid})
-    await db.execute(text("DELETE FROM work_reports WHERE tenant_id = :tid"), {"tid": tid})
-    await db.execute(text("DELETE FROM okr_objectives WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM okr_settings WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM work_reports WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM okr_objectives WHERE tenant_id = :tid"), {"tid": tid})
 
     # 11. Org structure
-    await db.execute(text("DELETE FROM org_members WHERE tenant_id = :tid"), {"tid": tid})
-    await db.execute(text("DELETE FROM org_departments WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM org_members WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM org_departments WHERE tenant_id = :tid"), {"tid": tid})
 
     # 12. Invitation codes
-    await db.execute(text("DELETE FROM invitation_codes WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM invitation_codes WHERE tenant_id = :tid"), {"tid": tid})
 
     # 12. Users of this tenant
-    await db.execute(text("DELETE FROM users WHERE tenant_id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM users WHERE tenant_id = :tid"), {"tid": tid})
 
     # 13. Delete the tenant itself
-    await db.execute(text("DELETE FROM tenants WHERE id = :tid"), {"tid": tid})
+    await query_dao.execute(db, text("DELETE FROM tenants WHERE id = :tid"), {"tid": tid})
 
-    await db.commit()
+    await query_dao.commit(db)
 
     # ── Find fallback tenant for the caller ──────────────────────────────────
-    fallback_result = await db.execute(
+    fallback_result = await query_dao.execute(db, 
         select(User.tenant_id).where(
             User.identity_id == identity_id,
             User.tenant_id != tenant_id,

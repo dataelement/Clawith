@@ -10,13 +10,21 @@ from app.services.storage_runtime.base import StorageBackend
 from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
-from app.services.storage_runtime.utils import (
-    agent_storage_prefix,
-    normalize_storage_key,
-    tenant_storage_prefix,
-)
+from app.services.storage_runtime.utils import agent_storage_prefix, normalize_storage_key, tenant_storage_prefix
+
+__all__ = [
+    "agent_storage_prefix",
+    "ensure_local_path",
+    "get_storage_backend",
+    "guess_content_type",
+    "normalize_storage_key",
+    "tenant_storage_prefix",
+]
 
 _storage_backend: StorageBackend | None = None
+_CONTENT_TYPE_OVERRIDES = {
+    ".webp": "image/webp",
+}
 
 
 def get_storage_backend() -> StorageBackend:
@@ -57,4 +65,9 @@ async def ensure_local_path(key: str) -> Path:
 
 
 def guess_content_type(filename: str) -> str:
-    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    suffix = Path(filename).suffix.lower()
+    return (
+        _CONTENT_TYPE_OVERRIDES.get(suffix)
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )

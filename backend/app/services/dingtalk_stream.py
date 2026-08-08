@@ -16,7 +16,7 @@ import httpx
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.channel_config import ChannelConfig
 from app.services.dingtalk_token import dingtalk_token_manager
 from app.services.storage import store_agent_upload
@@ -662,8 +662,8 @@ class DingTalkStreamManager:
     async def start_all(self):
         """Start Stream clients for all configured DingTalk agents."""
         logger.info("[DingTalk Stream] Initializing all active DingTalk channels...")
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured == True,
                     ChannelConfig.channel_type == "dingtalk",

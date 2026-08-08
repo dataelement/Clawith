@@ -1,13 +1,16 @@
+from typing import Any
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
 import uuid
 import logging
-
-logger = logging.getLogger(__name__)
+from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from pydantic import BaseModel
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,14 +34,76 @@ from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm import get_provider_manifest, get_model_api_key, create_llm_client, LLMMessage
 from app.services.platform_service import platform_service
 from app.services.sso_service import sso_service
+from app.services.agent_runtime.runtime_model_settings import (
+    resolve_runtime_model_settings,
+    runtime_model_setting_key,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 settings = get_settings()
+
+_CAPABILITY_PROBE_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "capability_probe",
+        "description": "Return the fixed value through a native structured tool call.",
+        "parameters": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["ok"]}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _has_valid_capability_probe(tool_calls: list[dict]) -> bool:
+    for call in tool_calls:
+        function = call.get("function")
+        if not isinstance(function, dict) or function.get("name") != "capability_probe":
+            continue
+        raw_arguments = function.get("arguments", "{}")
+        try:
+            arguments = (
+                json.loads(raw_arguments)
+                if isinstance(raw_arguments, str)
+                else dict(raw_arguments)
+                if isinstance(raw_arguments, dict)
+                else None
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if arguments == {"value": "ok"}:
+            return True
+    return False
 
 
 def _is_platform_admin_user(user: User) -> bool:
     """Return true for tenant-role or identity-level platform admins."""
     return user.role == "platform_admin" or bool(getattr(getattr(user, "identity", None), "is_platform_admin", False))
+
+
+def _llm_management_tenant_id(current_user: User, requested_tenant_id: str | None = None) -> uuid.UUID | None:
+    """Resolve an LLM-management tenant without letting org admins switch tenants."""
+    raw_tenant_id = requested_tenant_id or current_user.tenant_id
+    if raw_tenant_id is None:
+        return None
+    try:
+        tenant_id = uuid.UUID(str(raw_tenant_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid tenant ID") from exc
+    if not _is_platform_admin_user(current_user) and tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Cannot manage another tenant's models")
+    return tenant_id
+
+
+def _llm_model_scope(model_id: uuid.UUID, current_user: User):
+    """Build the tenant-scoped model lookup used by all mutable LLM routes."""
+    conditions = [LLMModel.id == model_id, LLMModel.deleted_at.is_(None)]
+    if not _is_platform_admin_user(current_user):
+        conditions.append(LLMModel.tenant_id == current_user.tenant_id)
+    return select(LLMModel).where(*conditions)
 
 
 # ─── Public: Check Email Exists ────────────────────────
@@ -50,7 +115,7 @@ class CheckEmailRequest(BaseModel):
 @router.post("/check-email-exists")
 async def check_email_exists(
     data: CheckEmailRequest,
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Public endpoint — check if an email address is already registered on this platform.
 
@@ -82,15 +147,124 @@ class LLMTestRequest(BaseModel):
     model_id: str | None = None  # existing model ID to use stored API key
 
 
-async def _load_llm_test_api_key(model_id: str | None) -> str | None:
-    """Load the stored API key for llm-test using a short-lived independent session."""
-    if not model_id:
-        return None
+@dataclass(frozen=True, slots=True)
+class LLMTestTarget:
+    """Exact configuration tested without holding a DB transaction over I/O."""
 
+    model_id: uuid.UUID | None
+    provider: str
+    model: str
+    api_key: str
+    base_url: str | None
+    stored_config_fingerprint: str | None = None
+
+
+def _llm_config_fingerprint(model: LLMModel) -> str:
+    payload = json.dumps(
+        {
+            "provider": model.provider,
+            "model": model.model,
+            "base_url": model.base_url,
+            "api_key_encrypted": model.api_key_encrypted,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalized_base_url(value: str | None) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+async def _resolve_llm_test_target(
+    data: LLMTestRequest,
+    current_user: User,
+) -> LLMTestTarget:
+    """Resolve either an unsaved draft or the exact persisted model identity."""
+    if not data.model_id:
+        api_key = (
+            data.api_key
+            if data.api_key and not data.api_key.startswith("****")
+            else ""
+        )
+        return LLMTestTarget(
+            model_id=None,
+            provider=data.provider.strip(),
+            model=data.model.strip(),
+            api_key=api_key,
+            base_url=data.base_url or None,
+        )
+
+    try:
+        model_id = uuid.UUID(data.model_id)
+    except ValueError as exc:
+        raise ValueError("model_id must be a valid UUID") from exc
     async with async_session() as session:
-        result = await session.execute(select(LLMModel).where(LLMModel.id == model_id))
+        result = await session.execute(
+            select(LLMModel).where(
+                LLMModel.id == model_id,
+                LLMModel.deleted_at.is_(None),
+            )
+        )
         existing = result.scalar_one_or_none()
-        return get_model_api_key(existing) if existing else None
+    if existing is None:
+        raise ValueError("Stored model does not exist")
+    if (
+        not _is_platform_admin_user(current_user)
+        and existing.tenant_id != current_user.tenant_id
+    ):
+        raise PermissionError("Stored model is outside the current tenant")
+    if data.api_key and not data.api_key.startswith("****"):
+        raise ValueError("Save the API key change before testing this model")
+    if (
+        data.provider.strip() != existing.provider
+        or data.model.strip() != existing.model
+        or _normalized_base_url(data.base_url)
+        != _normalized_base_url(existing.base_url)
+    ):
+        raise ValueError("Save provider, model, and Base URL changes before testing")
+    return LLMTestTarget(
+        model_id=existing.id,
+        provider=existing.provider,
+        model=existing.model,
+        api_key=get_model_api_key(existing),
+        base_url=existing.base_url,
+        stored_config_fingerprint=_llm_config_fingerprint(existing),
+    )
+
+
+async def _record_llm_tool_capability(
+    target: LLMTestTarget,
+    *,
+    supported: bool | None,
+    error: str | None,
+) -> bool:
+    """Record a probe only if the persisted model configuration is unchanged."""
+    if target.model_id is None or target.stored_config_fingerprint is None:
+        return False
+    async with async_session() as session:
+        result = await session.execute(
+            select(LLMModel)
+            .where(
+                LLMModel.id == target.model_id,
+                LLMModel.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        existing = result.scalar_one_or_none()
+        if (
+            existing is None
+            or _llm_config_fingerprint(existing)
+            != target.stored_config_fingerprint
+        ):
+            return False
+        existing.supports_tool_calling = supported
+        existing.tool_calling_capability_source = "probe"
+        existing.tool_calling_checked_at = datetime.now(UTC)
+        existing.tool_calling_error = error[:500] if error else None
+        await session.commit()
+        return True
 
 
 @router.post("/llm-test")
@@ -98,35 +272,115 @@ async def test_llm_model(
     data: LLMTestRequest,
     current_user: User = Depends(get_current_admin),
 ):
-    """Test an LLM model configuration by making a simple API call."""
+    """Test connectivity and native structured tool calling independently."""
     import time
-
-    # Resolve API key: use provided key, or look up from stored model
-    api_key = data.api_key if data.api_key and not data.api_key.startswith('****') else None
-    if not api_key and data.model_id:
-        api_key = await _load_llm_test_api_key(data.model_id)
-    if not api_key:
-        return {"success": False, "latency_ms": 0, "error": "API Key is required"}
 
     start = time.time()
     try:
+        target = await _resolve_llm_test_target(data, current_user)
+    except (PermissionError, ValueError) as exc:
+        return {
+            "success": False,
+            "connection_success": False,
+            "latency_ms": 0,
+            "connection_latency_ms": 0,
+            "tool_calling_supported": None,
+            "tool_calling_latency_ms": 0,
+            "capability_recorded": False,
+            "error": str(exc),
+        }
+    if not target.api_key:
+        return {
+            "success": False,
+            "connection_success": False,
+            "latency_ms": 0,
+            "connection_latency_ms": 0,
+            "tool_calling_supported": None,
+            "tool_calling_latency_ms": 0,
+            "capability_recorded": False,
+            "error": "API Key is required",
+        }
+
+    client = None
+    try:
         client = create_llm_client(
-            provider=data.provider,
-            model=data.model,
-            api_key=api_key,
-            base_url=data.base_url or None,
+            provider=target.provider,
+            model=target.model,
+            api_key=target.api_key,
+            base_url=target.base_url,
         )
-        # Simple test: ask model to say "ok"
+        connection_start = time.time()
         response = await client.complete(
             messages=[LLMMessage(role="user", content="Say 'ok' and nothing else.")],
+            tools=None,
             max_tokens=16,
         )
-        latency_ms = int((time.time() - start) * 1000)
+        connection_latency_ms = int((time.time() - connection_start) * 1000)
         reply = (response.content or "")[:100] if response else ""
-        return {"success": True, "latency_ms": latency_ms, "reply": reply}
+        tool_start = time.time()
+        tool_error: str | None = None
+        try:
+            tool_response = await client.complete(
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "This is a native tool-calling protocol test. Call the "
+                            "provided capability_probe tool with value set to ok."
+                        ),
+                    ),
+                    LLMMessage(
+                        role="user",
+                        content="Call capability_probe now with value set to ok.",
+                    ),
+                ],
+                tools=[_CAPABILITY_PROBE_TOOL_DEFINITION],
+                max_tokens=128,
+            )
+            tool_calls = list(tool_response.tool_calls or [])
+            tool_supported = _has_valid_capability_probe(tool_calls)
+            if not tool_supported:
+                tool_error = (
+                    "Model returned plain text or an invalid tool call instead of "
+                    "a valid capability_probe(value=ok) tool call."
+                )
+        except Exception as exc:
+            tool_supported = None
+            tool_error = f"Native tool probe failed: {type(exc).__name__}: {exc}"[:500]
+        tool_latency_ms = int((time.time() - tool_start) * 1000)
+        capability_recorded = await _record_llm_tool_capability(
+            target,
+            supported=tool_supported,
+            error=tool_error,
+        )
+        latency_ms = int((time.time() - start) * 1000)
+        return {
+            "success": tool_supported is True,
+            "connection_success": True,
+            "latency_ms": latency_ms,
+            "connection_latency_ms": connection_latency_ms,
+            "reply": reply,
+            "tool_calling_supported": tool_supported,
+            "tool_calling_latency_ms": tool_latency_ms,
+            "tool_calling_error": tool_error,
+            "capability_recorded": capability_recorded,
+            "error": tool_error,
+        }
     except Exception as e:
         latency_ms = int((time.time() - start) * 1000)
-        return {"success": False, "latency_ms": latency_ms, "error": str(e)[:500]}
+        return {
+            "success": False,
+            "connection_success": False,
+            "latency_ms": latency_ms,
+            "connection_latency_ms": latency_ms,
+            "tool_calling_supported": None,
+            "tool_calling_latency_ms": 0,
+            "capability_recorded": False,
+            "error": str(e)[:500],
+        }
+    finally:
+        if client is not None:
+            await client.close()
 
 
 
@@ -134,16 +388,15 @@ async def test_llm_model(
 async def list_llm_models(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List LLM models scoped to the selected tenant."""
-    # Authorization: non-platform admins can only see their own tenant's models
-    if tenant_id and current_user.role != "platform_admin":
-        if str(current_user.tenant_id) != tenant_id:
-            raise HTTPException(status_code=403, detail="Cannot access other tenant's models")
-
-    tid = tenant_id or str(current_user.tenant_id) if current_user.tenant_id else None
-    query = select(LLMModel).order_by(LLMModel.created_at.desc())
+    tid = _llm_management_tenant_id(current_user, tenant_id)
+    query = (
+        select(LLMModel)
+        .where(LLMModel.deleted_at.is_(None))
+        .order_by(LLMModel.created_at.desc())
+    )
     if tid:
         query = query.where(LLMModel.tenant_id == uuid.UUID(tid))
     result = await db.execute(query)
@@ -162,10 +415,10 @@ async def add_llm_model(
     data: LLMModelCreate,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Add a new LLM model to the tenant's pool (admin)."""
-    tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
+    tid = _llm_management_tenant_id(current_user, tenant_id)
     model = LLMModel(
         provider=data.provider,
         model=data.model,
@@ -178,7 +431,7 @@ async def add_llm_model(
         supports_vision=data.supports_vision,
         max_output_tokens=data.max_output_tokens,
         request_timeout=data.request_timeout,
-        tenant_id=uuid.UUID(tid) if tid else None,
+        tenant_id=tid,
     )
     db.add(model)
     await db.flush()
@@ -199,10 +452,10 @@ async def add_llm_model(
 async def set_default_llm_model(
     model_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Mark this model as the tenant's default for new agents."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(_llm_model_scope(model_id, current_user))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -247,44 +500,35 @@ async def set_default_llm_model(
 @router.delete("/llm-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_llm_model(
     model_id: uuid.UUID,
-    force: bool = False,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
-    """Remove an LLM model from the pool."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    """Logically delete an LLM model while retaining every historical reference."""
+    query = select(LLMModel).where(LLMModel.id == model_id)
+    if not _is_platform_admin_user(current_user):
+        query = query.where(LLMModel.tenant_id == current_user.tenant_id)
+    result = await db.execute(query)
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # Check if any agents reference this model
-    from sqlalchemy import or_
-    ref_result = await db.execute(
-        select(Agent.name).where(
-            or_(Agent.primary_model_id == model_id, Agent.fallback_model_id == model_id)
+    if model.deleted_at is None:
+        model.deleted_at = datetime.now(UTC)
+        model.enabled = False
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="llm_model_deleted",
+                details={
+                    "resource_id": str(model.id),
+                    "tenant_id": str(model.tenant_id) if model.tenant_id else None,
+                    "label": model.label,
+                    "provider": model.provider,
+                    "model": model.model,
+                },
+            )
         )
-    )
-    agent_names = [row[0] for row in ref_result.all()]
-
-    if agent_names and not force:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"This model is used by {len(agent_names)} agent(s)",
-                "agents": agent_names,
-            },
-        )
-
-    # Nullify FK references in agents before deleting
-    if agent_names:
-        await db.execute(
-            update(Agent).where(Agent.primary_model_id == model_id).values(primary_model_id=None)
-        )
-        await db.execute(
-            update(Agent).where(Agent.fallback_model_id == model_id).values(fallback_model_id=None)
-        )
-    await db.delete(model)
-    await db.commit()
+        await db.commit()
 
 
 @router.put("/llm-models/{model_id}", response_model=LLMModelOut)
@@ -292,15 +536,16 @@ async def update_llm_model(
     model_id: uuid.UUID,
     data: LLMModelUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update an existing LLM model in the pool (admin)."""
-    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    result = await db.execute(_llm_model_scope(model_id, current_user))
     model = result.scalar_one_or_none()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
     try:
+        original_config_fingerprint = _llm_config_fingerprint(model)
         if data.provider:
             model.provider = data.provider
         if data.model:
@@ -324,10 +569,18 @@ async def update_llm_model(
         if hasattr(data, 'request_timeout') and data.request_timeout is not None:
             model.request_timeout = data.request_timeout
 
+        if _llm_config_fingerprint(model) != original_config_fingerprint:
+            model.supports_tool_calling = None
+            model.tool_calling_capability_source = None
+            model.tool_calling_checked_at = None
+            model.tool_calling_error = (
+                "Model configuration changed; rerun the native tool-calling test."
+            )
+
         await db.commit()
         await db.refresh(model)
         return LLMModelOut.model_validate(model)
-    except SQLAlchemyError as e:
+    except SQLAlchemyError:
         await db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update model")
 
@@ -337,10 +590,16 @@ async def update_llm_model(
 @router.get("/info", response_model=list[EnterpriseInfoOut])
 async def list_enterprise_info(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
-    """List all enterprise information entries."""
-    result = await db.execute(select(EnterpriseInfo).order_by(EnterpriseInfo.info_type))
+    """List enterprise information entries for current tenant."""
+    if not current_user.tenant_id:
+        return []
+    result = await db.execute(
+        select(EnterpriseInfo)
+        .where(EnterpriseInfo.tenant_id == current_user.tenant_id)
+        .order_by(EnterpriseInfo.info_type)
+    )
     return [EnterpriseInfoOut.model_validate(e) for e in result.scalars().all()]
 
 
@@ -349,14 +608,17 @@ async def update_enterprise_info(
     info_type: str,
     data: EnterpriseInfoUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
-    """Create or update enterprise information. Triggers sync to agents."""
+    """Create or update enterprise information for current tenant. Triggers sync to tenant agents."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="User must belong to a tenant")
+
     info = await enterprise_sync_service.update_enterprise_info(
-        db, info_type, data.content, data.visible_roles, current_user.id
+        db, current_user.tenant_id, info_type, data.content, data.visible_roles, current_user.id
     )
-    # Sync to all running agents
-    await enterprise_sync_service.sync_to_all_agents(db)
+    # Sync only to running agents in the current tenant
+    await enterprise_sync_service.sync_to_all_agents(db, tenant_id=current_user.tenant_id)
     return EnterpriseInfoOut.model_validate(info)
 
 
@@ -367,7 +629,7 @@ async def list_approvals(
     tenant_id: str | None = None,
     status_filter: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List approval requests scoped to a tenant."""
     query = select(ApprovalRequest)
@@ -408,7 +670,7 @@ async def resolve_approval(
     approval_id: uuid.UUID,
     data: ApprovalAction,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Approve or reject a pending approval request."""
     try:
@@ -428,7 +690,7 @@ async def list_audit_logs(
     tenant_id: str | None = None,
     limit: int = 50,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List audit logs scoped to a tenant (admin only)."""
     query = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
@@ -449,7 +711,7 @@ async def list_audit_logs(
 async def get_enterprise_stats(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get enterprise dashboard statistics, optionally scoped to a tenant."""
     # Determine which tenant to filter by
@@ -509,7 +771,7 @@ class TenantQuotaUpdate(BaseModel):
 @router.get("/tenant-quotas")
 async def get_tenant_quotas(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get tenant quota defaults and heartbeat settings."""
     if not current_user.tenant_id:
@@ -535,7 +797,7 @@ async def get_tenant_quotas(
 async def update_tenant_quotas(
     data: TenantQuotaUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update tenant quota defaults (admin only). Enforces heartbeat floor on existing agents."""
     if not current_user.tenant_id:
@@ -592,7 +854,7 @@ class TestEmailRequest(BaseModel):
 async def send_test_email_endpoint(
     data: TestEmailRequest,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Send a test email to verify SMTP configuration (admin only)."""
     import smtplib
@@ -628,7 +890,7 @@ async def send_test_email_endpoint(
 @router.get("/email-templates")
 async def get_email_templates_endpoint(
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get email templates (current values + available variables per scenario)."""
     from app.services.system_email_service import (
@@ -653,7 +915,7 @@ class EmailTemplatesUpdate(BaseModel):
 async def update_email_templates_endpoint(
     data: EmailTemplatesUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Save email templates (admin only)."""
     from app.services.system_email_service import EMAIL_TEMPLATE_VARIABLES
@@ -688,9 +950,143 @@ class SettingUpdate(BaseModel):
     value: dict
 
 
+class RuntimeModelSettingsUpdate(BaseModel):
+    planning_model_id: uuid.UUID
+    compact_model_id: uuid.UUID
+
+
+def _require_system_setting_access(key: str, current_user: User) -> None:
+    """Authorize access to a platform setting or a tenant company introduction.
+
+    ``system_settings`` is a global key/value table and can contain credentials.
+    The sole tenant-scoped key family exposed through this API is
+    ``company_intro_<tenant UUID>``; organization administrators may manage
+    only their own tenant's entry. All other keys require a platform admin.
+    """
+    company_intro_prefix = "company_intro_"
+    if key.startswith(company_intro_prefix):
+        try:
+            tenant_id = uuid.UUID(key.removeprefix(company_intro_prefix))
+        except ValueError:
+            tenant_id = None
+        if tenant_id is not None and current_user.role == "org_admin" and current_user.tenant_id == tenant_id:
+            return
+    if _is_platform_admin_user(current_user):
+        return
+    raise HTTPException(status_code=403, detail="Platform admin access required for system settings")
+
+
+def _runtime_settings_tenant_id(current_user: User, requested_tenant_id: str | None) -> uuid.UUID:
+    raw_tenant_id = requested_tenant_id or current_user.tenant_id
+    if raw_tenant_id is None:
+        raise HTTPException(status_code=422, detail="A tenant must be selected")
+    try:
+        tenant_id = uuid.UUID(str(raw_tenant_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid tenant ID") from exc
+    if not _is_platform_admin_user(current_user):
+        if current_user.role != "org_admin" or current_user.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot manage another tenant's Runtime models")
+    return tenant_id
+
+
+async def _runtime_model_settings_payload(db: AsyncSession, *, tenant_id: uuid.UUID) -> dict:
+    configured = await resolve_runtime_model_settings(
+        db,
+        tenant_id=tenant_id,
+        environment_planning_model_id=settings.MULTI_AGENT_PLANNING_MODEL_ID,
+        environment_compact_model_id=settings.MULTI_AGENT_COMPACT_MODEL_ID,
+    )
+    result = await db.execute(
+        select(LLMModel)
+        .where(
+            or_(LLMModel.tenant_id.is_(None), LLMModel.tenant_id == tenant_id),
+            LLMModel.enabled.is_(True),
+            LLMModel.deleted_at.is_(None),
+        )
+        .order_by(LLMModel.created_at.desc())
+    )
+    candidates = [
+        {
+            "id": str(model.id),
+            "label": model.label,
+            "provider": model.provider,
+            "model": model.model,
+        }
+        for model in result.scalars().all()
+    ]
+    return {
+        "tenant_id": str(tenant_id),
+        "planning_model_id": (
+            str(configured.planning_model_id) if configured.planning_model_id else None
+        ),
+        "compact_model_id": (
+            str(configured.compact_model_id) if configured.compact_model_id else None
+        ),
+        "planning_source": configured.planning_source,
+        "compact_source": configured.compact_source,
+        "candidates": candidates,
+    }
+
+
+@router.get("/runtime-model-settings")
+async def get_runtime_model_settings(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Any = None,
+):
+    """Return the selected tenant's eligible Group Runtime model choices."""
+    resolved_tenant_id = _runtime_settings_tenant_id(current_user, tenant_id)
+    return await _runtime_model_settings_payload(db, tenant_id=resolved_tenant_id)
+
+
+@router.put("/runtime-model-settings")
+async def update_runtime_model_settings(
+    data: RuntimeModelSettingsUpdate,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Any = None,
+):
+    """Persist tenant-scoped Group Runtime models, effective immediately."""
+    resolved_tenant_id = _runtime_settings_tenant_id(current_user, tenant_id)
+
+    requested_ids = {data.planning_model_id, data.compact_model_id}
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id.in_(requested_ids),
+            LLMModel.deleted_at.is_(None),
+        )
+    )
+    models = {model.id: model for model in result.scalars().all()}
+    for model_id in requested_ids:
+        model = models.get(model_id)
+        if model is None:
+            raise HTTPException(status_code=422, detail=f"Model {model_id} does not exist")
+        if model.tenant_id not in {None, resolved_tenant_id}:
+            raise HTTPException(status_code=422, detail=f"Model {model_id} belongs to another tenant")
+        if not model.enabled:
+            raise HTTPException(status_code=422, detail=f"Model {model_id} is disabled")
+    result = await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.key == runtime_model_setting_key(resolved_tenant_id)
+        )
+    )
+    setting = result.scalar_one_or_none()
+    value = {
+        "planning_model_id": str(data.planning_model_id),
+        "compact_model_id": str(data.compact_model_id),
+    }
+    if setting:
+        setting.value = value
+    else:
+        db.add(SystemSetting(key=runtime_model_setting_key(resolved_tenant_id), value=value))
+    await db.commit()
+    return await _runtime_model_settings_payload(db, tenant_id=resolved_tenant_id)
+
+
 @router.get("/system-settings/notification_bar/public")
 async def get_notification_bar_public(
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Public (no auth) endpoint to read the notification bar config."""
     result = await db.execute(
@@ -710,9 +1106,10 @@ async def get_notification_bar_public(
 async def get_system_setting(
     key: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get a system setting by key."""
+    _require_system_setting_access(key, current_user)
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if not setting:
@@ -725,12 +1122,10 @@ async def update_system_setting(
     key: str,
     data: SettingUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Create or update a system setting."""
-    # Platform-level settings (e.g. PUBLIC_BASE_URL) require platform_admin
-    if key == "platform" and not _is_platform_admin_user(current_user):
-        raise HTTPException(status_code=403, detail="Only platform admin can modify platform settings")
+    _require_system_setting_access(key, current_user)
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     setting = result.scalar_one_or_none()
     if setting:
@@ -845,7 +1240,7 @@ async def list_identity_providers(
     tenant_id: str | None = None,
     global_only: bool = False,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List identity providers configured for the tenant."""
     # Authorization: non-platform admins can only see their own tenant's providers
@@ -999,7 +1394,7 @@ def _identity_provider_response(provider: IdentityProvider, sso_domain: str | No
 async def create_identity_provider(
     data: IdentityProviderCreate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Create a new identity provider (Admin only)."""
     from app.services.auth_registry import auth_provider_registry
@@ -1050,7 +1445,7 @@ async def create_identity_provider(
 async def create_oauth2_provider(
     data: IdentityProviderOAuth2Create,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Create a new OAuth2 identity provider with simplified fields (app_id, app_secret, authorize_url, etc.)."""
     from app.services.auth_registry import auth_provider_registry
@@ -1116,7 +1511,7 @@ async def update_oauth2_provider(
     provider_id: uuid.UUID,
     data: OAuth2ConfigUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update an OAuth2 identity provider with simplified fields."""
     from app.services.auth_registry import auth_provider_registry
@@ -1184,7 +1579,7 @@ async def update_identity_provider(
     provider_id: uuid.UUID,
     data: IdentityProviderUpdate,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Update an existing identity provider."""
     from app.services.auth_registry import auth_provider_registry
@@ -1241,7 +1636,7 @@ async def update_identity_provider(
 async def delete_identity_provider(
     provider_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Delete an identity provider."""
     result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
@@ -1280,7 +1675,7 @@ async def list_org_departments(
     tenant_id: str | None = None,
     provider_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List all departments, optionally filtered by tenant or provider."""
     # Tenant isolation rules:
@@ -1340,8 +1735,6 @@ async def list_org_departments(
 
 
 
-from sqlalchemy import or_
-
 @router.get("/org/members")
 async def list_org_members(
     department_id: str | None = None,
@@ -1349,7 +1742,7 @@ async def list_org_members(
     tenant_id: str | None = None,
     provider_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List org members, optionally filtered by department, search, tenant, or provider."""
     # Tenant isolation rules:
@@ -1432,7 +1825,7 @@ async def list_org_members(
 async def trigger_org_sync(
     provider_id: str | None = None,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Manually trigger org structure sync from a specific identity provider."""
     from app.services.org_sync_service import org_sync_service
@@ -1466,7 +1859,7 @@ async def wecom_org_sync_verify(
     timestamp: str = "",
     nonce: str = "",
     echostr: str = "",
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Handle WeCom receive-message-server URL verification for the org sync app.
 
@@ -1611,7 +2004,7 @@ async def _ensure_invitation_email_enabled(db: AsyncSession) -> None:
 async def create_invitation_codes(
     data: InvitationCodeCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Batch-create invitation codes for the current user's company."""
     _require_tenant_admin(current_user)
@@ -1640,7 +2033,7 @@ async def invite_users(
     data: UserInviteRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Batch-invite users via email to the current user's company."""
     _require_tenant_admin(current_user)
@@ -1706,7 +2099,7 @@ async def list_invitation_codes(
     page_size: int = 20,
     search: str = "",
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List invitation codes for the current user's company."""
     _require_tenant_admin(current_user)
@@ -1750,7 +2143,7 @@ async def list_invitation_codes(
 @router.get("/invitation-codes/export")
 async def export_invitation_codes_csv(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Export invitation codes for the current user's company as CSV."""
     _require_tenant_admin(current_user)
@@ -1789,7 +2182,7 @@ async def export_invitation_codes_csv(
 async def deactivate_invitation_code(
     code_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Deactivate an invitation code (must belong to current user's company)."""
     _require_tenant_admin(current_user)

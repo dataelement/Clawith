@@ -1,13 +1,14 @@
 """Notification API — list, count, mark-read, and broadcast."""
 
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.notification import Notification
@@ -38,7 +39,7 @@ async def list_notifications(
     unread_only: bool = Query(False),
     category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """List notifications for the current user, newest first."""
     query = select(Notification).where(Notification.user_id == current_user.id)
@@ -46,7 +47,7 @@ async def list_notifications(
         query = query.where(Notification.is_read == False)  # noqa: E712
     query = _apply_category_filter(query, category)
     query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     notifications = result.scalars().all()
     return [
         {
@@ -68,7 +69,7 @@ async def list_notifications(
 async def get_unread_count(
     category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Get the number of unread notifications for the current user."""
     query = select(func.count(Notification.id)).where(
@@ -76,7 +77,7 @@ async def get_unread_count(
         Notification.is_read == False,  # noqa: E712
     )
     query = _apply_category_filter(query, category)
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     return {"unread_count": result.scalar() or 0}
 
 
@@ -84,30 +85,30 @@ async def get_unread_count(
 async def mark_read(
     notification_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Mark a single notification as read."""
-    await db.execute(
+    await query_dao.execute(db, 
         update(Notification)
         .where(Notification.id == notification_id, Notification.user_id == current_user.id)
         .values(is_read=True)
     )
-    await db.commit()
+    await query_dao.commit(db)
     return {"ok": True}
 
 
 @router.post("/notifications/read-all")
 async def mark_all_read(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Mark all notifications as read for the current user."""
-    await db.execute(
+    await query_dao.execute(db, 
         update(Notification)
         .where(Notification.user_id == current_user.id, Notification.is_read == False)  # noqa: E712
         .values(is_read=True)
     )
-    await db.commit()
+    await query_dao.commit(db)
     return {"ok": True}
 
 
@@ -124,7 +125,7 @@ async def broadcast_notification(
     req: BroadcastRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: Any = None,
 ):
     """Send a notification to all users and agents in the current tenant.
     Requires org_admin or platform_admin role."""
@@ -151,7 +152,7 @@ async def broadcast_notification(
             raise HTTPException(400, "System email is not configured. Please configure it in Platform Settings.")
 
     # Notify all users in tenant
-    users_result = await db.execute(
+    users_result = await query_dao.execute(db, 
         select(User).where(User.tenant_id == tenant_id, User.id != current_user.id)
     )
     users = users_result.scalars().all()
@@ -166,8 +167,12 @@ async def broadcast_notification(
         count_users += 1
 
     # Notify all agents in tenant
-    agents_result = await db.execute(
-        select(Agent).where(Agent.tenant_id == tenant_id)
+    agents_result = await query_dao.execute(
+        db,
+        select(Agent).where(
+            Agent.tenant_id == tenant_id,
+            Agent.deleted_at.is_(None),
+        )
     )
     for agent in agents_result.scalars().all():
         await send_notification(
@@ -202,7 +207,7 @@ async def broadcast_notification(
             )
             count_emails += 1
 
-    await db.commit()
+    await query_dao.commit(db)
     if email_recipients:
         background_tasks.add_task(deliver_broadcast_emails, email_recipients)
     return {

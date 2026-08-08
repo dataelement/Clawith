@@ -11,6 +11,8 @@ import { useState, useRef, useCallback, type DragEvent } from 'react';
 export interface UseDropZoneOptions {
     /** Callback when files are dropped. Receives the filtered file list. */
     onDrop: (files: File[]) => void;
+    /** Called for files excluded by the accept filter so the UI can explain the rejection. */
+    onReject?: (files: File[]) => void;
     /** When true, the drop zone is inactive (no visual feedback, drops ignored). */
     disabled?: boolean;
     /**
@@ -44,13 +46,13 @@ function hasFiles(e: DragEvent): boolean {
 }
 
 /** Filter a FileList by an accept string (same format as <input accept>). */
-function filterFiles(files: FileList, accept?: string): File[] {
+function filterFiles(files: FileList, accept?: string): { accepted: File[]; rejected: File[] } {
     const list = Array.from(files);
-    if (!accept) return list;
+    if (!accept) return { accepted: list, rejected: [] };
 
     const tokens = accept.split(',').map(t => t.trim().toLowerCase());
 
-    return list.filter(file => {
+    const accepted = list.filter(file => {
         const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
         const mime = file.type.toLowerCase();
 
@@ -60,9 +62,11 @@ function filterFiles(files: FileList, accept?: string): File[] {
             return mime === token;
         });
     });
+    const acceptedSet = new Set(accepted);
+    return { accepted, rejected: list.filter(file => !acceptedSet.has(file)) };
 }
 
-export function useDropZone({ onDrop, disabled = false, accept }: UseDropZoneOptions): UseDropZoneReturn {
+export function useDropZone({ onDrop, onReject, disabled = false, accept }: UseDropZoneOptions): UseDropZoneReturn {
     const [isDragging, setIsDragging] = useState(false);
     const counterRef = useRef(0);
 
@@ -103,11 +107,14 @@ export function useDropZone({ onDrop, disabled = false, accept }: UseDropZoneOpt
         const rawFiles = e.dataTransfer?.files;
         if (!rawFiles || rawFiles.length === 0) return;
 
-        const filtered = filterFiles(rawFiles, accept);
-        if (filtered.length > 0) {
-            onDrop(filtered);
+        const { accepted, rejected } = filterFiles(rawFiles, accept);
+        if (accepted.length > 0) {
+            onDrop(accepted);
         }
-    }, [disabled, accept, onDrop]);
+        if (rejected.length > 0) {
+            onReject?.(rejected);
+        }
+    }, [disabled, accept, onDrop, onReject]);
 
     return {
         isDragging,

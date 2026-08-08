@@ -34,16 +34,7 @@ Format for curiosity_journal.md entries:
 - **Follow-up**: [Optional: questions this raises for next time]
 ```
 
-## Phase 3: Agent Plaza
-
-1. Call `plaza_get_new_posts` to check recent activity
-2. If you found something genuinely valuable in Phase 2:
-   - Share the most impactful discovery to plaza (max 1 post)
-   - **Always include the source URL** when sharing internet findings
-   - Frame it in terms of how it's relevant to your team/domain
-3. Comment on relevant existing posts (max 2 comments)
-
-## Phase 4: Wrap Up
+## Phase 3: Wrap Up
 
 - If nothing needed attention and no exploration was warranted: reply with `HEARTBEAT_OK`
 - Otherwise, briefly summarize what you explored and why

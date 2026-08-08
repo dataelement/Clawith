@@ -1,7 +1,6 @@
 """Seed default agents (Morty & Meeseeks) on first platform startup."""
 
 import uuid
-from datetime import datetime, timezone
 
 from loguru import logger
 
@@ -13,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.database import async_session
 from app.models.agent import Agent, AgentPermission
 from app.models.org import AgentAgentRelationship
-from app.models.skill import Skill, SkillFile
+from app.models.skill import Skill
 from app.models.tool import Tool, AgentTool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
@@ -41,6 +40,65 @@ async def _append_seed_marker(line: str) -> None:
     updated = existing if existing.endswith("\n") or not existing else existing + "\n"
     updated += f"{line}\n"
     await storage.write_text(SEED_MARKER_KEY, updated, encoding="utf-8")
+
+
+async def _repair_default_agent_storage(
+    db: AsyncSession,
+    agent: Agent,
+    *,
+    soul_content: str,
+    skill_folders: list[str],
+    all_skills: dict[str, Skill],
+    overwrite_skill_files: bool = False,
+) -> bool:
+    """Restore missing storage for an existing default agent without overwriting user files."""
+    storage = get_storage_backend()
+    agent_prefix = agent_manager._agent_storage_prefix(agent.id)
+    skills_prefix = f"{agent_prefix}/skills"
+    agent_dir_exists = await storage.is_dir(agent_prefix)
+    skills_dir_exists = await storage.is_dir(skills_prefix)
+
+    if agent_dir_exists and skills_dir_exists:
+        return False
+
+    if not agent_dir_exists:
+        await agent_manager.initialize_agent_files(db, agent)
+        await store_agent_bytes(
+            agent.id,
+            "soul.md",
+            (soul_content.strip() + "\n").encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
+
+    # Keep the directory visible even if the configured seed skills are absent
+    # from the database. Local and object storage both materialize the prefix on
+    # the first write.
+    if not skills_dir_exists:
+        await storage.write_text(f"{skills_prefix}/.gitkeep", "", encoding="utf-8")
+
+    folders_to_copy = set(skill_folders)
+    folders_to_copy.update(name for name, skill in all_skills.items() if skill.is_default)
+    for folder_name in folders_to_copy:
+        skill = all_skills.get(folder_name)
+        if not skill:
+            continue
+        for skill_file in skill.files:
+            target_key = f"{skills_prefix}/{skill.folder_name}/{skill_file.path}"
+            if not overwrite_skill_files and await storage.is_file(target_key):
+                continue
+            await store_agent_bytes(
+                agent.id,
+                f"skills/{skill.folder_name}/{skill_file.path}",
+                skill_file.content.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+
+    logger.warning(
+        "[AgentSeeder] Repaired missing default-agent storage: "
+        f"agent={agent.id} root_missing={not agent_dir_exists} "
+        f"skills_missing={not skills_dir_exists}"
+    )
+    return True
 
 
 # ── Soul definitions ────────────────────────────────────────────
@@ -168,7 +226,7 @@ When a daily or weekly report is triggered:
 3. Identify KRs with `behind` or `at_risk` status
 4. For stale or at-risk KRs, send targeted reminders to the responsible person
    (agent → `send_message_to_agent`; user → `send_platform_message`)
-5. Generate and post the report via `generate_okr_report` + `plaza_create_post`
+5. Generate the report via `generate_okr_report`, then use its bounded receipt/reference for the requested delivery path
 
 ## Communication Style
 - Professional and concise
@@ -204,11 +262,11 @@ MEESEEKS_SKILLS = [
 
 
 async def seed_default_agents():
-    """Create Morty & Meeseeks if they don't already exist.
+    """Create missing default agents and repair missing storage for existing ones.
 
-    Idempotency is guarded by a '.seeded' marker file in AGENT_DATA_DIR rather
-    than by agent name, so the seeder does NOT re-run if the user renames or
-    deletes the default agents.  Delete the marker manually to re-seed.
+    Database rows are the duplicate-creation guard. The storage marker is only
+    an operational hint because deployments can switch or lose storage while
+    preserving the database.
     """
     async with async_session() as db:
 
@@ -237,13 +295,6 @@ async def seed_default_agents():
         existing_by_name: dict[str, Agent] = {}
         for agent in existing_result.scalars().all():
             existing_by_name.setdefault(agent.name, agent)
-
-        if "Morty" in existing_by_name and "Meeseeks" in existing_by_name:
-            logger.info("[AgentSeeder] Default agents already exist in DB, skipping creation")
-            await _append_seed_marker(
-                f"morty={existing_by_name['Morty'].id}\nmeeseeks={existing_by_name['Meeseeks'].id}"
-            )
-            return
 
         created_agents: list[Agent] = []
         created_names: set[str] = set()
@@ -292,47 +343,32 @@ async def seed_default_agents():
         for agent in created_agents:
             db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
 
-        for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
-            if agent.name not in created_names:
-                continue
-            await agent_manager.initialize_agent_files(db, agent)
-            await store_agent_bytes(
-                agent.id,
-                "soul.md",
-                (soul_content.strip() + "\n").encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
-
         # ── Assign skills ──
         all_skills_result = await db.execute(
             select(Skill).options(selectinload(Skill.files))
         )
         all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
 
-        for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
-            if agent.name not in created_names:
-                continue
-            # Always include default skills
-            folders_to_copy = set(skill_folders)
-            for fname, skill in all_skills.items():
-                if skill.is_default:
-                    folders_to_copy.add(fname)
-
-            for fname in folders_to_copy:
-                skill = all_skills.get(fname)
-                if not skill:
-                    continue
-                for sf in skill.files:
-                    await store_agent_bytes(
-                        agent.id,
-                        f"skills/{skill.folder_name}/{sf.path}",
-                        sf.content.encode("utf-8"),
-                        content_type="text/plain; charset=utf-8",
-                    )
+        await _repair_default_agent_storage(
+            db,
+            morty,
+            soul_content=MORTY_SOUL,
+            skill_folders=MORTY_SKILLS,
+            all_skills=all_skills,
+            overwrite_skill_files=morty.name in created_names,
+        )
+        await _repair_default_agent_storage(
+            db,
+            meeseeks,
+            soul_content=MEESEEKS_SOUL,
+            skill_folders=MEESEEKS_SKILLS,
+            all_skills=all_skills,
+            overwrite_skill_files=meeseeks.name in created_names,
+        )
 
         # ── Assign all default tools ──
         default_tools_result = await db.execute(
-            select(Tool).where(Tool.is_default == True)
+            select(Tool).where(Tool.is_default)
         )
         default_tools = default_tools_result.scalars().all()
 
@@ -515,7 +551,7 @@ async def seed_okr_agent():
         # ── Assign default tools + OKR-specific tools ──
         # Default tools: all tools where is_default=True
         default_tools_result = await db.execute(
-            select(Tool).where(Tool.is_default == True)
+            select(Tool).where(Tool.is_default)
         )
         default_tools = default_tools_result.scalars().all()
         for tool in default_tools:

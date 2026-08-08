@@ -14,7 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiofiles
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import delete, desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
@@ -56,6 +57,10 @@ BINARY_REVISION_EXTENSIONS = {
     ".xlsx",
     ".zip",
 }
+GROUP_RUNTIME_OPERATION_KEY_PREFIX = "runtime-operation:"
+GROUP_RUNTIME_PREPARED_OPERATIONS = frozenset(
+    {"prepared_write", "prepared_delete"}
+)
 
 
 @dataclass
@@ -75,6 +80,13 @@ def _should_mirror_to_local_filesystem(storage) -> bool:
 def content_hash(content: str | None) -> str:
     """Return a stable hash for text content."""
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def group_runtime_operation_key(operation_id: uuid.UUID) -> str:
+    """Map one Tool Ledger identity to its Group revision saga key."""
+    if not isinstance(operation_id, uuid.UUID):
+        raise ValueError("operation_id must be a UUID")
+    return f"{GROUP_RUNTIME_OPERATION_KEY_PREFIX}{operation_id}"
 
 
 def normalize_workspace_path(path: str) -> str:
@@ -154,6 +166,8 @@ async def acquire_edit_lock(
     else:
         lock = WorkspaceEditLock(
             agent_id=agent_id,
+            scope_type="agent",
+            scope_id=agent_id,
             path=normalized,
             user_id=user_id,
             session_id=session_id,
@@ -199,20 +213,32 @@ async def get_active_lock(
     return result.scalar_one_or_none()
 
 
-async def record_revision(
+async def _record_scoped_revision(
     db: AsyncSession,
     *,
-    agent_id: uuid.UUID,
+    scope_type: str,
+    scope_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
     path: str,
     operation: str,
     actor_type: str,
     actor_id: uuid.UUID | None,
     before_content: str | None,
     after_content: str | None,
+    content_hash_override: str | None = None,
     session_id: str | None = None,
     merge_user_autosave: bool = False,
 ) -> WorkspaceFileRevision | None:
-    """Record a revision, optionally merging rapid user autosaves."""
+    """Record one revision under the shared Agent/group workspace contract."""
+    if scope_type == "agent":
+        if agent_id is None or scope_id != agent_id:
+            raise ValueError("agent workspace scope must match agent_id")
+    elif scope_type == "group":
+        if agent_id is not None:
+            raise ValueError("group workspace scope cannot set agent_id")
+    else:
+        raise ValueError("scope_type must be 'agent' or 'group'")
+
     normalized = normalize_workspace_path(path)
     # PostgreSQL text columns cannot store NUL bytes. Treat such content as
     # non-text revision data so binary files can still be moved/deleted safely.
@@ -220,17 +246,26 @@ async def record_revision(
     after_content = after_content.replace("\x00", "") if after_content is not None else None
     before = before_content or ""
     after = after_content or ""
-    if before == after and operation not in {"delete", "move_source", "move_destination"}:
+    if (
+        before == after
+        and content_hash_override is None
+        and operation not in {"delete", "move_source", "move_destination"}
+    ):
         return None
 
     group_key = None
     if merge_user_autosave and actor_type == "user" and actor_id:
-        group_key = f"user-autosave:{agent_id}:{normalized}:{actor_id}"
+        group_key = (
+            f"user-autosave:{scope_id}:{normalized}:{actor_id}"
+            if scope_type == "agent"
+            else f"user-autosave:group:{scope_id}:{normalized}:{actor_id}"
+        )
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=USER_AUTOSAVE_MERGE_SECONDS)
         existing_result = await db.execute(
             select(WorkspaceFileRevision)
             .where(
-                WorkspaceFileRevision.agent_id == agent_id,
+                WorkspaceFileRevision.scope_type == scope_type,
+                WorkspaceFileRevision.scope_id == scope_id,
                 WorkspaceFileRevision.path == normalized,
                 WorkspaceFileRevision.actor_type == "user",
                 WorkspaceFileRevision.actor_id == actor_id,
@@ -244,13 +279,15 @@ async def record_revision(
         existing = existing_result.scalar_one_or_none()
         if existing:
             existing.after_content = after
-            existing.content_hash = content_hash(after)
+            existing.content_hash = content_hash_override or content_hash(after)
             existing.session_id = session_id or existing.session_id
             await db.flush()
             return existing
 
     revision = WorkspaceFileRevision(
         agent_id=agent_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
         path=normalized,
         operation=operation,
         actor_type=actor_type,
@@ -258,12 +295,242 @@ async def record_revision(
         session_id=session_id,
         before_content=before_content,
         after_content=after_content,
-        content_hash=content_hash(after_content),
+        content_hash=content_hash_override or content_hash(after_content),
         group_key=group_key,
     )
     db.add(revision)
     await db.flush()
     return revision
+
+
+async def record_revision(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    path: str,
+    operation: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    before_content: str | None,
+    after_content: str | None,
+    session_id: str | None = None,
+    merge_user_autosave: bool = False,
+) -> WorkspaceFileRevision | None:
+    """Record a backward-compatible Agent workspace revision."""
+    return await _record_scoped_revision(
+        db,
+        scope_type="agent",
+        scope_id=agent_id,
+        agent_id=agent_id,
+        path=path,
+        operation=operation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=before_content,
+        after_content=after_content,
+        session_id=session_id,
+        merge_user_autosave=merge_user_autosave,
+    )
+
+
+async def record_group_revision(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    path: str,
+    operation: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    before_content: str | None,
+    after_content: str | None,
+    content_hash_override: str | None = None,
+    session_id: str | None = None,
+) -> WorkspaceFileRevision | None:
+    """Record a group-scoped file revision without creating a second history table."""
+    return await _record_scoped_revision(
+        db,
+        scope_type="group",
+        scope_id=group_id,
+        agent_id=None,
+        path=path,
+        operation=operation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        before_content=before_content,
+        after_content=after_content,
+        content_hash_override=content_hash_override,
+        session_id=session_id,
+    )
+
+
+async def get_group_runtime_revision(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    operation_id: uuid.UUID,
+    lock: bool = False,
+) -> WorkspaceFileRevision | None:
+    """Read the one revision saga owned by an AgentToolExecution identity."""
+    statement = select(WorkspaceFileRevision).where(
+        WorkspaceFileRevision.scope_type == "group",
+        WorkspaceFileRevision.scope_id == group_id,
+        WorkspaceFileRevision.group_key
+        == group_runtime_operation_key(operation_id),
+    )
+    if lock:
+        statement = statement.with_for_update()
+    result = await db.execute(statement)
+    return result.scalar_one_or_none()
+
+
+async def prepare_group_runtime_revision(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    operation_id: uuid.UUID,
+    path: str,
+    operation: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    before_content: str | None,
+    after_content: str | None,
+    session_id: str | None = None,
+) -> WorkspaceFileRevision:
+    """Persist the intent needed to reconcile one Group storage mutation.
+
+    The prepared row is deliberately not a visible history event.  Its stable
+    ``group_key`` is the Tool Ledger execution ID, so a process restart can
+    prove the exact storage operation without issuing it again.
+    """
+    if operation not in {"write", "delete"}:
+        raise ValueError("group runtime revision operation must be write or delete")
+    normalized = normalize_workspace_path(path)
+    if not normalized:
+        raise ValueError("group runtime revision path must not be empty")
+    prepared_operation = f"prepared_{operation}"
+
+    def existing_or_conflict(
+        existing: WorkspaceFileRevision | None,
+    ) -> WorkspaceFileRevision | None:
+        if existing is None:
+            return None
+        expected_operations = {prepared_operation, operation}
+        exact = (
+            existing.id == operation_id
+            and existing.scope_type == "group"
+            and existing.scope_id == group_id
+            and existing.path == normalized
+            and existing.operation in expected_operations
+            and existing.actor_type == actor_type
+            and existing.actor_id == actor_id
+            and existing.before_content == before_content
+            and existing.after_content == after_content
+            and existing.content_hash == content_hash(after_content)
+            and existing.session_id == session_id
+        )
+        if not exact:
+            raise ValueError(
+                "operation_id already belongs to a different Group revision"
+            )
+        return existing
+
+    existing = existing_or_conflict(
+        await get_group_runtime_revision(
+            db,
+            group_id=group_id,
+            operation_id=operation_id,
+            lock=True,
+        )
+    )
+    if existing is not None:
+        return existing
+
+    revision = WorkspaceFileRevision(
+        # AgentToolExecution.id is globally unique. Reusing it as the revision
+        # primary key gives concurrent prepare calls a database-enforced gate
+        # without another table, unique index, or migration.
+        id=operation_id,
+        agent_id=None,
+        scope_type="group",
+        scope_id=group_id,
+        path=normalized,
+        operation=prepared_operation,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        session_id=session_id,
+        before_content=before_content,
+        after_content=after_content,
+        content_hash=content_hash(after_content),
+        group_key=group_runtime_operation_key(operation_id),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(revision)
+            await db.flush()
+        return revision
+    except IntegrityError:
+        concurrent = existing_or_conflict(
+            await get_group_runtime_revision(
+                db,
+                group_id=group_id,
+                operation_id=operation_id,
+                lock=True,
+            )
+        )
+        if concurrent is None:
+            raise
+        return concurrent
+
+
+async def finalize_group_runtime_revision(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    operation_id: uuid.UUID,
+    operation: str,
+) -> WorkspaceFileRevision:
+    """Promote a proven prepared mutation to one visible history revision."""
+    if operation not in {"write", "delete"}:
+        raise ValueError("group runtime revision operation must be write or delete")
+    revision = await get_group_runtime_revision(
+        db,
+        group_id=group_id,
+        operation_id=operation_id,
+        lock=True,
+    )
+    if revision is None:
+        raise ValueError("group runtime revision is not prepared")
+    if revision.operation == operation:
+        return revision
+    if revision.operation != f"prepared_{operation}":
+        raise ValueError("group runtime revision has a conflicting operation")
+    revision.operation = operation
+    await db.flush()
+    return revision
+
+
+async def list_group_revisions(
+    db: AsyncSession,
+    *,
+    group_id: uuid.UUID,
+    path: str,
+    limit: int = 50,
+) -> list[WorkspaceFileRevision]:
+    """List committed Group history without exposing prepared saga rows."""
+    result = await db.execute(
+        select(WorkspaceFileRevision)
+        .where(
+            WorkspaceFileRevision.scope_type == "group",
+            WorkspaceFileRevision.scope_id == group_id,
+            WorkspaceFileRevision.path == normalize_workspace_path(path),
+            WorkspaceFileRevision.operation.not_in(
+                GROUP_RUNTIME_PREPARED_OPERATIONS
+            ),
+        )
+        .order_by(desc(WorkspaceFileRevision.created_at))
+        .limit(min(max(limit, 1), 100))
+    )
+    return list(result.scalars().all())
 
 
 async def write_workspace_file(
@@ -280,8 +547,9 @@ async def write_workspace_file(
     enforce_human_lock: bool = True,
     merge_user_autosave: bool = False,
     expected_version_token: str | None = None,
+    append: bool = False,
 ) -> WorkspaceWriteResult:
-    """Write text content, enforcing human locks for agent/system actors."""
+    """Write or append text content, enforcing human locks for agent/system actors."""
     normalized = normalize_workspace_path(path)
     if not normalized:
         return WorkspaceWriteResult(False, normalized, "Missing file path")
@@ -301,17 +569,34 @@ async def write_workspace_file(
 
     storage = get_storage_backend()
     storage_key = normalize_storage_key(f"{agent_id}/{normalized}")
+    current_version = await storage.get_version(storage_key)
+    if append and not current_version.exists:
+        return WorkspaceWriteResult(
+            False,
+            normalized,
+            f"Cannot append to missing file: {normalized}",
+        )
     local_base_available = _should_mirror_to_local_filesystem(storage)
     try:
         target = safe_agent_path(base_dir, normalized)
     except Exception:
         target = None
         local_base_available = False
-    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.exists(storage_key) else None
+    before = (
+        await storage.read_text(storage_key, encoding="utf-8", errors="replace")
+        if current_version.exists
+        else None
+    )
+    after = f"{before or ''}{content}" if append else content
+    condition = None
+    if expected_version_token is not None:
+        condition = WriteCondition(version_token=expected_version_token)
+    elif append:
+        condition = WriteCondition(version_token=current_version.token)
     write_result = await storage.write_bytes_if_match(
         storage_key,
-        content.encode("utf-8"),
-        condition=WriteCondition(version_token=expected_version_token) if expected_version_token is not None else None,
+        after.encode("utf-8"),
+        condition=condition,
         content_type="text/plain; charset=utf-8",
     )
     if not write_result.ok:
@@ -319,7 +604,7 @@ async def write_workspace_file(
     if local_base_available and target is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(target, "w", encoding="utf-8") as f:
-            await f.write(content)
+            await f.write(after)
 
     revision = await record_revision(
         db,
@@ -329,14 +614,18 @@ async def write_workspace_file(
         actor_type=actor_type,
         actor_id=actor_id,
         before_content=before,
-        after_content=content,
+        after_content=after,
         session_id=session_id,
         merge_user_autosave=merge_user_autosave,
     )
     return WorkspaceWriteResult(
         True,
         normalized,
-        f"Written to {normalized} ({len(content)} chars)",
+        (
+            f"Appended to {normalized} ({len(content)} chars; {len(after)} total)"
+            if append
+            else f"Written to {normalized} ({len(content)} chars)"
+        ),
         revision_id=str(revision.id) if revision else None,
     )
 

@@ -198,9 +198,15 @@ def compress_bytes_to_base64(
     Returns None if Pillow is missing or the bytes are unreadable.
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageFile
 
-        img = Image.open(BytesIO(raw_bytes))
+        allow_truncated = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            img = Image.open(BytesIO(raw_bytes))
+            img.load()
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = allow_truncated
 
         if coordinate_grid:
             options = grid_options or {}

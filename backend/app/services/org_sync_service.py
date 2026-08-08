@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+from app.dao import query_dao
 from app.models.identity import IdentityProvider
 
 
@@ -16,7 +17,7 @@ class OrgSyncService:
 
         pid = _uuid.UUID(provider_id) if isinstance(provider_id, str) else provider_id
 
-        result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == pid))
+        result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == pid))
         provider = result.scalar_one_or_none()
         if not provider:
             return {"error": f"Identity provider {provider_id} not found"}
@@ -38,7 +39,7 @@ class OrgSyncService:
 
         try:
             sync_result = await adapter.sync_org_structure(db)
-            await db.commit()
+            await query_dao.commit(db)
             return sync_result
         except Exception as e:
             logger.error(f"[OrgSync] Provider sync failed: {e}")

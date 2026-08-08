@@ -1,24 +1,32 @@
 """Resource discovery — search Smithery & ModelScope registries and import MCP servers."""
 
 import uuid
+from urllib.parse import quote, urlparse
+
 import httpx
 from loguru import logger
 from sqlalchemy import select
 from app.database import async_session
 from app.models.tool import Tool, AgentTool
-from app.services.tool_config import decrypt_sensitive_fields, get_tenant_tool_config
+from app.services.tool_config import (
+    decrypt_sensitive_fields,
+    get_tenant_tool_config,
+    set_tenant_tool_config,
+)
+from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
 
 
 # ── Smithery Registry Search ────────────────────────────────────
 
 SMITHERY_API_BASE = "https://registry.smithery.ai"
+SMITHERY_CONNECT_API_BASE = "https://api.smithery.ai"
 MODELSCOPE_API_BASE = "https://modelscope.cn"
 
 
 async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     """Read Smithery API key.
 
-    Priority: 1) per-agent AgentTool config, 2) system-level tool config.
+    Priority: 1) legacy per-agent AgentTool config, 2) tenant tool config.
 
     Sensitive fields in tool/AgentTool config are stored encrypted (see
     api.tools._encrypt_sensitive_fields). We must decrypt here before
@@ -38,7 +46,7 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                 tenant_r = await db.execute(select(AgentModel.tenant_id).where(AgentModel.id == agent_id))
                 agent_tenant_id = tenant_r.scalar_one_or_none()
 
-            # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
+            # 1) Legacy compatibility: read old per-agent key storage.
             if agent_id:
                 at_r = await db.execute(
                     select(AgentTool).where(AgentTool.agent_id == agent_id)
@@ -67,31 +75,27 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(
-                f"{SMITHERY_API_BASE}/servers",
-                params={"q": query, "pageSize": max_results},
-                headers=headers,
-            )
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-        results = []
-        for srv in data.get("servers", [])[:max_results]:
-            results.append({
-                "name": srv.get("qualifiedName", ""),
-                "display_name": srv.get("displayName", ""),
-                "description": srv.get("description", "")[:200],
-                "remote": srv.get("remote", False),
-                "verified": srv.get("verified", False),
-                "use_count": srv.get("useCount", 0),
-                "homepage": srv.get("homepage", ""),
-                "source": "Smithery",
-            })
-        return results
-    except Exception:
-        return []
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(
+            f"{SMITHERY_API_BASE}/servers",
+            params={"q": query, "pageSize": max_results},
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    results = []
+    for srv in data.get("servers", [])[:max_results]:
+        results.append({
+            "name": srv.get("qualifiedName", ""),
+            "display_name": srv.get("displayName", ""),
+            "description": srv.get("description", "")[:200],
+            "remote": srv.get("remote", False),
+            "verified": srv.get("verified", False),
+            "use_count": srv.get("useCount", 0),
+            "homepage": srv.get("homepage", ""),
+            "source": "Smithery",
+        })
+    return results
 
 
 async def _get_modelscope_api_token(agent_id: uuid.UUID | None = None) -> str:
@@ -118,11 +122,14 @@ async def _get_modelscope_api_token(agent_id: uuid.UUID | None = None) -> str:
     return ""
 
 
-async def _search_modelscope_api(query: str, max_results: int, agent_id: uuid.UUID | None = None) -> list[dict]:
+async def _search_modelscope_api(
+    query: str,
+    max_results: int,
+    api_token: str,
+) -> list[dict]:
     """Search ModelScope MCP Hub via official OpenAPI (no WAF issues)."""
-    api_token = await _get_modelscope_api_token(agent_id)
     if not api_token:
-        return []  # Silently skip if no token configured
+        return []
 
     headers = {
         "Content-Type": "application/json",
@@ -130,89 +137,165 @@ async def _search_modelscope_api(query: str, max_results: int, agent_id: uuid.UU
         "Cookie": f"m_session_id={api_token}",
         "User-Agent": "modelscope-mcp-server/1.0",
     }
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.put(
-                f"{MODELSCOPE_API_BASE}/openapi/v1/mcp/servers",
-                json={"page_size": max_results, "page_number": 1, "search": query, "filter": {}},
-                headers=headers,
-            )
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            if not data.get("success"):
-                return []
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.put(
+            f"{MODELSCOPE_API_BASE}/openapi/v1/mcp/servers",
+            json={"page_size": max_results, "page_number": 1, "search": query, "filter": {}},
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            raise RuntimeError("ModelScope rejected the registry search")
 
-        servers_data = data.get("data", {}).get("mcp_server_list", [])
-        if not servers_data:
-            return []
-
-        results = []
-        for srv in servers_data[:max_results]:
-            server_id = srv.get("id", "")
-            results.append({
-                "name": server_id,
-                "display_name": srv.get("name", server_id),
-                "description": srv.get("description", "")[:200],
-                "remote": srv.get("is_hosted", False),
-                "verified": True,
-                "use_count": 0,
-                "homepage": f"https://modelscope.cn/mcp/servers/{server_id}",
-                "source": "ModelScope",
-            })
-        return results
-    except Exception as e:
-        logger.error(f"[ResourceDiscovery] ModelScope search failed: {e}")
+    servers_data = data.get("data", {}).get("mcp_server_list", [])
+    if not servers_data:
         return []
+
+    results = []
+    for srv in servers_data[:max_results]:
+        server_id = srv.get("id", "")
+        results.append({
+            "name": server_id,
+            "display_name": srv.get("name", server_id),
+            "description": srv.get("description", "")[:200],
+            "remote": srv.get("is_hosted", False),
+            "verified": True,
+            "use_count": 0,
+            "homepage": f"https://modelscope.cn/mcp/servers/{server_id}",
+            "source": "ModelScope",
+        })
+    return results
+
+
+def _registry_failure_retryable(error: BaseException) -> bool:
+    if isinstance(error, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return status == 429 or status >= 500
+    return False
+
+
+async def search_registries_outcome(
+    query: str,
+    max_results: int = 5,
+    agent_id: uuid.UUID | None = None,
+) -> ToolExecutionOutcome:
+    """Search configured registries and preserve per-provider transport facts."""
+    if not isinstance(query, str) or not query.strip():
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="discover_resources requires query.",
+            result_ref=None,
+            error_code="invalid_tool_arguments",
+        )
+    try:
+        max_results = min(max(1, int(max_results)), 10)
+    except (TypeError, ValueError):
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="discover_resources max_results must be an integer.",
+            result_ref=None,
+            error_code="invalid_tool_arguments",
+        )
+
+    import asyncio
+
+    smithery_key, modelscope_token = await asyncio.gather(
+        _get_smithery_api_key(agent_id),
+        _get_modelscope_api_token(agent_id),
+    )
+    searches = []
+    if smithery_key:
+        searches.append(
+            _search_smithery_api(query.strip(), max_results, smithery_key)
+        )
+    if modelscope_token:
+        searches.append(
+            _search_modelscope_api(query.strip(), max_results, modelscope_token)
+        )
+    if not searches:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="No MCP registry credentials are configured.",
+            result_ref=None,
+            error_code="resource_credentials_missing",
+        )
+
+    provider_results = await asyncio.gather(*searches, return_exceptions=True)
+    successes = [
+        result for result in provider_results if isinstance(result, list)
+    ]
+    failures = [
+        result for result in provider_results if isinstance(result, BaseException)
+    ]
+    if not successes:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="Configured MCP registries could not be searched.",
+            result_ref=None,
+            error_code="resource_discovery_failed",
+            retryable=any(_registry_failure_retryable(error) for error in failures),
+        )
+
+    seen_names = set()
+    all_results = []
+    for provider_items in successes:
+        for item in provider_items:
+            name = item.get("name")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                all_results.append(item)
+
+    if not all_results:
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=(
+                f'No MCP servers found for "{query.strip()}" on the '
+                "configured registries."
+            ),
+            result_ref=None,
+        )
+
+    lines = []
+    for index, server in enumerate(all_results[:max_results], 1):
+        verified = " ✅" if server["verified"] else ""
+        remote = (
+            "🌐 Remote (no local install needed)"
+            if server["remote"]
+            else "💻 Local install required"
+        )
+        use_info = (
+            f" · 👥 {server['use_count']:,} users"
+            if server["use_count"]
+            else ""
+        )
+        homepage = server["homepage"]
+        lines.append(
+            f"**{index}. {server['display_name']}**{verified} "
+            f"[{server['source']}]\n"
+            f"   ID: `{server['name']}`\n"
+            f"   {server['description']}\n"
+            f"   {remote}{use_info}\n"
+            f"   {'🔗 ' + homepage if homepage else ''}"
+        )
+    summary = (
+        f'Found {len(lines)} MCP server(s) for "{query.strip()}":\n\n'
+        + "\n\n".join(lines)
+        + "\n\nUse import_mcp_server with a returned server ID."
+    )
+    return ToolExecutionOutcome(
+        status="succeeded",
+        result_summary=summary,
+        result_ref=None,
+    )
 
 
 async def search_registries(query: str, max_results: int = 5, agent_id: uuid.UUID | None = None) -> str:
-    """Search both Smithery and ModelScope for MCP servers."""
-    api_key = await _get_smithery_api_key(agent_id)
-
-    # Search both registries in parallel
-    import asyncio
-    smithery_task = _search_smithery_api(query, max_results, api_key)
-    modelscope_task = _search_modelscope_api(query, max_results, agent_id)
-    smithery_results, modelscope_results = await asyncio.gather(smithery_task, modelscope_task)
-
-    # Merge: Smithery first, then ModelScope (deduplicate by name)
-    seen_names = set()
-    all_results = []
-    for r in smithery_results + modelscope_results:
-        if r["name"] not in seen_names:
-            seen_names.add(r["name"])
-            all_results.append(r)
-
-    if not all_results:
-        return f'🔍 No MCP servers found for "{query}" on Smithery or ModelScope. Try different keywords.'
-
-    results = []
-    for i, srv in enumerate(all_results[:max_results], 1):
-        verified = " ✅" if srv["verified"] else ""
-        source_tag = f"[{srv['source']}]"
-        if srv["remote"]:
-            deploy_info = "🌐 Remote (no local install needed)"
-        else:
-            deploy_info = "💻 Local install required"
-        use_info = f" · 👥 {srv['use_count']:,} users" if srv["use_count"] else ""
-        hp = srv['homepage']
-
-        results.append(
-            f"**{i}. {srv['display_name']}**{verified} {source_tag}\n"
-            f"   ID: `{srv['name']}`\n"
-            f"   {srv['description']}\n"
-            f"   {deploy_info}{use_info}\n"
-            f"   {'🔗 ' + hp if hp else ''}"
-        )
-
-    header = f'🔍 Found {len(results)} MCP server(s) for "{query}":\n\n'
-    footer = (
-        "\n\n---\n"
-        "💡 To import a remote server, use `import_mcp_server` with the server ID.\n"
-        '   Example: import_mcp_server(server_id="gmail")'
-    )
-    return header + "\n\n".join(results) + footer
+    """Legacy display adapter for registry discovery."""
+    outcome = await search_registries_outcome(query, max_results, agent_id)
+    return outcome.result_summary or "Resource discovery returned no summary."
 
 
 # Keep backward-compatible alias
@@ -228,6 +311,7 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
     Returns dict with keys: namespace, connection_id, auth_url (if OAuth needed).
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    write_dispatched = False
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             # Get or create namespace
@@ -236,24 +320,32 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
             if namespaces:
                 namespace = namespaces[0]["name"]
             else:
+                write_dispatched = True
                 create_ns = await client.post(
                     "https://api.smithery.ai/namespaces",
                     json={"name": "clawith"},
                     headers=headers,
                 )
                 if create_ns.status_code not in (200, 201):
-                    return {"error": f"Failed to create namespace: HTTP {create_ns.status_code}"}
+                    return {
+                        "error": f"Failed to create namespace: HTTP {create_ns.status_code}",
+                        "unknown": False,
+                    }
                 namespace = create_ns.json()["name"]
 
             # Create connection
             conn_id = display_name.lower().replace(" ", "-").replace(":", "")
+            write_dispatched = True
             conn_resp = await client.post(
                 f"https://api.smithery.ai/connect/{namespace}",
                 json={"connectionId": conn_id, "mcpUrl": mcp_url, "name": display_name},
                 headers=headers,
             )
             if conn_resp.status_code not in (200, 201):
-                return {"error": f"Failed to create connection: HTTP {conn_resp.status_code} — {conn_resp.text[:200]}"}
+                return {
+                    "error": f"Failed to create connection: HTTP {conn_resp.status_code}",
+                    "unknown": False,
+                }
 
             conn_data = conn_resp.json()
             result = {
@@ -261,65 +353,271 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
                 "connection_id": conn_data.get("connectionId", conn_id),
             }
             status = conn_data.get("status", {})
-            if isinstance(status, dict) and status.get("state") == "auth_required":
-                result["auth_url"] = status.get("authorizationUrl", "")
+            if isinstance(status, dict):
+                state = str(status.get("state") or "").strip().lower()
+                if state:
+                    result["state"] = state
+                if state == "auth_required":
+                    result["auth_url"] = status.get("authorizationUrl", "")
             return result
     except Exception as e:
-        return {"error": str(e)[:200]}
+        return {
+            "error": type(e).__name__,
+            "unknown": write_dispatched,
+        }
 
 
-async def import_mcp_from_smithery(
+def _safe_smithery_authorization_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return candidate
+
+
+async def get_smithery_connection_status(
+    api_key: str,
+    namespace: str,
+    connection_id: str,
+) -> dict:
+    """Read one Smithery connection without creating or mutating it."""
+    if not api_key or not namespace or not connection_id:
+        return {"state": "unavailable"}
+
+    url = (
+        f"{SMITHERY_CONNECT_API_BASE}/connect/"
+        f"{quote(str(namespace), safe='')}/{quote(str(connection_id), safe='')}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/json",
+                },
+            )
+        if response.status_code != 200:
+            return {"state": "unavailable"}
+        payload = response.json()
+    except Exception:
+        return {"state": "unavailable"}
+
+    if not isinstance(payload, dict):
+        return {"state": "unavailable"}
+    raw_status = payload.get("status")
+    if isinstance(raw_status, dict):
+        state = str(raw_status.get("state") or "").strip().lower()
+        authorization_url = raw_status.get("authorizationUrl")
+    else:
+        state = str(raw_status or payload.get("state") or "").strip().lower()
+        authorization_url = payload.get("authorizationUrl")
+
+    if state == "connected":
+        return {"state": "connected"}
+    if state == "auth_required":
+        result = {"state": "auth_required"}
+        safe_url = _safe_smithery_authorization_url(authorization_url)
+        if safe_url:
+            result["authorization_url"] = safe_url
+        return result
+    return {"state": "unavailable"}
+
+
+def _smithery_connection_receipt(connection: dict) -> str | None:
+    namespace = str(connection.get("namespace") or "").strip()
+    connection_id = str(connection.get("connection_id") or "").strip()
+    if not namespace or not connection_id:
+        return None
+    safe_namespace = quote(namespace, safe="@._-")
+    safe_connection_id = quote(connection_id, safe="@._-")
+    return f"smithery-connection:{safe_namespace}:{safe_connection_id}"
+
+
+def _smithery_import_completion_outcome(
+    *,
+    display_name: str,
+    server_id: str,
+    imported_tools: list[str],
+    connection: dict,
+) -> ToolExecutionOutcome:
+    """Map a committed local import plus provider status to one safe fact."""
+    del display_name, server_id
+    tool_count = len(imported_tools)
+    result_ref = _smithery_connection_receipt(connection)
+    state = str(connection.get("state") or "").strip().lower()
+    if not state:
+        # Backward compatibility for the existing connection-creation helper.
+        state = "auth_required" if connection.get("auth_url") else "connected"
+
+    if state == "auth_required":
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                f"Saved {tool_count} Smithery tool definition(s), but they are "
+                "not available until an authorized user completes OAuth from "
+                "the Tools page."
+            ),
+            result_ref=result_ref,
+            error_code="mcp_auth_required",
+            retryable=False,
+        )
+    if state == "connected":
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=(
+                f"Saved {tool_count} Smithery tool definition(s); the "
+                "connection is authorized and available."
+            ),
+            result_ref=result_ref,
+        )
+    return ToolExecutionOutcome(
+        status="failed",
+        result_summary=(
+            f"Saved {tool_count} Smithery tool definition(s), but connection "
+            "authorization status could not be verified. Check it from the "
+            "Tools page before use."
+        ),
+        result_ref=result_ref,
+        error_code="mcp_authorization_status_unavailable",
+        retryable=False,
+    )
+
+
+async def _existing_smithery_import_outcome(
+    *,
+    display_name: str,
+    server_id: str,
+    existing_tools: list[Tool],
+    assignments: list[AgentTool],
+    api_key: str,
+) -> ToolExecutionOutcome:
+    """Re-check an already imported connection instead of trusting local rows."""
+    if not assignments or len(assignments) < len(existing_tools):
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Existing Smithery tools do not have a complete assignment set "
+                "and cannot be reported ready."
+            ),
+            result_ref=None,
+            error_code="mcp_connection_configuration_missing",
+            retryable=False,
+        )
+
+    coordinates: set[tuple[str, str]] = set()
+    for assignment in assignments:
+        assignment_config = assignment.config or {}
+        namespace = str(assignment_config.get("smithery_namespace") or "").strip()
+        connection_id = str(
+            assignment_config.get("smithery_connection_id") or ""
+        ).strip()
+        if not namespace or not connection_id:
+            return ToolExecutionOutcome(
+                status="failed",
+                result_summary=(
+                    "Existing Smithery tools are missing server-side connection "
+                    "configuration and cannot be reported ready."
+                ),
+                result_ref=None,
+                error_code="mcp_connection_configuration_missing",
+                retryable=False,
+            )
+        coordinates.add((namespace, connection_id))
+
+    if len(coordinates) != 1:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Existing Smithery tools are missing one consistent server-side "
+                "connection configuration and cannot be reported ready."
+            ),
+            result_ref=None,
+            error_code="mcp_connection_configuration_missing",
+            retryable=False,
+        )
+
+    namespace, connection_id = next(iter(coordinates))
+    status = await get_smithery_connection_status(
+        api_key,
+        namespace,
+        connection_id,
+    )
+    return _smithery_import_completion_outcome(
+        display_name=display_name,
+        server_id=server_id,
+        imported_tools=[tool.display_name for tool in existing_tools],
+        connection={
+            "namespace": namespace,
+            "connection_id": connection_id,
+            **status,
+        },
+    )
+
+
+async def import_mcp_from_smithery_outcome(
     server_id: str,
     agent_id: uuid.UUID,
     config: dict | None = None,
     reauthorize: bool = False,
-) -> str:
+) -> ToolExecutionOutcome:
     """Import an MCP server from Smithery into the platform.
 
     Uses the Smithery Registry detail API to get tool definitions,
     and stores the deploymentUrl for runtime execution via Smithery Connect.
-    If config contains 'smithery_api_key', it's stored per-agent for future use.
+    If config contains 'smithery_api_key', it is stored in encrypted tenant
+    tool configuration for future use.
     """
     config = dict(config) if config else {}  # mutable copy
 
     # Extract smithery_api_key from config (user-provided) or fallback to stored
     api_key = config.pop("smithery_api_key", None) or await _get_smithery_api_key(agent_id)
     if not api_key:
-        return (
-            "❌ Smithery API key is required to import MCP servers.\n\n"
-            "请提供你的 Smithery API Key，你可以通过以下步骤获取：\n"
-            "1. 注册/登录 https://smithery.ai\n"
-            "2. 前往 https://smithery.ai/account/api-keys 创建 API Key\n"
-            "3. 将 Key 提供给我，例如：\n"
-            '   `import_mcp_server(server_id="github", config={"smithery_api_key": "your-key"})`'
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="Smithery credentials are required to import this MCP server.",
+            result_ref=None,
+            error_code="resource_credentials_missing",
         )
 
-    # Write key back to discover_resources / import_mcp_server AgentTool configs
-    # so it shows up in the Config dialog
+    # Persist the key only in encrypted tenant tool config. Dynamic Tool and
+    # AgentTool rows keep non-secret connection coordinates, never credentials.
     try:
         async with async_session() as db:
+            from app.models.agent import Agent as AgentModel
+
+            tenant_r = await db.execute(
+                select(AgentModel.tenant_id).where(AgentModel.id == agent_id)
+            )
+            tenant_id = tenant_r.scalar_one_or_none()
+            if not tenant_id:
+                raise RuntimeError("Agent tenant is required for Smithery config")
             for tool_name in ("discover_resources", "import_mcp_server"):
                 r = await db.execute(select(Tool).where(Tool.name == tool_name))
                 tool = r.scalar_one_or_none()
                 if not tool:
                     continue
-                at_r = await db.execute(
-                    select(AgentTool).where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.tool_id == tool.id,
-                    )
+                current_config = await get_tenant_tool_config(
+                    db,
+                    tenant_id,
+                    tool.name,
+                    tool.config_schema,
                 )
-                at = at_r.scalar_one_or_none()
-                if at:
-                    at.config = {**(at.config or {}), "smithery_api_key": api_key}
-                else:
-                    db.add(AgentTool(
-                        agent_id=agent_id, tool_id=tool.id, enabled=True,
-                        source="system", config={"smithery_api_key": api_key},
-                    ))
+                await set_tenant_tool_config(
+                    db,
+                    tenant_id,
+                    tool.name,
+                    {**current_config, "smithery_api_key": api_key},
+                    tool.config_schema,
+                )
             await db.commit()
     except Exception:
-        pass  # non-critical — key is still usable from MCP tool configs
+        pass  # Non-critical for the current import; never fall back to Tool rows.
 
     # ---- Early exit: check if this server's tools are already installed for this agent ----
     # Check by both tool name prefix AND mcp_server_name to catch different server_id variants
@@ -338,7 +636,7 @@ async def import_mcp_from_smithery(
                 )
             )
             existing_server_tools = existing_server_r.scalars().all()
-            if existing_server_tools and not config and not reauthorize:
+            if existing_server_tools:
                 # Check if this agent has assignments for these tools
                 tool_ids = [t.id for t in existing_server_tools]
                 agent_assignments_r = await db.execute(
@@ -349,16 +647,34 @@ async def import_mcp_from_smithery(
                 )
                 agent_assignments = agent_assignments_r.scalars().all()
                 if len(agent_assignments) >= len(existing_server_tools):
-                    tool_names = [t.display_name for t in existing_server_tools[:5]]
-                    more = f" ... and {len(existing_server_tools) - 5} more" if len(existing_server_tools) > 5 else ""
-                    return (
-                        f"⏭️ You already have **{len(existing_server_tools)}** tools from this MCP server installed:\n"
-                        + "\n".join(f"  • {n}" for n in tool_names) + more
-                        + "\n\nNo action needed. These tools are ready to use."
-                        + "\n\n💡 If tools stopped working (e.g. OAuth expired), use `import_mcp_server(server_id=\"....\", reauthorize=true)` to re-authorize."
+                    if config:
+                        for assignment in agent_assignments:
+                            assignment.config = {
+                                **(assignment.config or {}),
+                                **config,
+                            }
+                        await db.commit()
+                    existing_display_name = (
+                        existing_server_tools[0].mcp_server_name or server_id
+                    )
+                    return await _existing_smithery_import_outcome(
+                        display_name=existing_display_name,
+                        server_id=server_id,
+                        existing_tools=existing_server_tools,
+                        assignments=agent_assignments,
+                        api_key=api_key,
                     )
     except Exception:
-        pass  # non-critical — proceed to normal import flow
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Existing Smithery installation status could not be checked; "
+                "no connection write was attempted."
+            ),
+            result_ref=None,
+            error_code="mcp_existing_import_check_failed",
+            retryable=False,
+        )
 
     # Step 1: Search for server by ID
     headers = {"Accept": "application/json"}
@@ -371,7 +687,15 @@ async def import_mcp_from_smithery(
                 headers=headers,
             )
             if resp.status_code != 200:
-                return f"❌ Server '{server_id}' not found on Smithery (HTTP {resp.status_code})"
+                return ToolExecutionOutcome(
+                    status="failed",
+                    result_summary=(
+                        f"Server '{server_id}' could not be loaded from Smithery "
+                        f"(HTTP {resp.status_code})."
+                    ),
+                    result_ref=None,
+                    error_code="mcp_server_lookup_rejected",
+                )
             data = resp.json()
             servers = data.get("servers", [])
             server_info = None
@@ -383,9 +707,19 @@ async def import_mcp_from_smithery(
             if not server_info and servers:
                 server_info = servers[0]
             if not server_info:
-                return f"❌ Server '{server_id}' not found on Smithery."
+                return ToolExecutionOutcome(
+                    status="failed",
+                    result_summary=f"Server '{server_id}' was not found on Smithery.",
+                    result_ref=None,
+                    error_code="mcp_server_not_found",
+                )
     except Exception as e:
-        return f"❌ Failed to fetch server info: {str(e)[:200]}"
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=f"Server lookup failed: {type(e).__name__}.",
+            result_ref=None,
+            error_code="mcp_server_lookup_failed",
+        )
 
     display_name = server_info.get("displayName", server_id.split("/")[-1])
     description = server_info.get("description", "")
@@ -393,10 +727,14 @@ async def import_mcp_from_smithery(
 
     # Check if server supports remote hosting
     if not server_info.get("remote"):
-        return (
-            f"⚠️ **{display_name}** (`{qualified_name}`) does not support remote hosting via Smithery Connect.\n"
-            f"This server requires local installation and cannot be imported automatically.\n"
-            f"🔗 {server_info.get('homepage', '')}"
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                f"{display_name} ({qualified_name}) does not support remote hosting "
+                "and cannot be imported automatically."
+            ),
+            result_ref=None,
+            error_code="mcp_server_not_remote",
         )
 
     # Step 2: Get full server details including tools from registry API
@@ -431,28 +769,37 @@ async def import_mcp_from_smithery(
 
     # Step 3.5: Auto-create Smithery Connect namespace + connection
     smithery_config = {}  # will be merged into every AgentTool.config
-    auth_message = ""
     conn_result = await _ensure_smithery_connection(api_key, base_mcp_url, display_name)
     if "error" in conn_result:
-        auth_message = f"\n\n⚠️ Could not auto-create Smithery connection: {conn_result['error']}"
+        if conn_result.get("unknown"):
+            return ToolExecutionOutcome(
+                status="unknown",
+                result_summary=(
+                    "Smithery connection creation outcome is unknown; "
+                    "reconcile before retrying."
+                ),
+                result_ref=None,
+                error_code="mcp_import_outcome_unknown",
+            )
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary="Smithery rejected connection creation.",
+            result_ref=None,
+            error_code="mcp_connection_rejected",
+        )
     else:
         smithery_config = {
             "smithery_namespace": conn_result["namespace"],
             "smithery_connection_id": conn_result["connection_id"],
         }
-        if conn_result.get("auth_url"):
-            auth_message = (
-                f"\n\n🔐 **OAuth 授权需要**: 请在浏览器中访问以下链接完成授权：\n"
-                f"{conn_result['auth_url']}\n"
-                f"授权完成后，工具即可使用。"
-            )
 
     # Step 3.6: Override registry-advertised schema with the runtime server's
     # actual tools/list. Smithery's registry detail can drift behind the live
     # server (we hit this with shibui/finance: registry said `sql`, server
     # required `user_prompt` + `query`). The truth is whatever tools/list
     # returns at call time, so prefer it whenever available.
-    if smithery_config:
+    connection_state = str(conn_result.get("state") or "").strip().lower()
+    if smithery_config and connection_state != "auth_required" and not conn_result.get("auth_url"):
         ns_ = smithery_config["smithery_namespace"]
         conn_ = smithery_config["smithery_connection_id"]
         try:
@@ -600,50 +947,66 @@ async def import_mcp_from_smithery(
                 existing_tool.mcp_server_url = base_mcp_url
                 await _ensure_agent_tool(existing_tool.id)
                 if config:
-                    await db.commit()
-                    return f"🔄 {tool_display} config updated. The tool is now ready to use."
+                    imported_tools.append(f"🔄 {tool_display} (config updated)")
                 else:
-                    return f"⏭️ {tool_display} is already imported."
-
-            tool = Tool(
-                name=tool_name,
-                display_name=tool_display,
-                description=description[:500] or f"MCP Server: {server_id}",
-                type="mcp",
-                category="mcp",
-                icon="🔌",
-                parameters_schema={"type": "object", "properties": {}},
-                mcp_server_url=base_mcp_url,
-                mcp_server_name=display_name,
-                enabled=True,
-                is_default=False,
-                source="agent",
-            )
-            db.add(tool)
-            await db.flush()
-            await _ensure_agent_tool(tool.id)
-            imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
+                    imported_tools.append(f"⏭️ {tool_display} (already imported)")
+            else:
+                tool = Tool(
+                    name=tool_name,
+                    display_name=tool_display,
+                    description=description[:500] or f"MCP Server: {server_id}",
+                    type="mcp",
+                    category="mcp",
+                    icon="🔌",
+                    parameters_schema={"type": "object", "properties": {}},
+                    mcp_server_url=base_mcp_url,
+                    mcp_server_name=display_name,
+                    enabled=True,
+                    is_default=False,
+                    source="agent",
+                )
+                db.add(tool)
+                await db.flush()
+                await _ensure_agent_tool(tool.id)
+                imported_tools.append(
+                    f"✅ {tool_display} "
+                    "(tool list not available from registry — may need configuration)"
+                )
 
         await db.commit()
 
-    result = f"🔌 Imported MCP server: **{display_name}** (`{server_id}`)\n\n"
-    result += "\n".join(imported_tools)
-    result += f"\n\n📡 MCP Server URL: `{base_mcp_url}`"
-    if auth_message:
-        result += auth_message
-    else:
-        result += "\n\n💡 The imported tools are now available for use."
-    return result
+    return _smithery_import_completion_outcome(
+        display_name=display_name,
+        server_id=server_id,
+        imported_tools=imported_tools,
+        connection=conn_result,
+    )
+
+
+async def import_mcp_from_smithery(
+    server_id: str,
+    agent_id: uuid.UUID,
+    config: dict | None = None,
+    reauthorize: bool = False,
+) -> str:
+    """Legacy display adapter for typed Smithery import."""
+    outcome = await import_mcp_from_smithery_outcome(
+        server_id,
+        agent_id,
+        config,
+        reauthorize,
+    )
+    return outcome.result_summary or "MCP import returned no summary."
 
 
 # ── Direct URL Import ───────────────────────────────────────────
 
-async def import_mcp_direct(
+async def import_mcp_direct_outcome(
     mcp_url: str,
     agent_id: uuid.UUID,
     server_name: str | None = None,
     api_key: str | None = None,
-) -> str:
+) -> ToolExecutionOutcome:
     """Import an MCP server by directly connecting to its HTTP/SSE endpoint.
 
     This bypasses Smithery entirely — useful for self-hosted or third-party
@@ -734,7 +1097,12 @@ async def import_mcp_direct(
             if existing_tool:
                 existing_tool.mcp_server_url = mcp_url
                 await _ensure_agent_tool(existing_tool.id)
-                return f"⏭️ {display_name} is already imported."
+                await db.commit()
+                return ToolExecutionOutcome(
+                    status="succeeded",
+                    result_summary=f"{display_name} is already imported.",
+                    result_ref=None,
+                )
 
             tool = Tool(
                 name=tool_name,
@@ -757,11 +1125,30 @@ async def import_mcp_direct(
 
         await db.commit()
 
-    result = f"🔌 Imported MCP server: **{display_name}**\n\n"
+    result = f"Imported MCP server: **{display_name}**\n\n"
     result += "\n".join(imported_tools)
-    result += f"\n\n📡 MCP Server URL: `{mcp_url}`"
-    result += "\n\n💡 The imported tools are now available for use."
-    return result
+    result += "\n\nThe imported tools are now available for use."
+    return ToolExecutionOutcome(
+        status="succeeded",
+        result_summary=result,
+        result_ref=None,
+    )
+
+
+async def import_mcp_direct(
+    mcp_url: str,
+    agent_id: uuid.UUID,
+    server_name: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Legacy display adapter for typed direct MCP import."""
+    outcome = await import_mcp_direct_outcome(
+        mcp_url,
+        agent_id,
+        server_name,
+        api_key,
+    )
+    return outcome.result_summary or "MCP import returned no summary."
 
 
 # ── Atlassian Rovo MCP Auto-Seeding ─────────────────────────────────────────

@@ -81,7 +81,7 @@ async def test_get_wecom_channel_reports_runtime_websocket_status(monkeypatch):
             return {str(agent_id): True}
 
     monkeypatch.setattr(wecom_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr("app.services.wecom_stream.wecom_stream_manager", FakeManager())
+    monkeypatch.setattr(wecom_api, "wecom_stream_manager", FakeManager())
 
     result = await wecom_api.get_wecom_channel(
         agent_id=agent_id,

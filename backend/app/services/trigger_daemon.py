@@ -9,10 +9,11 @@ import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.logging_config import new_trace_id
 from app.database import async_session
+from app.models.experience import ExperienceEntry
 from app.models.trigger import AgentTrigger
 from app.services.trigger_runtime.evaluator import (
     evaluate_trigger as evaluate_trigger_runtime,
@@ -22,16 +23,9 @@ from app.services.trigger_runtime.evaluator import (
     mark_trigger_skipped as mark_trigger_skipped_runtime,
     should_skip_non_workday as should_skip_non_workday_runtime,
 )
-from app.services.trigger_runtime.invoker import invoke_agent_for_triggers as invoke_agent_for_triggers_runtime
-from app.services.trigger_runtime import (
-    claim_ready_trigger_invocations,
-    enqueue_due_trigger,
-    mark_trigger_executions_completed,
-    mark_trigger_executions_failed,
-)
+from app.services.trigger_runtime import enqueue_due_trigger
 
 TICK_INTERVAL = 15  # seconds
-DEDUP_WINDOW = 30   # seconds — same agent won't be invoked twice within this window
 MIN_POLL_INTERVAL_MINUTES = 5  # minimum poll interval to prevent abuse
 
 # Safety: per-agent on_message fire rate limiter
@@ -39,18 +33,8 @@ _ON_MSG_RATE_WINDOW = 3600  # 1 hour window
 _ON_MSG_RATE_LIMIT = 30     # max on_message fires per agent per hour
 _on_msg_fire_log: dict[uuid.UUID, list[datetime]] = {}  # agent_id -> list of fire timestamps
 
-_last_invoke: dict[uuid.UUID, datetime] = {}
-
-_A2A_WAKE_CHAIN: dict[str, int] = {}
-_A2A_WAKE_CHAIN_TTL = 300
-_A2A_MAX_WAKE_DEPTH = 3
-
-
 def _cleanup_stale_invoke_cache():
     now = datetime.now(timezone.utc)
-    stale = [k for k, v in _last_invoke.items() if (now - v).total_seconds() > DEDUP_WINDOW * 2]
-    for k in stale:
-        del _last_invoke[k]
     # Clean up old on_message rate limiter entries
     cutoff = now - timedelta(seconds=_ON_MSG_RATE_WINDOW)
     stale_agents = []
@@ -60,6 +44,40 @@ def _cleanup_stale_invoke_cache():
             stale_agents.append(aid)
     for aid in stale_agents:
         del _on_msg_fire_log[aid]
+
+
+_RETIRED_EXPERIENCE_TTL_DAYS = 30
+_last_exp_purge_day = None  # date of the last purge; runs at most once per UTC day
+
+
+async def _purge_expired_retired_experiences():
+    """Hard-delete experience entries retired more than 30 days ago and not re-published.
+
+    Re-publishing clears `retired_at`, so only entries still sitting in the 已下架 bin
+    past the TTL are removed. experience_references cascade at the DB level. Runs once
+    per day off the daemon tick.
+    """
+    global _last_exp_purge_day
+    today = datetime.now(timezone.utc).date()
+    if _last_exp_purge_day == today:
+        return
+    _last_exp_purge_day = today
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_RETIRED_EXPERIENCE_TTL_DAYS)
+    async with async_session() as db:
+        ids = (
+            await db.execute(
+                select(ExperienceEntry.id).where(
+                    ExperienceEntry.status == "retired",
+                    ExperienceEntry.retired_at.is_not(None),
+                    ExperienceEntry.retired_at < cutoff,
+                )
+            )
+        ).scalars().all()
+        if not ids:
+            return
+        await db.execute(delete(ExperienceEntry).where(ExperienceEntry.id.in_(ids)))
+        await db.commit()
+        logger.info(f"🧹 Purged {len(ids)} retired experience entries older than {_RETIRED_EXPERIENCE_TTL_DAYS}d")
 
 
 async def _should_skip_non_workday(trigger: AgentTrigger, local_now: datetime) -> bool:
@@ -84,11 +102,6 @@ async def _handle_okr_collection_trigger(trigger: AgentTrigger, now: datetime) -
 async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     return await evaluate_trigger_runtime(trigger, now)
 
-async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTrigger]):
-    new_trace_id()
-    await invoke_agent_for_triggers_runtime(agent_id, triggers)
-
-
 # ── Main Tick Loop ──────────────────────────────────────────────────
 
 async def _tick():
@@ -98,7 +111,7 @@ async def _tick():
 
     async with async_session() as db:
         result = await db.execute(
-            select(AgentTrigger).where(AgentTrigger.is_enabled == True)
+            select(AgentTrigger).where(AgentTrigger.is_enabled.is_(True))
         )
         all_triggers = result.scalars().all()
         # Expunge each object before session.close() is called.
@@ -157,134 +170,6 @@ async def _tick():
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
 
-    # Claim queued executions with a DB lease so only one worker handles each event.
-    try:
-        fired_by_agent, force_invoke_agents = await claim_ready_trigger_invocations(now)
-    except Exception as e:
-        logger.warning(f"Failed to claim trigger executions: {e}")
-        fired_by_agent = {}
-        force_invoke_agents = set()
-
-    # Invoke each agent (with dedup window)
-    for agent_id, agent_triggers in fired_by_agent.items():
-        last = _last_invoke.get(agent_id)
-        if agent_id not in force_invoke_agents and last and (now - last).total_seconds() < DEDUP_WINDOW:
-            continue  # Skip — invoked too recently
-        _last_invoke[agent_id] = now
-
-        # ── Immediately update trigger state BEFORE launching async task ──
-        # This prevents the next tick from re-evaluating the same trigger as
-        # "should fire" while the LLM call is still running (which can take
-        # minutes). Without this, the 15s tick interval + 30s dedup window
-        # would cause repeated invocations for long-running triggers.
-        try:
-            async with async_session() as db:
-                for t in agent_triggers:
-                    cfg = t.config or {}
-                    if isinstance(cfg, str):
-                        import json
-                        try:
-                            cfg = json.loads(cfg)
-                        except (json.JSONDecodeError, TypeError):
-                            cfg = {}
-                    if cfg.get("_execution_id"):
-                        continue
-                    result = await db.execute(
-                        select(AgentTrigger).where(AgentTrigger.id == t.id)
-                    )
-                    trigger = result.scalar_one_or_none()
-                    if trigger:
-                        trigger.last_fired_at = now
-                        trigger.fire_count += 1
-                        # Auto-disable single-shot types only
-                        if trigger.type == "once":
-                            trigger.is_enabled = False
-                        if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
-                            trigger.is_enabled = False
-                await db.commit()
-        except Exception as e:
-            logger.warning(f"Failed to pre-update trigger state: {e}")
-
-        asyncio.create_task(_invoke_agent_for_triggers(agent_id, agent_triggers))
-
-
-async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, from_agent_id: uuid.UUID | None = None, skip_dedup: bool = False, a2a_session_id: str | None = None) -> None:
-    """Public API: wake an agent asynchronously with a message context.
-
-    Creates a synthetic trigger invocation so the agent processes the
-    message in a Reflection Session via the standard trigger path.
-    If a2a_session_id is provided, the agent's reply will also be saved
-    to the A2A chat session for visibility in the admin chat history.
-    Safe to call from any async context.
-
-    Args:
-        agent_id: The agent to wake.
-        message_context: The message to deliver.
-        from_agent_id: The agent that initiated this wake (for chain depth tracking).
-        skip_dedup: If True, bypass the dedup window check.
-        a2a_session_id: Optional A2A chat session ID to mirror the reply into.
-    """
-    import time as _time
-
-    now = datetime.now(timezone.utc)
-
-    if from_agent_id:
-        chain_key = f"{from_agent_id}->{agent_id}"
-        current_depth = _A2A_WAKE_CHAIN.get(chain_key, 0)
-        if current_depth >= _A2A_MAX_WAKE_DEPTH:
-            logger.warning(
-                f"[A2A] Wake chain depth {current_depth} reached for {chain_key}, "
-                f"stopping to prevent wake storm"
-            )
-            return
-
-        _A2A_WAKE_CHAIN[chain_key] = current_depth + 1
-
-        def _decay_chain():
-            _A2A_WAKE_CHAIN.pop(chain_key, None)
-        asyncio.get_running_loop().call_later(_A2A_WAKE_CHAIN_TTL, _decay_chain)
-
-    if not skip_dedup and agent_id in _last_invoke:
-        elapsed = (now - _last_invoke[agent_id]).total_seconds()
-        if elapsed < DEDUP_WINDOW:
-            logger.info(
-                f"[A2A] Skipping wake for agent {agent_id} — "
-                f"invoked {elapsed:.0f}s ago (dedup window {DEDUP_WINDOW}s)"
-            )
-            return
-
-    _last_invoke[agent_id] = now
-
-    from_agent_name = ""
-    if from_agent_id:
-        try:
-            async with async_session() as db:
-                from app.models.agent import Agent as AgentModel
-                r = await db.execute(select(AgentModel.name).where(AgentModel.id == from_agent_id))
-                from_agent_name = r.scalar() or ""
-        except Exception as e:
-            logger.warning(f"Failed to lookup sender agent name: {e}")
-
-    dummy_trigger = AgentTrigger(
-        id=uuid.uuid4(),
-        agent_id=agent_id,
-        name="a2a_wake",
-        type="on_message",
-        config={"from_agent_name": from_agent_name, "_matched_message": message_context[:2000], "_matched_from": "agent", "_a2a_session_id": a2a_session_id},
-        reason=(
-            "You received a notification from another agent. "
-            "Read the message content above, update your focus and memory if needed, "
-            "and take any action you deem necessary. "
-            "Do NOT reply back to the sender unless you have a genuine question — "
-            "this was a notification, not a request for response."
-        ),
-        is_enabled=True,
-        last_fired_at=now,
-        fire_count=0,
-    )
-    asyncio.create_task(_invoke_agent_for_triggers(agent_id, [dummy_trigger]))
-
-
 async def start_trigger_daemon():
     """Start the background trigger daemon loop. Called from FastAPI startup."""
     logger.info("⚡ Trigger Daemon started (15s tick, heartbeat every ~60s)")
@@ -307,5 +192,9 @@ async def start_trigger_daemon():
                 await _heartbeat_tick()
             except Exception as e:
                 logger.error(f"Heartbeat tick error: {e}")
+            try:
+                await _purge_expired_retired_experiences()
+            except Exception as e:
+                logger.error(f"Retired-experience purge error: {e}")
 
         await asyncio.sleep(TICK_INTERVAL)

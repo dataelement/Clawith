@@ -6,10 +6,10 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
-from loguru import logger
 from app.core.security import get_current_user
 from app.models.user import User
 from app.services.storage import ensure_local_path, get_storage_backend, guess_content_type, normalize_storage_key
+from app.services.text_extractor import extract_text as extract_document_text
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -37,70 +37,20 @@ def extract_text(file_path: Path, extension: str) -> str:
         except Exception:
             return file_path.read_text(encoding="gbk", errors="replace")
 
-    if extension == ".pdf":
+    extraction_failures = {
+        ".pdf": "[PDF内容提取失败]",
+        ".docx": "[DOCX内容提取失败]",
+        ".xlsx": "[Excel内容提取失败]",
+        ".xls": "[Excel内容提取失败]",
+    }
+    if extension in extraction_failures:
         try:
-            import subprocess
-            result = subprocess.run(
-                ["python3", "-c", f"""
-import sys
-try:
-    import PyPDF2
-    reader = PyPDF2.PdfReader('{file_path}')
-    text = '\\n'.join(page.extract_text() or '' for page in reader.pages)
-    print(text[:8000])
-except ImportError:
-    # Fallback: use pdftotext if available
-    import subprocess as sp
-    r = sp.run(['pdftotext', '{file_path}', '-'], capture_output=True, text=True)
-    print(r.stdout[:8000] if r.returncode == 0 else '[无法解析PDF]')
-"""],
-                capture_output=True, text=True, timeout=30,
-            )
-            return result.stdout.strip() or "[PDF内容提取失败]"
+            # Pass file bytes to the trusted extractor; never interpolate an upload path into executable code.
+            text = extract_document_text(file_path.read_bytes(), file_path.name)
+            return text[:8000] if text else extraction_failures[extension]
         except Exception as e:
-            return f"[PDF解析错误: {e}]"
-
-    if extension == ".docx":
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["python3", "-c", f"""
-try:
-    from docx import Document
-    doc = Document('{file_path}')
-    text = '\\n'.join(p.text for p in doc.paragraphs)
-    print(text[:8000])
-except ImportError:
-    print('[需要安装 python-docx 库]')
-"""],
-                capture_output=True, text=True, timeout=30,
-            )
-            return result.stdout.strip() or "[DOCX内容提取失败]"
-        except Exception as e:
-            return f"[DOCX解析错误: {e}]"
-
-    if extension in (".xlsx", ".xls"):
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["python3", "-c", f"""
-try:
-    import openpyxl
-    wb = openpyxl.load_workbook('{file_path}', read_only=True)
-    lines = []
-    for ws in wb.worksheets[:3]:
-        lines.append(f'## Sheet: {{ws.title}}')
-        for row in ws.iter_rows(max_row=50, values_only=True):
-            lines.append('\\t'.join(str(c) if c is not None else '' for c in row))
-    print('\\n'.join(lines)[:8000])
-except ImportError:
-    print('[需要安装 openpyxl 库]')
-"""],
-                capture_output=True, text=True, timeout=30,
-            )
-            return result.stdout.strip() or "[Excel内容提取失败]"
-        except Exception as e:
-            return f"[Excel解析错误: {e}]"
+            format_name = "PDF" if extension == ".pdf" else "DOCX" if extension == ".docx" else "Excel"
+            return f"[{format_name}解析错误: {e}]"
 
     return f"[不支持的文件格式: {extension}]"
 

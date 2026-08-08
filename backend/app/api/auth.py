@@ -2,10 +2,13 @@
 
 import uuid
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from loguru import logger
+from app.dao import query_dao
+from app.config import get_settings
 from app.core.security import (
     create_access_token,
     get_authenticated_user,
@@ -41,6 +44,7 @@ from app.schemas.schemas import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+settings = get_settings()
 
 
 @router.get("/registration-config")
@@ -229,12 +233,12 @@ async def register_init(
             # Set initial status
             user.is_active = is_first_user  # Active immediately if first user
             user.email_verified = identity.email_verified
-            await session.flush()
+            await query_dao.flush(session)
         else:
             user.identity = identity
 
     # 5. Generate token outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
 
     # 6. Send verification email if not verified (outside transaction)
     if not identity.email_verified:
@@ -287,10 +291,10 @@ async def register_sso(
             )
             if tenant:
                 user.tenant_id = tenant.id
-                await session.flush()
+                await query_dao.flush(session)
 
     # Move token generation outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
 
     logger.info(f"[REGISTER_SSO] SSO successful: user_id={user.id}, is_new={is_new}")
 
@@ -372,7 +376,7 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         if is_first_user:
             identity.email_verified = True
             identity.is_active = True
-            await session.flush()
+            await query_dao.flush(session)
 
         # Create Tenant User
         user = await registration_service.create_user_with_identity(
@@ -397,7 +401,7 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         await _send_verification_email_task(user, background_tasks, settings)
 
     # 7. Generate access token and build response payload outside transaction
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
     response_data = RegisterInitResponse(
         user_id=user.id,
         email=user.email,
@@ -422,124 +426,175 @@ async def _handle_sso_register(data: UserRegister):
 @router.post("/login", response_model=Any)
 async def login(data: UserLogin, background_tasks: BackgroundTasks):
     """Login with email/phone/username and password. Supports multi-tenant selection."""
-    # 1. Query Identity
-    identity = await identity_dao.get_by_login_identifier(data.login_identifier)
+    total_start = perf_counter()
+    outcome = "error"
+    identity_lookup_ms = 0.0
+    password_verify_ms = 0.0
+    user_lookup_ms = 0.0
+    tenant_processing_ms = 0.0
+    verification_ms = 0.0
 
-    if (
-        not identity
-        or not identity.password_hash
-        or not await verify_password_async(data.password, identity.password_hash)
-    ):
-        logger.warning(
-            f"[LOGIN] Invalid credentials for {data.login_identifier} identity_id={identity.id if identity else 'None'}"
+    def _log_login_metrics() -> None:
+        total_ms = (perf_counter() - total_start) * 1000
+        log_message = (
+            "[LOGIN_PERF] outcome={} identifier={} total_ms={:.2f} "
+            "identity_lookup_ms={:.2f} password_verify_ms={:.2f} "
+            "user_lookup_ms={:.2f} tenant_processing_ms={:.2f} verification_ms={:.2f}"
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-    # 2. Check Global Activity & Verification
-    if not identity.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account has been disabled.")
-
-    if not identity.email_verified:
-        from app.config import get_settings
-        from app.services.system_email_service import resolve_email_config_async
-
-        email_config = await resolve_email_config_async()
-
-        if not email_config:
-            # SMTP missing: auto-verify users under a transaction
-            async with transaction():
-                tx_identity = await identity_dao.get(identity.id)
-                if tx_identity:
-                    tx_identity.email_verified = True
-                    tx_identity.is_active = True
-                    identity.email_verified = True
-                    identity.is_active = True
-                    users = await user_dao.get_by_identity_id(tx_identity.id)
-                    for u in users:
-                        u.is_active = True
+        log_args = (
+            outcome,
+            data.login_identifier,
+            total_ms,
+            identity_lookup_ms,
+            password_verify_ms,
+            user_lookup_ms,
+            tenant_processing_ms,
+            verification_ms,
+        )
+        if total_ms >= settings.LOGIN_SLOW_LOG_THRESHOLD_MS:
+            logger.warning(log_message, *log_args)
         else:
-            # Find any user record (just for the task)
-            user = await user_dao.get_representative_user_for_identity(identity.id)
+            logger.debug(log_message, *log_args)
 
-            # Trigger email delivery in background
-            if user:
-                await _send_verification_email_task(user, background_tasks, get_settings())
+    # 1. Query Identity
+    try:
+        stage_start = perf_counter()
+        identity = await identity_dao.get_by_login_identifier(data.login_identifier)
+        identity_lookup_ms = (perf_counter() - stage_start) * 1000
 
-            # Consistent with identity-first flow: Return 403 Forbidden with verification intent
+        stage_start = perf_counter()
+        password_valid = bool(
+            identity
+            and identity.password_hash
+            and await verify_password_async(data.password, identity.password_hash)
+        )
+        password_verify_ms = (perf_counter() - stage_start) * 1000
+
+        if not password_valid:
+            outcome = "invalid_credentials"
+            logger.warning(
+                f"[LOGIN] Invalid credentials for {data.login_identifier} identity_id={identity.id if identity else 'None'}"
+            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+        # 2. Check Global Activity & Verification
+        if not identity.is_active:
+            outcome = "identity_inactive"
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your account has been disabled.")
+
+        if not identity.email_verified:
+            from app.services.system_email_service import resolve_email_config_async
+
+            stage_start = perf_counter()
+            email_config = await resolve_email_config_async()
+
+            if not email_config:
+                # SMTP missing: auto-verify users under a transaction
+                async with transaction():
+                    tx_identity = await identity_dao.get(identity.id)
+                    if tx_identity:
+                        tx_identity.email_verified = True
+                        tx_identity.is_active = True
+                        identity.email_verified = True
+                        identity.is_active = True
+                        users = await user_dao.get_by_identity_id(tx_identity.id)
+                        for u in users:
+                            u.is_active = True
+            else:
+                # Find any user record (just for the task)
+                user = await user_dao.get_representative_user_for_identity(identity.id)
+
+                # Trigger email delivery in background
+                if user:
+                    await _send_verification_email_task(user, background_tasks, settings)
+
+                verification_ms = (perf_counter() - stage_start) * 1000
+                outcome = "needs_verification"
+
+                # Consistent with identity-first flow: Return 403 Forbidden with verification intent
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "needs_verification": True,
+                        "email": identity.email,
+                        "message": "Please verify your email to continue.",
+                    },
+                )
+            verification_ms = (perf_counter() - stage_start) * 1000
+
+        # 3. Find all User records (tenants) and tenant metadata
+        stage_start = perf_counter()
+        login_candidates = await user_dao.get_login_users_with_tenants(identity.id)
+        user_lookup_ms = (perf_counter() - stage_start) * 1000
+
+        if not login_candidates:
+            outcome = "no_tenant_association"
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "needs_verification": True,
-                    "email": identity.email,
-                    "message": "Please verify your email to continue.",
-                },
+                status_code=status.HTTP_404_NOT_FOUND, detail="No organization associated with this account."
             )
 
-    # 3. Find all User records (tenants)
-    valid_users = await user_dao.get_by_identity_id(identity.id, include_identity=True)
-
-    if not valid_users:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No organization associated with this account."
-        )
-
-    # 4. Handle Tenant Selection
-    if not data.tenant_id:
-        # If multiple tenants, return choice
-        if len(valid_users) > 1:
-            tenant_ids = [u.tenant_id for u in valid_users if u.tenant_id]
-            tenants_map = {}
-            if tenant_ids:
-                tenants_result = await tenant_dao.get_by_ids(tenant_ids)
-                tenants_map = {str(t.id): t for t in tenants_result}
-
-            tenant_choices = []
-            for u in valid_users:
-                tenant = tenants_map.get(str(u.tenant_id)) if u.tenant_id else None
-                tenant_choices.append(
-                    TenantChoice(
-                        tenant_id=u.tenant_id,
-                        tenant_name=tenant.name if tenant else "Create or Join Organization",
-                        tenant_slug=tenant.slug if tenant else "",
-                        logo_url=tenant.logo_url if tenant else None,
+        # 4. Handle Tenant Selection
+        stage_start = perf_counter()
+        if not data.tenant_id:
+            # If multiple tenants, return choice
+            if len(login_candidates) > 1:
+                tenant_choices = []
+                for user, tenant in login_candidates:
+                    tenant_choices.append(
+                        TenantChoice(
+                            tenant_id=user.tenant_id,
+                            tenant_name=tenant.name if tenant else "Create or Join Organization",
+                            tenant_slug=tenant.slug if tenant else "",
+                            logo_url=tenant.logo_url if tenant else None,
+                        )
                     )
+
+                tenant_processing_ms = (perf_counter() - stage_start) * 1000
+                outcome = "tenant_selection_required"
+                return MultiTenantResponse(
+                    requires_tenant_selection=True,
+                    login_identifier=data.login_identifier,
+                    tenants=tenant_choices,
                 )
 
-            return MultiTenantResponse(
-                requires_tenant_selection=True,
-                login_identifier=data.login_identifier,
-                tenants=tenant_choices,
-            )
+            # Only one tenant
+            user, tenant = login_candidates[0]
+        else:
+            # Specific tenant requested (Dedicated Link flow)
+            selected = next((entry for entry in login_candidates if entry[0].tenant_id == data.tenant_id), None)
 
-        # Only one tenant
-        user = valid_users[0]
-    else:
-        # Specific tenant requested (Dedicated Link flow)
-        user = next((u for u in valid_users if u.tenant_id == data.tenant_id), None)
+            # Cross-tenant access check
+            if not selected:
+                tenant_processing_ms = (perf_counter() - stage_start) * 1000
+                outcome = "tenant_forbidden"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This account does not belong to the selected organization.",
+                )
 
-        # Cross-tenant access check
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This account does not belong to the selected organization.",
-            )
+            user, tenant = selected
 
-    if user.tenant_id:
-        tenant = await tenant_dao.get(user.tenant_id)
         if tenant and not tenant.is_active:
+            tenant_processing_ms = (perf_counter() - stage_start) * 1000
+            outcome = "tenant_inactive"
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Your organization has been disabled.",
             )
 
-    # 6. Generate Token
-    token = create_access_token(str(user.id), user.role)
-    return TokenResponse(
-        access_token=token,
-        user=UserOut.model_validate(user),
-        identity=IdentityOut.model_validate(identity),
-        needs_company_setup=user.tenant_id is None,
-    )
+        tenant_processing_ms = (perf_counter() - stage_start) * 1000
+
+        # 6. Generate Token
+        token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
+        outcome = "success"
+        return TokenResponse(
+            access_token=token,
+            user=UserOut.model_validate(user),
+            identity=IdentityOut.model_validate(identity),
+            needs_company_setup=user.tenant_id is None,
+        )
+    finally:
+        _log_login_metrics()
 
 
 @router.get("/email-hint")
@@ -703,7 +758,7 @@ async def update_me(
         for field, value in update_data.items():
             setattr(user, field, value)
 
-        await session.flush()
+        await query_dao.flush(session)
 
         # Sync email/phone to OrgMember if changed
         if "email" in update_data or "primary_mobile" in update_data:
@@ -769,7 +824,7 @@ async def switch_tenant(
         )
 
     # 3. Generate new token
-    token = create_access_token(str(target_user.id), target_user.role)
+    token = create_access_token(str(target_user.id), target_user.role, tenant_id=str(getattr(target_user, "tenant_id", None)) if getattr(target_user, "tenant_id", None) else None)
 
     # 4. Determine redirect URL
     from app.services.platform_service import platform_service
@@ -960,7 +1015,7 @@ async def oauth_callback(
             if not user.is_active:
                 raise HTTPException(status_code=403, detail="Account is disabled")
 
-        jwt_token = create_access_token(str(user.id), user.role)
+        jwt_token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
         return TokenResponse(
             access_token=jwt_token,
             user=UserOut.model_validate(user),
@@ -1049,7 +1104,7 @@ async def oauth_callback(
         )
 
     # Single tenant (or new user with no tenant yet) — issue token directly
-    jwt_token = create_access_token(str(user.id), user.role)
+    jwt_token = create_access_token(str(user.id), user.role, tenant_id=str(getattr(user, "tenant_id", None)) if getattr(user, "tenant_id", None) else None)
     return TokenResponse(
         access_token=jwt_token,
         user=UserOut.model_validate(user),
@@ -1168,9 +1223,9 @@ async def verify_email(data: VerifyEmailRequest):
         for u in users:
             u.is_active = True
 
-        await session.flush()
+        await query_dao.flush(session)
         # Refresh inside transaction to ensure we have the committed model state
-        await session.refresh(identity)
+        await query_dao.refresh(session, identity)
 
     # 3. Find a representative user outside transaction (read-only)
     user = await user_dao.get_representative_user_for_identity(identity.id)
@@ -1178,7 +1233,11 @@ async def verify_email(data: VerifyEmailRequest):
     # 4. Generate token and return full response outside transaction
     effective_id = str(user.id) if user else str(identity.id)
     effective_role = user.role if user else "user"
-    token = create_access_token(effective_id, effective_role)
+    token = create_access_token(
+        effective_id,
+        effective_role,
+        tenant_id=str(user.tenant_id) if user and user.tenant_id else None,
+    )
 
     return TokenResponse(
         access_token=token,

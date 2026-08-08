@@ -1,13 +1,25 @@
+import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import String, create_engine, select
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.dao.base import BaseDAO
-from app.database import _session_ctx
+from app.dao.base import BaseDAO, tenant_context
+from app.database import Base, _session_ctx
 
 
 class DummyModel:
     id = "id"
+
+
+class TenantScopedRecord(Base):
+    """Small mapped record proving the session-level isolation hook."""
+
+    __tablename__ = "test_tenant_scoped_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class RecordingSession:
@@ -102,3 +114,25 @@ async def test_delete_uses_current_session_without_nested_lookup(monkeypatch):
     assert session.deleted == [session.object_to_get]
     assert session.flushed is True
     assert session.committed is True
+
+
+def test_orm_session_injects_tenant_filter_for_direct_queries():
+    """Direct ORM access cannot bypass tenant isolation by omitting WHERE."""
+    engine = create_engine("sqlite://")
+    TenantScopedRecord.__table__.create(engine)
+    tenant_a = str(uuid.uuid4())
+    tenant_b = str(uuid.uuid4())
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                TenantScopedRecord(id="a", tenant_id=tenant_a),
+                TenantScopedRecord(id="b", tenant_id=tenant_b),
+            ]
+        )
+        session.commit()
+
+        with tenant_context(tenant_a):
+            records = session.scalars(select(TenantScopedRecord).order_by(TenantScopedRecord.id)).all()
+
+    assert [record.id for record in records] == ["a"]

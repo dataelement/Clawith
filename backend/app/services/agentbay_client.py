@@ -18,10 +18,33 @@ class GenericExtractSchema(RootModel[Any]):
 
 
 from agentbay import AgentBay, CreateSessionParams
+from app.dao import query_dao
 from app.core.logging_config import _disable_agentbay_logger_override, configure_logging
 
 _disable_agentbay_logger_override()
 configure_logging()
+
+
+def _sdk_result_mapping(result: object) -> dict[str, Any]:
+    """Preserve provider facts instead of replacing them with guessed success."""
+    mapped: dict[str, Any] = {}
+    for field in (
+        "success",
+        "request_id",
+        "error",
+        "error_message",
+        "data",
+        "exit",
+        "exit_code",
+        "session",
+        "stdout",
+        "stderr",
+        "output",
+        "message",
+    ):
+        if hasattr(result, field):
+            mapped[field] = getattr(result, field)
+    return mapped
 
 
 @dataclass
@@ -42,7 +65,12 @@ class AgentBayClient:
         self._session = None
         self._image_type = None
 
-    async def create_session(self, image: str = "linux_latest") -> AgentBaySession:
+    async def create_session(
+        self,
+        image: str = "linux_latest",
+        *,
+        labels: dict[str, str] | None = None,
+    ) -> AgentBaySession:
         """Create a new session using SDK.
 
         Closes any existing session first to prevent leaked sessions
@@ -62,7 +90,10 @@ class AgentBayClient:
         image_id = image_id_map.get(image, image)
         self._image_type = image
 
-        result = await asyncio.to_thread(self._sdk.create, CreateSessionParams(image_id=image_id))
+        result = await asyncio.to_thread(
+            self._sdk.create,
+            CreateSessionParams(image_id=image_id, labels=labels or {}),
+        )
         if not result.success:
             raise RuntimeError(f"Failed to create session: {result.error_message}")
 
@@ -221,7 +252,7 @@ class AgentBayClient:
             login_config: JSON string with login configuration, e.g.
                           '{"api_key": "xxx", "skill_id": "yyy"}'
         """
-        if not self._session or self._image_type != "browser":
+        if not self._session or self._image_type not in ("browser", "browser_latest"):
             await self.create_session("browser_latest")
         await self._ensure_browser_initialized()
 
@@ -263,6 +294,15 @@ class AgentBayClient:
             "exit_code": 0 if result.success else 1,
             "success": result.success,
         }
+
+    async def code_read_file(self, remote_path: str):
+        """Read a code-sandbox file while preserving the SDK result facts."""
+        if not self._session or self._image_type not in ("code", "code_latest"):
+            await self.create_session("code_latest")
+        return await asyncio.to_thread(
+            self._session.file_system.read_file,
+            remote_path,
+        )
 
     # ─── Browser: Extract & Observe ───────────────────
 
@@ -322,13 +362,18 @@ class AgentBayClient:
             timeout_ms=timeout_ms,
             cwd=cwd or None,
         )
-        return {
-            "success": result.success,
-            "stdout": getattr(result, "stdout", "") or getattr(result, "output", "") or "",
-            "stderr": getattr(result, "stderr", "") or "",
-            "exit_code": getattr(result, "exit_code", -1),
-            "error_message": result.error_message or "",
-        }
+        mapped = _sdk_result_mapping(result)
+        mapped.setdefault(
+            "stdout",
+            getattr(result, "stdout", "") or getattr(result, "output", "") or "",
+        )
+        mapped.setdefault("stderr", getattr(result, "stderr", "") or "")
+        mapped.setdefault(
+            "exit_code",
+            getattr(result, "exit_code", getattr(result, "exit", -1)),
+        )
+        mapped.setdefault("error_message", getattr(result, "error_message", "") or "")
+        return mapped
 
     # ─── Computer Operations ──────────────────────────
 
@@ -434,11 +479,7 @@ class AgentBayClient:
         result = await asyncio.to_thread(
             self._session.computer.start_app, cmd, work_directory=work_dir
         )
-        return {
-            "success": result.success,
-            "data": getattr(result, "data", None),
-            "error_message": result.error_message or "",
-        }
+        return _sdk_result_mapping(result)
 
     async def computer_get_installed_apps(
         self,
@@ -667,6 +708,10 @@ class AgentBayClient:
 
 _agentbay_sessions: dict[tuple[uuid.UUID, str, str], tuple[AgentBayClient, datetime]] = {}
 _AGENTBAY_SESSION_TIMEOUT = timedelta(minutes=5)
+_agentbay_session_locks: dict[tuple[uuid.UUID, str, str], asyncio.Lock] = {}
+# Compatibility name used by older diagnostics. Both names intentionally point
+# at the same per-scope lock registry.
+_agentbay_cold_start_locks = _agentbay_session_locks
 
 
 AGENTBAY_API_URL = "https://api.agentbay.ai/v1"
@@ -692,13 +737,12 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
     from app.models.channel_config import ChannelConfig
     from app.models.tool import Tool
     from sqlalchemy import select
-    from app.database import async_session
     from app.core.security import decrypt_data
     from app.config import get_settings
 
     async def _fetch(session):
         # 1) Check per-agent ChannelConfig first (highest priority)
-        result = await session.execute(
+        result = await query_dao.execute(session, 
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == "agentbay",
@@ -725,7 +769,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
         # tool with an empty config (e.g. agentbay_computer_screenshot), which
         # would silently return None even when a key IS configured.
         candidate_tools: list[Tool] = []
-        tool_result = await session.execute(
+        tool_result = await query_dao.execute(session, 
             select(Tool).where(
                 Tool.name == "agentbay_browser_navigate",
                 Tool.enabled == True,
@@ -737,7 +781,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
 
         # Also scan all agentbay tools in case the key was stored on a
         # different category representative by an older UI.
-        all_result = await session.execute(
+        all_result = await query_dao.execute(session, 
             select(Tool).where(
                 Tool.category == "agentbay",
                 Tool.enabled == True,
@@ -764,7 +808,7 @@ async def get_agentbay_api_key_for_agent(agent_id: uuid.UUID, db=None) -> Option
 
     if db:
         return await _fetch(db)
-    async with async_session() as session:
+    async with query_dao.session() as session:
         return await _fetch(session)
 
 
@@ -789,7 +833,75 @@ async def test_agentbay_channel(agent_id: uuid.UUID, current_user, db) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, session_id: str = "") -> AgentBayClient:
+def _agentbay_scope(
+    *,
+    session_id: str,
+    run_id: str,
+) -> tuple[str, str, str]:
+    chat_session_id = str(session_id or "").strip()
+    if chat_session_id:
+        return "chat_session", chat_session_id, chat_session_id
+    current_run_id = str(run_id or "").strip()
+    if current_run_id:
+        return "run", current_run_id, f"run:{current_run_id}"
+    raise RuntimeError(
+        "AgentBay execution requires an exact ChatSession or Run scope."
+    )
+
+
+def _agentbay_session_labels(
+    *,
+    agent_id: uuid.UUID,
+    scope_kind: str,
+    scope_id: str,
+    environment: str,
+) -> dict[str, str]:
+    return {
+        "clawith_agent_id": str(agent_id),
+        "clawith_scope_kind": scope_kind,
+        "clawith_scope_id": scope_id,
+        "clawith_environment": environment,
+    }
+
+
+async def _restore_exact_remote_session(
+    client: AgentBayClient,
+    *,
+    image: str,
+    labels: dict[str, str],
+) -> bool:
+    """Restore one exact labelled session; ambiguous/unknown results fail closed."""
+    listed = await asyncio.to_thread(client._sdk.list, labels=labels)
+    if getattr(listed, "success", None) is not True:
+        raise RuntimeError("AgentBay exact session lookup did not succeed.")
+    session_ids = getattr(listed, "session_ids", None)
+    if not isinstance(session_ids, (list, tuple)):
+        raise RuntimeError("AgentBay exact session lookup returned an invalid payload.")
+    normalized_ids = [value for value in session_ids if isinstance(value, str) and value]
+    if len(normalized_ids) != len(session_ids) or len(normalized_ids) > 1:
+        raise RuntimeError("AgentBay exact session lookup was ambiguous.")
+    if not normalized_ids:
+        return False
+
+    fetched = await asyncio.to_thread(client._sdk.get, normalized_ids[0])
+    if (
+        getattr(fetched, "success", None) is not True
+        or getattr(fetched, "session", None) is None
+    ):
+        raise RuntimeError("AgentBay exact session restore did not succeed.")
+    client._session = fetched.session
+    client._image_type = image
+    client._browser_initialized = False
+    return True
+
+
+async def get_agentbay_client_for_agent(
+    agent_id: uuid.UUID,
+    image_type: str,
+    session_id: str = "",
+    *,
+    run_id: str = "",
+) -> AgentBayClient:
     """Get or create AgentBay client for agent.
 
     Sessions are cached per (agent_id, session_id, image_type) so that each
@@ -800,64 +912,92 @@ async def get_agentbay_client_for_agent(agent_id: uuid.UUID, image_type: str, se
     Args:
         agent_id: The agent UUID.
         image_type: One of 'browser', 'computer', 'code'.
-        session_id: The ChatSession ID. Defaults to '' for backward compat
-                    (e.g. test_agentbay_channel, single-session callers).
+        session_id: Exact ChatSession ID when one exists.
+        run_id: Exact Run ID used only when there is no ChatSession.
     """
 
-    now = datetime.now()
-    cache_key = (agent_id, session_id, image_type)
+    scope_kind, scope_id, cache_scope_id = _agentbay_scope(
+        session_id=session_id,
+        run_id=run_id,
+    )
+    cache_key = (agent_id, cache_scope_id, image_type)
+    lock = _agentbay_session_locks.setdefault(cache_key, asyncio.Lock())
 
-    if cache_key in _agentbay_sessions:
-        client, last_used = _agentbay_sessions[cache_key]
-        if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
-            # Session still valid, refresh timestamp and reuse
-            _agentbay_sessions[cache_key] = (client, now)
-            return client
-        else:
-            # Session expired, close and remove
-            logger.info(f"[AgentBay] Session expired for {image_type} (session={session_id[:8]}), closing")
+    async with lock:
+        now = datetime.now()
+        cached = _agentbay_sessions.get(cache_key)
+        if cached is not None:
+            client, last_used = cached
+            if now - last_used < _AGENTBAY_SESSION_TIMEOUT:
+                _agentbay_sessions[cache_key] = (client, now)
+                return client
+            logger.info(
+                "[AgentBay] Exact scoped session expired for {} ({})",
+                image_type,
+                scope_kind,
+            )
             await client.close_session()
-            del _agentbay_sessions[cache_key]
+            _agentbay_sessions.pop(cache_key, None)
 
-    from app.services.agent_tools import _get_tool_config
+        from app.services.agent_tools import _get_tool_config
 
-    tool_config = await _get_tool_config(agent_id, "agentbay_browser_navigate")
-    api_key = None
+        tool_config = await _get_tool_config(
+            agent_id,
+            "agentbay_browser_navigate",
+        )
+        api_key = None
 
-    if tool_config and tool_config.get("api_key"):
-        api_key = tool_config.get("api_key")
-        from app.core.security import decrypt_data
-        from app.config import get_settings
-        try:
-            api_key = decrypt_data(api_key, get_settings().SECRET_KEY)
-        except Exception:
-            pass  # Fallback if it's somehow plaintext
-        if not _is_plausible_agentbay_api_key(api_key):
-            api_key = None
+        if tool_config and tool_config.get("api_key"):
+            api_key = tool_config.get("api_key")
+            from app.core.security import decrypt_data
+            from app.config import get_settings
+            try:
+                api_key = decrypt_data(api_key, get_settings().SECRET_KEY)
+            except Exception:
+                pass  # Plaintext is accepted only after format validation below.
+            if not _is_plausible_agentbay_api_key(api_key):
+                api_key = None
 
-    if not api_key:
-        api_key = await get_agentbay_api_key_for_agent(agent_id)
+        if not api_key:
+            api_key = await get_agentbay_api_key_for_agent(agent_id)
 
-    if not api_key:
-        raise RuntimeError("AgentBay not configured for this agent. Please configure in Tools > AgentBay.")
+        if not api_key:
+            raise RuntimeError(
+                "AgentBay not configured for this agent. Please configure in Tools > AgentBay."
+            )
 
-    client = AgentBayClient(api_key)
+        client = AgentBayClient(api_key)
+        labels = _agentbay_session_labels(
+            agent_id=agent_id,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            environment=image_type,
+        )
 
-    if image_type == "browser":
-        await client.create_session("browser_latest")
-        # Inject stored cookies after browser initialization
-        await _inject_credentials(client, agent_id)
-    elif image_type == "computer":
-        # Read OS preference from tool config (default: windows)
-        os_type = (tool_config or {}).get("os_type", "windows")
-        computer_image = "windows_latest" if os_type == "windows" else "linux_latest"
-        logger.info(f"[AgentBay] Creating computer session with OS: {os_type} (image: {computer_image}) for session={session_id[:8]}")
-        await client.create_session(computer_image)
-    else:
-        await client.create_session("code_latest")
+        if image_type == "browser":
+            image = "browser_latest"
+        elif image_type == "computer":
+            os_type = str((tool_config or {}).get("os_type") or "").strip()
+            if os_type not in {"linux", "windows"}:
+                raise RuntimeError("AgentBay computer OS configuration is invalid.")
+            image = "windows_latest" if os_type == "windows" else "linux_latest"
+        elif image_type == "code":
+            image = "code_latest"
+        else:
+            raise RuntimeError(f"Unsupported AgentBay environment: {image_type}")
 
-    _agentbay_sessions[cache_key] = (client, now)
-    return client
+        restored = await _restore_exact_remote_session(
+            client,
+            image=image,
+            labels=labels,
+        )
+        if not restored:
+            await client.create_session(image, labels=labels)
+        if image_type == "browser":
+            await _inject_credentials(client, agent_id)
+
+        _agentbay_sessions[cache_key] = (client, datetime.now())
+        return client
 
 
 async def cleanup_agentbay_sessions():
@@ -885,7 +1025,6 @@ async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
     exist or injection fails, it logs a warning but does not block the session.
     """
     import json
-    from app.database import async_session as async_session_factory
     from app.models.agent_credential import AgentCredential
     from sqlalchemy import select
     from app.core.security import decrypt_data
@@ -895,8 +1034,8 @@ async def _inject_credentials(client: AgentBayClient, agent_id: uuid.UUID):
 
     # Fetch active credentials with stored cookies
     try:
-        async with async_session_factory() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(AgentCredential).where(
                     AgentCredential.agent_id == agent_id,
                     AgentCredential.status == "active",
@@ -1016,11 +1155,11 @@ const { chromium } = require('/usr/local/lib/node_modules/playwright');
             try:
                 from datetime import timezone as tz
                 now = datetime.now(tz.utc)
-                async with async_session_factory() as db:
+                async with query_dao.session() as db:
                     for cred in credentials:
                         cred.last_injected_at = now
-                        db.add(cred)
-                    await db.commit()
+                        query_dao.add(db, cred)
+                    await query_dao.commit(db)
             except Exception as e:
                 logger.warning(f"[AgentBay] Failed to update last_injected_at: {e}")
         else:

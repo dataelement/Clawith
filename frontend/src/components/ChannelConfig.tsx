@@ -338,7 +338,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [wechatLoadingQr, setWechatLoadingQr] = useState(false);
 
     // ─── Edit mode: queries for each channel ────────────
-    const enabled = mode === 'edit' && !!agentId;
+    const enabled = mode === 'edit' && !!agentId && canManage;
 
     const { data: feishuConfig } = useQuery({
         queryKey: ['channel', agentId],

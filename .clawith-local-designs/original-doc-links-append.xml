@@ -1,0 +1,7 @@
+<hr/>
+<h1>十一、原始技术文件</h1>
+<p>下面两份是本次讨论过程中沉淀的原始技术材料，保留更完整的方案细节，后续实现时优先对照这些文档。</p>
+<ul>
+  <li><a href="https://dataelem.feishu.cn/docx/Dnd0dJ7ZIoOCQFxqIEVcxaK2nyh">Context Compact Design 原始技术文件</a></li>
+  <li><a href="https://dataelem.feishu.cn/docx/DDOFdjnrsoPlnqxojd0cpHfJngf">Long-Running Checkpoint Design 原始技术文件</a></li>
+</ul>

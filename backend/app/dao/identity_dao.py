@@ -1,6 +1,4 @@
 import re
-import uuid
-from typing import Any
 
 from sqlalchemy import select
 
@@ -16,23 +14,30 @@ class IdentityDAO(BaseDAO[Identity]):
 
     async def get_by_login_identifier(self, identifier: str) -> Identity | None:
         """Find identity by email, phone, or username."""
-        async with self.session() as db:
-            query = select(Identity).where(
-                (Identity.email == identifier) | (Identity.phone == identifier) | (Identity.username == identifier)
-            )
+        normalized_phone = re.sub(r"[\s\-\+]", "", identifier)
+
+        async with self.session(readonly=True) as db:
+            if "@" in identifier:
+                query = select(Identity).where(Identity.email == identifier)
+            elif re.fullmatch(r"[\d\s\-\+]{6,}", identifier):
+                query = select(Identity).where(
+                    (Identity.phone == normalized_phone) | (Identity.username == identifier)
+                )
+            else:
+                query = select(Identity).where(Identity.username == identifier)
             result = await db.execute(query)
             return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> Identity | None:
         """Find identity by email address."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             query = select(Identity).where(Identity.email == email)
             result = await db.execute(query)
             return result.scalar_one_or_none()
 
     async def get_by_username(self, username: str) -> Identity | None:
         """Find identity by username."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             query = select(Identity).where(Identity.username == username)
             result = await db.execute(query)
             return result.scalar_one_or_none()
@@ -40,14 +45,14 @@ class IdentityDAO(BaseDAO[Identity]):
     async def get_by_phone(self, phone: str) -> Identity | None:
         """Find identity by normalized phone number."""
         normalized = re.sub(r"[\s\-\+]", "", phone)
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             query = select(Identity).where(Identity.phone == normalized)
             result = await db.execute(query)
             return result.scalar_one_or_none()
 
     async def is_username_taken(self, username: str) -> bool:
         """Return True if the username is already used by another identity."""
-        async with self.session() as db:
+        async with self.session(readonly=True) as db:
             result = await db.execute(
                 select(Identity.id).where(Identity.username == username).limit(1)
             )

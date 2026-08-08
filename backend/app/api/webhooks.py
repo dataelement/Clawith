@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import select
 
+from app.dao import query_dao
+async_session = query_dao.session
 from app.core.events import get_redis
-from app.database import async_session
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.trigger import AgentTrigger
@@ -70,7 +71,7 @@ async def receive_webhook(token: str, request: Request):
 
     # Look up trigger
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(AgentTrigger).where(
                 AgentTrigger.type == "webhook",
                 AgentTrigger.is_enabled,
@@ -91,8 +92,16 @@ async def receive_webhook(token: str, request: Request):
             return JSONResponse({"ok": True})
 
         # Per-agent rate limit check
-        agent_result = await db.execute(select(Agent).where(Agent.id == target.agent_id))
+        agent_result = await query_dao.execute(
+            db,
+            select(Agent).where(
+                Agent.id == target.agent_id,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent_obj = agent_result.scalar_one_or_none()
+        if agent_obj is None:
+            return JSONResponse({"ok": True})
         agent_rate_limit = (agent_obj.webhook_rate_limit if agent_obj else None) or RATE_LIMIT
 
         # Retrieve all needed scalar fields and expunge from db session to prevent MissingGreenlet errors.
@@ -108,7 +117,7 @@ async def receive_webhook(token: str, request: Request):
             logger.warning(f"Webhook per-agent rate limit ({agent_rate_limit}/min) for token {token[:8]}...")
             # Log audit entry so user can see dropped webhooks
             try:
-                db.add(
+                query_dao.add(db, 
                     AuditLog(
                         agent_id=target_agent_id,
                         action="webhook_rate_limited",
@@ -119,7 +128,7 @@ async def receive_webhook(token: str, request: Request):
                         },
                     )
                 )
-                await db.commit()
+                await query_dao.commit(db)
             except Exception:
                 pass
             return JSONResponse({"ok": True}, status_code=429)
@@ -148,7 +157,7 @@ async def receive_webhook(token: str, request: Request):
             payload_obj = None
             payload_str = repr(body[:2000])
 
-        _execution, created = await enqueue_webhook_execution(
+        execution, created = await enqueue_webhook_execution(
             db,
             trigger=target,
             body=body,
@@ -159,6 +168,16 @@ async def receive_webhook(token: str, request: Request):
         if not created:
             logger.info(f"Webhook duplicate ignored for trigger {target_name}")
             return JSONResponse({"ok": True})
+        if execution is not None and execution.status == "failed":
+            logger.error(
+                "Webhook Runtime intake failed for trigger {}: {}",
+                target_name,
+                execution.last_error,
+            )
+            return JSONResponse(
+                {"ok": False, "error": "runtime_unavailable"},
+                status_code=503,
+            )
 
         logger.info(f"Webhook queued for trigger {target_name} (agent {target_agent_id})")
 

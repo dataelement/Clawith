@@ -21,10 +21,13 @@ from app.models.audit import AuditLog, ApprovalRequest, ChatMessage, EnterpriseI
 from app.models.skill import Skill, SkillFile  # noqa: F401
 from app.models.chat_session import ChatSession  # noqa: F401
 from app.models.participant import Participant  # noqa: F401
+from app.models.group import Group, GroupMember  # noqa: F401
 from app.models.activity_log import AgentActivityLog  # noqa: F401
 from app.models.invitation_code import InvitationCode  # noqa: F401
 from app.models.org import OrgDepartment, OrgMember, AgentRelationship, AgentAgentRelationship  # noqa: F401
 from app.models.plaza import PlazaPost, PlazaComment, PlazaLike  # noqa: F401
+from app.models.experience import ExperienceEntry  # noqa: F401
+from app.models.experience_reference import ExperienceReference  # noqa: F401
 from app.models.schedule import AgentSchedule  # noqa: F401
 from app.models.system_settings import SystemSetting  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401
@@ -32,6 +35,15 @@ from app.models.tool import Tool  # noqa: F401
 from app.models.trigger import AgentTrigger  # noqa: F401
 from app.models.agent_credential import AgentCredential  # noqa: F401
 from app.models.onboarding import UserTenantOnboarding  # noqa: F401
+from app.models.agent_run import AgentRun  # noqa: F401
+from app.models.agent_run_command import AgentRunCommand  # noqa: F401
+from app.models.agent_run_event import AgentRunEvent  # noqa: F401
+from app.models.agent_tool_execution import AgentToolExecution  # noqa: F401
+from app.models.session_context_state import SessionContextState  # noqa: F401
+from app.models.gateway_message import GatewayMessage  # noqa: F401
+from app.models.notification import Notification  # noqa: F401
+from app.models.tenant_setting import TenantSetting  # noqa: F401
+from app.models.trigger_execution import TriggerExecution  # noqa: F401
 
 config = context.config
 settings = get_settings()

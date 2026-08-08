@@ -5,11 +5,19 @@ interface PromptModalProps {
     open: boolean;
     title: string;
     placeholder?: string;
+    allowEmpty?: boolean;
     onConfirm: (value: string) => void;
     onCancel: () => void;
 }
 
-export default function PromptModal({ open, title, placeholder, onConfirm, onCancel }: PromptModalProps) {
+export default function PromptModal({
+    open,
+    title,
+    placeholder,
+    allowEmpty = false,
+    onConfirm,
+    onCancel,
+}: PromptModalProps) {
     const { t } = useTranslation();
     const [value, setValue] = useState('');
     const inputRef = useRef<HTMLInputElement>(null);
@@ -22,6 +30,11 @@ export default function PromptModal({ open, title, placeholder, onConfirm, onCan
     }, [open]);
 
     if (!open) return null;
+
+    const canConfirm = allowEmpty || Boolean(value.trim());
+    const confirm = () => {
+        if (canConfirm) onConfirm(value.trim());
+    };
 
     return (
         <div style={{
@@ -42,15 +55,22 @@ export default function PromptModal({ open, title, placeholder, onConfirm, onCan
                     onChange={e => setValue(e.target.value)}
                     placeholder={placeholder || ''}
                     onKeyDown={e => {
-                        if (e.key === 'Enter' && value.trim()) onConfirm(value.trim());
-                        if (e.key === 'Escape') onCancel();
+                        // Enter commits an IME candidate before it should submit the prompt.
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            confirm();
+                        } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            onCancel();
+                        }
                     }}
                     style={{ width: '100%', marginBottom: '16px' }}
                 />
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
                     <button className="btn btn-secondary" onClick={onCancel}>{t('common.confirmActions.cancelLabel')}</button>
-                    <button className="btn btn-primary" onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
-                        disabled={!value.trim()}>{t('common.confirmActions.confirmLabel')}</button>
+                    <button className="btn btn-primary" onClick={confirm}
+                        disabled={!canConfirm}>{t('common.confirmActions.confirmLabel')}</button>
                 </div>
             </div>
         </div>

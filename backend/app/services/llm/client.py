@@ -7,6 +7,7 @@ Provides a consistent interface for all LLM operations across the application.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from abc import ABC, abstractmethod
@@ -15,6 +16,215 @@ from typing import Any, Callable, Coroutine, Literal
 
 import httpx
 from loguru import logger
+
+
+# ============================================================================
+# Errors and request-shape normalization
+# ============================================================================
+
+class LLMError(Exception):
+    """Base exception for LLM client errors."""
+
+
+class LLMRequestShapeError(LLMError):
+    """The final provider request violates a portable message-shape invariant."""
+
+
+_LEADING_THINK_TAG = re.compile(r"^\s*<think>", re.IGNORECASE)
+_CLOSING_THINK_TAG = re.compile(r"</think>", re.IGNORECASE)
+_TEXTUAL_TOOL_CALL = re.compile(
+    r"^\s*<tool_call>\s*(.*?)\s*</tool_call>\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_TEXTUAL_TOOL_CALL_MARKER = re.compile(r"<tool_call(?:\s[^>]*)?>", re.IGNORECASE)
+_TEXTUAL_TOOL_RESULT = re.compile(
+    r"<(?:result|tool_result)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def extract_embedded_reasoning(
+    content: str | None,
+    reasoning_content: str | None,
+) -> tuple[str, str | None]:
+    """Move leading ``<think>`` blocks into the structured reasoning channel.
+
+    Only leading blocks are treated as model protocol. Literal tags later in a
+    user-facing answer remain visible.
+    """
+    visible = content or ""
+    extracted: list[str] = []
+
+    while (opening := _LEADING_THINK_TAG.match(visible)) is not None:
+        remainder = visible[opening.end() :]
+        closing = _CLOSING_THINK_TAG.search(remainder)
+        if closing is None:
+            thought = remainder.strip()
+            if thought:
+                extracted.append(thought)
+            visible = ""
+            break
+        thought = remainder[: closing.start()].strip()
+        if thought:
+            extracted.append(thought)
+        visible = remainder[closing.end() :]
+
+    reasoning_parts: list[str] = []
+    for part in (reasoning_content, *extracted):
+        normalized = (part or "").strip()
+        if normalized and normalized not in reasoning_parts:
+            reasoning_parts.append(normalized)
+    return visible.strip(), "\n\n".join(reasoning_parts) or None
+
+
+def _available_tool_names(tools: list[dict] | None) -> frozenset[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return frozenset(names)
+
+
+def normalize_textual_tool_protocol(
+    content: str | None,
+    tools: list[dict] | None,
+) -> tuple[str, list[dict], str | None]:
+    """Convert an exact textual tool envelope or reject an invented result.
+
+    Ordinary JSON remains ordinary Assistant content. Conversion is limited to
+    an exact ``<tool_call>`` envelope (or a strict bare call object) naming a
+    tool that is actually enabled for this model step.
+    """
+    text = content or ""
+    available_names = _available_tool_names(tools)
+    protocol_visible_text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    protocol_visible_text = re.sub(r"`[^`]*`", "", protocol_visible_text)
+
+    if _TEXTUAL_TOOL_RESULT.search(protocol_visible_text):
+        next_action = (
+            "Use a native tool call to an enabled tool, wait for its Tool "
+            "Result, and only then answer from that result."
+            if available_names
+            else (
+                "No tool is enabled for this step, so answer normally from the "
+                "available context without inventing a Tool Result."
+            )
+        )
+        return (
+            "",
+            [],
+            (
+                "No tool was executed. Your previous response encoded a tool "
+                "result in Assistant text, which cannot be trusted or published. "
+                + next_action
+            ),
+        )
+
+    wrapped = _TEXTUAL_TOOL_CALL.match(text)
+    if wrapped is None and _TEXTUAL_TOOL_CALL_MARKER.search(protocol_visible_text):
+        return (
+            "",
+            [],
+            (
+                "The previous response mixed a textual <tool_call> with Assistant "
+                "content. Retry using only a native tool call."
+            ),
+        )
+    raw_payload = wrapped.group(1) if wrapped is not None else text.strip()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> envelope was not valid JSON. Retry with "
+                "a native tool call to one enabled tool."
+            ),
+        )
+    if not isinstance(payload, dict):
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            "The textual <tool_call> envelope must contain one native tool call object.",
+        )
+
+    function_payload = payload.get("function")
+    if isinstance(function_payload, dict):
+        if set(payload) - {"id", "type", "function"}:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> contains unsupported control fields.",
+            )
+        name = function_payload.get("name")
+        arguments = function_payload.get("arguments", {})
+    else:
+        if set(payload) - {"id", "name", "arguments"} or "name" not in payload:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> must contain one named native tool call.",
+            )
+        name = payload.get("name")
+        arguments = payload.get("arguments", {})
+
+    if not isinstance(name, str) or name.strip() not in available_names:
+        return (
+            "",
+            [],
+            (
+                "The textual tool call named a tool that is not enabled. Retry "
+                "with a native tool call to one tool from the current Tool Schema."
+            ),
+        )
+
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    if not isinstance(arguments, dict):
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> arguments must be one JSON object. Retry "
+                "with a native tool call."
+            ),
+        )
+
+    normalized_name = name.strip()
+    call_id = payload.get("id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+        call_id = f"call_text_{digest}"
+    return (
+        "",
+        [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        ],
+        None,
+    )
 
 
 # ============================================================================
@@ -155,6 +365,89 @@ class LLMMessage:
         return {"role": role, "content": content}
 
 
+def _system_content_as_text(content: str | list | None) -> str:
+    """Convert a secondary system message into ordered text for the dynamic tail."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        raise LLMRequestShapeError(
+            f"system message content must be text or text blocks, got {type(content).__name__}"
+        )
+
+    text_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            raise LLMRequestShapeError(
+                "secondary system messages may contain only text blocks"
+            )
+        text = part.get("text")
+        if text:
+            text_parts.append(str(text))
+    return "\n".join(text_parts)
+
+
+def normalize_provider_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
+    """Return a provider-safe copy with at most one leading system message.
+
+    The first system message remains the cacheable/static prefix. Its dynamic
+    content and any later system records are folded, in encounter order, into
+    the uncached dynamic tail. Non-system history keeps its original order.
+    """
+    system_messages = [message for message in messages if message.role == "system"]
+    if not system_messages:
+        return list(messages)
+
+    for message in system_messages:
+        if message.tool_calls or message.tool_call_id or message.reasoning_content:
+            raise LLMRequestShapeError(
+                "system messages cannot contain tool calls, tool results, or reasoning content"
+            )
+
+    first = system_messages[0]
+    dynamic_parts: list[str] = []
+    if first.dynamic_content:
+        dynamic_parts.append(first.dynamic_content)
+
+    for message in system_messages[1:]:
+        content = _system_content_as_text(message.content)
+        if content:
+            dynamic_parts.append(content)
+        if message.dynamic_content:
+            dynamic_parts.append(message.dynamic_content)
+
+    normalized_system = LLMMessage(
+        role="system",
+        content=first.content if first.content is not None else "",
+        dynamic_content="\n\n".join(dynamic_parts) or None,
+    )
+    normalized = [normalized_system]
+    normalized.extend(message for message in messages if message.role != "system")
+    return normalized
+
+
+def validate_openai_message_shape(
+    messages: list[dict[str, Any]],
+    *,
+    provider_label: str,
+) -> None:
+    """Fail closed if a final OpenAI-style payload has an unsafe system shape."""
+    system_indexes = [
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, dict) and message.get("role") == "system"
+    ]
+    if len(system_indexes) > 1:
+        raise LLMRequestShapeError(
+            f"{provider_label} request contains multiple system messages; expected at most one"
+        )
+    if system_indexes and system_indexes[0] != 0:
+        raise LLMRequestShapeError(
+            f"{provider_label} request system message must be the first item"
+        )
+
+
 @dataclass
 class LLMResponse:
     """Unified response format."""
@@ -166,6 +459,29 @@ class LLMResponse:
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
     model: str | None = None
+
+
+def normalize_llm_finish_reason(
+    finish_reason: str | None,
+    tool_calls: list[dict] | tuple[dict, ...],
+) -> str | None:
+    """Normalize provider stop metadata without treating unknown values as success."""
+    if tool_calls:
+        return "tool_calls"
+    if not isinstance(finish_reason, str) or not finish_reason.strip():
+        return None
+    normalized = finish_reason.strip().lower()
+    if normalized in {"stop", "end_turn", "stop_sequence"}:
+        return "stop"
+    if normalized in {"tool_calls", "tool_use"}:
+        return "tool_calls"
+    if normalized in {"length", "max_tokens"}:
+        return "length"
+    if normalized in {"content_filter", "safety", "recitation"}:
+        return "content_filter"
+    if normalized == "refusal":
+        return "refusal"
+    return "unknown"
 
 
 @dataclass
@@ -293,8 +609,8 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
-        messages_payload = self._messages_to_openai_payload(messages)
-        logger.debug(f"[LLM-Debug] OpenAICompatibleClient payload messages for model {self.model}: {json.dumps(messages_payload, indent=2, ensure_ascii=False)}")
+        normalized_messages = normalize_provider_messages(messages)
+        messages_payload = self._messages_to_openai_payload(normalized_messages)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages_payload,
@@ -318,6 +634,20 @@ class OpenAICompatibleClient(LLMClient):
 
         # Add any additional kwargs
         payload.update(kwargs)
+
+        final_messages = payload.get("messages")
+        if not isinstance(final_messages, list):
+            raise LLMRequestShapeError(
+                "OpenAI-compatible provider request messages must be a list"
+            )
+        validate_openai_message_shape(
+            final_messages,
+            provider_label="OpenAI-compatible provider",
+        )
+        logger.debug(
+            "[LLM-Debug] OpenAICompatibleClient payload messages for model "
+            f"{self.model}: {json.dumps(final_messages, indent=2, ensure_ascii=False)}"
+        )
 
         return payload
 
@@ -460,12 +790,19 @@ class OpenAICompatibleClient(LLMClient):
         if delta.get("reasoning_content"):
             chunk.reasoning_content = delta["reasoning_content"]
 
-        # Regular content with think tag filtering
+        # Regular content with embedded think routing
         if delta.get("content"):
             text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
+            (
+                chunk.content,
+                embedded_reasoning,
+                in_think,
+                tag_buffer,
+            ) = self._filter_think_tags(
                 text, in_think, tag_buffer
             )
+            if embedded_reasoning:
+                chunk.reasoning_content += embedded_reasoning
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -477,13 +814,14 @@ class OpenAICompatibleClient(LLMClient):
 
     def _filter_think_tags(
         self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
-        """Filter out <think>...</think> tags from content.
+    ) -> tuple[str, str, bool, str]:
+        """Route ``<think>`` text away from visible content.
 
-        Returns (filtered_content, new_in_think, new_tag_buffer).
+        Returns visible content, reasoning content, state, and partial tag buffer.
         """
         tag_buffer += text
-        emit = ""
+        visible_emit = ""
+        reasoning_emit = ""
         i = 0
         buf = tag_buffer
 
@@ -500,10 +838,10 @@ class OpenAICompatibleClient(LLMClient):
                         # Partial match - keep in buffer
                         break
                     else:
-                        emit += buf[i]
+                        visible_emit += buf[i]
                         i += 1
                 else:
-                    emit += buf[i]
+                    visible_emit += buf[i]
                     i += 1
             else:
                 # Inside think - look for </think> close tag
@@ -515,10 +853,11 @@ class OpenAICompatibleClient(LLMClient):
                         continue
                     elif "</think>".startswith(tag_candidate):
                         break
+                reasoning_emit += buf[i]
                 i += 1
 
         tag_buffer = buf[i:]
-        return emit, in_think, tag_buffer
+        return visible_emit, reasoning_emit, in_think, tag_buffer
 
     async def complete(
         self,
@@ -550,6 +889,7 @@ class OpenAICompatibleClient(LLMClient):
         return LLMResponse(
             content=msg.get("content", ""),
             tool_calls=msg.get("tool_calls", []),
+            reasoning_content=msg.get("reasoning_content"),
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
@@ -660,13 +1000,20 @@ class OpenAICompatibleClient(LLMClient):
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
-        # Clean up any remaining think tags
-        full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
+        if tag_buffer:
+            if in_think:
+                full_reasoning += tag_buffer
+            else:
+                full_content += tag_buffer
+        full_content, normalized_reasoning = extract_embedded_reasoning(
+            full_content,
+            full_reasoning or None,
+        )
 
         return LLMResponse(
             content=full_content,
             tool_calls=tool_calls_data,
-            reasoning_content=full_reasoning or None,
+            reasoning_content=normalized_reasoning,
             finish_reason=last_finish_reason,
             usage=final_usage,
             model=self.model,
@@ -867,9 +1214,11 @@ class OpenAIResponsesClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        normalized_messages = normalize_provider_messages(messages)
+        input_items = self._messages_to_input(normalized_messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "input": self._messages_to_input(messages),
+            "input": input_items,
             "temperature": temperature,
             "stream": stream,
         }
@@ -884,6 +1233,15 @@ class OpenAIResponsesClient(LLMClient):
                 payload["tool_choice"] = "auto"
 
         payload.update(kwargs)
+        final_input = payload.get("input")
+        if not isinstance(final_input, list):
+            raise LLMRequestShapeError(
+                "OpenAI Responses provider request input must be a list"
+            )
+        validate_openai_message_shape(
+            final_input,
+            provider_label="OpenAI Responses provider",
+        )
         return payload
 
     def _parse_response_data(self, data: dict[str, Any]) -> LLMResponse:
@@ -891,6 +1249,7 @@ class OpenAIResponsesClient(LLMClient):
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        refusal_seen = False
 
         for item in data.get("output", []) or []:
             item_type = item.get("type")
@@ -901,6 +1260,8 @@ class OpenAIResponsesClient(LLMClient):
                         content_parts.append(c.get("text", ""))
                     elif c_type == "reasoning":
                         reasoning_parts.append(c.get("summary", "") or c.get("text", ""))
+                    elif c_type == "refusal":
+                        refusal_seen = True
             elif item_type == "function_call":
                 args = item.get("arguments", "{}")
                 if isinstance(args, dict):
@@ -920,7 +1281,32 @@ class OpenAIResponsesClient(LLMClient):
             content_parts.append(str(data.get("output_text", "")))
 
         usage = data.get("usage")
-        finish_reason = "tool_calls" if tool_calls else "stop"
+        status = str(data.get("status") or "").lower()
+        incomplete_details = data.get("incomplete_details")
+        incomplete_reason = (
+            str(incomplete_details.get("reason") or "").lower()
+            if isinstance(incomplete_details, dict)
+            else ""
+        )
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif refusal_seen:
+            finish_reason = "refusal"
+        elif status == "incomplete" and incomplete_reason in {
+            "max_output_tokens",
+            "max_tokens",
+        }:
+            finish_reason = "length"
+        elif status == "incomplete" and incomplete_reason in {
+            "content_filter",
+            "safety",
+            "recitation",
+        }:
+            finish_reason = "content_filter"
+        elif status in {"", "completed"}:
+            finish_reason = "stop"
+        else:
+            finish_reason = "unknown"
 
         return LLMResponse(
             content="".join(content_parts),
@@ -951,6 +1337,21 @@ class OpenAIResponsesClient(LLMClient):
             return str(err)
 
         status = str(data.get("status") or "").lower()
+        if status == "incomplete":
+            incomplete = data.get("incomplete_details")
+            reason = (
+                str(incomplete.get("reason") or "").lower()
+                if isinstance(incomplete, dict)
+                else ""
+            )
+            if reason in {
+                "max_output_tokens",
+                "max_tokens",
+                "content_filter",
+                "safety",
+                "recitation",
+            }:
+                return None
         if status in {"failed", "incomplete", "cancelled"}:
             last_error = data.get("last_error")
             incomplete = data.get("incomplete_details")
@@ -1205,6 +1606,7 @@ class GeminiClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build Gemini request payload."""
+        messages = normalize_provider_messages(messages)
         system_blocks: list[str] = []
         contents: list[dict[str, Any]] = []
         tool_name_map = self._extract_tool_name_map(messages)
@@ -1213,6 +1615,8 @@ class GeminiClient(LLMClient):
             if msg.role == "system":
                 parts = self._content_to_gemini_parts(msg.content)
                 text_chunks = [p.get("text", "") for p in parts if p.get("text")]
+                if msg.dynamic_content:
+                    text_chunks.append(msg.dynamic_content)
                 if text_chunks:
                     system_blocks.append("\n".join(text_chunks))
                 continue
@@ -1319,17 +1723,7 @@ class GeminiClient(LLMClient):
 
     def _normalize_finish_reason(self, finish_reason: str | None, tool_calls: list[dict]) -> str | None:
         """Normalize Gemini finish reason to OpenAI-style labels."""
-        if tool_calls:
-            return "tool_calls"
-        if not finish_reason:
-            return None
-        mapping = {
-            "STOP": "stop",
-            "MAX_TOKENS": "length",
-            "SAFETY": "content_filter",
-            "RECITATION": "content_filter",
-        }
-        return mapping.get(finish_reason, "stop")
+        return normalize_llm_finish_reason(finish_reason, tool_calls)
 
     def _parse_response_data(self, data: dict[str, Any]) -> LLMResponse:
         """Convert Gemini native response into canonical LLMResponse."""
@@ -1597,6 +1991,7 @@ class AnthropicClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build Anthropic request payload."""
+        messages = normalize_provider_messages(messages)
         system_blocks = []
         anthropic_messages = []
 
@@ -2186,11 +2581,6 @@ MAX_TOKENS_BY_MODEL: dict[str, int] = {
     for spec in PROVIDER_REGISTRY.values()
     for prefix, limit in spec.model_max_tokens.items()
 }
-
-
-class LLMError(Exception):
-    """Base exception for LLM client errors."""
-    pass
 
 
 def get_provider_base_url(provider: str, custom_base_url: str | None = None) -> str | None:

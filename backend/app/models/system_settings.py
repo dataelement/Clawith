@@ -1,6 +1,5 @@
 """System-level settings (key-value store)."""
 
-import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, String, func

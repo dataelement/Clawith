@@ -11,13 +11,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func, or_, select, update
+from sqlalchemy import or_, select, update
 
 import httpx
 from loguru import logger
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
 from app.models.user import User, Identity
@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - lightweight fallback for minimal test 
         return [[ascii_value]]
 
 from app.config import get_settings
-from app.core.security import decrypt_data, hash_password
+from app.core.security import decrypt_data
 from app.services.auth_provider import GoogleWorkspaceAuthProvider
 from app.services.google_workspace_oauth import GOOGLE_HTTP_PROXY
 from jose import jwt
@@ -112,7 +112,7 @@ async def derive_member_department_paths(
     pending_ids = set(dept_ids)
 
     while pending_ids:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(OrgDepartment).where(OrgDepartment.id.in_(pending_ids))
         )
         batch = result.scalars().all()
@@ -263,7 +263,7 @@ class BaseOrgSyncAdapter(ABC):
                     logger.error(f"[OrgSync] Failed to sync department {dept.external_id}: {e}")
 
             await self._rebuild_department_paths(db, provider.id)
-            await db.flush()
+            await query_dao.flush(db)
 
             # Fetch and sync users (from all departments)
             for dept in departments:
@@ -290,14 +290,14 @@ class BaseOrgSyncAdapter(ABC):
                         errors.append(f"Member {user.external_id}: {str(e)}")
 
             await self._refresh_member_department_paths(db, provider.id)
-            await db.flush()
+            await query_dao.flush(db)
 
             # Update provider metadata if possible
             if self.provider:
                 config = (self.provider.config or {}).copy()
                 config["last_synced_at"] = _utcnow().isoformat()
                 self.provider.config = config
-                await db.flush()
+                await query_dao.flush(db)
                 
                 if partial_failure:
                     logger.warning(
@@ -307,11 +307,11 @@ class BaseOrgSyncAdapter(ABC):
                 else:
                     # Reconciliation: mark records not updated in this sync as deleted
                     await self._reconcile(db, provider.id, sync_start)
-                    await db.flush()
+                    await query_dao.flush(db)
 
                 # Recalculate member counts for all departments (crucial for DingTalk/WeCom)
                 await self._update_member_counts(db, provider.id)
-                await db.flush()
+                await query_dao.flush(db)
 
         except Exception as e:
             import traceback
@@ -332,7 +332,7 @@ class BaseOrgSyncAdapter(ABC):
         """Mark records that were not updated in this sync as deleted."""
         
         # 1. Members reconciled
-        await db.execute(
+        await query_dao.execute(db, 
             update(OrgMember)
             .where(OrgMember.provider_id == provider_id)
             .where(OrgMember.synced_at < sync_start)
@@ -342,7 +342,7 @@ class BaseOrgSyncAdapter(ABC):
         )
         
         # 2. Departments reconciled
-        await db.execute(
+        await query_dao.execute(db, 
             update(OrgDepartment)
             .where(OrgDepartment.provider_id == provider_id)
             .where(OrgDepartment.synced_at < sync_start)
@@ -363,7 +363,7 @@ class BaseOrgSyncAdapter(ABC):
             .scalar_subquery()
         )
         
-        await db.execute(
+        await query_dao.execute(db, 
             update(OrgDepartment)
             .where(OrgDepartment.provider_id == provider_id)
             .where(OrgDepartment.status == "active")
@@ -371,7 +371,7 @@ class BaseOrgSyncAdapter(ABC):
         )
 
         # 2. Fetch all active departments to compute recursive aggregated counts
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(OrgDepartment.id, OrgDepartment.parent_id, OrgDepartment.member_count)
             .where(OrgDepartment.provider_id == provider_id)
             .where(OrgDepartment.status == "active")
@@ -408,7 +408,7 @@ class BaseOrgSyncAdapter(ABC):
             # Execute individual UPDATE statements to avoid SQLAlchemy 2.x
             # "Bulk UPDATE by Primary Key" ambiguity when passing a list to execute().
             for m in update_mappings:
-                await db.execute(
+                await query_dao.execute(db, 
                     update(OrgDepartment)
                     .where(OrgDepartment.id == m["id"])
                     .values(member_count=m["member_count"])
@@ -421,7 +421,7 @@ class BaseOrgSyncAdapter(ABC):
 
         # If we have an ID, look it up
         if hasattr(self, 'provider_id') and self.provider_id:
-            result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == self.provider_id))
+            result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == self.provider_id))
             self.provider = result.scalar_one_or_none()
             if self.provider:
                 return self.provider
@@ -433,7 +433,7 @@ class BaseOrgSyncAdapter(ABC):
         else:
             query = query.where(IdentityProvider.tenant_id.is_(None))
             
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         provider = result.scalars().first()
 
         if not provider:
@@ -444,8 +444,8 @@ class BaseOrgSyncAdapter(ABC):
                 config=self.config,
                 tenant_id=self.tenant_id
             )
-            db.add(provider)
-            await db.flush()
+            query_dao.add(db, provider)
+            await query_dao.flush(db)
 
         self.provider = provider
         return provider
@@ -455,7 +455,7 @@ class BaseOrgSyncAdapter(ABC):
     ):
         """Insert or update a department."""
         # Check if exists by external_id and provider
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(OrgDepartment).where(
                 OrgDepartment.external_id == dept.external_id,
                 OrgDepartment.provider_id == provider.id,
@@ -470,7 +470,7 @@ class BaseOrgSyncAdapter(ABC):
         # Resolve parent_id from parent_external_id
         parent_id = None
         if dept.parent_external_id:
-            parent_result = await db.execute(
+            parent_result = await query_dao.execute(db, 
                 select(OrgDepartment).where(
                     OrgDepartment.external_id == dept.parent_external_id,
                     OrgDepartment.provider_id == provider.id,
@@ -500,13 +500,13 @@ class BaseOrgSyncAdapter(ABC):
                 tenant_id=self.tenant_id,
                 synced_at=now,
             )
-            db.add(new_dept)
+            query_dao.add(db, new_dept)
 
-        await db.flush()
+        await query_dao.flush(db)
 
     async def _rebuild_department_paths(self, db: AsyncSession, provider_id: uuid.UUID) -> dict[uuid.UUID, str]:
         """Normalize OrgDepartment.path using parent_id/name reverse derivation."""
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
         )
         departments = result.scalars().all()
@@ -519,13 +519,13 @@ class BaseOrgSyncAdapter(ABC):
 
     async def _refresh_member_department_paths(self, db: AsyncSession, provider_id: uuid.UUID):
         """Refresh OrgMember.department_path from the normalized department tree."""
-        dept_result = await db.execute(
+        dept_result = await query_dao.execute(db, 
             select(OrgDepartment).where(OrgDepartment.provider_id == provider_id)
         )
         departments = dept_result.scalars().all()
         dept_path_map = build_department_path_map(departments)
 
-        member_result = await db.execute(
+        member_result = await query_dao.execute(db, 
             select(OrgMember).where(OrgMember.provider_id == provider_id)
         )
         members = member_result.scalars().all()
@@ -554,7 +554,7 @@ class BaseOrgSyncAdapter(ABC):
         if user.department_ids:
             # Iterate in reverse so we try the most specific dept first
             for dept_ext_id in reversed(user.department_ids):
-                dept_result = await db.execute(
+                dept_result = await query_dao.execute(db, 
                     select(OrgDepartment).where(
                         OrgDepartment.external_id == dept_ext_id,
                         OrgDepartment.provider_id == provider.id,
@@ -565,7 +565,7 @@ class BaseOrgSyncAdapter(ABC):
                     break
         # Fallback: use the department_external_id that was set during fetch_users
         if not department and user.department_external_id:
-            dept_result = await db.execute(
+            dept_result = await query_dao.execute(db, 
                 select(OrgDepartment).where(
                     OrgDepartment.external_id == user.department_external_id,
                     OrgDepartment.provider_id == provider.id,
@@ -590,7 +590,7 @@ class BaseOrgSyncAdapter(ABC):
             user_query = select(User).join(User.identity).where(Identity.email == email)
             if self.tenant_id:
                 user_query = user_query.where(User.tenant_id == self.tenant_id)
-            user_res = await db.execute(user_query)
+            user_res = await query_dao.execute(db, user_query)
             platform_user = user_res.scalars().first()
             if platform_user:
                 user_id = platform_user.id
@@ -599,7 +599,7 @@ class BaseOrgSyncAdapter(ABC):
             user_query = select(User).join(User.identity).where(Identity.phone == mobile)
             if self.tenant_id:
                 user_query = user_query.where(User.tenant_id == self.tenant_id)
-            user_res = await db.execute(user_query)
+            user_res = await query_dao.execute(db, user_query)
             platform_user = user_res.scalars().first()
             if platform_user:
                 user_id = platform_user.id
@@ -660,14 +660,14 @@ class BaseOrgSyncAdapter(ABC):
                 tenant_id=self.tenant_id,
                 synced_at=now,
             )
-            db.add(new_member)
+            query_dao.add(db, new_member)
             stats["profile_synced"] = True
 
         # Sync email/phone from OrgMember to User (if linked)
         target_user = platform_user
         if not target_user and (user_id or (existing_member and existing_member.user_id)):
             target_id = user_id or existing_member.user_id
-            user_res = await db.execute(select(User).where(User.id == target_id))
+            user_res = await query_dao.execute(db, select(User).where(User.id == target_id))
             target_user = user_res.scalars().first()
 
         if target_user:
@@ -676,7 +676,7 @@ class BaseOrgSyncAdapter(ABC):
             if mobile and target_user.primary_mobile != mobile:
                 target_user.primary_mobile = mobile
 
-        await db.flush()
+        await query_dao.flush(db)
         return stats
 
     def _provider_requires_unionid(self, provider: IdentityProvider) -> bool:
@@ -705,7 +705,7 @@ class BaseOrgSyncAdapter(ABC):
         user: ExternalUser,
     ) -> OrgMember | None:
         if user.unionid:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.provider_id == provider.id,
                     OrgMember.unionid == user.unionid,
@@ -740,7 +740,7 @@ class BaseOrgSyncAdapter(ABC):
                 )
             )
 
-        result = await db.execute(fallback_query)
+        result = await query_dao.execute(db, fallback_query)
         return result.scalars().first()
 
     async def _resolve_platform_user(self, db: AsyncSession, user: ExternalUser) -> User | None:
@@ -748,7 +748,7 @@ class BaseOrgSyncAdapter(ABC):
         # 1. Try by Email matching (primary way now)
         email = _normalize_contact(user.email)
         if email:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(User).join(User.identity).where(Identity.email == email)
             )
             u = result.scalars().first()
@@ -757,7 +757,7 @@ class BaseOrgSyncAdapter(ABC):
         # 2. Try by mobile matching
         mobile = _normalize_contact(user.mobile)
         if mobile:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(User).join(User.identity).where(Identity.phone == mobile)
             )
             u = result.scalars().first()
@@ -1636,7 +1636,7 @@ async def get_org_sync_adapter(
     """
     # Get provider config from database - prefer specific provider_id if provided
     if provider_id:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(IdentityProvider).where(IdentityProvider.id == provider_id)
         )
     else:
@@ -1645,7 +1645,7 @@ async def get_org_sync_adapter(
             query = query.where(IdentityProvider.tenant_id == tenant_id)
         else:
             query = query.where(IdentityProvider.tenant_id.is_(None))
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
     provider = result.scalar_one_or_none()
 
     adapter_class = SYNC_ADAPTER_CLASSES.get(provider_type)

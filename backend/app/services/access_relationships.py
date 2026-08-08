@@ -2,13 +2,14 @@
 
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import get_agent_accessible_user_ids
+from app.dao import agent_access_dao
+from app.database import bind_session_context
 from app.models.agent import Agent
-from app.models.org import AgentRelationship, OrgMember
-from app.models.user import User
+from app.models.org import AgentRelationship
 from app.services.registration_service import registration_service
 
 
@@ -18,53 +19,43 @@ async def ensure_access_granted_platform_relationships(
     *,
     created_by_user_id: uuid.UUID | None = None,
 ) -> bool:
-    """Ensure private/custom platform users are in the agent's human network.
+    """Ensure private creator access is present in the legacy human network.
 
-    Platform messages intentionally require an active human relationship. For
-    private/custom agents, the access list is already the user's explicit
-    relationship boundary, so we materialize those platform users as human
-    relationships. Company-wide agents stay explicit to avoid adding every
-    tenant user to every public agent.
+    The roster-driven model no longer uses legacy relationship rows to decide
+    who can contact whom. This helper only keeps the old Relationships surface
+    usable for private agents, where the creator is still the sole human member
+    worth materializing. Company and custom agents both have company-wide use
+    access, so materializing them would add every tenant user to legacy data.
 
     Returns True when new relationship rows were added.
     """
     access_mode = getattr(agent, "access_mode", None) or "company"
-    if access_mode not in ("private", "custom") or not agent.tenant_id:
+    if access_mode != "private" or not agent.tenant_id:
         return False
 
-    user_ids = await get_agent_accessible_user_ids(db, agent)
+    user_ids = await get_agent_accessible_user_ids(agent)
     if not user_ids:
         return False
 
-    existing_result = await db.execute(
-        select(OrgMember.user_id)
-        .join(AgentRelationship, AgentRelationship.member_id == OrgMember.id)
-        .where(
-            AgentRelationship.agent_id == agent.id,
-            OrgMember.tenant_id == agent.tenant_id,
-            OrgMember.status == "active",
-            OrgMember.user_id.in_(user_ids),
+    async with bind_session_context(db):
+        existing_user_ids = await agent_access_dao.list_active_relationship_user_ids(
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            user_ids=user_ids,
         )
-    )
-    existing_user_ids = {row[0] for row in existing_result.fetchall() if row[0]}
     missing_user_ids = user_ids - existing_user_ids
     if not missing_user_ids:
         return False
 
-    users_result = await db.execute(
-        select(User).where(
-            User.id.in_(missing_user_ids),
-            User.tenant_id == agent.tenant_id,
-            User.is_active == True,  # noqa: E712
-        )
-    )
+    async with bind_session_context(db):
+        users = await agent_access_dao.list_active_users_by_ids(user_ids=missing_user_ids, tenant_id=agent.tenant_id)
 
     changed = False
-    for user in users_result.scalars().all():
+    for user in users:
         member = await registration_service.ensure_web_org_member(user)
         if not member or member.status != "active":
             continue
-        db.add(
+        query_dao.add(db, 
             AgentRelationship(
                 agent_id=agent.id,
                 member_id=member.id,
@@ -77,6 +68,6 @@ async def ensure_access_granted_platform_relationships(
         changed = True
 
     if changed:
-        await db.flush()
+        await query_dao.flush(db)
 
     return changed

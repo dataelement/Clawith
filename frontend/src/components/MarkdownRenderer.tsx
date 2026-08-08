@@ -25,6 +25,12 @@ function escapeAttribute(str: string): string {
     return escapeHtml(str).replace(/'/g, '&#39;');
 }
 
+function sanitizeCodeLanguage(language: string): string {
+    // A fence info string is untrusted Markdown input. Only retain characters
+    // valid for the single syntax-highlighting class we generate from it.
+    return /^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,63}$/.test(language) ? language : '';
+}
+
 function prepareUrl(url: string, kind: 'link' | 'image' = 'link'): string | null {
     let finalUrl = url.trim().replace(/^<|>$/g, '');
     const lower = finalUrl.toLowerCase();
@@ -72,7 +78,7 @@ function triggerImageDownload(url: string, alt: string) {
     document.body.removeChild(link);
 }
 
-function renderInline(text: string): string {
+function renderInline(text: string, mentionNames: readonly string[]): string {
     const tokens: string[] = [];
     const stash = (html: string) => {
         const key = `@@CLAWITHMDTOKEN${tokens.length}@@`;
@@ -101,6 +107,20 @@ function renderInline(text: string): string {
         // Links
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => stash(renderLink(url, escapeHtml(label))));
 
+    if (mentionNames.length > 0) {
+        const escapedNames = mentionNames
+            .filter(Boolean)
+            .sort((a, b) => b.length - a.length)
+            .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        if (escapedNames.length > 0) {
+            const mentionPattern = new RegExp(`@(${escapedNames.join('|')})`, 'g');
+            working = working.replace(
+                mentionPattern,
+                (_match, name) => stash(`<span class="group-mention-chip">@${escapeHtml(name)}</span>`),
+            );
+        }
+    }
+
     working = escapeHtml(working)
         // Bold + italic
         .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
@@ -120,7 +140,7 @@ function renderInline(text: string): string {
     return working;
 }
 
-function markdownToHtml(md: string): string {
+function markdownToHtml(md: string, mentionNames: readonly string[] = []): string {
     const lines = md.split('\n');
     let html = '';
     let inCodeBlock = false;
@@ -149,7 +169,7 @@ function markdownToHtml(md: string): string {
             if (!inCodeBlock) {
                 flushList(); flushBlockquote(); flushTable();
                 inCodeBlock = true;
-                codeLang = line.slice(3).trim();
+                codeLang = sanitizeCodeLanguage(line.slice(3).trim());
                 codeLines = [];
             } else {
                 const codeContent = escapeHtml(codeLines.join('\n'));
@@ -176,7 +196,7 @@ function markdownToHtml(md: string): string {
             const level = hMatch[1].length;
             const sizes = ['1.6em', '1.4em', '1.2em', '1.1em', '1em', '0.9em'];
             const margins = ['20px 0 8px', '16px 0 6px', '14px 0 5px', '12px 0 4px', '10px 0 4px', '8px 0 4px'];
-            html += `<h${level} style="margin:${margins[level - 1]};font-size:${sizes[level - 1]};font-weight:600;line-height:1.3">${renderInline(hMatch[2])}</h${level}>`;
+            html += `<h${level} style="margin:${margins[level - 1]};font-size:${sizes[level - 1]};font-weight:600;line-height:1.3">${renderInline(hMatch[2], mentionNames)}</h${level}>`;
             continue;
         }
 
@@ -194,7 +214,7 @@ function markdownToHtml(md: string): string {
                 html += '<blockquote style="border-left:3px solid var(--accent-primary);margin:8px 0;padding:4px 12px;color:var(--text-secondary);background:var(--bg-secondary);border-radius:0 4px 4px 0">';
                 inBlockquote = true;
             }
-            html += `<div>${renderInline(line.slice(2))}</div>`;
+            html += `<div>${renderInline(line.slice(2), mentionNames)}</div>`;
             continue;
         } else if (inBlockquote) {
             flushBlockquote();
@@ -214,10 +234,10 @@ function markdownToHtml(md: string): string {
                 inTable = true;
                 tableHeader = false;
                 // This is the header row
-                html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c)}</th>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c, mentionNames)}</th>`).join('') + '</tr>';
                 html += '</thead><tbody>';
             } else {
-                html += '<tr>' + cols.map(c => `<td style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px">${renderInline(c)}</td>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<td style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px">${renderInline(c, mentionNames)}</td>`).join('') + '</tr>';
             }
             continue;
         } else if (inTable) {
@@ -229,7 +249,7 @@ function markdownToHtml(md: string): string {
         if (ulMatch) {
             flushBlockquote(); flushTable();
             if (inList !== 'ul') { if (inList) flushList(); html += '<ul style="margin:6px 0;padding-left:24px">'; inList = 'ul'; }
-            html += `<li style="margin:2px 0">${renderInline(ulMatch[2])}</li>`;
+            html += `<li style="margin:2px 0">${renderInline(ulMatch[2], mentionNames)}</li>`;
             continue;
         }
 
@@ -238,13 +258,13 @@ function markdownToHtml(md: string): string {
         if (olMatch) {
             flushBlockquote(); flushTable();
             if (inList !== 'ol') { if (inList) flushList(); html += '<ol style="margin:6px 0;padding-left:24px">'; inList = 'ol'; }
-            html += `<li style="margin:2px 0">${renderInline(olMatch[2])}</li>`;
+            html += `<li style="margin:2px 0">${renderInline(olMatch[2], mentionNames)}</li>`;
             continue;
         }
 
         // Regular paragraph
         flushList(); flushBlockquote(); flushTable();
-        html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line)}</p>`;
+        html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line, mentionNames)}</p>`;
     }
 
     // Close any open structures
@@ -258,12 +278,13 @@ function markdownToHtml(md: string): string {
 
 interface MarkdownRendererProps {
     content: string;
+    mentionNames?: readonly string[];
     style?: React.CSSProperties;
     className?: string;
 }
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
-    const html = useMemo(() => markdownToHtml(content), [content]);
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, mentionNames = [], style, className }: MarkdownRendererProps) {
+    const html = useMemo(() => markdownToHtml(content, mentionNames), [content, mentionNames]);
     const [lightbox, setLightbox] = useState<{ src: string; alt: string; scale: number } | null>(null);
 
     const closeLightbox = useCallback(() => setLightbox(null), []);

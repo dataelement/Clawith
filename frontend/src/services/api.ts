@@ -1,6 +1,10 @@
 /** API service layer */
 
 import type { Agent, TokenResponse, User, Task, ChatMessage } from '../types';
+import { AppError, parseHttpError, parseHttpErrorResponse, normalizeUnknownError } from './apiError';
+
+export { ApiError, AppError } from './apiError';
+export type { ApiErrorContext, AppErrorContext, ErrorSource } from './apiError';
 
 const API_BASE = '/api';
 
@@ -11,9 +15,15 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
 
-    const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    let res: Response;
+    try {
+        res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    } catch (error) {
+        throw normalizeUnknownError(error, { code: 'network_error', source: 'http', retryable: true });
+    }
 
     if (!res.ok) {
+        const apiError = await parseHttpErrorResponse(res);
         // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
         const isAuthEndpoint = url.startsWith('/auth/login')
             || url.startsWith('/auth/register')
@@ -25,50 +35,9 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             window.location.href = '/login';
-            throw new Error('Session expired');
+            throw apiError;
         }
-        const bodyText = await res.text();
-        let error: { detail?: unknown };
-        try {
-            error = bodyText ? JSON.parse(bodyText) : {};
-        } catch {
-            const snippet = bodyText.trim().slice(0, 280);
-            error = {
-                detail: snippet || `HTTP ${res.status} ${res.statusText || ''}`.trim(),
-            };
-        }
-        // Pydantic validation errors return detail as an array of objects
-        const fieldLabels: Record<string, string> = {
-            name: '名称',
-            role_description: '角色描述',
-            agent_type: '智能体类型',
-            primary_model_id: '主模型',
-            max_tokens_per_day: '每日 Token 上限',
-            max_tokens_per_month: '每月 Token 上限',
-        };
-        let message = '';
-        if (Array.isArray(error.detail)) {
-            message = error.detail
-                .map((e: any) => {
-                    const field = e.loc?.slice(-1)[0] || '';
-                    const label = fieldLabels[field] || field;
-                    return label ? `${label}: ${e.msg}` : e.msg;
-                })
-                .join('; ');
-        } else if (typeof error.detail === 'object' && error.detail !== null) {
-            // Structured error detail (e.g., NeedsVerificationResponse)
-            message = (error.detail as Record<string, any>).message || `HTTP ${res.status}`;
-        } else {
-            const d = error.detail;
-            if (typeof d === 'string') message = d;
-            else if (d != null && typeof d === 'object') message = JSON.stringify(d);
-            else message = `HTTP ${res.status}`;
-        }
-
-        const apiErr: any = new Error(message);
-        apiErr.status = res.status;
-        apiErr.detail = error.detail;
-        throw apiErr;
+        throw apiError;
     }
 
     if (res.status === 204) return undefined as T;
@@ -87,14 +56,18 @@ async function uploadFile(url: string, file: File, extraFields?: Record<string, 
             formData.append(k, v);
         }
     }
-    const res = await fetch(`${API_BASE}${url}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-    });
+    let res: Response;
+    try {
+        res = await fetch(`${API_BASE}${url}`, {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            body: formData,
+        });
+    } catch (error) {
+        throw normalizeUnknownError(error, { code: 'network_error', source: 'http', retryable: true });
+    }
     if (!res.ok) {
-        const error = await res.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new Error(error.detail || `HTTP ${res.status}`);
+        throw await parseHttpErrorResponse(res);
     }
     return res.json();
 }
@@ -137,15 +110,17 @@ export function uploadFileWithProgress(
             if (xhr.status >= 200 && xhr.status < 300) {
                 try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(undefined); }
             } else {
-                try {
-                    const err = JSON.parse(xhr.responseText);
-                    reject(new Error(err.detail || `HTTP ${xhr.status}`));
-                } catch { reject(new Error(`HTTP ${xhr.status}`)); }
+                reject(parseHttpError({
+                    status: xhr.status,
+                    statusText: xhr.statusText,
+                    bodyText: xhr.responseText,
+                    traceId: xhr.getResponseHeader('X-Trace-Id'),
+                }));
             }
         };
-        xhr.onerror = () => reject(new Error('Network error'));
-        xhr.ontimeout = () => reject(new Error('Upload timed out'));
-        xhr.onabort = () => reject(new Error('Upload cancelled'));
+        xhr.onerror = () => reject(new AppError({ message: 'Network error', code: 'network_error', source: 'http', retryable: true }));
+        xhr.ontimeout = () => reject(new AppError({ message: 'Upload timed out', code: 'upload_timeout', source: 'http', retryable: true }));
+        xhr.onabort = () => reject(new AppError({ message: 'Upload cancelled', code: 'upload_cancelled', source: 'http', retryable: false }));
         xhr.timeout = timeoutMs;
         xhr.send(formData);
     });
@@ -590,4 +565,86 @@ export const controlApi = {
 
     unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
         request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
+};
+
+// ─── Experience Library ───────────────────────────────
+export interface ExperienceEntry {
+    id: string;
+    // Set only for an edit draft derived from a published/retired source entry.
+    draft_of_id: string | null;
+    tenant_id: string | null;
+    title: string;
+    body: string;           // 正文 — free-form markdown
+    applicability: string;  // 适用条件与失效信号 — the agent's read-or-skip preview; required to publish
+    status: 'draft' | 'published' | 'retired';
+    tags: string[];
+    // Legacy response fields; published Experience is tenant-wide.
+    visibility_scope: 'company' | 'department' | 'user';
+    visibility_scope_id: string | null;
+    origin: 'chat' | 'legacy_plaza';
+    origin_session_id: string | null;
+    origin_agent_id: string | null;
+    created_by: string;
+    reviewed_by: string | null;
+    last_reviewed_at: string | null;
+    retired_at: string | null;
+    created_at: string;
+    updated_at: string | null;
+    created_by_name?: string | null;
+    origin_agent_name?: string | null;
+    // Whether the caller may edit/review/retire/re-publish (single-entry fetch only; null in lists).
+    can_manage?: boolean | null;
+}
+
+export type ExperienceView = 'team' | 'mine' | 'all';
+
+export const experienceApi = {
+    list: (params: { view?: ExperienceView; status?: string; tag?: string; q?: string } = {}) => {
+        const qs = new URLSearchParams();
+        if (params.view) qs.set('view', params.view);
+        if (params.status) qs.set('status', params.status);
+        if (params.tag) qs.set('tag', params.tag);
+        if (params.q) qs.set('q', params.q);
+        const s = qs.toString();
+        return request<ExperienceEntry[]>(`/experience/entries${s ? `?${s}` : ''}`);
+    },
+    get: (id: string) => request<ExperienceEntry>(`/experience/entries/${id}`),
+    createDraftFromContent: (data: { agent_id: string; content: string; session_id?: string }) =>
+        request<ExperienceEntry>('/experience/drafts', { method: 'POST', body: JSON.stringify(data) }),
+    // Distill chat content into title / body / applicability WITHOUT persisting (human confirms in the editor).
+    distill: (data: { agent_id: string; content: string; session_id?: string }) =>
+        request<{ title: string; body: string; applicability: string; tags: string[]; extracted: boolean }>(
+            '/experience/distill', { method: 'POST', body: JSON.stringify(data) }),
+    create: (data: Partial<ExperienceEntry>) =>
+        request<ExperienceEntry>('/experience/entries', { method: 'POST', body: JSON.stringify(data) }),
+    createRevision: (id: string, data: Partial<ExperienceEntry>) =>
+        request<ExperienceEntry>(`/experience/entries/${id}/draft`, { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<ExperienceEntry>) =>
+        request<ExperienceEntry>(`/experience/entries/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    publish: (id: string) =>
+        request<ExperienceEntry>(`/experience/entries/${id}/publish`, { method: 'POST' }),
+    retire: (id: string) =>
+        request<ExperienceEntry>(`/experience/entries/${id}/retire`, { method: 'POST' }),
+    remove: (id: string) =>
+        request<{ deleted: boolean }>(`/experience/entries/${id}`, { method: 'DELETE' }),
+    review: (id: string) =>
+        request<ExperienceEntry>(`/experience/entries/${id}/review`, { method: 'POST' }),
+    references: (id: string) =>
+        request<{ entry_id: string; read_count: number; cited_count: number }>(`/experience/entries/${id}/references`),
+    stats: () =>
+        request<{ total: number; today: number; cited: number; top_contributors: { name: string; count: number }[] }>('/experience/stats'),
+};
+
+// ─── Org structure (synced from Feishu/DingTalk/WeCom; empty until org sync runs) ───
+export interface OrgDepartmentItem {
+    id: string;
+    name: string;
+    path?: string;
+    parent_id?: string | null;
+    member_count?: number;
+}
+
+export const orgApi = {
+    departments: () =>
+        request<{ items: OrgDepartmentItem[]; total_member: number }>('/enterprise/org/departments'),
 };

@@ -4,8 +4,6 @@ import socket
 import ssl
 import smtplib
 from contextlib import contextmanager
-from email.mime.multipart import MIMEMultipart
-from typing import Optional
 
 
 def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):

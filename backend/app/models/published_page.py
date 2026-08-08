@@ -14,6 +14,7 @@ class PublishedPage(Base):
     """A publicly accessible HTML page published from an agent workspace."""
 
     __tablename__ = "published_pages"
+    __tenant_scoped__ = True
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     short_id: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)

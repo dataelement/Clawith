@@ -25,7 +25,7 @@ class OrgMemberDAO(BaseDAO[OrgMember]):
                 select(OrgMember).where(
                     OrgMember.email == email,
                     OrgMember.tenant_id == tenant_id,
-                    OrgMember.user_id == None,
+                    OrgMember.user_id.is_(None),
                 ).limit(1)
             )
             return result.scalar_one_or_none()
@@ -41,7 +41,7 @@ class OrgMemberDAO(BaseDAO[OrgMember]):
                 select(OrgMember).where(
                     OrgMember.phone == phone,
                     OrgMember.tenant_id == tenant_id,
-                    OrgMember.user_id == None,
+                    OrgMember.user_id.is_(None),
                 ).limit(1)
             )
             return result.scalar_one_or_none()
@@ -76,7 +76,7 @@ class OrgMemberDAO(BaseDAO[OrgMember]):
                     OrgMember.email == email,
                     OrgMember.tenant_id == tenant_id,
                     OrgMember.provider_id == provider_id,
-                    OrgMember.user_id == None,
+                    OrgMember.user_id.is_(None),
                 ).limit(1)
             )
             return result.scalar_one_or_none()
@@ -94,7 +94,7 @@ class OrgMemberDAO(BaseDAO[OrgMember]):
                     OrgMember.phone == phone,
                     OrgMember.tenant_id == tenant_id,
                     OrgMember.provider_id == provider_id,
-                    OrgMember.user_id == None,
+                    OrgMember.user_id.is_(None),
                 ).limit(1)
             )
             return result.scalar_one_or_none()

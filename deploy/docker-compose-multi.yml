@@ -71,10 +71,18 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
       PROCESS_ROLE: api
+      APP_WORKERS: ${APP_WORKERS:-2}
+      BCRYPT_WORKERS: ${BCRYPT_WORKERS:-4}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-40}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-40}
+      LOGIN_SLOW_LOG_THRESHOLD_MS: ${LOGIN_SLOW_LOG_THRESHOLD_MS:-1000}
+      AGENT_RUNTIME_V2_ENABLED: "true"
+      AGENT_RUNTIME_V2_AGENT_IDS: ""
+      AGENT_RUNTIME_V2_SOURCE_TYPES: ""
       CORS_ORIGINS: '["*"]'
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
-      DOCKER_NETWORK: clawith_yaojin_network
+      DOCKER_NETWORK: ${CLAWITH_DOCKER_NETWORK:-clawith_network}
       SS_CONFIG_FILE: /data/ss-nodes.json
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
@@ -130,10 +138,14 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
       PROCESS_ROLE: bootstrap,worker,connector
+      AGENT_RUNTIME_COMMAND_CONCURRENCY: ${AGENT_RUNTIME_COMMAND_CONCURRENCY:-10}
+      AGENT_RUNTIME_V2_ENABLED: "true"
+      AGENT_RUNTIME_V2_AGENT_IDS: ""
+      AGENT_RUNTIME_V2_SOURCE_TYPES: ""
       CORS_ORIGINS: '["*"]'
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
-      DOCKER_NETWORK: clawith_yaojin_network
+      DOCKER_NETWORK: ${CLAWITH_DOCKER_NETWORK:-clawith_network}
       SS_CONFIG_FILE: /data/ss-nodes.json
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
@@ -185,4 +197,4 @@ volumes:
 
 networks:
   default:
-    name: clawith_network
+    name: ${CLAWITH_DOCKER_NETWORK:-clawith_network}

@@ -1,7 +1,6 @@
 """Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
 
 import json
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +11,42 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
-from app.models.agent import Agent
+from app.models.agent import Agent, AgentTemplate
 from app.models.llm import LLMModel
 from app.services.llm import get_model_api_key
+from app.services.llm.model_resolution import resolve_active_agent_model
 from app.services.storage import get_storage_backend, normalize_storage_key
 
 settings = get_settings()
+
+
+def _render_soul_template(
+    template_content: str | None,
+    *,
+    agent_name: str,
+    creator_name: str,
+    created_at: str,
+) -> str:
+    """Render Soul-owned fields without promoting product role metadata."""
+    if not template_content:
+        return "# Soul\n\n_Describe your role and responsibilities._\n"
+    # D-017 keeps `role_description` as product/directory metadata. Remove any
+    # legacy template line that would silently copy it into the authoritative
+    # Soul identity before substituting Soul-owned fields.
+    without_role_placeholder = "\n".join(
+        line
+        for line in template_content.splitlines()
+        if "{{role_description}}" not in line
+    )
+    return (
+        without_role_placeholder
+        .replace("{{agent_name}}", agent_name)
+        .replace("{name}", agent_name)
+        .replace("{{creator_name}}", creator_name)
+        .replace("{{created_at}}", created_at)
+    )
 
 
 class AgentManager:
@@ -111,18 +139,29 @@ class AgentManager:
         # Customize soul.md
         # Get creator name
         from app.models.user import User
-        result = await db.execute(select(User).where(User.id == agent.creator_id))
+        result = await query_dao.execute(db, select(User).where(User.id == agent.creator_id))
         creator = result.scalar_one_or_none()
         creator_name = creator.display_name if creator else "Unknown"
 
-        soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
         soul_key = f"{agent_prefix}/soul.md"
-        if await storage.exists(soul_key):
+        template_content = None
+        if agent.template_id is not None:
+            template_result = await db.execute(
+                select(AgentTemplate.soul_template).where(
+                    AgentTemplate.id == agent.template_id
+                )
+            )
+            selected_soul = template_result.scalar_one_or_none()
+            if isinstance(selected_soul, str) and selected_soul.strip():
+                template_content = selected_soul
+        if template_content is None and await storage.exists(soul_key):
             template_content = await storage.read_text(soul_key, encoding="utf-8", errors="replace")
-            soul_content = template_content.replace("{{agent_name}}", agent.name)
-            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
-            soul_content = soul_content.replace("{{creator_name}}", creator_name)
-            soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        soul_content = _render_soul_template(
+            template_content,
+            agent_name=agent.name,
+            creator_name=creator_name,
+            created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        )
 
         # Helper function to replace or append sections
         def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
@@ -214,6 +253,10 @@ class AgentManager:
 
         Returns container_id or None if Docker not available.
         """
+        if agent.deleted_at is not None:
+            logger.info("Agent {} is deleted; skipping container start", agent.id)
+            return None
+
         if not self.docker_client:
             logger.info("Docker not available, skipping container start")
             agent.status = "idle"
@@ -223,10 +266,7 @@ class AgentManager:
         agent_dir = await self._materialize_agent_dir(agent.id)
 
         # Get model config
-        model = None
-        if agent.primary_model_id:
-            result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
-            model = result.scalar_one_or_none()
+        model = await resolve_active_agent_model(db, agent)
 
         # Generate OpenClaw config
         config = self._generate_openclaw_config(agent, model)
@@ -314,21 +354,6 @@ class AgentManager:
         except DockerException as e:
             logger.error(f"Failed to remove container: {e}")
             return False
-
-    async def archive_agent_files(self, agent_id: uuid.UUID) -> Path:
-        """Archive agent files to a backup location and return the archive directory."""
-        agent_dir = self._agent_dir(agent_id)
-        local_root = settings.STORAGE_LOCAL_ROOT or settings.AGENT_DATA_DIR
-        archive_dir = Path(local_root) / "_archived"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        dest = archive_dir / f"{agent_id}_{timestamp}"
-        if agent_dir.exists():
-            shutil.move(str(agent_dir), str(dest))
-            logger.info(f"Archived agent files to {dest}")
-        else:
-            dest.mkdir(parents=True, exist_ok=True)
-        return dest
 
     def get_container_status(self, agent: Agent) -> dict:
         """Get real-time container status."""

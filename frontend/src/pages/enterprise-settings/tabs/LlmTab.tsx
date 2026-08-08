@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconEdit } from '@tabler/icons-react';
 import { useDialog } from '../../../components/Dialog/DialogProvider';
 import { useToast } from '../../../components/Toast/ToastProvider';
 import { useAuthStore } from '../../../stores';
+import { notifyModelCacheInvalidated } from '../../../services/modelCacheEvents';
 import { fetchJson } from '../utils/fetchJson';
 
 interface LLMModel {
@@ -17,6 +18,10 @@ interface LLMModel {
     max_tokens_per_day?: number;
     enabled: boolean;
     supports_vision?: boolean;
+    supports_tool_calling?: boolean | null;
+    tool_calling_capability_source?: 'probe' | 'builtin_registry' | null;
+    tool_calling_checked_at?: string | null;
+    tool_calling_error?: string | null;
     max_output_tokens?: number;
     request_timeout?: number;
     temperature?: number;
@@ -40,6 +45,15 @@ interface LLMProviderEndpoint {
     openai_base_url: string;
     anthropic_base_url: string;
     docs_root?: string | null;
+}
+
+interface RuntimeModelSettings {
+    tenant_id: string;
+    planning_model_id: string | null;
+    compact_model_id: string | null;
+    planning_source: 'database' | 'environment' | 'unavailable';
+    compact_source: 'database' | 'environment' | 'unavailable';
+    candidates: Array<Pick<LLMModel, 'id' | 'label' | 'provider' | 'model'>>;
 }
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
@@ -106,13 +120,19 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         request_timeout: '' as string,
         temperature: '' as string,
     });
+    const [runtimeModelForm, setRuntimeModelForm] = useState({
+        planning_model_id: '',
+        compact_model_id: '',
+    });
 
     const invalidateModelCaches = () => {
         qc.invalidateQueries({ queryKey: ['llm-models'] });
+        qc.invalidateQueries({ queryKey: ['runtime-model-settings'] });
         qc.invalidateQueries({ queryKey: ['tenant', 'me'] });
         qc.invalidateQueries({ queryKey: ['tenant-default-model'] });
         qc.invalidateQueries({ queryKey: ['agents'] });
         qc.invalidateQueries({ queryKey: ['agent'] });
+        notifyModelCacheInvalidated();
     };
 
     const { data: models = [] } = useQuery({
@@ -132,6 +152,37 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
             endpoint.anthropic_base_url,
         ]),
     ));
+    const canManageRuntimeModels = currentUser?.role === 'platform_admin'
+        || currentUser?.role === 'org_admin'
+        || !!currentUser?.is_platform_admin;
+    const runtimeModelSettingsUrl = `/enterprise/runtime-model-settings${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`;
+    const { data: runtimeModelSettings } = useQuery({
+        queryKey: ['runtime-model-settings', selectedTenantId],
+        queryFn: () => fetchJson<RuntimeModelSettings>(runtimeModelSettingsUrl),
+        enabled: canManageRuntimeModels,
+    });
+    useEffect(() => {
+        if (!runtimeModelSettings) return;
+        setRuntimeModelForm({
+            planning_model_id: runtimeModelSettings.planning_model_id || '',
+            compact_model_id: runtimeModelSettings.compact_model_id || '',
+        });
+    }, [runtimeModelSettings]);
+    const saveRuntimeModelSettings = useMutation({
+        mutationFn: () => fetchJson<RuntimeModelSettings>(runtimeModelSettingsUrl, {
+            method: 'PUT',
+            body: JSON.stringify(runtimeModelForm),
+        }),
+        onSuccess: (data) => {
+            qc.setQueryData(['runtime-model-settings', selectedTenantId], data);
+            toast.success(t('enterprise.llm.runtimeModelsSaved', '运行时模型配置已更新'));
+        },
+        onError: (err: any) => {
+            toast.error(t('enterprise.llm.runtimeModelsSaveFailed', '运行时模型配置保存失败'), {
+                details: String(err?.message || err),
+            });
+        },
+    });
 
     const addModel = useMutation({
         mutationFn: (data: any) => fetchJson(`/enterprise/llm-models${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`, { method: 'POST', body: JSON.stringify(data) }),
@@ -181,29 +232,35 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
         },
     });
     const deleteModel = useMutation({
-        mutationFn: async ({ id }: { id: string; force?: boolean }) => {
-            const url = `/enterprise/llm-models/${id}`;
-            const res = await fetch(`/api${url}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-            });
-            if (res.status === 409) {
-                const data = await res.json();
-                const agents = data.detail?.agents || [];
-                const msg = `该模型正在被 ${agents.length} 个数字员工使用：\n\n${agents.join(', ')}\n\n仍要删除吗？（对应的模型配置会被清空）`;
-                if (await dialog.confirm(msg, { title: t('common.dialog.deleteModel'), danger: true, confirmLabel: t('common.confirmActions.forceDelete') })) {
-                    const r2 = await fetch(`/api/enterprise/llm-models/${id}?force=true`, {
-                        method: 'DELETE',
-                        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-                    });
-                    if (!r2.ok && r2.status !== 204) throw new Error('Delete failed');
-                }
-                return;
-            }
-            if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+        mutationFn: (id: string) => fetchJson<void>(`/enterprise/llm-models/${id}`, {
+            method: 'DELETE',
+        }),
+        onSuccess: () => {
+            invalidateModelCaches();
+            toast.success(t('enterprise.llm.deleteDone', 'Model disabled'));
         },
-        onSuccess: () => invalidateModelCaches(),
+        onError: (error: any) => {
+            toast.error(t('enterprise.llm.deleteFailed', 'Failed to delete model'), {
+                details: String(error?.message || error),
+            });
+        },
     });
+
+    const confirmDeleteModel = async (model: LLMModel) => {
+        const confirmed = await dialog.confirm(
+            t(
+                'enterprise.llm.deleteConfirm',
+                'Disable {{name}}? Existing agents and history keep their model references; new calls will use another available model.',
+                { name: model.label || model.model },
+            ),
+            {
+                title: t('common.dialog.deleteModel'),
+                danger: true,
+                confirmLabel: t('common.delete'),
+            },
+        );
+        if (confirmed) deleteModel.mutate(model.id);
+    };
 
     const openCreateForm = () => {
         setEditingModelId(null);
@@ -242,9 +299,12 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                 body: JSON.stringify(testData),
             });
             const result = await res.json();
-            if (result.success) {
+            if (result.capability_recorded) invalidateModelCaches();
+            if (result.connection_success && result.tool_calling_supported === true) {
                 if (btn) {
-                    btn.textContent = t('enterprise.llm.testSuccess', { latency: result.latency_ms });
+                    btn.textContent = result.capability_recorded
+                        ? t('enterprise.llm.testSuccessWithTools', '连接与原生工具调用均可用 · {{latency}}ms', { latency: result.latency_ms })
+                        : t('enterprise.llm.draftTestSuccess', '测试通过；保存模型后需再次测试');
                     btn.style.color = 'var(--success)';
                 }
                 setTimeout(() => {
@@ -253,6 +313,19 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                         btn.style.color = '';
                     }
                 }, 3000);
+            } else if (result.connection_success) {
+                const capabilityUnknown = result.tool_calling_supported == null;
+                await dialog.alert(
+                    capabilityUnknown
+                        ? t('enterprise.llm.toolTestUnknown', '连接成功，但原生工具调用暂未确认')
+                        : t('enterprise.llm.toolTestUnsupported', '连接成功，但原生工具调用不可用'),
+                    {
+                        type: 'error',
+                        title: t('enterprise.llm.agentCompatibilityTest', 'Agent 兼容性测试'),
+                        details: String(result.tool_calling_error || result.error || 'Model did not return a valid native capability probe.'),
+                    },
+                );
+                if (btn) btn.textContent = origText;
             } else {
                 await dialog.alert(t('enterprise.llm.testFailedShort', '连通性测试失败'), {
                     type: 'error',
@@ -273,6 +346,65 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
 
     return (
         <div>
+            {canManageRuntimeModels && runtimeModelSettings && (
+                <div className="card" style={{ marginBottom: '16px' }}>
+                    <div style={{ marginBottom: '14px' }}>
+                        <div style={{ fontWeight: 600, fontSize: '15px' }}>
+                            {t('enterprise.llm.runtimeModelsTitle', '多智能体运行时模型')}
+                        </div>
+                        <div style={{ marginTop: '4px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                            {t('enterprise.llm.runtimeModelsHint', '可使用当前公司或平台已保存且启用的模型；工具测试结果仅作诊断，不影响选择。保存后立即生效。')}
+                        </div>
+                    </div>
+                    {runtimeModelSettings.candidates.length === 0 ? (
+                        <div style={{ color: 'var(--warning)', fontSize: '13px' }}>
+                            {t('enterprise.llm.noRuntimeModelCandidates', '暂无可用模型，请先为当前公司或平台创建模型并完成 Agent 兼容性测试。')}
+                        </div>
+                    ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr)) auto', gap: '12px', alignItems: 'end' }}>
+                            <label className="form-group" style={{ margin: 0 }}>
+                                <span className="form-label">{t('enterprise.llm.planningModel', '群聊规划模型')}</span>
+                                <select
+                                    className="form-input"
+                                    value={runtimeModelForm.planning_model_id}
+                                    onChange={(event) => setRuntimeModelForm((current) => ({ ...current, planning_model_id: event.target.value }))}
+                                >
+                                    <option value="" disabled>{t('enterprise.llm.selectRuntimeModel', '请选择模型')}</option>
+                                    {runtimeModelSettings.candidates.map((model) => (
+                                        <option key={model.id} value={model.id}>{model.label} · {model.provider}/{model.model}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label className="form-group" style={{ margin: 0 }}>
+                                <span className="form-label">{t('enterprise.llm.compactModel', '群聊上下文模型')}</span>
+                                <select
+                                    className="form-input"
+                                    value={runtimeModelForm.compact_model_id}
+                                    onChange={(event) => setRuntimeModelForm((current) => ({ ...current, compact_model_id: event.target.value }))}
+                                >
+                                    <option value="" disabled>{t('enterprise.llm.selectRuntimeModel', '请选择模型')}</option>
+                                    {runtimeModelSettings.candidates.map((model) => (
+                                        <option key={model.id} value={model.id}>{model.label} · {model.provider}/{model.model}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <button
+                                className="btn btn-primary"
+                                disabled={
+                                    saveRuntimeModelSettings.isPending
+                                    || !runtimeModelForm.planning_model_id
+                                    || !runtimeModelForm.compact_model_id
+                                }
+                                onClick={() => saveRuntimeModelSettings.mutate()}
+                            >
+                                {saveRuntimeModelSettings.isPending
+                                    ? t('common.saving', '保存中...')
+                                    : t('common.save', '保存')}
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
                 <button className="btn btn-primary" onClick={openCreateForm}>+ {t('enterprise.llm.addModel')}</button>
             </div>
@@ -494,6 +626,35 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                         }} />
                                     </button>
                                     {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
+                                    {m.supports_tool_calling === true ? (
+                                        <span
+                                            className="badge"
+                                            title={m.tool_calling_capability_source === 'probe'
+                                                ? t('enterprise.llm.toolsVerifiedTitle', 'This exact model configuration passed the native tool-calling probe.')
+                                                : t('enterprise.llm.toolsRegistryTitle', 'Preserved from the built-in cloud provider registry; rerun the test to verify this exact configuration.')}
+                                            style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}
+                                        >
+                                            {m.tool_calling_capability_source === 'probe'
+                                                ? t('enterprise.llm.toolsVerified', 'Tools verified')
+                                                : t('enterprise.llm.toolsRegistry', 'Tools registry')}
+                                        </span>
+                                    ) : m.supports_tool_calling === false ? (
+                                        <span
+                                            className="badge"
+                                            title={m.tool_calling_error || t('enterprise.llm.toolsUnavailableTitle', 'The tool probe failed, but the saved enabled model remains available.')}
+                                            style={{ background: 'rgba(239,68,68,0.15)', color: 'rgb(239,68,68)', fontSize: '10px' }}
+                                        >
+                                            {t('enterprise.llm.toolsUnavailable', 'Tools unavailable')}
+                                        </span>
+                                    ) : (
+                                        <span
+                                            className="badge"
+                                            title={m.tool_calling_error || t('enterprise.llm.toolsUnverifiedTitle', 'Tool support has not been tested; the saved enabled model remains available.')}
+                                            style={{ background: 'rgba(245,158,11,0.15)', color: 'rgb(245,158,11)', fontSize: '10px' }}
+                                        >
+                                            {t('enterprise.llm.toolsUnverified', 'Tools unverified')}
+                                        </span>
+                                    )}
                                     {tenantForDefault?.default_model_id === m.id ? (
                                         <span className="badge" style={{ background: 'rgba(34,197,94,0.15)', color: 'rgb(34,197,94)', fontSize: '10px' }}>{t('enterprise.llm.defaultBadge', '默认')}</span>
                                     ) : m.enabled ? (
@@ -518,7 +679,7 @@ export default function LlmTab({ selectedTenantId }: LlmTabProps) {
                                     }} style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                         <IconEdit size={13} stroke={1.8} /> {t('enterprise.tools.edit')}
                                     </button>
-                                    <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
+                                    <button className="btn btn-ghost" onClick={() => void confirmDeleteModel(m)} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>
                                 </div>
                             </div>
                         )}
