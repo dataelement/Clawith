@@ -1,4 +1,3 @@
-from typing import Any
 """Microsoft Teams Bot Channel API routes."""
 
 import json
@@ -219,7 +218,7 @@ async def configure_teams_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure Microsoft Teams bot for an agent. Fields: app_id, app_secret."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
@@ -281,7 +280,7 @@ async def configure_teams_channel(
 async def get_teams_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get Microsoft Teams channel configuration for an agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -302,7 +301,7 @@ async def get_teams_webhook_url(
     agent_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get the Microsoft Teams webhook URL for an agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -315,7 +314,7 @@ async def get_teams_webhook_url(
 async def delete_teams_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete Microsoft Teams channel configuration for an agent."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
@@ -343,7 +342,7 @@ _processed_teams_events: set[str] = set()
 async def teams_event_webhook(
     agent_id: uuid.UUID,
     request: Request,
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Handle Microsoft Teams Bot Framework callbacks."""
     try:

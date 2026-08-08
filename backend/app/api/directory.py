@@ -1,4 +1,3 @@
-from typing import Any
 """Read-only agent directory API."""
 
 import uuid
@@ -56,7 +55,7 @@ async def get_agent_directory(
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return the people and agents the source agent can currently contact."""
     await check_agent_access(db, current_user, agent_id)
@@ -79,7 +78,7 @@ async def get_agent_directory(
 async def get_custom_directory_humans(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return explicitly authorized human members in a custom Directory."""
     agent = await _require_custom_directory_manager(db, current_user, agent_id)
@@ -127,7 +126,7 @@ async def get_custom_directory_human_candidates(
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return paginated human candidates that can be added to a custom Directory."""
     _validate_pagination(limit, offset)
@@ -184,7 +183,7 @@ async def add_custom_directory_human(
     agent_id: uuid.UUID,
     payload: CustomHumanDirectoryIn,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Add a human platform user to a custom Directory with use access."""
     agent = await _require_custom_directory_manager(db, current_user, agent_id)
@@ -216,7 +215,7 @@ async def remove_custom_directory_human(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Remove a use-level human from a custom Directory."""
     await _require_custom_directory_manager(db, current_user, agent_id)
@@ -243,7 +242,7 @@ async def remove_custom_directory_human(
 async def get_custom_directory_agents(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return explicitly linked digital employees in a custom Directory."""
     await _require_custom_directory_manager(db, current_user, agent_id)
@@ -275,7 +274,7 @@ async def get_custom_directory_agent_candidates(
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return paginated digital employee candidates for a custom Directory."""
     _validate_pagination(limit, offset)
@@ -321,7 +320,7 @@ async def add_custom_directory_agent(
     agent_id: uuid.UUID,
     payload: CustomAgentDirectoryIn,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Add a digital employee to a custom Directory."""
     agent = await _require_custom_directory_manager(db, current_user, agent_id)
@@ -361,7 +360,7 @@ async def remove_custom_directory_agent(
     agent_id: uuid.UUID,
     target_agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Remove a digital employee from a custom Directory."""
     await _require_custom_directory_manager(db, current_user, agent_id)

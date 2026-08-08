@@ -1,4 +1,3 @@
-from typing import Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -52,7 +51,7 @@ class UserOut(BaseModel):
 async def list_users(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List all users in the specified tenant (admin only)."""
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -107,7 +106,7 @@ async def update_user_quota(
     user_id: uuid.UUID,
     data: UserQuotaUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a user's quota settings (admin only)."""
     if current_user.role not in ("platform_admin", "org_admin"):
@@ -169,7 +168,7 @@ async def update_user_role(
     user_id: uuid.UUID,
     data: RoleUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Change a user's role within the same company.
 

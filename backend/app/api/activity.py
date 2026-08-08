@@ -1,4 +1,3 @@
-from typing import Any
 """Activity log API — view agent work history."""
 
 import uuid
@@ -19,7 +18,7 @@ async def get_agent_activity(
     agent_id: uuid.UUID,
     limit: int = Query(50, le=200),
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get recent activity logs for an agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -45,7 +44,7 @@ async def get_agent_activity(
 async def list_conversations(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List all conversation partners for this agent (web users + other agents)."""
     await check_agent_access(db, current_user, agent_id)
@@ -59,7 +58,7 @@ async def get_conversation_messages(
     conv_id: str,
     limit: int = Query(100, le=500),
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get messages for a specific conversation."""
     await check_agent_access(db, current_user, agent_id)
