@@ -1,4 +1,3 @@
-from typing import Any
 """Google Workspace OAuth callback routes."""
 
 import uuid
@@ -39,7 +38,7 @@ async def get_google_workspace_sync_authorize_url(
     provider_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_admin),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     provider = await get_google_provider(db, provider_id)
     if current_user.role != "platform_admin" and provider.tenant_id != current_user.tenant_id:
@@ -195,7 +194,7 @@ async def google_workspace_callback(
     code: str,
     state: str | None = None,
     request: Request = None,
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Unified callback for Google Workspace SSO login and admin authorization."""
     parsed_state = parse_google_oauth_state(state) if state else None

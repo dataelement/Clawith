@@ -1,4 +1,3 @@
-from typing import Any
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -17,7 +16,7 @@ router = APIRouter(tags=["sso"])
 @router.post("/sso/session")
 async def create_sso_session(
     tenant_id: uuid.UUID | None = None,
-    db: Any = None
+    db: AsyncSession = Depends(get_db)
 ):
     """Create a new SSO scan session for QR code login."""
     session = SSOScanSession(
@@ -31,7 +30,7 @@ async def create_sso_session(
     return {"session_id": str(session.id), "expires_at": session.expires_at}
 
 @router.get("/sso/session/{sid}/status")
-async def get_sso_session_status(sid: uuid.UUID, db: Any = None):
+async def get_sso_session_status(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Check the status of an SSO scan session."""
     result = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
     session = result.scalar_one_or_none()
@@ -72,7 +71,7 @@ async def get_sso_session_status(sid: uuid.UUID, db: Any = None):
     return response
 
 @router.put("/sso/session/{sid}/scan")
-async def mark_sso_session_scanned(sid: uuid.UUID, db: Any = None):
+async def mark_sso_session_scanned(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Optional: Mark session as 'scanned' when the landing page loads on mobile."""
     result = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
     session = result.scalar_one_or_none()
@@ -82,7 +81,7 @@ async def mark_sso_session_scanned(sid: uuid.UUID, db: Any = None):
     return {"status": "ok"}
 
 @router.get("/sso/config")
-async def get_sso_config(sid: uuid.UUID, request: Request, db: Any = None):
+async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     """List active SSO providers with their redirect URLs for the specified session ID."""
     # 1. Resolve session to get tenant context
     res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))

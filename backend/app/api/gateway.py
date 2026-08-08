@@ -1,4 +1,3 @@
-from typing import Any
 """Gateway API for OpenClaw agent communication.
 
 OpenClaw agents authenticate via X-Api-Key header and use these endpoints
@@ -63,7 +62,7 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
 @router.get("/poll", response_model=GatewayPollResponse)
 async def poll_messages(
     x_api_key: str = Header(..., alias="X-Api-Key"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent polls for pending messages.
 
@@ -219,7 +218,7 @@ async def poll_messages(
 async def report_result(
     body: GatewayReportRequest,
     x_api_key: str = Header(None, alias="X-Api-Key"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent reports the result of a processed message."""
     if not x_api_key:
@@ -344,7 +343,7 @@ async def report_result(
 @router.post("/heartbeat")
 async def heartbeat(
     x_api_key: str = Header(..., alias="X-Api-Key"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Pure heartbeat ping — keeps the OpenClaw agent marked as online."""
     agent = await _get_agent_by_key(x_api_key, db)
@@ -360,7 +359,7 @@ async def heartbeat(
 async def send_message(
     body: GatewaySendMessageRequest,
     x_api_key: str = Header(..., alias="X-Api-Key"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent sends a message to a person or another agent.
 
@@ -572,7 +571,7 @@ async def get_setup_guide(
     agent_id: uuid.UUID,
     x_api_key: str = Header(..., alias="X-Api-Key"),
     accept_language: str | None = Header(None, alias="Accept-Language"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return the pre-filled Skill file and Heartbeat instruction for this agent."""
     agent = await _get_agent_by_key(x_api_key, db)

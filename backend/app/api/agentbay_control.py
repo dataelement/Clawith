@@ -14,7 +14,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -626,7 +626,7 @@ async def control_current_url(
     agent_id: uuid.UUID,
     data: CurrentUrlRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get the current page URL from the active browser session via CDP.
 
@@ -676,7 +676,7 @@ async def control_click(
     agent_id: uuid.UUID,
     data: ClickRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Forward a mouse click to the AgentBay session.
 
@@ -709,7 +709,7 @@ async def control_type(
     agent_id: uuid.UUID,
     data: TypeRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Forward text input to the AgentBay session."""
     _agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -736,7 +736,7 @@ async def control_press_keys(
     agent_id: uuid.UUID,
     data: PressKeysRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Forward keyboard key presses to the AgentBay session."""
     _agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -763,7 +763,7 @@ async def control_drag(
     agent_id: uuid.UUID,
     data: DragRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Simulate a human-like mouse drag in the AgentBay session.
 
@@ -799,7 +799,7 @@ async def control_screenshot(
     agent_id: uuid.UUID,
     data: ScreenshotRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get an immediate screenshot from the AgentBay session.
 
@@ -846,7 +846,7 @@ async def control_lock(
     agent_id: uuid.UUID,
     data: LockRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Enter Take Control mode — locks the session against automatic tool execution.
 
@@ -888,7 +888,7 @@ async def control_unlock(
     agent_id: uuid.UUID,
     data: UnlockRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Exit Take Control mode — unlock session and optionally export cookies.
 
