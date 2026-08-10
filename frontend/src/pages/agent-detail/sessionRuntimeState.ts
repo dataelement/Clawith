@@ -21,6 +21,14 @@ export type SessionActiveRun = {
     pendingToolReconciliations: ToolReconciliation[];
 };
 
+export const activeRunForSession = (
+    activeRun: SessionActiveRun | null,
+    sessionId: unknown,
+): SessionActiveRun | null => {
+    if (!activeRun || sessionId == null) return null;
+    return activeRun.sessionId === String(sessionId) ? activeRun : null;
+};
+
 const record = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === 'object'
         ? value as Record<string, unknown>

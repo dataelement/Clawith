@@ -31,10 +31,16 @@ test('replayed tool packets keep one row by stable tool call id', () => {
 });
 
 test('an authoritative active run keeps a thinking indicator visible after reload', () => {
-  assert.match(source, /\['queued', 'running'\]\.includes\(activeRun\.status\)/);
+  assert.match(source, /\['queued', 'running'\]\.includes\(selectedSessionActiveRun\.status\)/);
   assert.match(source, /showDirectRunThinking/);
   assert.match(source, /\{showDirectRunThinking && \(/);
   assert.match(source, /lastChatMessage\.toolStatus === 'running'/);
+});
+
+test('direct chat runtime controls and delayed sends stay scoped to the selected session', () => {
+  assert.match(source, /activeRunForSession\(activeRun, activeSession\?\.id\)/);
+  assert.match(source, /currentAgentIdRef\.current === runtimeAgentId[\s\S]*activeSessionIdRef\.current === runtimeSessionId/);
+  assert.match(source, /if \(isActiveRuntime\) \{[\s\S]*setIsWaiting\(true\);[\s\S]*setChatMessages/);
 });
 
 test('direct chat renders canonical runtime diagnostics and keeps legacy fallbacks', () => {
