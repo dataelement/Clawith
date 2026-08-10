@@ -131,7 +131,8 @@ if PG_BIN_DIR=$(find_psql 2>/dev/null); then
 
         # Try to create role and database
         ROLE_EXISTS=false
-        if psql -h localhost -p $PG_PORT -U "$USER" -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
+        # Use --no-password so existing PostgreSQL setups don't hang on an interactive prompt.
+        if psql -w -h localhost -p $PG_PORT -U "$USER" -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
             ROLE_EXISTS=true
             echo -e "  ${GREEN}✓${NC} Role 'clawith' already exists"
         elif sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
@@ -141,8 +142,8 @@ if PG_BIN_DIR=$(find_psql 2>/dev/null); then
 
         if [ "$ROLE_EXISTS" = false ]; then
             # Try 1: as current user
-            if createuser -h localhost -p $PG_PORT clawith 2>/dev/null; then
-                psql -h localhost -p $PG_PORT -U "$USER" -d postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
+            if createuser -w -h localhost -p $PG_PORT clawith 2>/dev/null; then
+                psql -w -h localhost -p $PG_PORT -U "$USER" -d postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
                 echo -e "  ${GREEN}✓${NC} Created PostgreSQL role: clawith"
             # Try 2: via sudo -u postgres (standard Linux setup)
             elif sudo -u postgres createuser clawith 2>/dev/null && \
@@ -156,7 +157,7 @@ if PG_BIN_DIR=$(find_psql 2>/dev/null); then
 
         if [ -n "$PG_BIN_DIR" ] || command -v psql &>/dev/null; then
             DB_EXISTS=false
-            if psql -h localhost -p $PG_PORT -U "$USER" -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
+            if psql -w -h localhost -p $PG_PORT -U "$USER" -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
                 DB_EXISTS=true
             elif sudo -u postgres psql -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
                 DB_EXISTS=true
@@ -165,7 +166,7 @@ if PG_BIN_DIR=$(find_psql 2>/dev/null); then
             if [ "$DB_EXISTS" = true ]; then
                 echo -e "  ${GREEN}✓${NC} Database 'clawith' already exists"
             else
-                if createdb -h localhost -p $PG_PORT -O clawith clawith 2>/dev/null || \
+                if createdb -w -h localhost -p $PG_PORT -O clawith clawith 2>/dev/null || \
                    sudo -u postgres createdb -O clawith clawith 2>/dev/null; then
                     echo -e "  ${GREEN}✓${NC} Created database: clawith"
                 fi
@@ -246,14 +247,14 @@ if [ -z "$PG_BIN_DIR" ] && ! (PGPASSWORD=clawith psql -h localhost -p 5432 -U cl
             done
             # Create role and database
             if command -v psql &>/dev/null; then
-                if ! psql -h localhost -p $PG_PORT -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
-                    sudo -u postgres createuser clawith 2>/dev/null || createuser -h localhost -p $PG_PORT clawith 2>/dev/null || true
+                if ! psql -w -h localhost -p $PG_PORT -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
+                    sudo -u postgres createuser clawith 2>/dev/null || createuser -w -h localhost -p $PG_PORT clawith 2>/dev/null || true
                     sudo -u postgres psql -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" 2>/dev/null || \
-                        psql -h localhost -p $PG_PORT -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" 2>/dev/null || true
+                        psql -w -h localhost -p $PG_PORT -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" 2>/dev/null || true
                     echo -e "  ${GREEN}✓${NC} Created role: clawith"
                 fi
-                if ! psql -h localhost -p $PG_PORT -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
-                    sudo -u postgres createdb -O clawith clawith 2>/dev/null || createdb -h localhost -p $PG_PORT -O clawith clawith 2>/dev/null || true
+                if ! psql -w -h localhost -p $PG_PORT -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
+                    sudo -u postgres createdb -O clawith clawith 2>/dev/null || createdb -w -h localhost -p $PG_PORT -O clawith clawith 2>/dev/null || true
                     echo -e "  ${GREEN}✓${NC} Created database: clawith"
                 fi
                 PG_MANAGED_BY_US=false  # System manages PG now
@@ -320,13 +321,13 @@ if [ -z "$PG_BIN_DIR" ] && ! (PGPASSWORD=clawith psql -h localhost -p 5432 -U cl
             fi
 
             # Create role and database
-            if ! psql -h localhost -p "$PG_PORT" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
-                createuser -h localhost -p "$PG_PORT" -U postgres clawith 2>/dev/null || true
-                psql -h localhost -p "$PG_PORT" -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
+            if ! psql -w -h localhost -p "$PG_PORT" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='clawith'" 2>/dev/null | grep -q 1; then
+                createuser -w -h localhost -p "$PG_PORT" -U postgres clawith 2>/dev/null || true
+                psql -w -h localhost -p "$PG_PORT" -U postgres -c "ALTER ROLE clawith WITH LOGIN PASSWORD 'clawith';" &>/dev/null
                 echo -e "  ${GREEN}✓${NC} Created role: clawith"
             fi
-            if ! psql -h localhost -p "$PG_PORT" -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
-                createdb -h localhost -p "$PG_PORT" -U postgres -O clawith clawith 2>/dev/null
+            if ! psql -w -h localhost -p "$PG_PORT" -U postgres -lqt 2>/dev/null | cut -d\| -f1 | grep -qw clawith; then
+                createdb -w -h localhost -p "$PG_PORT" -U postgres -O clawith clawith 2>/dev/null
                 echo -e "  ${GREEN}✓${NC} Created database: clawith"
             fi
         else
@@ -366,8 +367,15 @@ cd "$ROOT/backend"
 
 if [ ! -d ".venv" ]; then
     echo "  Creating Python virtual environment..."
-    $PYTHON_BIN -m venv .venv
-    echo -e "  ${GREEN}✓${NC} Virtual environment created"
+    if $PYTHON_BIN -m venv .venv; then
+        echo -e "  ${GREEN}✓${NC} Virtual environment created"
+    else
+        echo -e "  ${RED}✗${NC} Failed to create Python virtual environment."
+        echo "  On Ubuntu/Debian, install the venv package first:"
+        echo "    sudo apt install python3.12-venv"
+        echo "  Then re-run: bash setup.sh"
+        exit 1
+    fi
 fi
 
 if [ "$INSTALL_DEV" = true ]; then
