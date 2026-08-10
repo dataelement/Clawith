@@ -22,6 +22,14 @@ const messageStream = readFileSync(
   new URL('../src/pages/groups/MessageStream.tsx', import.meta.url),
   'utf8',
 );
+const messageComposer = readFileSync(
+  new URL('../src/pages/groups/MessageComposer.tsx', import.meta.url),
+  'utf8',
+);
+const groupStyles = readFileSync(
+  new URL('../src/pages/groups/groups.css', import.meta.url),
+  'utf8',
+);
 
 test('new group sessions may use the backend default title while group names stay required', () => {
   assert.match(promptModal, /allowEmpty\?: boolean/);
@@ -115,4 +123,13 @@ test('group planning failures preserve the backend message and diagnostics', () 
   assert.match(groupsPage, /intake\.error\?\.message/);
   assert.match(groupsPage, /intake\.error\?\.trace_id/);
   assert.match(groupsPage, /intake\.error\?\.code \?\? intake\.error_code/);
+});
+
+test('mention candidates stay reachable by pointer and keyboard scrolling', () => {
+  assert.doesNotMatch(messageComposer, /\.slice\(0, 8\)/);
+  assert.match(messageComposer, /mentionPopupRef/);
+  assert.match(messageComposer, /mentionOptionRefs/);
+  assert.match(messageComposer, /popup\.scrollTop/);
+  assert.match(groupStyles, /\.group-mention-popup\s*\{[\s\S]*?overflow-y:\s*auto/);
+  assert.match(groupStyles, /\.group-mention-popup\s*\{[\s\S]*?overscroll-behavior:\s*contain/);
 });
