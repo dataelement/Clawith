@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  activeRunForSession,
   failClosedSessionActiveRun,
   runtimeCompletionNeedsMessageRefresh,
   sessionActiveRunFromResponse,
@@ -24,6 +25,12 @@ const waitingRun = {
   canCancel: true,
   pendingToolReconciliations: [],
 };
+
+test('active run controls are projected only onto their own selected session', () => {
+  assert.equal(activeRunForSession(waitingRun, 'session-2'), null);
+  assert.equal(activeRunForSession(waitingRun, null), null);
+  assert.equal(activeRunForSession(waitingRun, 'session-1'), waitingRun);
+});
 
 test('runtime-state request failure preserves display identity but disables actions', () => {
   assert.deepEqual(failClosedSessionActiveRun(waitingRun), {

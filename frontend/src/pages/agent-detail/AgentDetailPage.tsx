@@ -61,6 +61,7 @@ import ToolsTab from './tabs/ToolsTab';
 import AgentDirectory from './AgentDirectory';
 import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
 import {
+    activeRunForSession,
     failClosedSessionActiveRun,
     mergeTerminalAssistantMessage,
     runtimeCompletionNeedsMessageRefresh,
@@ -2386,6 +2387,7 @@ export default function AgentDetailPage() {
     const sessionActiveRunRef = useRef<Record<SessionRuntimeKey, SessionActiveRun | null>>({});
     const runtimeEventCursorRef = useRef<Record<SessionRuntimeKey, string>>({});
     const [activeRun, setActiveRun] = useState<SessionActiveRun | null>(null);
+    const selectedSessionActiveRun = activeRunForSession(activeRun, activeSession?.id);
     const [reconcilingExecutionId, setReconcilingExecutionId] = useState<string | null>(null);
     const [messagesLoadedRuntimeKey, setMessagesLoadedRuntimeKey] = useState<string | null>(null);
     const [runtimeStateLoadedRuntimeKey, setRuntimeStateLoadedRuntimeKey] = useState<string | null>(null);
@@ -2968,8 +2970,8 @@ export default function AgentDetailPage() {
         || (lastChatMessage?.role === 'tool_call' && lastChatMessage.toolStatus === 'running'),
     );
     const showDirectRunThinking = isWaiting || Boolean(
-        activeRun
-        && ['queued', 'running'].includes(activeRun.status)
+        selectedSessionActiveRun
+        && ['queued', 'running'].includes(selectedSessionActiveRun.status)
         && !isStreaming
         && !hasVisibleLiveProgress
     );
@@ -3701,24 +3703,31 @@ export default function AgentDetailPage() {
     };
 
     const dispatchChatMessage = (socket: WebSocket, runtimeKey: SessionRuntimeKey, payload: PendingChatMessage) => {
-        setIsWaiting(true);
-        setIsStreaming(false);
+        const [runtimeAgentId, runtimeSessionId] = runtimeKey.split(':');
+        const isActiveRuntime = (
+            currentAgentIdRef.current === runtimeAgentId
+            && activeSessionIdRef.current === runtimeSessionId
+        );
         setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
         if (payload.resumeRunId) {
             const current = sessionActiveRunRef.current[runtimeKey];
             if (current?.runId === payload.resumeRunId) {
                 const next = { ...current, canResume: false };
                 sessionActiveRunRef.current[runtimeKey] = next;
-                setActiveRun(next);
+                if (isActiveRuntime) setActiveRun(next);
             }
         }
-        setChatMessages(prev => [...prev, parseChatMsg({
-            role: 'user',
-            content: payload.userMsg,
-            fileName: payload.fileName,
-            imageUrl: payload.imageUrl,
-            timestamp: new Date().toISOString()
-        })]);
+        if (isActiveRuntime) {
+            setIsWaiting(true);
+            setIsStreaming(false);
+            setChatMessages(prev => [...prev, parseChatMsg({
+                role: 'user',
+                content: payload.userMsg,
+                fileName: payload.fileName,
+                imageUrl: payload.imageUrl,
+                timestamp: new Date().toISOString()
+            })]);
+        }
         socket.send(JSON.stringify({
             content: payload.contentForLLM,
             display_content: payload.userMsg,
@@ -3727,7 +3736,6 @@ export default function AgentDetailPage() {
             ...(payload.resumeRunId ? { run_id: payload.resumeRunId } : {}),
             ...(payload.resumeCorrelationId ? { correlation_id: payload.resumeCorrelationId } : {}),
         }));
-        const [runtimeAgentId, runtimeSessionId] = runtimeKey.split(':');
         window.setTimeout(() => {
             void fetchSessionRuntimeState(runtimeAgentId, runtimeSessionId);
         }, 250);
@@ -3740,15 +3748,15 @@ export default function AgentDetailPage() {
         reconciliation: ToolReconciliation,
         outcome: 'applied' | 'not_applied',
     ) => {
-        if (!id || !activeSession?.id || !activeRun?.correlationId) return;
-        const correlationId = activeRun.correlationId;
+        if (!id || !activeSession?.id || !selectedSessionActiveRun?.correlationId) return;
+        const correlationId = selectedSessionActiveRun.correlationId;
         const applied = outcome === 'applied';
         const confirmation = applied
             ? t('agent.chat.reconcileAppliedConfirm', '确认该操作已经生效，并且不得重复执行？')
             : t('agent.chat.reconcileNotAppliedConfirm', '确认该操作没有生效，可以让 Agent 重新决定是否重试？');
         if (!window.confirm(confirmation)) return;
 
-        const run = activeRun;
+        const run = selectedSessionActiveRun;
         const sessionId = String(activeSession.id);
         const runtimeKey = buildSessionRuntimeKey(id, sessionId);
         setReconcilingExecutionId(reconciliation.executionId);
@@ -3825,14 +3833,14 @@ export default function AgentDetailPage() {
             || !activeSession?.id
             || activeTab !== 'chat'
             || !isWritableSession(activeSession)
-            || !activeRun
+            || !selectedSessionActiveRun
         ) return;
         const sessionId = String(activeSession.id);
         const timer = window.setInterval(() => {
             void fetchSessionRuntimeState(id, sessionId);
         }, 1500);
         return () => window.clearInterval(timer);
-    }, [id, activeTab, activeSession?.id, activeRun?.runId, activeRun?.status]);
+    }, [id, activeTab, activeSession?.id, selectedSessionActiveRun?.runId, selectedSessionActiveRun?.status]);
 
     const handleWorkspacePathDeleted = useCallback((path: string) => {
         let removedName = '';
@@ -4722,7 +4730,7 @@ export default function AgentDetailPage() {
             messagesLoaded: messagesLoadedRuntimeKey === runtimeKey,
             runtimeStateLoaded: runtimeStateLoadedRuntimeKey === runtimeKey,
             messageCount: chatMessages.length,
-            hasActiveRun: activeRun !== null,
+            hasActiveRun: selectedSessionActiveRun !== null,
         })) return;
         const pairKey = onboardingKickoffKey(id, String(currentUser.id));
         if (onboardingKickoffRef.current.has(pairKey)) return;
@@ -4736,7 +4744,7 @@ export default function AgentDetailPage() {
             kind: 'onboarding_trigger',
             model_id: effectiveChatModelId,
         }));
-    }, [wsConnected, id, currentUser?.id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length, messagesLoadedRuntimeKey, runtimeStateLoadedRuntimeKey, activeRun]);
+    }, [wsConnected, id, currentUser?.id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length, messagesLoadedRuntimeKey, runtimeStateLoadedRuntimeKey, selectedSessionActiveRun]);
 
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
@@ -7089,7 +7097,7 @@ export default function AgentDetailPage() {
                                             ) : null}
                                             <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                                 <div className="chat-composer">
-                                                    {activeRun?.pendingToolReconciliations.map((reconciliation) => (
+                                                    {selectedSessionActiveRun?.pendingToolReconciliations.map((reconciliation) => (
                                                         <div className="chat-tool-reconciliation" key={reconciliation.executionId}>
                                                             <div className="chat-tool-reconciliation__title">
                                                                 <IconAlertTriangle size={16} />
@@ -7193,7 +7201,7 @@ export default function AgentDetailPage() {
                                                         <textarea
                                                             ref={chatInputRef}
                                                             className="chat-input"
-                                                            disabled={showNoModelState || !!activeRun?.pendingToolReconciliations.length}
+                                                            disabled={showNoModelState || !!selectedSessionActiveRun?.pendingToolReconciliations.length}
                                                             value={chatInput}
                                                             onChange={e => {
                                                                 setChatInput(e.target.value);
@@ -7208,7 +7216,7 @@ export default function AgentDetailPage() {
                                                                     e.key === 'Enter'
                                                                     && !e.shiftKey
                                                                     && !e.nativeEvent.isComposing
-                                                                    && !(activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                                    && !(selectedSessionActiveRun?.status === 'waiting_user' && !selectedSessionActiveRun.canResume)
                                                                 ) {
                                                                     e.preventDefault();
                                                                     sendChatMsg();
@@ -7225,7 +7233,7 @@ export default function AgentDetailPage() {
                                                             type="button"
                                                             className="chat-composer-btn"
                                                             onClick={() => fileInputRef.current?.click()}
-                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10 || !!activeRun?.pendingToolReconciliations.length}
+                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10 || !!selectedSessionActiveRun?.pendingToolReconciliations.length}
                                                             title={t('agent.workspace.uploadFile')}
                                                         >
                                                             <IconPaperclip size={16} stroke={1.75} />
@@ -7237,16 +7245,16 @@ export default function AgentDetailPage() {
                                                             disabled={showNoModelState || !wsConnected}
                                                         />
                                                         <div style={{ flex: 1 }} />
-                                                        {activeRun?.canCancel && (
+                                                        {selectedSessionActiveRun?.canCancel && (
                                                             <button
                                                                 type="button"
                                                                 className="btn btn-stop-generation"
                                                                 onClick={() => {
-                                                                    if (!id || !activeSession?.id || !activeRun?.runId) return;
+                                                                    if (!id || !activeSession?.id || !selectedSessionActiveRun?.runId) return;
                                                                     const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
                                                                     const activeSocket = wsMapRef.current[activeRuntimeKey];
                                                                     if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                                        activeSocket.send(JSON.stringify({ type: 'abort', run_id: activeRun.runId }));
+                                                                        activeSocket.send(JSON.stringify({ type: 'abort', run_id: selectedSessionActiveRun.runId }));
                                                                     }
                                                                 }}
                                                                 title={t('chat.stop', 'Stop')}
@@ -7262,7 +7270,7 @@ export default function AgentDetailPage() {
                                                                 showNoModelState
                                                                 || !wsConnected
                                                                 || (!chatInput.trim() && attachedFiles.length === 0)
-                                                                || (activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                                || (selectedSessionActiveRun?.status === 'waiting_user' && !selectedSessionActiveRun.canResume)
                                                             }
                                                             title={t('chat.send')}
                                                         >
