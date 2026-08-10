@@ -252,6 +252,17 @@ def _target(
     )
 
 
+def _human_target(*, name: str = "Grace") -> ResolvedGroupMention:
+    return ResolvedGroupMention(
+        participant_id=uuid.uuid4(),
+        participant_type="user",
+        participant_ref_id=uuid.uuid4(),
+        display_name=name,
+        valid=True,
+        triggers_agent=False,
+    )
+
+
 def test_frozen_intent_rejects_a_noncanonical_participant_sequence() -> None:
     source_run, scope, _, _ = _records()
     target = _target(tenant_id=source_run.tenant_id)
@@ -352,6 +363,52 @@ async def test_preflight_freezes_all_targets_scope_lineage_plan_and_cutoff(
 
     restored = GroupAgentHandoffIntent.from_payload(intent.payload())
     assert restored == intent
+
+
+@pytest.mark.asyncio
+async def test_preflight_accepts_human_mentions_without_treating_them_as_handoffs() -> None:
+    source_run, scope, context, state = _records()
+    agent_target = _target(tenant_id=source_run.tenant_id)
+    human_target = _human_target()
+    ensure = AsyncMock(return_value=_cycle_check())
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_handoff._load_source_run",
+            new=AsyncMock(return_value=source_run),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._resolve_mentions",
+            new=AsyncMock(return_value=(agent_target, human_target)),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff.AgentCycleGuard.ensure_delegation_allowed",
+            new=ensure,
+        ),
+    ):
+        intent = await preflight_group_agent_handoff(
+            _DB(),  # type: ignore[arg-type]
+            state=state,
+            context=context,
+            content="@Target Agent please continue. @Grace please review.",
+            mention_participant_ids=(
+                str(agent_target.participant_id),
+                str(human_target.participant_id),
+            ),
+            settings=_settings(),
+            clock=lambda: NOW,
+        )
+
+    assert intent.mention_participant_ids == (
+        agent_target.participant_id,
+        human_target.participant_id,
+    )
+    assert ensure.await_count == 1
+    assert ensure.await_args.kwargs["target_agent_id"] == agent_target.agent.id
 
 
 @pytest.mark.asyncio
@@ -654,6 +711,107 @@ async def test_atomic_apply_creates_public_message_and_one_new_child_per_target(
     assert all(command.origin_agent_id == source_run.agent_id for command in commands)
     assert all(command.actor_agent_id == source_run.agent_id for command in commands)
     assert all(command.idempotency_key.startswith("start:group_mention:") for command in commands)
+
+
+@pytest.mark.asyncio
+async def test_apply_persists_human_mentions_but_starts_only_agent_targets() -> None:
+    source_run, scope, context, state = _records()
+    agent_target = _target(tenant_id=source_run.tenant_id)
+    human_target = _human_target()
+    ensure = AsyncMock(return_value=_cycle_check())
+    resolved_targets = (agent_target, human_target)
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_handoff._load_source_run",
+            new=AsyncMock(return_value=source_run),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._resolve_mentions",
+            new=AsyncMock(return_value=resolved_targets),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff.AgentCycleGuard.ensure_delegation_allowed",
+            new=ensure,
+        ),
+    ):
+        intent = await preflight_group_agent_handoff(
+            _DB(),  # type: ignore[arg-type]
+            state=state,
+            context=context,
+            content="@Target Agent please continue. @Grace please review.",
+            mention_participant_ids=tuple(
+                str(target.participant_id) for target in resolved_targets
+            ),
+            settings=_settings(),
+            clock=lambda: NOW,
+        )
+
+    message = ChatMessage(
+        id=intent.trigger_message_id,
+        agent_id=source_run.agent_id,
+        user_id=None,
+        role="assistant",
+        content="@Target Agent please continue. @Grace please review.",
+        conversation_id=str(scope.session.id),
+        participant_id=scope.participant.id,
+        mentions=[target.payload() for target in resolved_targets],
+        created_at=NOW,
+    )
+    run_id = uuid.uuid4()
+    handle = RunHandle(
+        tenant_id=source_run.tenant_id,
+        run_id=run_id,
+        thread_id=str(run_id),
+        command_id=uuid.uuid4(),
+        runtime_type="langgraph",
+        created=True,
+    )
+    start = AsyncMock(return_value=handle)
+    persist = AsyncMock(return_value=(message, True))
+
+    with (
+        patch(
+            "app.services.agent_runtime.group_handoff._load_sender_scope",
+            new=AsyncMock(return_value=scope),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._resolve_mentions",
+            new=AsyncMock(return_value=resolved_targets),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff.AgentCycleGuard.ensure_delegation_allowed",
+            new=AsyncMock(return_value=_cycle_check()),
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff._persist_message",
+            new=persist,
+        ),
+        patch(
+            "app.services.agent_runtime.group_handoff.RuntimeCommandIntake.start_run",
+            new=start,
+        ),
+    ):
+        result = await apply_group_agent_handoff(
+            _DB(),  # type: ignore[arg-type]
+            source_run=source_run,
+            content=message.content,
+            intent_payload=intent.payload(),
+            expected_idempotency_key=intent.idempotency_key,
+            expected_message_id=intent.trigger_message_id,
+            settings=_settings(),
+        )
+
+    assert result.message is message
+    assert result.run_handles == (handle,)
+    start.assert_awaited_once()
+    assert start.await_args.args[0].agent_id == agent_target.agent.id
+    persist.assert_awaited_once()
+    assert persist.await_args.kwargs["mentions"] == resolved_targets
 
 
 @pytest.mark.asyncio

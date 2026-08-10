@@ -1491,7 +1491,9 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "Tools without that parameter retain their original scope" in group_system_prompt
     assert "every path in `group_context.workspace_index`" in group_system_prompt
     assert "missing from the other" in group_system_prompt
-    assert "join the current group conversation" in group_system_prompt
+    assert "Mentioning an Agent wakes it to reply publicly" in group_system_prompt
+    assert "Mentioning a human is visible but does not start a Run" in group_system_prompt
+    assert "Use `@` for a human only when" in group_system_prompt
     assert "must produce a new public reply now" in group_system_prompt
     assert "Must this Agent answer this message in the group" in group_system_prompt
     assert "Write only the business-facing words" in group_system_prompt
@@ -1505,7 +1507,8 @@ async def test_group_snapshot_adds_only_current_group_tools_and_platform_rules()
     assert "After the `at` Tool Result" in group_system_prompt
     assert "normal Assistant content" in group_system_prompt
     assert "Do not put public content in `at`" in group_system_prompt
-    assert "one child Run per staged participant" in group_system_prompt
+    assert "one child Run per staged Agent" in group_system_prompt
+    assert "human participants remain public mentions without child Runs" in group_system_prompt
     assert "every intended recipient" in group_system_prompt
     assert "`send_message_to_agent` is private A2A" in group_system_prompt
     assert "never a substitute for `at`" in group_system_prompt

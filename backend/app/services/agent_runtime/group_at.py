@@ -16,9 +16,10 @@ AT_TOOL_DEFINITION: dict[str, Any] = {
     "function": {
         "name": AT_TOOL_NAME,
         "description": (
-            "Set the complete list of Group Agents that must be visibly mentioned "
-            "and woken by the next final public reply. This only stages routing and "
-            "does not send a message or finish the Run."
+            "Set the complete list of Group participants that must be visibly mentioned "
+            "by the next final public reply. Agent targets are woken; human targets are "
+            "mentioned without starting a Run. This only stages routing and does not "
+            "send a message or finish the Run."
         ),
         "parameters": {
             "type": "object",
