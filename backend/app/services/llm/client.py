@@ -2292,6 +2292,27 @@ class AnthropicClient(LLMClient):
 # ============================================================================
 
 @dataclass(frozen=True)
+class ProviderModelSpec:
+    """Model metadata exposed through the provider manifest."""
+
+    model_id: str
+    context_window: int | None = None
+    pricing_usd_per_million_tokens: dict[str, float | None] = field(default_factory=dict)
+    input_modalities: tuple[str, ...] = ()
+    thinking: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProviderEndpoint:
+    """Regional protocol endpoints exposed through the provider manifest."""
+
+    region: str
+    openai_base_url: str
+    anthropic_base_url: str
+    docs_root: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderSpec:
     """Provider registry entry."""
 
@@ -2302,6 +2323,9 @@ class ProviderSpec:
     supports_tool_choice: bool = True
     default_max_tokens: int = 4096
     model_max_tokens: dict[str, int] = field(default_factory=dict)
+    default_model_id: str | None = None
+    models: tuple[ProviderModelSpec, ...] = ()
+    endpoints: tuple[ProviderEndpoint, ...] = ()
 
 
 # Provider aliases accepted for compatibility
@@ -2366,8 +2390,49 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         provider="minimax",
         display_name="MiniMax",
         protocol="openai_compatible",
-        default_base_url="https://api.minimaxi.com/v1",
+        default_base_url="https://api.minimax.io/v1",
         default_max_tokens=16384,
+        default_model_id="MiniMax-M3",
+        models=(
+            ProviderModelSpec(
+                model_id="MiniMax-M3",
+                context_window=1000000,
+                pricing_usd_per_million_tokens={
+                    "input": 0.6,
+                    "output": 2.4,
+                    "cache_read": 0.12,
+                    "cache_write": None,
+                },
+                input_modalities=("text", "image", "video"),
+                thinking=("adaptive", "disabled"),
+            ),
+            ProviderModelSpec(
+                model_id="MiniMax-M2.7",
+                context_window=204800,
+                pricing_usd_per_million_tokens={
+                    "input": 0.3,
+                    "output": 1.2,
+                    "cache_read": 0.06,
+                    "cache_write": 0.375,
+                },
+                input_modalities=("text",),
+                thinking=("always_on",),
+            ),
+        ),
+        endpoints=(
+            ProviderEndpoint(
+                region="global_en",
+                openai_base_url="https://api.minimax.io/v1",
+                anthropic_base_url="https://api.minimax.io/anthropic",
+                docs_root="https://platform.minimax.io/docs",
+            ),
+            ProviderEndpoint(
+                region="cn_zh",
+                openai_base_url="https://api.minimaxi.com/v1",
+                anthropic_base_url="https://api.minimaxi.com/anthropic",
+                docs_root="https://platform.minimaxi.com/docs",
+            ),
+        ),
     ),
     "openrouter": ProviderSpec(
         provider="openrouter",
@@ -2460,6 +2525,27 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "default_max_tokens": spec.default_max_tokens,
             "model_max_tokens": spec.model_max_tokens,
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
+            "default_model_id": spec.default_model_id,
+            "model_ids": [model.model_id for model in spec.models],
+            "models": [
+                {
+                    "model_id": model.model_id,
+                    "context_window": model.context_window,
+                    "pricing_usd_per_million_tokens": model.pricing_usd_per_million_tokens,
+                    "input_modalities": list(model.input_modalities),
+                    "thinking": list(model.thinking),
+                }
+                for model in spec.models
+            ],
+            "endpoints": [
+                {
+                    "region": endpoint.region,
+                    "openai_base_url": endpoint.openai_base_url,
+                    "anthropic_base_url": endpoint.anthropic_base_url,
+                    "docs_root": endpoint.docs_root,
+                }
+                for endpoint in spec.endpoints
+            ],
         })
     return out
 
@@ -2536,6 +2622,34 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     return MAX_TOKENS_BY_PROVIDER.get(normalize_provider(provider), 4096)
 
 
+_ANTHROPIC_BASE_URL_SUFFIXES = ("/v1/messages", "/v1/chat/completions", "/v1")
+
+
+def _normalize_anthropic_base_url(base_url: str) -> str:
+    """Strip trailing Anthropic API path suffixes before endpoint matching.
+
+    Mirrors :meth:`AnthropicClient._normalize_base_url` so admin-entered full
+    endpoints (``/v1/messages``, ``/v1``) compare against the registry bases.
+    """
+    url = base_url.rstrip("/")
+    for suffix in _ANTHROPIC_BASE_URL_SUFFIXES:
+        if url.endswith(suffix) and url != suffix:
+            url = url[: -len(suffix)]
+            break
+    return url
+
+
+def _uses_anthropic_endpoint(spec: ProviderSpec | None, base_url: str | None) -> bool:
+    """Detect a configured native Anthropic-compatible endpoint for a provider."""
+    if not spec or not base_url:
+        return False
+    normalized_base_url = _normalize_anthropic_base_url(base_url)
+    return any(
+        normalized_base_url == _normalize_anthropic_base_url(endpoint.anthropic_base_url)
+        for endpoint in spec.endpoints
+    )
+
+
 def create_llm_client(
     provider: str,
     api_key: str,
@@ -2565,7 +2679,7 @@ def create_llm_client(
     final_base_url = get_provider_base_url(normalized_provider, base_url)
 
     # Create appropriate client
-    if spec and spec.protocol == "anthropic":
+    if spec and (spec.protocol == "anthropic" or _uses_anthropic_endpoint(spec, final_base_url)):
         return AnthropicClient(
             api_key=api_key,
             base_url=final_base_url,
