@@ -288,6 +288,30 @@ def assert_confirmed_digests(
     assert outcome.metadata.get("confirmed_blob_digests") == list(expected)
 
 
+def assert_async_deployment_operation(
+    outcome: ToolExecutionOutcome,
+    *,
+    state: str,
+    pending: bool,
+) -> None:
+    assert outcome.metadata.get("runtime_async_pending") is pending
+    operation = outcome.metadata.get("async_operation")
+    assert operation == {
+        "version": 1,
+        "operation_key": f"vercel:deployment:{DEPLOYMENT_ID}",
+        "operation_id": DEPLOYMENT_ID,
+        "state": state,
+        "poll": {
+            "tool": "vercel_deploy",
+            "arguments": {
+                "operation": "poll",
+                "deployment_id": DEPLOYMENT_ID,
+            },
+            "interval_ms": 2000,
+        },
+    }
+
+
 def test_vercel_deploy_contract_is_typed_external_exactly_once() -> None:
     assert "vercel_deploy" in agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES
     assert builtin_policy("vercel_deploy") == {
@@ -742,7 +766,7 @@ async def test_deployment_post_rejects_non_https_artifact_receipt(
 
 
 @pytest.mark.asyncio
-async def test_accepted_building_then_poll_timeout_is_successful_pending_receipt(
+async def test_accepted_building_then_poll_timeout_is_async_pending_receipt(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -777,14 +801,113 @@ async def test_accepted_building_then_poll_timeout_is_successful_pending_receipt
         }
     )
 
-    outcome = assert_outcome(result, "succeeded")
-    assert outcome.result_ref == DEPLOYMENT_ID
-    assert DEPLOYMENT_URL in outcome.artifact_refs
+    outcome = assert_outcome(result, "pending")
+    assert outcome.result_ref is None
     assert outcome.metadata.get("deployment_state") in {"BUILDING", "PENDING"}
+    assert_async_deployment_operation(
+        outcome,
+        state=outcome.metadata["deployment_state"],
+        pending=True,
+    )
     assert_confirmed_digests(outcome, [digest])
     assert_deployment_posted_once(provider)
     assert provider.count("GET", f"/v13/deployments/{DEPLOYMENT_ID}") == 1
     assert_no_implicit_project_patch(provider)
+    provider.assert_done()
+
+
+@pytest.mark.parametrize(
+    ("provider_state", "expected_status"),
+    (
+        ("INITIALIZING", "pending"),
+        ("QUEUED", "pending"),
+        ("BUILDING", "pending"),
+        ("READY", "succeeded"),
+        ("ERROR", "failed"),
+        ("CANCELED", "failed"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_internal_poll_maps_exact_deployment_without_replaying_launch(
+    monkeypatch,
+    tmp_path,
+    provider_state,
+    expected_status,
+) -> None:
+    provider = ScriptedVercel(
+        ExpectedCall(
+            "GET",
+            f"/v13/deployments/{DEPLOYMENT_ID}",
+            FakeResponse(200, deployment_receipt(provider_state)),
+        )
+    )
+    install_vercel(
+        monkeypatch,
+        provider,
+        workspace_root=tmp_path / "missing-workspace",
+    )
+
+    result = await execute(
+        {
+            "operation": "poll",
+            "deployment_id": DEPLOYMENT_ID,
+        }
+    )
+
+    outcome = assert_outcome(result, expected_status)
+    assert outcome.metadata.get("deployment_state") == provider_state
+    assert_async_deployment_operation(
+        outcome,
+        state=provider_state,
+        pending=expected_status == "pending",
+    )
+    assert provider.count("GET", f"/v13/deployments/{DEPLOYMENT_ID}") == 1
+    assert provider.count("GET", f"/v9/projects/{PROJECT_NAME}") == 0
+    assert provider.count("POST") == 0
+    assert provider.count("PATCH") == 0
+    provider.assert_done()
+
+
+@pytest.mark.asyncio
+async def test_internal_poll_does_not_accept_a_mismatched_deployment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    provider = ScriptedVercel(
+        ExpectedCall(
+            "GET",
+            f"/v13/deployments/{DEPLOYMENT_ID}",
+            FakeResponse(
+                200,
+                {
+                    **deployment_receipt("READY"),
+                    "id": "dpl_different",
+                },
+            ),
+        )
+    )
+    install_vercel(
+        monkeypatch,
+        provider,
+        workspace_root=tmp_path / "missing-workspace",
+    )
+
+    result = await execute(
+        {
+            "operation": "poll",
+            "deployment_id": DEPLOYMENT_ID,
+        }
+    )
+
+    outcome = assert_outcome(result, "unknown")
+    assert outcome.error_code == "vercel_deployment_status_unknown"
+    assert_async_deployment_operation(
+        outcome,
+        state="UNKNOWN",
+        pending=False,
+    )
+    assert provider.count("POST") == 0
+    assert provider.count("PATCH") == 0
     provider.assert_done()
 
 

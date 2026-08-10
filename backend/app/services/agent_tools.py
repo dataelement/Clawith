@@ -23233,6 +23233,139 @@ def _vercel_receipt_metadata_fits_preflight(
     return len(encoded) <= 16 * 1024
 
 
+_VERCEL_DEPLOYMENT_PENDING_STATES = frozenset(
+    {"INITIALIZING", "QUEUED", "BUILDING", "PENDING"}
+)
+
+
+def _vercel_async_deployment_metadata(
+    metadata: Mapping[str, object],
+    *,
+    deployment_id: str,
+    deployment_state: str,
+    pending: bool,
+) -> dict:
+    return {
+        **dict(metadata),
+        "deployment_id": deployment_id,
+        "deployment_state": deployment_state,
+        "runtime_async_pending": pending,
+        "async_operation": {
+            "version": 1,
+            "operation_key": f"vercel:deployment:{deployment_id}",
+            "operation_id": deployment_id,
+            "state": deployment_state,
+            "poll": {
+                "tool": "vercel_deploy",
+                "arguments": {
+                    "operation": "poll",
+                    "deployment_id": deployment_id,
+                },
+                "interval_ms": 2000,
+            },
+        },
+    }
+
+
+def _vercel_deployment_state_outcome(
+    *,
+    deployment_id: str,
+    deployment_url: str | None,
+    deployment_state: str,
+    metadata: Mapping[str, object],
+) -> ToolExecutionOutcome:
+    from urllib.parse import quote
+
+    normalized_state = deployment_state.strip().upper()
+    pending = normalized_state in _VERCEL_DEPLOYMENT_PENDING_STATES
+    result_metadata = (
+        _vercel_async_deployment_metadata(
+            metadata,
+            deployment_id=deployment_id,
+            deployment_state=normalized_state,
+            pending=pending,
+        )
+        if pending or metadata.get("operation") == "deployment_status"
+        else dict(metadata)
+    )
+    evidence_refs = (
+        f"vercel-deployment://{quote(deployment_id, safe='')}",
+    )
+    artifact_refs = (deployment_url,) if deployment_url is not None else ()
+    if pending:
+        return _typed_pending(
+            f"Vercel deployment {deployment_id} is still {normalized_state}.",
+            metadata=result_metadata,
+        )
+    if normalized_state == "READY":
+        if deployment_url is None:
+            return _typed_unknown(
+                "Vercel deployment reached READY without a stable HTTPS URL receipt.",
+                "vercel_deployment_status_invalid",
+                result_ref=deployment_id,
+                metadata=result_metadata,
+            )
+        return _typed_success(
+            f"Vercel deployment {deployment_id} is READY at {deployment_url}.",
+            result_ref=deployment_id,
+            artifact_refs=artifact_refs,
+            evidence_refs=evidence_refs,
+            metadata=result_metadata,
+        )
+    if normalized_state in {"ERROR", "CANCELED"}:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                f"Vercel deployment reached terminal state {normalized_state}."
+            ),
+            result_ref=deployment_id,
+            artifact_refs=artifact_refs,
+            evidence_refs=evidence_refs,
+            error_code=f"vercel_deployment_{normalized_state.lower()}",
+            metadata=result_metadata,
+        )
+    return _typed_unknown(
+        f"Vercel deployment returned unknown state {normalized_state!r}.",
+        "vercel_deployment_status_unknown",
+        result_ref=deployment_id,
+        metadata=result_metadata,
+    )
+
+
+async def _get_vercel_deployment_state(
+    client,
+    *,
+    headers: Mapping[str, str],
+    deployment_id: str,
+) -> tuple[str, str | None] | None:
+    from urllib.parse import quote
+
+    try:
+        response = await client.get(
+            "https://api.vercel.com/v13/deployments/"
+            f"{quote(deployment_id, safe='')}",
+            headers=dict(headers),
+        )
+    except Exception:
+        return None
+    if not 200 <= response.status_code < 300:
+        return None
+    data = _deploy_response_object(response)
+    if data is None or data.get("id") != deployment_id:
+        return ("UNKNOWN", None)
+    state_value = data.get("readyState")
+    if (
+        not isinstance(state_value, str)
+        or not state_value.strip()
+        or len(state_value.strip().encode("utf-8")) > 100
+    ):
+        return ("UNKNOWN", None)
+    return (
+        state_value.strip().upper(),
+        _vercel_deployment_https_url(data.get("url")),
+    )
+
+
 async def _vercel_deploy_outcome(
     agent_id: uuid.UUID,
     workspace_root: Path,
@@ -23241,6 +23374,82 @@ async def _vercel_deploy_outcome(
     """Settle the existing Vercel deployment lifecycle from stage receipts."""
     import httpx
     from urllib.parse import quote
+
+    operation_value = arguments.get("operation", "launch")
+    operation = (
+        operation_value.strip().lower()
+        if isinstance(operation_value, str)
+        else ""
+    )
+    if operation == "poll":
+        deployment_id_value = arguments.get("deployment_id")
+        deployment_id = (
+            deployment_id_value.strip()
+            if isinstance(deployment_id_value, str)
+            else ""
+        )
+        if (
+            not deployment_id
+            or len(deployment_id.encode("utf-8")) > 512
+        ):
+            return _typed_failure(
+                "vercel_deploy internal poll requires deployment_id.",
+                "invalid_tool_arguments",
+            )
+        try:
+            token = await _get_vercel_token(agent_id, "vercel_deploy")
+        except Exception:
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="UNKNOWN",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+            )
+        if not isinstance(token, str) or not token.strip():
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="UNKNOWN",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+            )
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            observation = await _get_vercel_deployment_state(
+                client,
+                headers=headers,
+                deployment_id=deployment_id,
+            )
+        if observation is None:
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="PENDING",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+            )
+        deployment_state, deployment_url = observation
+        return _vercel_deployment_state_outcome(
+            deployment_id=deployment_id,
+            deployment_url=deployment_url,
+            deployment_state=deployment_state,
+            metadata={
+                "provider": "vercel",
+                "operation": "deployment_status",
+            },
+        )
+    if operation != "launch":
+        return _typed_failure(
+            "vercel_deploy operation must be launch.",
+            "invalid_tool_arguments",
+        )
 
     project_value = arguments.get("project_name")
     method_value = arguments.get("deploy_method", "upload")
@@ -23673,79 +23882,30 @@ async def _vercel_deploy_outcome(
             write_stage = None
 
             if deployment_state not in {"READY", "ERROR", "CANCELED"}:
-                try:
-                    poll_response = await client.get(
-                        "https://api.vercel.com/v13/deployments/"
-                        f"{quote(deployment_id, safe='')}",
-                        headers=headers,
-                    )
-                except Exception:
-                    poll_response = None
-                poll_data = (
-                    _deploy_response_object(poll_response)
-                    if poll_response is not None
-                    and 200 <= poll_response.status_code < 300
-                    else None
+                observation = await _get_vercel_deployment_state(
+                    client,
+                    headers=headers,
+                    deployment_id=deployment_id,
                 )
-                if (
-                    poll_data is not None
-                    and poll_data.get("id") == deployment_id
-                    and isinstance(poll_data.get("readyState"), str)
-                    and str(poll_data.get("readyState")).strip()
-                    and len(
-                        str(poll_data.get("readyState")).strip().encode("utf-8")
-                    )
-                    <= 100
-                ):
-                    deployment_state = str(
-                        poll_data["readyState"]
-                    ).strip().upper()
-                    polled_url = poll_data.get("url")
-                    normalized_polled_url = _vercel_deployment_https_url(
-                        polled_url
-                    )
-                    if normalized_polled_url is not None:
-                        deployment_url = normalized_polled_url
+                if observation is not None:
+                    deployment_state, polled_url = observation
+                    if polled_url is not None:
+                        deployment_url = polled_url
 
             metadata = receipt_metadata(operation="deployment_accepted")
-            evidence_refs = (
-                f"vercel-deployment://{quote(deployment_id, safe='')}",
-            )
-            if deployment_state in {"ERROR", "CANCELED"}:
-                return ToolExecutionOutcome(
-                    status="failed",
-                    result_summary=f"Vercel deployment reached terminal state {deployment_state}.",
-                    result_ref=deployment_id,
-                    artifact_refs=(deployment_url,),
-                    evidence_refs=evidence_refs,
-                    error_code=f"vercel_deployment_{deployment_state.lower()}",
-                    metadata=metadata,
-                )
-            if deployment_state == "READY":
-                return _typed_success(
-                    f"Vercel deployment {deployment_id} is READY at {deployment_url}.",
-                    result_ref=deployment_id,
-                    artifact_refs=(deployment_url,),
-                    evidence_refs=evidence_refs,
-                    metadata=metadata,
-                )
-            return _typed_success(
-                f"Vercel accepted deployment {deployment_id} at {deployment_url}; current state is {deployment_state}.",
-                result_ref=deployment_id,
-                artifact_refs=(deployment_url,),
-                evidence_refs=evidence_refs,
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=deployment_url,
+                deployment_state=deployment_state,
                 metadata=metadata,
             )
     except Exception as exc:
         if deployment_id and deployment_url:
             deployment_state = deployment_state or "PENDING"
-            return _typed_success(
-                f"Vercel accepted deployment {deployment_id}; status polling is pending.",
-                result_ref=deployment_id,
-                artifact_refs=(deployment_url,),
-                evidence_refs=(
-                    f"vercel-deployment://{quote(deployment_id, safe='')}",
-                ),
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=deployment_url,
+                deployment_state=deployment_state,
                 metadata=receipt_metadata(operation="deployment_accepted"),
             )
         if write_stage:
