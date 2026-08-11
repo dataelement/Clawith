@@ -16,6 +16,7 @@ settings = get_settings()
 
 PRESENCE_TTL_SECONDS = 180
 PUBSUB_PREFIX = "realtime:ws"
+SUBSCRIBER_RETRY_SECONDS = 5
 
 
 class RealtimeRouter:
@@ -42,31 +43,37 @@ class RealtimeRouter:
         user_id: str | None,
     ) -> str:
         connection_id = uuid.uuid4().hex
-        redis = await get_redis()
+        setattr(websocket.state, "realtime_connection_id", connection_id)
         payload = {
             "agent_id": agent_id,
             "session_id": session_id or "",
             "user_id": user_id or "",
             "instance_id": self.instance_id,
         }
-        async with redis.pipeline(transaction=True) as pipe:
-            pipe.sadd(self._agent_index_key(agent_id), connection_id)
-            pipe.hset(self._connection_key(connection_id), mapping=payload)
-            pipe.expire(self._connection_key(connection_id), PRESENCE_TTL_SECONDS)
-            pipe.expire(self._agent_index_key(agent_id), PRESENCE_TTL_SECONDS)
-            await pipe.execute()
-        setattr(websocket.state, "realtime_connection_id", connection_id)
+        try:
+            redis = await get_redis()
+            async with redis.pipeline(transaction=True) as pipe:
+                pipe.sadd(self._agent_index_key(agent_id), connection_id)
+                pipe.hset(self._connection_key(connection_id), mapping=payload)
+                pipe.expire(self._connection_key(connection_id), PRESENCE_TTL_SECONDS)
+                pipe.expire(self._agent_index_key(agent_id), PRESENCE_TTL_SECONDS)
+                await pipe.execute()
+        except Exception as exc:
+            logger.warning(f"[Realtime] Redis presence unavailable; using local websocket only: {exc}")
         return connection_id
 
     async def unregister_connection(self, *, agent_id: str, websocket: WebSocket) -> None:
         connection_id = getattr(websocket.state, "realtime_connection_id", None)
         if not connection_id:
             return
-        redis = await get_redis()
-        async with redis.pipeline(transaction=True) as pipe:
-            pipe.srem(self._agent_index_key(agent_id), connection_id)
-            pipe.delete(self._connection_key(connection_id))
-            await pipe.execute()
+        try:
+            redis = await get_redis()
+            async with redis.pipeline(transaction=True) as pipe:
+                pipe.srem(self._agent_index_key(agent_id), connection_id)
+                pipe.delete(self._connection_key(connection_id))
+                await pipe.execute()
+        except Exception as exc:
+            logger.warning(f"[Realtime] Redis presence cleanup failed: {exc}")
 
     async def is_user_viewing_session(self, *, agent_id: str, session_id: str, user_id: str) -> bool:
         for record in await self._list_presence(agent_id):
@@ -118,21 +125,25 @@ class RealtimeRouter:
         if not remote_targets:
             return
 
-        redis = await get_redis()
-        envelope = json.dumps(
-            {
-                "message": message,
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "user_id": user_id,
-                "origin_instance_id": self.instance_id,
-            }
-        )
-        publish_tasks = [
-            redis.publish(f"{PUBSUB_PREFIX}:instance:{instance_id}", envelope)
-            for instance_id in remote_targets
-        ]
-        await asyncio.gather(*publish_tasks, return_exceptions=True)
+        try:
+            redis = await get_redis()
+            envelope = json.dumps(
+                {
+                    "message": message,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "origin_instance_id": self.instance_id,
+                }
+            )
+            publish_tasks = [
+                redis.publish(f"{PUBSUB_PREFIX}:instance:{instance_id}", envelope)
+                for instance_id in remote_targets
+            ]
+            await asyncio.gather(*publish_tasks, return_exceptions=True)
+        except Exception as exc:
+            logger.warning(f"[Realtime] Redis pubsub unavailable; skipped remote websocket routing: {exc}")
+            return
         logger.debug(
             f"[Realtime] Routed agent={agent_id} local={local_sent} remote_instances={list(remote_targets.keys())}"
         )
@@ -154,47 +165,67 @@ class RealtimeRouter:
         self._started = False
 
     async def _subscriber_loop(self, deliver_local) -> None:
-        redis = await get_redis()
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(self._instance_channel())
-        try:
-            while True:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if not message:
-                    await asyncio.sleep(0.05)
-                    continue
-                try:
-                    data = json.loads(message["data"])
-                    await deliver_local(
-                        agent_id=data["agent_id"],
-                        payload=data["message"],
-                        session_id=data.get("session_id"),
-                        user_id=data.get("user_id"),
-                    )
-                except Exception as exc:
-                    logger.warning(f"[Realtime] Failed to deliver pubsub message: {exc}")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            await pubsub.unsubscribe(self._instance_channel())
-            await pubsub.aclose()
+        while True:
+            pubsub = None
+            try:
+                redis = await get_redis()
+                pubsub = redis.pubsub()
+                await pubsub.subscribe(self._instance_channel())
+                logger.info("[Realtime] Redis pubsub subscriber connected")
+                while True:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if not message:
+                        await asyncio.sleep(0.05)
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                        await deliver_local(
+                            agent_id=data["agent_id"],
+                            payload=data["message"],
+                            session_id=data.get("session_id"),
+                            user_id=data.get("user_id"),
+                        )
+                    except Exception as exc:
+                        logger.warning(f"[Realtime] Failed to deliver pubsub message: {exc}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    f"[Realtime] Redis pubsub subscriber unavailable; retrying in "
+                    f"{SUBSCRIBER_RETRY_SECONDS}s: {exc}"
+                )
+                await asyncio.sleep(SUBSCRIBER_RETRY_SECONDS)
+            finally:
+                if pubsub is not None:
+                    try:
+                        await pubsub.unsubscribe(self._instance_channel())
+                    except Exception as exc:
+                        logger.warning(f"[Realtime] Failed to unsubscribe pubsub channel: {exc}")
+                    try:
+                        await pubsub.aclose()
+                    except Exception as exc:
+                        logger.warning(f"[Realtime] Failed to close pubsub connection: {exc}")
 
     async def _list_presence(self, agent_id: str) -> list[dict[str, str]]:
-        redis = await get_redis()
-        connection_ids = await redis.smembers(self._agent_index_key(agent_id))
-        if not connection_ids:
+        try:
+            redis = await get_redis()
+            connection_ids = await redis.smembers(self._agent_index_key(agent_id))
+            if not connection_ids:
+                return []
+            records: list[dict[str, str]] = []
+            stale_ids: list[str] = []
+            for connection_id in connection_ids:
+                data = await redis.hgetall(self._connection_key(connection_id))
+                if not data:
+                    stale_ids.append(connection_id)
+                    continue
+                records.append(data)
+            if stale_ids:
+                await redis.srem(self._agent_index_key(agent_id), *stale_ids)
+            return records
+        except Exception as exc:
+            logger.warning(f"[Realtime] Redis presence lookup failed: {exc}")
             return []
-        records: list[dict[str, str]] = []
-        stale_ids: list[str] = []
-        for connection_id in connection_ids:
-            data = await redis.hgetall(self._connection_key(connection_id))
-            if not data:
-                stale_ids.append(connection_id)
-                continue
-            records.append(data)
-        if stale_ids:
-            await redis.srem(self._agent_index_key(agent_id), *stale_ids)
-        return records
 
 
 realtime_router = RealtimeRouter()
