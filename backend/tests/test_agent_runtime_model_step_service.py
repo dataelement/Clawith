@@ -1,36 +1,40 @@
 """Runtime model-step adapter tests."""
 
 import base64
+import json
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
-import json
 from unittest.mock import AsyncMock, patch
-import uuid
 
 import pytest
+from langchain_core.messages import convert_to_messages
 
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.services.agent_runtime.context_builder import RuntimeContextBuild
-from app.services.agent_runtime.group_handoff import GroupAgentHandoffIntent
-from app.services.agent_runtime.group_handoff import GroupAgentHandoffError
-from app.services.agent_runtime.model_step_service import RuntimeModelStepService
-from app.services.agent_runtime.model_step_service import RuntimeModelCallError
-from app.services.agent_runtime.model_step_service import _group_mention_mismatches
-from app.services.agent_runtime.model_step_service import _message_token_counter
-from app.services.agent_runtime.model_step_service import _prompt_messages
-from app.services.agent_runtime.model_step_service import _visible_mention_names
+from app.services.agent_runtime.group_handoff import GroupAgentHandoffError, GroupAgentHandoffIntent
+from app.services.agent_runtime.model_step_service import (
+    RuntimeModelCallError,
+    RuntimeModelStepService,
+    _group_mention_mismatches,
+    _message_token_counter,
+    _prompt_messages,
+    _tool_repair_reset_reason,
+    _visible_mention_names,
+)
 from app.services.agent_runtime.state import (
     RunInputSnapshots,
     RunRegistrySnapshot,
     RuntimeContext,
     RuntimeGraphState,
+    runtime_message_to_json,
 )
-from app.services.llm.single_step import LLMCompletionStep
+from app.services.agent_runtime.tool_contracts import parse_step_tool_context
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
+from app.services.llm.single_step import LLMCompletionStep
 from app.services.token_tracker import TokenUsage
-
 
 _TINY_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
@@ -289,6 +293,64 @@ def test_prompt_messages_compatibly_parse_legacy_image_checkpoint() -> None:
     ]
 
 
+def test_explicit_user_correction_is_the_only_tool_repair_reset_boundary() -> None:
+    state = _state(uuid.uuid4(), _model(uuid.uuid4()), _agent(uuid.uuid4()))
+    state["lifecycle"]["tool_repair_reset"] = {
+        "reason": "explicit_user_correction"
+    }
+    assert _tool_repair_reset_reason(state) == "explicit_user_correction"
+
+    state["lifecycle"]["tool_repair_reset"] = {"reason": "provider_retry"}
+    assert _tool_repair_reset_reason(state) is None
+
+
+def test_prompt_messages_restore_provider_tool_call_pairing() -> None:
+    build = _build(
+        current_run={"run_id": str(uuid.uuid4()), "goal": "Read"},
+        recent_session_messages_snapshot=(),
+        recent_thread_messages=(
+            {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-instance-1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+                "provider_call_ids": {
+                    "call-instance-1": "provider-call-1",
+                },
+            },
+            {
+                "id": "tool-result-1",
+                "role": "tool",
+                "tool_call_id": "call-instance-1",
+                "content": "contents",
+            },
+        ),
+        initial_input={"input_content": "Continue"},
+    )
+
+    messages = _prompt_messages(
+        static_prompt="Static",
+        dynamic_prompt="Dynamic",
+        build=build,
+    )
+
+    assistant = next(message for message in messages if message.role == "assistant")
+    tool = next(message for message in messages if message.role == "tool")
+    assert assistant.tool_calls is not None
+    assert assistant.tool_calls[0]["id"] == "provider-call-1"
+    assert "provider_call_id" not in assistant.tool_calls[0]
+    assert tool.tool_call_id == "provider-call-1"
+
+
 def test_message_budget_does_not_treat_large_base64_as_text_tokens() -> None:
     padded_png = base64.b64encode(
         base64.b64decode(_TINY_PNG_BASE64) + b"x" * (1024 * 1024)
@@ -444,8 +506,37 @@ async def test_normal_tool_proposal_is_stable_and_does_not_execute_in_model_step
     assert result.intent == "tool_calls"
     assert result.assistant_message is not None
     assert result.assistant_message["id"] == expected_message_id
-    assert result.assistant_message["tool_calls"] == list(result.tool_calls)
+    assert result.assistant_message["tool_calls"][0]["id"] == (
+        result.tool_calls[0]["id"]
+    )
+    assert "provider_call_id" not in result.assistant_message["tool_calls"][0]
     assert result.assistant_message["reasoning_content"] == "inspect"
+    tool_context = parse_step_tool_context(result.step_tool_context)
+    assert tool_context is not None
+    assert tool_context.assistant_message_id == expected_message_id
+    assert tool_context.model_step == 1
+    expected_call_instance_id = str(
+        uuid.uuid5(
+            uuid.UUID(run_id),
+            f"call-instance:{expected_message_id}:0",
+        )
+    )
+    assert tool_context.accepted_calls[0].call_instance_id == (
+        expected_call_instance_id
+    )
+    assert tool_context.accepted_calls[0].provider_call_id == "call-1"
+    assert result.tool_calls[0]["id"] == expected_call_instance_id
+    assert result.tool_calls[0]["provider_call_id"] == "call-1"
+    checkpoint_message = runtime_message_to_json(
+        convert_to_messages([result.assistant_message])[0]
+    )
+    assert checkpoint_message["provider_call_ids"] == {
+        expected_call_instance_id: "call-1"
+    }
+    assert tool_context.accepted_calls[0].entry.tool_name == "read_file"
+    assert tool_context.accepted_calls[0].entry.binding.handler_key == "read_file"
+    assert tool_context.accepted_calls[0].entry.effect == "read"
+    assert tool_context.accepted_calls[0].entry.retry_policy == "safe"
     assert len(calls) == 1
     tool_names = {tool["function"]["name"] for tool in calls[0][2]["tools"]}
     assert tool_names == {"read_file", "wait"}
@@ -460,7 +551,54 @@ async def test_normal_tool_proposal_is_stable_and_does_not_execute_in_model_step
 
 
 @pytest.mark.asyncio
-async def test_invalid_write_file_arguments_request_three_protocol_repairs() -> None:
+async def test_fallback_tool_proposal_freezes_the_actual_fallback_workset() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    fallback = _model(tenant_id)
+    fallback.model = "fallback-model"
+    agent = _agent(tenant_id)
+    agent.fallback_model_id = fallback.id
+    state = _state(tenant_id, model, agent)
+
+    async def complete(model_arg, _messages, **_kwargs):
+        if model_arg.id == model.id:
+            raise TimeoutError("primary provider timeout")
+        return LLMCompletionStep(
+            content="",
+            tool_calls=(
+                {
+                    "id": "fallback-call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"notes.md"}',
+                    },
+                },
+            ),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=20),
+        )
+
+    result = await _failover_service(
+        model,
+        fallback,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    tool_context = parse_step_tool_context(result.step_tool_context)
+    assert result.intent == "tool_calls"
+    assert tool_context is not None
+    assert tool_context.accepted_calls[0].call_instance_id != "fallback-call-1"
+    assert tool_context.accepted_calls[0].provider_call_id == "fallback-call-1"
+    assert result.assistant_message is not None
+    assert result.assistant_message["runtime_model_id"] == str(fallback.id)
+
+
+@pytest.mark.asyncio
+async def test_invalid_write_file_arguments_request_ten_protocol_repairs() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)

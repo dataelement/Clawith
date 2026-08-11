@@ -14,7 +14,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import fnmatch
 import hashlib
 import json
@@ -91,6 +91,13 @@ from app.services.agent_runtime.tool_execution import (
     ToolExecutionOutcome,
     sanitize_tool_arguments,
 )
+from app.services.agent_runtime.tool_contracts import (
+    resolve_tool_deadline_seconds,
+)
+from app.services.agent_runtime.tool_registry import (
+    STATIC_REGISTERED_TOOL_NAMES,
+    resolve_registered_tool,
+)
 
 
 _settings = get_settings()
@@ -100,6 +107,8 @@ TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 TEMP_WORKSPACE_DEFAULT_PATHS = ["workspace", "memory", "skills", "focus.md", "soul.md", "HEARTBEAT.md"]
 MAX_EXEC_STDOUT_CAPTURE_BYTES = 1_000_000
 MAX_EXEC_STDERR_CAPTURE_BYTES = 500_000
+EMAIL_IMAP_DEADLINE_SECONDS = 30.0
+PUBLIC_DNS_DEADLINE_SECONDS = 10.0
 _READ_FILE_BINARY_EXTENSIONS = frozenset(
     {
         ".7z",
@@ -707,6 +716,92 @@ def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[d
     return patched
 
 
+def _project_active_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Remove instructions that point at tools absent from this exact Workset."""
+    active_names = {
+        str(tool.get("function", {}).get("name") or "") for tool in tools
+    }
+    projected: list[dict] = []
+    for original in tools:
+        tool = original
+        function = original.get("function", {})
+        name = str(function.get("name") or "")
+        description = str(function.get("description") or "")
+
+        replacements: list[tuple[str, str]] = []
+        if name == "write_file" and "list_files" not in active_names:
+            replacements.append(
+                (
+                    "Before creating a new document under workspace/, first inspect "
+                    "the relevant directories with list_files, prefer an existing "
+                    "topical subfolder over the workspace root, and create a new "
+                    "subfolder when the content belongs to a new category.",
+                    "Before creating a new document under workspace/, use the current "
+                    "context to prefer an existing topical subfolder over the workspace "
+                    "root, and create a new subfolder when the content belongs to a new "
+                    "category.",
+                )
+            )
+        if name == "read_file" and "read_document" not in active_names:
+            replacements.append(
+                (
+                    "use read_document for supported office documents.",
+                    "the office-document extractor is unavailable in this Workset.",
+                )
+            )
+        if name == "update_objective":
+            if "get_my_okr" not in active_names:
+                replacements.append(
+                    (
+                        "Regular agents can only update their own Objectives — call "
+                        "get_my_okr first to get your objective_id.",
+                        "Regular agents can only update their own Objectives; provide an "
+                        "objective_id from the current context or user.",
+                    )
+                )
+            if "create_objective" not in active_names:
+                replacements.append(
+                    (
+                        "If the request is to revise an existing OKR's goal text rather "
+                        "than create a new one, prefer this tool over create_objective.",
+                        "Use this tool only to revise an existing Objective.",
+                    )
+                )
+
+        projected_description = description
+        for old, new in replacements:
+            projected_description = projected_description.replace(old, new)
+
+        objective_id_description = None
+        if name == "update_objective" and not {
+            "get_my_okr",
+            "get_okr",
+        } <= active_names:
+            objective_id_description = (
+                "UUID of the Objective to update. Provide an ID from the current "
+                "context or user."
+            )
+
+        if (
+            projected_description != description
+            or objective_id_description is not None
+        ):
+            tool = deepcopy(original)
+            tool["function"]["description"] = projected_description
+            if objective_id_description is not None:
+                properties = (
+                    tool["function"]
+                    .get("parameters", {})
+                    .get("properties", {})
+                )
+                if "objective_id" in properties:
+                    properties["objective_id"][
+                        "description"
+                    ] = objective_id_description
+        projected.append(tool)
+    return projected
+
+
 async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
     """Check deterministic local Feishu channel readiness."""
     try:
@@ -928,6 +1023,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     )
                 # Inject OS-aware paths into computer-related tool descriptions
                 result = _patch_computer_tool_descriptions(result, computer_os_type)
+                result = _project_active_tool_descriptions(result)
                 # Final diagnostic: log the complete tool list and assignment stats
                 final_names = sorted(t["function"]["name"] for t in result)
                 logger.info(
@@ -950,6 +1046,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     # can leak disabled tools (for example search tools) into the LLM. Keep only
     # the minimal always-available core/channel tools.
     fallback = _patch_computer_tool_descriptions(_always_tools, computer_os_type)
+    fallback = _project_active_tool_descriptions(fallback)
     return fallback
 
 
@@ -964,19 +1061,23 @@ def _runtime_typed_tools(
     dynamic MCP row may enter only through the separately resolved exact-name
     workset and may not replace Runtime control, Group, or builtin contracts.
     """
-    return [
-        tool
-        for tool in tools
-        if (
-            (name := str(tool.get("function", {}).get("name") or ""))
-            in RUNTIME_TYPED_APPLICATION_TOOL_NAMES
-            or (
-                name in dynamic_mcp_names
-                and name not in BUILTIN_TOOL_NAMES
-                and not is_reserved_custom_tool_name(name)
-            )
+    resolved: list[dict] = []
+    for tool in tools:
+        name = str(tool.get("function", {}).get("name") or "")
+        registered = resolve_registered_tool(
+            tool,
+            dynamic_mcp_names=dynamic_mcp_names,
         )
-    ]
+        if name in STATIC_REGISTERED_TOOL_NAMES:
+            if registered is not None:
+                resolved.append(tool)
+            continue
+        if (
+            registered is not None
+            or name in RUNTIME_TYPED_APPLICATION_TOOL_NAMES
+        ):
+            resolved.append(tool)
+    return resolved
 
 
 async def _agent_is_designated_okr_agent(agent_id: uuid.UUID) -> bool:
@@ -1046,7 +1147,7 @@ async def _get_runtime_dynamic_mcp_tool_names(
             )
             continue
         ready.add(name)
-    return ready
+    return _project_active_tool_descriptions(ready)
 
 
 async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
@@ -1284,7 +1385,7 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             for tool in tools
         }
         - RUNTIME_TYPED_APPLICATION_TOOL_NAMES
-        - dynamic_mcp_names
+        - set(dynamic_mcp_names)
         - {""}
     )
     if hidden:
@@ -3879,9 +3980,16 @@ async def _validate_public_http_url(url: str) -> tuple[str | None, str | None]:
             addresses = [hostname]
         else:
             loop = asyncio.get_running_loop()
-            infos = await loop.run_in_executor(
-                None,
-                lambda: socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM),
+            infos = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: socket.getaddrinfo(
+                        hostname,
+                        parsed.port or (443 if parsed.scheme == "https" else 80),
+                        type=socket.SOCK_STREAM,
+                    ),
+                ),
+                timeout=PUBLIC_DNS_DEADLINE_SECONDS,
             )
             addresses = [info[4][0] for info in infos]
     except Exception as exc:
@@ -6678,6 +6786,42 @@ class DocumentReadResult:
     content: str
     error_code: str | None = None
     retryable: bool = False
+    truncated: bool = False
+    processed_scope: dict[str, Any] = field(default_factory=dict)
+    truncation_reasons: tuple[str, ...] = ()
+
+
+def _complete_document_read(
+    content: str,
+    *,
+    max_chars: int,
+    processed_scope: dict[str, Any] | None = None,
+    truncation_reasons: list[str] | None = None,
+) -> DocumentReadResult:
+    """Return content with an explicit, machine-readable incompleteness fact."""
+    scope = dict(processed_scope or {})
+    reasons = list(dict.fromkeys(truncation_reasons or []))
+    if len(content) > max_chars:
+        scope["characters_total"] = len(content)
+        scope["characters_returned"] = max_chars
+        reasons.append(
+            f"returned the first {max_chars} of {len(content)} extracted characters"
+        )
+        content = content[:max_chars]
+    reasons = list(dict.fromkeys(reasons))
+    if reasons:
+        content += (
+            "\n\n[Document output incomplete: "
+            + "; ".join(reasons)
+            + ". No continuation parameter is available.]"
+        )
+    return DocumentReadResult(
+        True,
+        content,
+        truncated=bool(reasons),
+        processed_scope=scope,
+        truncation_reasons=tuple(reasons),
+    )
 
 
 def _safe_document_cell_text(value: Any) -> str:
@@ -6732,17 +6876,30 @@ def _read_document_sync(
         )
 
     ext = file_path.suffix.lower()
+    processed_scope: dict[str, Any] = {}
+    truncation_reasons: list[str] = []
     try:
         if ext == ".pdf":
             import pdfplumber
             text_parts = []
             with pdfplumber.open(str(file_path)) as pdf:
+                total_pages = len(pdf.pages)
+                processed_pages = 0
                 for i, page in enumerate(pdf.pages[:50]):  # Limit to 50 pages
+                    processed_pages = i + 1
                     page_text = page.extract_text() or ""
                     if page_text:
                         text_parts.append(f"--- Page {i+1} ---\n{page_text}")
                     if sum(len(part) for part in text_parts) >= max_chars:
                         break
+            processed_scope.update(
+                pages_processed=processed_pages,
+                pages_total=total_pages,
+            )
+            if processed_pages < total_pages:
+                truncation_reasons.append(
+                    f"processed the first {processed_pages} of {total_pages} pages"
+                )
             content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
 
         elif ext == ".docx":
@@ -6802,14 +6959,29 @@ def _read_document_sync(
             wb = load_workbook(str(file_path), read_only=True, data_only=True)
             sheets = []
             cell_count = 0
+            processed_sheets = 0
+            total_sheets = len(wb.sheetnames)
             for ws_name in wb.sheetnames[:10]:  # Limit to 10 sheets
+                processed_sheets += 1
                 sheet = wb[ws_name]
                 rows = []
+                if sheet.max_row > 200:
+                    truncation_reasons.append(
+                        f"sheet {ws_name} processed the first 200 of {sheet.max_row} rows"
+                    )
+                if sheet.max_column > _READ_DOCUMENT_MAX_COLUMNS:
+                    truncation_reasons.append(
+                        f"sheet {ws_name} processed the first {_READ_DOCUMENT_MAX_COLUMNS} "
+                        f"of {sheet.max_column} columns"
+                    )
                 for row in sheet.iter_rows(max_row=200, max_col=_READ_DOCUMENT_MAX_COLUMNS, values_only=True):
                     visible = row
                     cell_count += len(visible)
                     if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS:
                         rows.append("[cell limit reached; remaining cells omitted]")
+                        truncation_reasons.append(
+                            f"stopped after the {_READ_DOCUMENT_MAX_XLSX_CELLS}-cell safety limit"
+                        )
                         break
                     row_str = "\t".join(_safe_document_cell_text(c) for c in visible)
                     if row_str.strip():
@@ -6819,21 +6991,41 @@ def _read_document_sync(
                 if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS or sum(len(part) for part in sheets) >= max_chars:
                     break
             wb.close()
+            processed_scope.update(
+                sheets_processed=processed_sheets,
+                sheets_total=total_sheets,
+                cells_processed=min(cell_count, _READ_DOCUMENT_MAX_XLSX_CELLS),
+            )
+            if processed_sheets < total_sheets:
+                truncation_reasons.append(
+                    f"processed the first {processed_sheets} of {total_sheets} sheets"
+                )
             content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
 
         elif ext == ".pptx":
             from pptx import Presentation
             prs = Presentation(str(file_path))
             slides = []
+            total_slides = len(prs.slides)
+            processed_slides = 0
             for i, slide in enumerate(prs.slides):
                 if i >= 50:
                     break
+                processed_slides = i + 1
                 texts = []
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
                         texts.append(shape.text)
                 if texts:
                     slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
+            processed_scope.update(
+                slides_processed=processed_slides,
+                slides_total=total_slides,
+            )
+            if processed_slides < total_slides:
+                truncation_reasons.append(
+                    f"processed the first {processed_slides} of {total_slides} slides"
+                )
             content = "\n\n".join(slides) if slides else "(PPT is empty)"
 
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
@@ -6846,9 +7038,12 @@ def _read_document_sync(
                 "document_format_unsupported",
             )
 
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return DocumentReadResult(True, content)
+        return _complete_document_read(
+            content,
+            max_chars=max_chars,
+            processed_scope=processed_scope,
+            truncation_reasons=truncation_reasons,
+        )
 
     except ImportError as e:
         return DocumentReadResult(
@@ -6919,16 +7114,30 @@ def _read_pdf_fast_sync(
 
         text_parts = []
         with fitz.open(str(file_path)) as doc:
+            total_pages = len(doc)
+            processed_pages = 0
             for i, page in enumerate(doc[:50]):
+                processed_pages = i + 1
                 page_text = page.get_text("text") or ""
                 if page_text:
                     text_parts.append(f"--- Page {i+1} ---\n{page_text}")
                 if sum(len(part) for part in text_parts) >= max_chars:
                     break
         content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return DocumentReadResult(True, content)
+        reasons = []
+        if processed_pages < total_pages:
+            reasons.append(
+                f"processed the first {processed_pages} of {total_pages} pages"
+            )
+        return _complete_document_read(
+            content,
+            max_chars=max_chars,
+            processed_scope={
+                "pages_processed": processed_pages,
+                "pages_total": total_pages,
+            },
+            truncation_reasons=reasons,
+        )
     except ImportError as exc:
         return DocumentReadResult(
             False,
@@ -7199,9 +7408,19 @@ async def _read_document_outcome(
     finally:
         temp_workspace.cleanup()
     if result.ok:
+        metadata: dict[str, Any] = {}
+        if result.truncated:
+            metadata = {
+                "content_truncated": True,
+                "document_processed_scope": result.processed_scope,
+                "document_truncation_reasons": list(
+                    result.truncation_reasons
+                ),
+            }
         return _typed_success(
             result.content,
             evidence_refs=(_workspace_artifact_ref(agent_id, path),),
+            metadata=metadata,
         )
     return _typed_failure(
         result.content,
@@ -10274,6 +10493,11 @@ async def _execute_code_legacy_outcome(
 
         return _typed_success("\n\n".join(result_parts))
 
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     except Exception as e:
         if proc is not None:
             try:
@@ -10496,45 +10720,167 @@ async def _handle_set_trigger_outcome(
         )
 
     # Validate type-specific config
+    allowed_config_keys = {
+        "cron": {"expr", "timezone"},
+        "once": {"at"},
+        "interval": {"minutes"},
+        "poll": {
+            "url",
+            "interval_min",
+            "method",
+            "headers",
+            "json_path",
+            "fire_on",
+            "match_value",
+        },
+        "on_message": {"from_agent_name", "from_user_name"},
+        "webhook": set(),
+    }[ttype]
+    unexpected_config_keys = sorted(set(config) - allowed_config_keys)
+    if unexpected_config_keys:
+        return _typed_failure(
+            f"{ttype} trigger config contains unsupported fields: "
+            + ", ".join(unexpected_config_keys),
+            "invalid_tool_arguments",
+        )
     if ttype == "cron":
         expr = config.get("expr", "")
-        if not expr:
+        timezone_name = config.get("timezone")
+        if not isinstance(expr, str) or not expr.strip():
             return _typed_failure(
-                "cron trigger requires config.expr.",
+                "cron trigger requires string config.expr.",
+                "invalid_tool_arguments",
+            )
+        if timezone_name is not None and (
+            not isinstance(timezone_name, str) or not timezone_name.strip()
+        ):
+            return _typed_failure(
+                "cron trigger config.timezone must be a non-empty string.",
                 "invalid_tool_arguments",
             )
         try:
             from croniter import croniter
-            croniter(expr)
+            croniter(expr.strip())
+            if timezone_name:
+                from zoneinfo import ZoneInfo
+
+                ZoneInfo(timezone_name.strip())
         except Exception:
-            return _typed_failure(
-                f"Invalid cron expression: '{expr}'.",
-                "invalid_tool_arguments",
-            )
+            return _typed_failure("Invalid cron config.", "invalid_tool_arguments")
+        config["expr"] = expr.strip()
+        if timezone_name:
+            config["timezone"] = timezone_name.strip()
     elif ttype == "once":
-        if not config.get("at"):
+        at_value = config.get("at")
+        if not isinstance(at_value, str) or not at_value.strip():
             return _typed_failure(
-                "once trigger requires config.at.",
+                "once trigger requires ISO-8601 string config.at.",
                 "invalid_tool_arguments",
             )
-    elif ttype == "interval":
-        if not config.get("minutes"):
+        try:
+            parsed_at = datetime.fromisoformat(at_value.strip())
+        except ValueError:
             return _typed_failure(
-                "interval trigger requires config.minutes.",
+                "once trigger config.at must be a valid ISO-8601 date-time.",
+                "invalid_tool_arguments",
+            )
+        config["at"] = parsed_at.isoformat()
+    elif ttype == "interval":
+        minutes = config.get("minutes")
+        if (
+            not isinstance(minutes, int)
+            or isinstance(minutes, bool)
+            or not 1 <= minutes <= 525_600
+        ):
+            return _typed_failure(
+                "interval trigger config.minutes must be an integer from 1 through 525600.",
                 "invalid_tool_arguments",
             )
     elif ttype == "poll":
-        if not config.get("url"):
+        from urllib.parse import urlparse
+
+        url = config.get("url")
+        if (
+            not isinstance(url, str)
+            or urlparse(url.strip()).scheme not in {"http", "https"}
+            or not urlparse(url.strip()).netloc
+        ):
             return _typed_failure(
-                "poll trigger requires config.url.",
+                "poll trigger requires an absolute HTTP(S) config.url.",
                 "invalid_tool_arguments",
             )
+        interval_min = config.get("interval_min", 5)
+        if (
+            not isinstance(interval_min, int)
+            or isinstance(interval_min, bool)
+            or interval_min <= 0
+        ):
+            return _typed_failure(
+                "poll trigger config.interval_min must be a positive integer.",
+                "invalid_tool_arguments",
+            )
+        method = config.get("method", "GET")
+        if method not in {"GET", "HEAD"}:
+            return _typed_failure(
+                "poll trigger config.method must be GET or HEAD.",
+                "invalid_tool_arguments",
+            )
+        headers = config.get("headers", {})
+        if not isinstance(headers, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in headers.items()
+        ):
+            return _typed_failure(
+                "poll trigger config.headers must contain only string values.",
+                "invalid_tool_arguments",
+            )
+        fire_on = config.get("fire_on", "change")
+        if fire_on not in {"change", "match"}:
+            return _typed_failure(
+                "poll trigger config.fire_on must be change or match.",
+                "invalid_tool_arguments",
+            )
+        if fire_on == "match" and "match_value" not in config:
+            return _typed_failure(
+                "poll trigger config.match_value is required when fire_on is match.",
+                "invalid_tool_arguments",
+            )
+        json_path = config.get("json_path")
+        if json_path is not None and not isinstance(json_path, str):
+            return _typed_failure(
+                "poll trigger config.json_path must be a string.",
+                "invalid_tool_arguments",
+            )
+        config["url"] = url.strip()
+        config["method"] = method
+        config["interval_min"] = interval_min
+        config["fire_on"] = fire_on
     elif ttype == "on_message":
-        if not config.get("from_agent_name") and not config.get("from_user_name"):
+        agent_name = config.get("from_agent_name")
+        user_name = config.get("from_user_name")
+        if agent_name is not None and (
+            not isinstance(agent_name, str) or not agent_name.strip()
+        ):
+            return _typed_failure(
+                "on_message config.from_agent_name must be a non-empty string.",
+                "invalid_tool_arguments",
+            )
+        if user_name is not None and (
+            not isinstance(user_name, str) or not user_name.strip()
+        ):
+            return _typed_failure(
+                "on_message config.from_user_name must be a non-empty string.",
+                "invalid_tool_arguments",
+            )
+        if not agent_name and not user_name:
             return _typed_failure(
                 "on_message trigger requires from_agent_name or from_user_name.",
                 "invalid_tool_arguments",
             )
+        if agent_name:
+            config["from_agent_name"] = agent_name.strip()
+        if user_name:
+            config["from_user_name"] = user_name.strip()
         # Snapshot the latest message timestamp so we only detect NEW messages after this point
         # This prevents false positives from already-processed messages
         try:
@@ -16955,7 +17301,16 @@ async def _read_emails_outcome(
                 return messages
 
     try:
-        messages = await asyncio.to_thread(read_mailbox)
+        messages = await asyncio.wait_for(
+            asyncio.to_thread(read_mailbox),
+            timeout=EMAIL_IMAP_DEADLINE_SECONDS,
+        )
+    except TimeoutError:
+        return _typed_failure(
+            "IMAP read exceeded its operation deadline.",
+            "email_imap_deadline_exceeded",
+            retryable=True,
+        )
     except _EmailIMAPRejected as exc:
         return _typed_failure(
             f"IMAP rejected the {exc.stage} operation.",
@@ -18155,14 +18510,37 @@ async def _agentbay_read_outcome(
         elif tool_name == "agentbay_browser_extract":
             instruction = cast(str, arguments.get("instruction"))
             selector = cast(str, arguments.get("selector", ""))
-            result = await client.browser_extract(instruction, selector)
+            result = await client.browser_extract(
+                instruction,
+                selector,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name == "agentbay_browser_observe":
             instruction = cast(str, arguments.get("instruction"))
             selector = cast(str, arguments.get("selector", ""))
-            result = await client.browser_observe(instruction, selector)
+            result = await client.browser_observe(
+                instruction,
+                selector,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name == "agentbay_code_read_file":
             remote_path = cast(str, arguments.get("remote_path"))
-            result = await client.code_read_file(remote_path)
+            result = await client.code_read_file(
+                remote_path,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name in {
             "agentbay_computer_screenshot",
             "agentbay_computer_precision_screenshot",
@@ -18391,7 +18769,15 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
 
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
-    timeout = arguments.get("timeout", 30)
+    try:
+        timeout = int(
+            resolve_tool_deadline_seconds(
+                "agentbay_code",
+                arguments.get("timeout"),
+            )
+        )
+    except ValueError:
+        return "❌ timeout 必须是正数"
 
     if not code.strip():
         return "❌ 请提供要执行的代码"
@@ -18471,9 +18857,14 @@ async def _agentbay_code_read_file(agent_id: Optional[uuid.UUID], ws: Path, argu
     try:
         _session_id, _run_id = _agentbay_scope_ids(arguments)
         client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id, run_id=_run_id)
-        result = await asyncio.to_thread(
-            client._session.file_system.read_file,
+        result = await client.code_read_file(
             remote_path,
+            timeout=int(
+                resolve_tool_deadline_seconds(
+                    "agentbay_read",
+                    arguments.get("timeout"),
+                )
+            ),
         )
         if result.success:
             content = getattr(result, "content", "") or ""

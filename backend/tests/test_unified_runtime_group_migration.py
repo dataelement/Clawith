@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -30,7 +30,6 @@ from app.models.session_context_state import SessionContextState
 from app.models.tenant_setting import TenantSetting
 from app.models.trigger_execution import TriggerExecution
 from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
-
 
 VERSIONS_DIR = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 MIGRATION_PATH = VERSIONS_DIR / "202607161200_unify_runtime_group_schema.py"
@@ -96,6 +95,9 @@ DURABLE_GUARDED_TABLES = (
     "groups",
     "group_members",
 )
+POST_UNIFIED_COLUMNS_BY_TABLE = {
+    "agent_tool_executions": {"provider_call_id", "contract_version"},
+}
 
 
 def _load_migration():
@@ -107,6 +109,13 @@ def _load_migration():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _belongs_to_unified_schema(table_name: str, column_name: str) -> bool:
+    return (
+        column_name != "tenant_id"
+        and column_name not in POST_UNIFIED_COLUMNS_BY_TABLE.get(table_name, set())
+    )
 
 
 def _canonical_sql(value: object, *, table_name: str) -> str:
@@ -388,11 +397,11 @@ def test_every_created_table_matches_current_orm_metadata(monkeypatch) -> None:
         assert {
             column.name: _column_signature(column)
             for column in migration_table.columns
-            if column.name != "tenant_id"
+            if _belongs_to_unified_schema(table_name, column.name)
         } == {
             column.name: _column_signature(column)
             for column in model_table.columns
-            if column.name != "tenant_id"
+            if _belongs_to_unified_schema(table_name, column.name)
         }
         assert (
             migration_table.primary_key.name,

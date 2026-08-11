@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-import json
 from typing import Literal, Protocol, cast
-import uuid
 
 from langchain_core.messages import RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -21,13 +22,17 @@ from app.services.agent_runtime.state import (
     RuntimeStateUpdate,
     runtime_messages_as_json,
 )
+from app.services.agent_runtime.tool_repair_budget import (
+    ToolRepairBudgetError,
+    apply_tool_result,
+    reset_tool_repair_episodes,
+)
 from app.services.llm.caller import (
     WRITE_FILE_PROTOCOL_FAILURE_MESSAGE,
     WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY,
     WRITE_FILE_PROTOCOL_REPAIR_LIMIT,
 )
 from app.services.llm.multimodal_content import parse_multimodal_content
-
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_STATUSES = frozenset({"waiting_user", "waiting_external", "waiting_agent"})
@@ -47,7 +52,7 @@ class RuntimeNodeTransitionError(RuntimeError):
 class RuntimeInvocationCancelled(RuntimeError):
     """Stop an invocation without committing a synthetic cancelled checkpoint."""
 
-    def __init__(self, signal: "CancelSignal") -> None:
+    def __init__(self, signal: CancelSignal) -> None:
         super().__init__(signal.reason or "runtime invocation cancelled")
         self.cancel_command_id = signal.command_id
         self.reason = signal.reason
@@ -68,6 +73,7 @@ class ModelStepResult:
     intent: ModelIntent
     assistant_message: JsonObject | None = None
     tool_calls: tuple[JsonObject, ...] = ()
+    step_tool_context: JsonObject | None = None
     waiting_request: JsonObject | None = None
     finish_content: str | None = None
     finish_mention_participant_ids: tuple[str, ...] = ()
@@ -75,6 +81,7 @@ class ModelStepResult:
     repair_instruction: str | None = None
     repair_code: str | None = None
     repair_tool_name: str | None = None
+    repair_reset_reason: str | None = None
     error: JsonObject | None = None
 
 
@@ -85,6 +92,7 @@ class ToolStepResult:
     messages: tuple[JsonObject, ...] = ()
     waiting_request: JsonObject | None = None
     pending_tool_calls: tuple[JsonObject, ...] = ()
+    step_tool_context: JsonObject | None = None
     pending_group_at_changed: bool = False
     pending_group_at: JsonObject | None = None
     cancel_signal: CancelSignal | None = None
@@ -331,6 +339,74 @@ def _tool_calls(lifecycle: RuntimeLifecycle) -> tuple[JsonObject, ...]:
             "each pending tool call must be an object",
         )
     return tuple(dict(cast(Mapping[str, JsonValue], call)) for call in value)
+
+
+def _tool_call_name(call: Mapping[str, object]) -> str:
+    function = call.get("function")
+    name = function.get("name") if isinstance(function, Mapping) else call.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else "unknown_tool"
+
+
+def _paused_tail_result(
+    context: RuntimeContext,
+    call: Mapping[str, object],
+) -> JsonObject:
+    call_id = str(call.get("id") or "")
+    return {
+        "id": _runtime_message_id(context, f"tool-repair-paused:{call_id}"),
+        "role": "tool",
+        "tool_call_id": call_id,
+        "name": _tool_call_name(call),
+        "content": "Tool execution was skipped because the repair episode paused.",
+        "execution_status": "failed",
+        "error_code": "tool_batch_paused",
+        "model_action": "ask_user",
+        "side_effect_state": "none",
+        "safe_remediation": "Wait for corrected user input before proposing Tools again.",
+    }
+
+
+def _verification_fingerprint(verification: VerificationResult) -> str:
+    payload = json.dumps(
+        {
+            "code": verification.details.get("code"),
+            "reason": verification.reason,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+def _verification_repair_attempt(
+    lifecycle: RuntimeLifecycle,
+    verification: VerificationResult,
+) -> tuple[int, JsonObject]:
+    fingerprint = _verification_fingerprint(verification)
+    raw = lifecycle.get("verification_repair_episode")
+    if raw is not None and not isinstance(raw, Mapping):
+        raise RuntimeNodeTransitionError(
+            "invalid_verification_repair_episode",
+            "checkpoint verification repair episode must be an object",
+        )
+    prior_fingerprint = raw.get("fingerprint") if isinstance(raw, Mapping) else None
+    prior_attempts = raw.get("attempts", 0) if isinstance(raw, Mapping) else 0
+    if (
+        isinstance(prior_attempts, bool)
+        or not isinstance(prior_attempts, int)
+        or prior_attempts < 0
+    ):
+        raise RuntimeNodeTransitionError(
+            "invalid_verification_repair_episode",
+            "checkpoint verification repair attempts must be non-negative",
+        )
+    attempts = prior_attempts + 1 if prior_fingerprint == fingerprint else 1
+    return attempts, {
+        "fingerprint": fingerprint,
+        "attempts": attempts,
+        "issue_code": verification.details.get("code"),
+    }
 
 
 def _error(code: str, message: str) -> JsonObject:
@@ -603,6 +679,17 @@ class DeterministicRuntimeNodeExecutor:
 
         result = await self._model_service.complete_once(state, context)
         lifecycle["model_step_count"] = step_count
+        if result.repair_reset_reason is not None:
+            if result.repair_reset_reason != "explicit_user_correction":
+                raise RuntimeNodeTransitionError(
+                    "invalid_tool_repair_reset",
+                    "model repair reset reason is unsupported",
+                )
+            lifecycle["tool_repair_reset"] = {
+                "reason": result.repair_reset_reason,
+                "command_id": context.command_id,
+                "consumed_at_model_step": step_count,
+            }
         if result.intent != "finish":
             lifecycle.pop("finish_delivery_intent", None)
         new_messages: list[JsonObject] = []
@@ -619,6 +706,14 @@ class DeterministicRuntimeNodeExecutor:
                     "invalid_model_intent",
                     "tool_calls intent requires at least one call",
                 )
+            if result.step_tool_context is not None and not isinstance(
+                result.step_tool_context,
+                Mapping,
+            ):
+                raise RuntimeNodeTransitionError(
+                    "invalid_step_tool_context",
+                    "tool_calls intent Step Tool Context must be an object",
+                )
             lifecycle.update(
                 {
                     "status": "running",
@@ -626,6 +721,8 @@ class DeterministicRuntimeNodeExecutor:
                     "pending_tool_calls": [dict(call) for call in result.tool_calls],
                 }
             )
+            if result.step_tool_context is not None:
+                lifecycle["step_tool_context"] = dict(result.step_tool_context)
         elif result.intent == "wait":
             request = _validate_waiting_request(result.waiting_request)
             waiting_type = cast(str, request["waiting_type"])
@@ -681,6 +778,8 @@ class DeterministicRuntimeNodeExecutor:
                 repair_limit = (
                     WRITE_FILE_PROTOCOL_REPAIR_LIMIT
                     if is_write_file_repair
+                    else 10
+                    if repair_code == "invalid_tool_call"
                     else 1
                 )
                 repair_counter_key = (
@@ -846,11 +945,38 @@ class DeterministicRuntimeNodeExecutor:
         )
         pending_calls = (*result.pending_tool_calls, *tail_calls)
         lifecycle = dict(state["lifecycle"])
+        repair_pause_reason: str | None = None
+        repair_pause_tool: str | None = None
+        try:
+            repair_episodes: object = lifecycle.get("tool_repair_episodes")
+            for message in result.messages:
+                transition = apply_tool_result(
+                    repair_episodes,
+                    message,
+                    model_step=_counter(state["lifecycle"], "model_step_count"),
+                )
+                repair_episodes = transition.episodes
+                if transition.pause_reason is not None:
+                    repair_pause_reason = transition.pause_reason
+                    repair_pause_tool = transition.paused_tool_name
+            lifecycle["tool_repair_episodes"] = cast(JsonObject, repair_episodes)
+        except ToolRepairBudgetError as exc:
+            raise RuntimeNodeTransitionError(
+                "invalid_tool_repair_episodes",
+                str(exc),
+            ) from exc
         lifecycle.update(
             {
                 "pending_tool_calls": [dict(call) for call in pending_calls],
             }
         )
+        if result.step_tool_context is not None:
+            if not isinstance(result.step_tool_context, Mapping):
+                raise RuntimeNodeTransitionError(
+                    "invalid_step_tool_context",
+                    "Tool Step context update must be an object",
+                )
+            lifecycle["step_tool_context"] = dict(result.step_tool_context)
         if result.pending_group_at_changed:
             if result.pending_group_at is None:
                 lifecycle.pop("pending_group_at", None)
@@ -890,6 +1016,30 @@ class DeterministicRuntimeNodeExecutor:
                     "error": dict(result.error),
                 }
             )
+        elif repair_pause_reason is not None:
+            lifecycle.pop("step_tool_context", None)
+            lifecycle.update(
+                {
+                    "status": "waiting_user",
+                    "next_route": "wait",
+                    "reason": repair_pause_reason,
+                    "pending_tool_calls": [],
+                    "waiting_request": {
+                        "waiting_type": "user",
+                        "correlation_id": _runtime_message_id(
+                            context,
+                            f"tool-repair:{repair_pause_reason}:{repair_pause_tool}",
+                        ),
+                        "reason": repair_pause_reason,
+                        "question": (
+                            f"Tool {repair_pause_tool or 'unknown'} reached its "
+                            "repair safety limit. Provide corrected requirements "
+                            "or arguments to continue."
+                        ),
+                    },
+                    "error": None,
+                }
+            )
         else:
             lifecycle.update(
                 {
@@ -901,6 +1051,7 @@ class DeterministicRuntimeNodeExecutor:
             if pending_calls:
                 lifecycle["next_route"] = "tool"
             else:
+                lifecycle.pop("step_tool_context", None)
                 _schedule_compact(lifecycle)
         update: RuntimeStateUpdate = {
             "lifecycle": cast(RuntimeLifecycle, lifecycle),
@@ -908,6 +1059,11 @@ class DeterministicRuntimeNodeExecutor:
         output_messages = [
             _message_for_channel(dict(message)) for message in result.messages
         ]
+        if repair_pause_reason is not None:
+            output_messages.extend(
+                _message_for_channel(_paused_tail_result(context, call))
+                for call in tail_calls
+            )
         if (
             result.cancel_signal is None
             and result.waiting_request is None
@@ -966,6 +1122,8 @@ class DeterministicRuntimeNodeExecutor:
             "details": dict(verification.details),
         }
         if verification.outcome == "pass":
+            lifecycle.pop("verification_repair_episode", None)
+            lifecycle["verification_attempt_count"] = 0
             finalized = await self._finalizer.finalize(
                 state,
                 context,
@@ -1008,8 +1166,12 @@ class DeterministicRuntimeNodeExecutor:
             )
         elif verification.outcome == "repair":
             lifecycle.pop("finish_delivery_intent", None)
-            attempts = _counter(state["lifecycle"], "verification_attempt_count") + 1
+            attempts, verification_episode = _verification_repair_attempt(
+                state["lifecycle"],
+                verification,
+            )
             lifecycle["verification_attempt_count"] = attempts
+            lifecycle["verification_repair_episode"] = verification_episode
             if attempts > self._max_verification_repairs:
                 lifecycle.pop("pending_group_at", None)
                 lifecycle.update(
@@ -1105,6 +1267,32 @@ class DeterministicRuntimeNodeExecutor:
             "runtime_input": "resume",
             "runtime_run_id": context.run_id,
         })
+        if (
+            waiting_status == "waiting_user"
+            and state["lifecycle"].get("reason")
+            in {
+                "tool_repair_same_fingerprint_limit_reached",
+                "tool_repair_episode_limit_reached",
+            }
+            and resume_value.get("resume_type") == "user_input"
+        ):
+            try:
+                lifecycle["tool_repair_episodes"] = reset_tool_repair_episodes(
+                    lifecycle.get("tool_repair_episodes")
+                )
+            except ToolRepairBudgetError as exc:
+                raise RuntimeNodeTransitionError(
+                    "invalid_tool_repair_episodes",
+                    str(exc),
+                ) from exc
+            lifecycle["tool_repair_reset"] = {
+                "reason": "explicit_user_correction",
+                "command_id": context.command_id,
+                "at_model_step": _counter(
+                    state["lifecycle"],
+                    "model_step_count",
+                ),
+            }
         pending_calls = _tool_calls(cast(RuntimeLifecycle, lifecycle))
         if waiting_status == "waiting_user" and pending_calls:
             deferred = lifecycle.get("deferred_resume_messages", [])
@@ -1195,10 +1383,10 @@ __all__ = [
     "RunCompactResult",
     "RuntimeCancelSource",
     "RuntimeFinalizer",
-    "RuntimeModelStepService",
-    "RuntimeRunCompactor",
     "RuntimeInvocationCancelled",
+    "RuntimeModelStepService",
     "RuntimeNodeTransitionError",
+    "RuntimeRunCompactor",
     "RuntimeToolStepService",
     "RuntimeVerifier",
     "ToolStepResult",

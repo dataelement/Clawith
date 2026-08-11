@@ -140,6 +140,27 @@ def test_document_reader_returns_structured_parse_fact(tmp_path: Path) -> None:
     assert failure.error_code == "document_format_unsupported"
 
 
+def test_document_reader_reports_content_truncation_without_fake_continuation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "long.txt").write_text("x" * 100, encoding="utf-8")
+
+    result = agent_tools._read_document_sync(
+        tmp_path,
+        "long.txt",
+        max_chars=20,
+    )
+
+    assert result.ok is True
+    assert result.truncated is True
+    assert result.processed_scope == {
+        "characters_total": 100,
+        "characters_returned": 20,
+    }
+    assert "first 20 of 100 extracted characters" in result.content
+    assert "No continuation parameter is available" in result.content
+
+
 def test_document_reader_extracts_pptx_slides_without_slicing(
     tmp_path: Path,
 ) -> None:
@@ -200,6 +221,50 @@ async def test_document_outcome_preserves_workspace_evidence(monkeypatch) -> Non
     )
     assert outcome.status == "succeeded"
     assert outcome.evidence_refs == (f"workspace://{agent_id}/workspace/report.pdf",)
+
+
+@pytest.mark.asyncio
+async def test_document_outcome_preserves_structured_truncation_fact(
+    monkeypatch,
+) -> None:
+    agent_id = uuid.uuid4()
+
+    class TempWorkspace:
+        root = Path("/tmp/typed-document-truncation-test")
+
+        def cleanup(self):
+            return None
+
+    async def prepare(*args, **kwargs):
+        return TempWorkspace()
+
+    async def read_result(*args, **kwargs):
+        return agent_tools.DocumentReadResult(
+            True,
+            "partial document",
+            truncated=True,
+            processed_scope={"pages_processed": 50, "pages_total": 72},
+            truncation_reasons=("processed the first 50 of 72 pages",),
+        )
+
+    monkeypatch.setattr(agent_tools, "_prepare_temp_workspace", prepare)
+    monkeypatch.setattr(agent_tools, "_read_document_result", read_result)
+
+    outcome = await agent_tools._read_document_outcome(
+        agent_id,
+        {"path": "workspace/report.pdf"},
+        tenant_id=None,
+    )
+
+    assert outcome.status == "succeeded"
+    assert outcome.metadata["content_truncated"] is True
+    assert outcome.metadata["document_processed_scope"] == {
+        "pages_processed": 50,
+        "pages_total": 72,
+    }
+    assert outcome.metadata["document_truncation_reasons"] == [
+        "processed the first 50 of 72 pages"
+    ]
 
 
 @pytest.mark.asyncio

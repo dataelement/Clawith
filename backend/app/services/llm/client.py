@@ -573,10 +573,12 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
         supports_cache_control: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self.supports_cache_control = supports_cache_control
         self._client: httpx.AsyncClient | None = None
 
@@ -630,6 +632,7 @@ class OpenAICompatibleClient(LLMClient):
             payload["tools"] = tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
                 payload["parallel_tool_calls"] = True
 
         # Add any additional kwargs
@@ -1041,9 +1044,11 @@ class OpenAIResponsesClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1231,6 +1236,8 @@ class OpenAIResponsesClient(LLMClient):
             payload["tools"] = converted_tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         payload.update(kwargs)
         final_input = payload.get("input")
@@ -1482,6 +1489,7 @@ class GeminiClient(LLMClient):
                 model=self.model,
                 timeout=self.timeout,
                 supports_tool_choice=self.supports_tool_choice,
+                supports_parallel_tool_calls=False,
                 supports_cache_control=False,
             )
         return self._openai_fallback_client
@@ -2300,6 +2308,7 @@ class ProviderSpec:
     protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
     default_base_url: str | None
     supports_tool_choice: bool = True
+    supports_parallel_tool_calls: bool = False
     default_max_tokens: int = 4096
     model_max_tokens: dict[str, int] = field(default_factory=dict)
 
@@ -2326,6 +2335,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI",
         protocol="openai_compatible",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "openai-response": ProviderSpec(
@@ -2333,6 +2343,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI Responses",
         protocol="openai_responses",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "azure": ProviderSpec(
@@ -2340,6 +2351,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Azure OpenAI",
         protocol="openai_compatible",
         default_base_url=None,
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "deepseek": ProviderSpec(
@@ -2354,6 +2366,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Qwen (DashScope)",
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=8192,
         model_max_tokens={
             "qwen-plus": 16384,
@@ -2457,6 +2470,7 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "protocol": spec.protocol,
             "default_base_url": spec.default_base_url,
             "supports_tool_choice": spec.supports_tool_choice,
+            "supports_parallel_tool_calls": spec.supports_parallel_tool_calls,
             "default_max_tokens": spec.default_max_tokens,
             "model_max_tokens": spec.model_max_tokens,
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
@@ -2579,6 +2593,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+            supports_parallel_tool_calls=spec.supports_parallel_tool_calls,
         )
     elif spec and spec.protocol == "gemini":
         return GeminiClient(
@@ -2596,6 +2611,9 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            supports_parallel_tool_calls=(
+                spec.supports_parallel_tool_calls if spec else False
+            ),
             supports_cache_control=normalized_provider == "qwen",
         )
     else:
@@ -2606,6 +2624,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            supports_parallel_tool_calls=False,
             supports_cache_control=False,
         )
 

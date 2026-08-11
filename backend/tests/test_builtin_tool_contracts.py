@@ -23,6 +23,14 @@ from app.services.builtin_tool_definitions import (
     validate_builtin_tool_definitions,
 )
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
+from app.services.agent_runtime.tool_contracts import ToolContractError
+from app.services.agent_runtime.tool_registry import (
+    STATIC_REGISTERED_TOOL_NAMES,
+    RegisteredTool,
+    registered_dynamic_mcp,
+    registered_tool,
+    resolve_registered_tool,
+)
 
 
 def _model_by_name() -> dict[str, dict]:
@@ -84,6 +92,42 @@ def test_builtin_model_definition_ignores_stale_database_contract() -> None:
 
     assert canonical == builtin_model_definition("send_channel_message")
     assert canonical != stale
+
+
+def test_active_workset_descriptions_do_not_reference_invisible_tools() -> None:
+    projected = agent_tools._project_active_tool_descriptions(
+        [
+            builtin_model_definition("write_file"),
+            builtin_model_definition("read_file"),
+            builtin_model_definition("update_objective"),
+        ]
+    )
+    functions = {
+        tool["function"]["name"]: tool["function"] for tool in projected
+    }
+
+    assert "list_files" not in functions["write_file"]["description"]
+    assert "read_document" not in functions["read_file"]["description"]
+    assert "get_my_okr" not in functions["update_objective"]["description"]
+    assert "create_objective" not in functions["update_objective"]["description"]
+    objective_id = functions["update_objective"]["parameters"]["properties"][
+        "objective_id"
+    ]["description"]
+    assert "get_my_okr" not in objective_id
+    assert "get_okr" not in objective_id
+
+
+def test_active_workset_projection_preserves_available_tool_references() -> None:
+    canonical_write = builtin_model_definition("write_file")
+    projected = agent_tools._project_active_tool_descriptions(
+        [
+            canonical_write,
+            builtin_model_definition("list_files"),
+        ]
+    )
+
+    assert projected[0] is canonical_write
+    assert "list_files" in projected[0]["function"]["description"]
 
 
 def test_known_schema_contracts_match_handler_validation() -> None:
@@ -236,6 +280,66 @@ def test_runtime_resolver_hides_every_application_tool_without_typed_boundary() 
         "read_webpage",
     ]
     assert agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES <= BUILTIN_TOOL_NAMES
+
+
+def test_registered_tool_requires_a_complete_execution_contract() -> None:
+    definition = builtin_model_definition("read_file")
+    assert definition is not None
+
+    with pytest.raises(ToolContractError, match="authorization"):
+        RegisteredTool(
+            model_definition=definition,
+            binding_kind="builtin",
+            handler_key="read_file",
+            effect="read",
+            retry_policy="safe",
+            authorization_policy="",
+            recovery_policy="runtime_default",
+            deadline_policy="runtime_default",
+            cancel_capability="stop_waiting_only",
+            contract_version="registered:read_file:test",
+        )
+
+
+def test_registry_exposes_only_complete_static_entries_and_hides_schema_drift() -> None:
+    assert STATIC_REGISTERED_TOOL_NAMES == {
+        "read_file",
+        "agentbay_code_read_file",
+    }
+    assert registered_tool("read_file") is not None
+    assert registered_tool("not_migrated_yet") is None
+
+    stale = deepcopy(builtin_model_definition("read_file"))
+    stale["function"]["parameters"] = {"type": "object", "properties": {}}
+    assert resolve_registered_tool(stale) is None
+
+
+def test_dynamic_mcp_registry_uses_exact_name_and_conservative_policies() -> None:
+    definition = {
+        "type": "function",
+        "function": {
+            "name": "tenant_search",
+            "description": "Search one tenant provider.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+    assert resolve_registered_tool(definition) is None
+    registered = resolve_registered_tool(
+        definition,
+        dynamic_mcp_names={"tenant_search"},
+    )
+
+    assert registered is not None
+    assert registered == registered_dynamic_mcp(definition)
+    entry = registered.to_workset_entry()
+    assert entry.binding.kind == "mcp"
+    assert entry.effect == "external_write"
+    assert entry.retry_policy == "never"
 
 
 def test_local_content_batch_has_native_runtime_outcomes_before_becoming_visible() -> None:

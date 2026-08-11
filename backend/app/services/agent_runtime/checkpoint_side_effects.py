@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-import json
 from typing import Protocol, cast
-import uuid
 
 from loguru import logger
 from sqlalchemy import select
@@ -31,14 +31,27 @@ from app.services.agent_runtime.delivery import (
     deliver_runtime_message,
 )
 from app.services.agent_runtime.state import runtime_messages_as_json
-from app.services.agent_runtime.tool_execution import sanitize_tool_arguments
+from app.services.agent_runtime.tool_execution import (
+    sanitize_tool_arguments,
+    sanitize_tool_feedback_text,
+)
 from app.services.builtin_tool_definitions import builtin_sensitive_paths
-from app.services.group_realtime import publish_stored_group_message
 from app.services.experience_retrieval import record_experience_citations
-
+from app.services.group_realtime import publish_stored_group_message
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_PROMPT = "需要你的确认或补充信息后才能继续。"
+_MODEL_ACTIONS = frozenset(
+    {
+        "continue",
+        "repair_arguments",
+        "choose_other_tool",
+        "ask_user",
+        "wait",
+        "reconcile",
+    }
+)
+_SIDE_EFFECT_STATES = frozenset({"none", "confirmed", "possible", "unknown"})
 
 
 class RuntimeCheckpointSideEffectError(RuntimeError):
@@ -268,6 +281,31 @@ def _tool_arguments(call: Mapping[str, object], tool_name: str) -> dict:
     )
 
 
+def _tool_feedback(message: Mapping[str, object]) -> dict[str, str]:
+    feedback: dict[str, str] = {}
+    model_action = _text_field(message.get("model_action"))
+    if model_action in _MODEL_ACTIONS:
+        feedback["model_action"] = model_action
+    side_effect_state = _text_field(message.get("side_effect_state"))
+    if side_effect_state in _SIDE_EFFECT_STATES:
+        feedback["side_effect_state"] = side_effect_state
+    remediation = _text_field(message.get("safe_remediation"))
+    if remediation is not None:
+        remediation = sanitize_tool_feedback_text(remediation)
+        if remediation:
+            feedback["safe_remediation"] = remediation
+    return feedback
+
+
+def _tool_result_identity(message: Mapping[str, object]) -> dict[str, str]:
+    identity: dict[str, str] = {}
+    for field in ("execution_id", "provider_call_id", "contract_version"):
+        value = _text_field(message.get(field))
+        if value is not None:
+            identity[field] = value[:255]
+    return identity
+
+
 def _runtime_observation_events(
     run: RuntimeRunRecord,
     checkpoint: CheckpointObservation,
@@ -324,6 +362,16 @@ def _runtime_observation_events(
         raw_calls = message.get("tool_calls")
         if not isinstance(raw_calls, list):
             continue
+        provider_call_ids = message.get("provider_call_ids")
+        if not isinstance(provider_call_ids, Mapping):
+            additional_kwargs = message.get("additional_kwargs")
+            provider_call_ids = (
+                additional_kwargs.get("provider_call_ids")
+                if isinstance(additional_kwargs, Mapping)
+                else {}
+            )
+        if not isinstance(provider_call_ids, Mapping):
+            provider_call_ids = {}
         for raw_call in raw_calls:
             if not isinstance(raw_call, Mapping):
                 continue
@@ -334,11 +382,17 @@ def _runtime_observation_events(
                 continue
             detail = {
                 "call_id": call_id,
+                "call_instance_id": call_id,
                 "name": tool_name,
                 "args": _tool_arguments(raw_call, tool_name),
                 "reasoning_content": reasoning or "",
                 "assistant_message_id": message_id,
             }
+            provider_call_id = _text_field(
+                raw_call.get("provider_call_id") or provider_call_ids.get(call_id)
+            )
+            if provider_call_id is not None:
+                detail["provider_call_id"] = provider_call_id
             calls[call_id] = detail
             events.append(
                 (
@@ -370,6 +424,8 @@ def _runtime_observation_events(
             **calls[call_id],
             "result": result,
             "execution_status": execution_status,
+            **_tool_feedback(message),
+            **_tool_result_identity(message),
         }
         if error_code is not None:
             payload["error_code"] = error_code
@@ -428,12 +484,15 @@ async def _record_direct_tool_history(
                 "execution_status": execution_status,
                 "result": str(message.get("content") or ""),
                 "tool_call_id": call_id,
+                "call_instance_id": call_id,
                 "reasoning_content": detail.get("reasoning_content") or "",
                 **(
                     {"error_code": message["error_code"]}
                     if isinstance(message.get("error_code"), str)
                     else {}
                 ),
+                **_tool_feedback(message),
+                **_tool_result_identity(message),
             },
             ensure_ascii=False,
             default=str,
@@ -807,8 +866,8 @@ class RuntimeCheckpointSideEffects:
 
 
 __all__ = [
-    "RuntimeCheckpointSideEffectError",
     "RuntimeCheckpointProductHandler",
+    "RuntimeCheckpointSideEffectError",
     "RuntimeCheckpointSideEffects",
     "delivery_from_checkpoint",
 ]

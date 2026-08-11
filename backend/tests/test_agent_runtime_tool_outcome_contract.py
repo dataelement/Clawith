@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from collections import deque
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import uuid
+from collections import deque
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.services import agent_tools
 from app.models.agent_tool_execution import AgentToolExecution
+from app.services import agent_tools
 from app.services.agent_runtime.state import (
     RunInputSnapshots,
     RuntimeContext,
@@ -20,6 +20,7 @@ from app.services.agent_runtime.state import (
 )
 from app.services.agent_runtime.tool_execution import (
     ToolExecutionOutcome,
+    execution_outcome,
     normalize_tool_outcome,
     sanitize_tool_arguments,
 )
@@ -289,6 +290,86 @@ def test_outcome_normalizer_replaces_controls_redacts_credentials_and_caps_utf8_
     assert normalized.metadata["redaction_count"] >= 1
     assert normalized.metadata["summary_truncated"] is True
     assert normalized.metadata["content_hash"]
+
+
+def test_failure_feedback_fields_are_sanitized_bounded_and_replayable() -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="failed",
+            result_summary="Argument validation failed.",
+            result_ref=None,
+            error_code="tool_arguments_invalid",
+            model_action="repair_arguments",
+            side_effect_state="none",
+            safe_remediation=(
+                "Correct $.path; Authorization: Bearer must-not-survive\x00"
+                + "界" * 300
+            ),
+        ),
+        effect="read",
+        retry_policy="safe",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.model_action == "repair_arguments"
+    assert normalized.side_effect_state == "none"
+    assert normalized.safe_remediation is not None
+    assert "must-not-survive" not in normalized.safe_remediation
+    assert "\x00" not in normalized.safe_remediation
+    assert len(normalized.safe_remediation.encode("utf-8")) <= 512
+    assert normalized.metadata["model_action"] == "repair_arguments"
+    assert normalized.metadata["side_effect_state"] == "none"
+    assert normalized.metadata["safe_remediation"] == normalized.safe_remediation
+
+    execution = _execution(
+        tenant_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        status="failed",
+    )
+    execution.result_summary = normalized.result_summary
+    execution.result_ref = normalized.result_ref
+    execution.result_metadata = normalized.metadata
+    replayed = execution_outcome(execution)
+
+    assert replayed.model_action == normalized.model_action
+    assert replayed.side_effect_state == normalized.side_effect_state
+    assert replayed.safe_remediation == normalized.safe_remediation
+
+
+@pytest.mark.parametrize(
+    ("error_code", "event_key"),
+    (
+        ("tool_deadline_outcome_unknown", "deadline_exceeded"),
+        ("tool_cancelled_outcome_unknown", "cancel_requested"),
+    ),
+)
+def test_possible_write_after_deadline_or_cancel_is_unknown_and_not_replayable(
+    error_code: str,
+    event_key: str,
+) -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="unknown",
+            result_summary="External write may have happened; reconcile first.",
+            result_ref=None,
+            error_code=error_code,
+            retryable=False,
+            model_action="reconcile",
+            side_effect_state="unknown",
+            metadata={event_key: True},
+        ),
+        effect="external_write",
+        retry_policy="never",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.status == "unknown"
+    assert normalized.retryable is False
+    assert normalized.model_action == "reconcile"
+    assert normalized.side_effect_state == "unknown"
+    assert normalized.metadata[event_key] is True
 
 
 def test_outcome_normalizer_preserves_bounded_email_provider_receipt() -> None:

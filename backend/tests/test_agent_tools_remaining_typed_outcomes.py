@@ -103,6 +103,52 @@ async def test_runtime_resolver_applies_channel_and_registry_readiness(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("trigger_type", "config"),
+    [
+        ("once", {"at": "tomorrow"}),
+        ("interval", {"minutes": "30"}),
+        ("interval", {"minutes": True}),
+        ("interval", {"minutes": 0}),
+        ("poll", {"url": "/relative"}),
+        ("poll", {"url": "https://example.test", "method": "POST"}),
+        (
+            "poll",
+            {"url": "https://example.test", "headers": {"X-Test": 1}},
+        ),
+        (
+            "poll",
+            {"url": "https://example.test", "fire_on": "match"},
+        ),
+        ("cron", {"expr": "0 9 * * *", "timezone": "Mars/Olympus"}),
+        ("webhook", {"url": "https://example.test"}),
+    ],
+)
+async def test_set_trigger_rejects_invalid_config_before_database_access(
+    monkeypatch,
+    trigger_type: str,
+    config: dict,
+) -> None:
+    def forbidden_session():
+        raise AssertionError("invalid trigger config reached the database")
+
+    monkeypatch.setattr(agent_tools, "async_session", forbidden_session)
+
+    outcome = await agent_tools._handle_set_trigger_outcome(
+        uuid.uuid4(),
+        {
+            "name": "invalid-trigger",
+            "type": trigger_type,
+            "config": config,
+            "reason": "validate me",
+        },
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", sorted(REMAINING_DEFAULT_TYPED_TOOLS))
 async def test_remaining_default_tools_have_native_typed_validation_failures(
     tool_name: str,

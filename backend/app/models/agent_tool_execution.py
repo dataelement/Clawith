@@ -74,6 +74,8 @@ class AgentToolExecution(Base):
         UUID(as_uuid=True), nullable=False
     )
     tool_call_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contract_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
     assistant_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
     arguments_hash: Mapped[str] = mapped_column(String(128), nullable=False)

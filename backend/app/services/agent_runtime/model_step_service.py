@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from copy import deepcopy
-from dataclasses import asdict, replace
+import hashlib
 import json
 import random
 import re
-from typing import Protocol, cast
 import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import asdict, replace
+from typing import Protocol, cast
 
 from loguru import logger
 from sqlalchemy import select
@@ -19,30 +20,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.agent_run_command import AgentRunCommand
 from app.models.agent_tool_execution import AgentToolExecution
-from app.models.llm import LLMModel
 from app.models.group import GroupMember
+from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.services.agent_context import build_agent_context
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.context_builder import (
-    ContextBuildError,
     ContextBuilder,
+    ContextBuildError,
     RuntimeContextBuild,
 )
 from app.services.agent_runtime.group_at import (
     AT_TOOL_NAME,
     group_at_tool_definition,
 )
-from app.services.agent_runtime.group_runtime_tools import with_group_runtime_tools
 from app.services.agent_runtime.group_handoff import (
     GroupAgentHandoffError,
     preflight_group_agent_handoff,
+)
+from app.services.agent_runtime.group_runtime_tools import (
+    GROUP_READ_TOOL_NAMES,
+    GROUP_WRITE_TOOL_NAMES,
+    with_group_runtime_tools,
 )
 from app.services.agent_runtime.model_capabilities import (
     ModelCapabilityError,
     ModelCapabilityResolver,
 )
 from app.services.agent_runtime.node_executor import ModelStepResult
+from app.services.agent_runtime.run_compactor import RunCompactInputs
 from app.services.agent_runtime.state import (
     JsonObject,
     JsonValue,
@@ -50,16 +56,34 @@ from app.services.agent_runtime.state import (
     RuntimeGraphState,
     runtime_messages_as_json,
 )
-from app.services.agent_runtime.run_compactor import RunCompactInputs
+from app.services.agent_runtime.thread_visibility import (
+    model_visible_thread_messages,
+)
+from app.services.agent_runtime.tool_contracts import (
+    AcceptedToolCall,
+    StepToolContext,
+    ToolBindingKind,
+    ToolContractError,
+    ToolEffect,
+    ToolExecutionBinding,
+    ToolRetryPolicy,
+    ToolWorksetEntry,
+    deadline_policy_for_tool,
+    workset_version,
+)
 from app.services.agent_runtime.tool_result_store import (
     ToolResultStore,
     ToolResultStoreError,
 )
-from app.services.agent_runtime.thread_visibility import (
-    model_visible_thread_messages,
+from app.services.agent_runtime.tool_registry import (
+    resolve_registered_tool,
 )
 from app.services.agent_tools import get_runtime_agent_tools_for_llm
-from app.services.vision_inject import compress_bytes_to_base64
+from app.services.builtin_tool_definitions import (
+    BUILTIN_TOOL_NAMES,
+    builtin_policy,
+    is_reserved_custom_tool_name,
+)
 from app.services.llm.client import LLMMessage
 from app.services.llm.failover import FailoverErrorType, classify_error
 from app.services.llm.finish import (
@@ -68,6 +92,7 @@ from app.services.llm.finish import (
     parse_legacy_finish_content,
     parse_tool_arguments,
 )
+from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.multimodal_content import (
     MultimodalContentError,
     estimate_multimodal_tokens,
@@ -75,9 +100,8 @@ from app.services.llm.multimodal_content import (
     parse_multimodal_content,
 )
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
-from app.services.llm.model_resolution import active_agent_model_candidates
 from app.services.llm.utils import get_max_tokens
-
+from app.services.vision_inject import compress_bytes_to_base64
 
 _ACTIVE_AGENT_STATUSES = frozenset({"creating", "running", "idle"})
 _LEDGER_METADATA_KEY = "__clawith_tool_execution__"
@@ -197,6 +221,14 @@ def _pending_group_at_participant_ids(
             "checkpoint pending_group_at.participant_ids must be an array of UUID strings",
         )
     return tuple(cast(str, participant_id) for participant_id in participant_ids)
+
+
+def _tool_repair_reset_reason(state: RuntimeGraphState) -> str | None:
+    raw = state["lifecycle"].get("tool_repair_reset")
+    if not isinstance(raw, Mapping):
+        return None
+    reason = raw.get("reason")
+    return "explicit_user_correction" if reason == "explicit_user_correction" else None
 
 
 def _retry_http_status(error: Exception) -> str:
@@ -392,6 +424,110 @@ def _application_tools_for_model(
         for tool in tools
         if _tool_name(tool) not in _AGENTBAY_SCREENSHOT_TOOL_NAMES
     ]
+
+
+def _runtime_workset_entry(tool: Mapping[str, object]) -> ToolWorksetEntry:
+    """Join one model definition to a stable, secret-free execution route."""
+    name = _tool_name(tool)
+    if name is None:
+        raise ToolContractError("Tool Workset entry requires a name")
+    function = tool.get("function")
+    if not isinstance(function, Mapping):
+        raise ToolContractError("Tool Workset entry requires a function object")
+    raw_schema = function.get("parameters", {"type": "object", "properties": {}})
+    if not isinstance(raw_schema, Mapping):
+        raise ToolContractError("Tool Workset entry parameters must be an object")
+    schema = cast(JsonObject, deepcopy(dict(raw_schema)))
+    dynamic_mcp_names = (
+        {name}
+        if name not in BUILTIN_TOOL_NAMES
+        and not is_reserved_custom_tool_name(name)
+        else set()
+    )
+    registered = resolve_registered_tool(
+        tool,
+        dynamic_mcp_names=dynamic_mcp_names,
+    )
+    if registered is not None:
+        return registered.to_workset_entry()
+    if name in GROUP_READ_TOOL_NAMES:
+        effect, retry_policy = "read", "safe"
+        binding_kind = "group"
+    elif name in GROUP_WRITE_TOOL_NAMES:
+        effect, retry_policy = "write", "conditional"
+        binding_kind = "group"
+    else:
+        policy = builtin_policy(name)
+        effect = cast(str, policy["effect"])
+        retry_policy = cast(str, policy["retry_policy"])
+        binding_kind = (
+            "group"
+            if name == AT_TOOL_NAME
+            else "a2a"
+            if name == "send_message_to_agent"
+            else "agentbay"
+            if name.startswith("agentbay_")
+            else "builtin"
+            if name in BUILTIN_TOOL_NAMES
+            else "legacy"
+        )
+    contract_payload = json.dumps(
+        {"name": name, "schema": schema, "binding_kind": binding_kind},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    contract_digest = hashlib.sha256(contract_payload).hexdigest()[:16]
+    return ToolWorksetEntry(
+        tool_name=name,
+        contract_version=f"runtime:{name}:{contract_digest}",
+        parameters_schema=schema,
+        binding=ToolExecutionBinding(
+            kind=cast(ToolBindingKind, binding_kind),
+            handler_key=name,
+        ),
+        effect=cast(ToolEffect, effect),
+        retry_policy=cast(ToolRetryPolicy, retry_policy),
+        deadline_policy=deadline_policy_for_tool(name).name,
+    )
+
+
+def _step_tool_context(
+    state: RuntimeGraphState,
+    result: ModelStepResult,
+    tools: Sequence[Mapping[str, object]],
+) -> JsonObject:
+    if result.assistant_message is None:
+        raise ToolContractError("accepted Tool Calls require an Assistant message")
+    assistant_message_id = result.assistant_message.get("id")
+    if not isinstance(assistant_message_id, str) or not assistant_message_id:
+        raise ToolContractError("accepted Tool Calls require a stable Assistant message ID")
+    entries = tuple(_runtime_workset_entry(tool) for tool in tools)
+    entries_by_name = {entry.tool_name: entry for entry in entries}
+    accepted_calls: list[AcceptedToolCall] = []
+    for call in result.tool_calls:
+        call_id = call.get("id")
+        provider_call_id = call.get("provider_call_id")
+        tool_name = _tool_name(call)
+        if (
+            not isinstance(call_id, str)
+            or not isinstance(provider_call_id, str)
+            or tool_name not in entries_by_name
+        ):
+            raise ToolContractError("accepted Tool Call is missing from its Workset")
+        accepted_calls.append(
+            AcceptedToolCall(
+                call_instance_id=call_id,
+                provider_call_id=provider_call_id,
+                entry=entries_by_name[tool_name],
+            )
+        )
+    return StepToolContext(
+        assistant_message_id=assistant_message_id,
+        model_step=int(state["lifecycle"].get("model_step_count", 0)) + 1,
+        workset_version=workset_version(entries),
+        accepted_calls=tuple(accepted_calls),
+    ).to_json()
 
 
 def _with_group_instruction(
@@ -643,6 +779,7 @@ def _prompt_messages(
     initial_message_id = build.initial_input.get("message_id")
     initial_message_seen = False
     seen_message_ids: set[str] = set()
+    provider_call_ids: dict[str, str] = {}
 
     def append_history(raw: Mapping[str, object]) -> None:
         nonlocal initial_message_seen
@@ -662,14 +799,48 @@ def _prompt_messages(
                 or raw.get("runtime_input") in {"current", "resume"}
             )
         )
+        raw_tool_calls = raw.get("tool_calls")
+        provider_tool_calls: list[dict] | None = None
+        raw_provider_call_ids = raw.get("provider_call_ids")
+        if not isinstance(raw_provider_call_ids, Mapping):
+            additional_kwargs = raw.get("additional_kwargs")
+            raw_provider_call_ids = (
+                additional_kwargs.get("provider_call_ids")
+                if isinstance(additional_kwargs, Mapping)
+                else {}
+            )
+        if not isinstance(raw_provider_call_ids, Mapping):
+            raw_provider_call_ids = {}
+        if isinstance(raw_tool_calls, list):
+            provider_tool_calls = []
+            for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, Mapping):
+                    continue
+                call = deepcopy(dict(raw_call))
+                call_instance_id = call.get("id")
+                provider_call_id = call.pop("provider_call_id", None)
+                if not isinstance(provider_call_id, str) and isinstance(
+                    call_instance_id, str
+                ):
+                    provider_call_id = raw_provider_call_ids.get(call_instance_id)
+                if isinstance(call_instance_id, str) and isinstance(
+                    provider_call_id, str
+                ):
+                    provider_call_ids[call_instance_id] = provider_call_id
+                    call["id"] = provider_call_id
+                provider_tool_calls.append(call)
+        raw_tool_call_id = raw.get("tool_call_id")
+        provider_tool_call_id = (
+            provider_call_ids.get(raw_tool_call_id, raw_tool_call_id)
+            if isinstance(raw_tool_call_id, str)
+            else None
+        )
         messages.append(
             LLMMessage(
                 role=cast(str, role),  # type: ignore[arg-type]
                 content=_model_message_content(raw, build),
-                tool_calls=(
-                    cast(list[dict], raw.get("tool_calls")) if isinstance(raw.get("tool_calls"), list) else None
-                ),
-                tool_call_id=(cast(str, raw.get("tool_call_id")) if isinstance(raw.get("tool_call_id"), str) else None),
+                tool_calls=provider_tool_calls,
+                tool_call_id=provider_tool_call_id,
                 reasoning_content=(
                     cast(str, raw.get("reasoning_content")) if isinstance(raw.get("reasoning_content"), str) else None
                 ),
@@ -754,6 +925,48 @@ def _assistant_message(
     if runtime_intent:
         message["runtime_intent"] = runtime_intent
     return message
+
+
+def _with_call_instances(
+    context: RuntimeContext,
+    result: ModelStepResult,
+) -> ModelStepResult:
+    """Replace provider-local IDs with stable Run-local Call Instance IDs."""
+    if result.assistant_message is None:
+        raise ToolContractError("accepted Tool Calls require an Assistant message")
+    assistant_message_id = result.assistant_message.get("id")
+    if not isinstance(assistant_message_id, str) or not assistant_message_id:
+        raise ToolContractError("accepted Tool Calls require a stable Assistant message ID")
+    run_id = uuid.UUID(context.run_id)
+    calls: list[JsonObject] = []
+    provider_call_ids: dict[str, str] = {}
+    for index, raw_call in enumerate(result.tool_calls):
+        provider_call_id = raw_call.get("id")
+        if not isinstance(provider_call_id, str) or not provider_call_id.strip():
+            raise ToolContractError("accepted Tool Call requires a Provider Call ID")
+        call = cast(JsonObject, deepcopy(raw_call))
+        call["id"] = str(
+            uuid.uuid5(
+                run_id,
+                f"call-instance:{assistant_message_id}:{index}",
+            )
+        )
+        call["provider_call_id"] = provider_call_id.strip()
+        provider_call_ids[cast(str, call["id"])] = provider_call_id.strip()
+        calls.append(call)
+    assistant_message = cast(JsonObject, deepcopy(result.assistant_message))
+    assistant_message["tool_calls"] = [
+        {key: value for key, value in call.items() if key != "provider_call_id"}
+        for call in calls
+    ]
+    assistant_message["additional_kwargs"] = {
+        "provider_call_ids": provider_call_ids,
+    }
+    return replace(
+        result,
+        assistant_message=assistant_message,
+        tool_calls=tuple(calls),
+    )
 
 
 def _repair(
@@ -1590,6 +1803,7 @@ class RuntimeModelStepService:
             actual_model = model
             failed_over_from: LLMModel | None = None
             active_allowed_names = allowed_names
+            active_tools = tools
             try:
                 _log_provider_request_start(
                     context=context,
@@ -1717,6 +1931,7 @@ class RuntimeModelStepService:
                 actual_model = fallback
                 failed_over_from = model
                 active_allowed_names = fallback_allowed_names
+                active_tools = fallback_tools
 
             result = _parse_step(
                 state,
@@ -1726,6 +1941,19 @@ class RuntimeModelStepService:
                 allow_user_wait=allow_user_wait,
                 allow_group_handoff=not allow_user_wait,
             )
+            reset_reason = _tool_repair_reset_reason(state)
+            if reset_reason is not None:
+                result = replace(result, repair_reset_reason=reset_reason)
+            if result.intent == "tool_calls":
+                result = _with_call_instances(context, result)
+                result = replace(
+                    result,
+                    step_tool_context=_step_tool_context(
+                        state,
+                        result,
+                        active_tools,
+                    ),
+                )
             if result.intent == "finish" and not allow_user_wait:
                 try:
                     staged_participant_ids = _pending_group_at_participant_ids(state)

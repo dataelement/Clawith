@@ -1,17 +1,19 @@
+import uuid
 from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime
-import uuid
 
 import pytest
 
 from app.services.agent_runtime.contracts import (
     CancelRunCommand,
-    RunHandle,
-    RunView,
-    RuntimeEvent,
     ResumeRunCommand,
+    RunHandle,
+    RuntimeEvent,
+    RunView,
     StartRunCommand,
 )
+from app.services.agent_runtime.state import RuntimeLifecycle
+from app.services.agent_runtime.tool_contracts import parse_step_tool_context
 
 
 def test_execution_commands_cannot_carry_product_projection_fields() -> None:
@@ -93,3 +95,17 @@ def test_run_view_and_runtime_event_are_query_only_values() -> None:
 
     assert view.execution_status == "running"
     assert event.payload == {"status": "running"}
+
+
+def test_legacy_runtime_lifecycle_may_omit_step_tool_context() -> None:
+    lifecycle: RuntimeLifecycle = {
+        "status": "running",
+        "next_route": "tool",
+        "pending_tool_calls": [],
+    }
+
+    assert "step_tool_context" not in lifecycle
+    assert parse_step_tool_context(
+        lifecycle.get("step_tool_context"),
+        allow_legacy_missing=True,
+    ) is None

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-import uuid
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.models.agent_tool_execution import AgentToolExecution
 from app.services.agent_runtime import async_tool_poll
-
 
 _NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
 
@@ -66,6 +65,8 @@ def _pending_execution(*, due_at: datetime, scheduled: bool = False):
         tenant_id=tenant_id,
         run_id=run_id,
         tool_call_id="launch-call",
+        provider_call_id="provider-launch-call",
+        contract_version="runtime:arxiv-download:v1",
         tool_name="arxiv_local-download_paper",
         assistant_message_id="assistant-1",
         arguments_hash="hash",
@@ -126,9 +127,13 @@ async def test_due_async_poll_enqueues_one_idempotent_timer_resume(monkeypatch) 
                     "async_poll_correlation_id"
                 ],
                 "payload": {
-                    "operation_key": "operation-key",
-                    "tool_call_id": "launch-call",
-                    "poll_call_id": "poll-call",
+                        "operation_key": "operation-key",
+                        "tool_call_id": "launch-call",
+                        "call_instance_id": "launch-call",
+                        "tool_execution_id": str(execution.id),
+                        "provider_call_id": "provider-launch-call",
+                        "tool_contract_version": "runtime:arxiv-download:v1",
+                        "poll_call_id": "poll-call",
                     "poll": {
                         "tool": "arxiv_local-download_paper",
                         "arguments": {

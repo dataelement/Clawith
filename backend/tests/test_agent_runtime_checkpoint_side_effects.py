@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 from unittest.mock import AsyncMock, patch
-import uuid
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -281,14 +281,22 @@ async def test_checkpoint_projects_replayable_tool_activity_with_redacted_argume
                             },
                         }
                     ],
+                    "provider_call_ids": {"call-1": "provider-call-1"},
                 },
                 {
                     "id": "tool-result-1",
                     "role": "tool",
                     "tool_call_id": "call-1",
                     "name": "read_file",
-                    "content": "contents",
-                    "execution_status": "succeeded",
+                    "content": "$.path must have type string.",
+                    "execution_status": "failed",
+                    "error_code": "tool_arguments_invalid",
+                    "model_action": "repair_arguments",
+                    "side_effect_state": "none",
+                    "safe_remediation": "Correct $.path and call the Tool again.",
+                    "execution_id": "execution-1",
+                    "provider_call_id": "provider-call-1",
+                    "contract_version": "runtime:read_file:v1",
                 },
             ],
         },
@@ -316,8 +324,21 @@ async def test_checkpoint_projects_replayable_tool_activity_with_redacted_argume
         "tool_call",
     ]
     assert activities[1]["status"] == "running"
+    assert activities[1]["call_instance_id"] == "call-1"
+    assert activities[1]["provider_call_id"] == "provider-call-1"
     assert activities[2]["status"] == "done"
-    assert activities[2]["result"] == "contents"
+    assert activities[2]["call_instance_id"] == "call-1"
+    assert activities[2]["provider_call_id"] == "provider-call-1"
+    assert activities[2]["execution_id"] == "execution-1"
+    assert activities[2]["contract_version"] == "runtime:read_file:v1"
+    assert activities[2]["result"] == "$.path must have type string."
+    assert activities[2]["execution_status"] == "failed"
+    assert activities[2]["error_code"] == "tool_arguments_invalid"
+    assert activities[2]["model_action"] == "repair_arguments"
+    assert activities[2]["side_effect_state"] == "none"
+    assert activities[2]["safe_remediation"] == (
+        "Correct $.path and call the Tool again."
+    )
     assert activities[1]["args"]["api_key"] == "[REDACTED]"
 
 

@@ -1,10 +1,10 @@
 """Focused tests for the Runtime Tool Execution Ledger service."""
 
-from collections import deque
-from datetime import UTC, datetime, timedelta
 import inspect
 import math
 import uuid
+from collections import deque
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -12,7 +12,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.agent_tool_execution import AgentToolExecution
 from app.services.agent_runtime import tool_execution
-
 
 _NOW = datetime(2026, 7, 13, 13, 0, tzinfo=UTC)
 _ARGUMENTS = {"channel": "ops", "message": "hello"}
@@ -144,19 +143,25 @@ async def _reserve(
     retry_policy: str = "never",
     resume_safe_read: bool = False,
     arguments: dict | None = None,
+    tool_call_id: str = "call-1",
+    assistant_message_id: str = "assistant-message-1",
+    provider_call_id: str | None = None,
+    contract_version: str | None = None,
 ):
     return await tool_execution.reserve_tool_execution(
         db,
         tenant_id=tenant_id,
         run_id=run_id,
-        tool_call_id="call-1",
+        tool_call_id=tool_call_id,
         tool_name="send_message",
-        assistant_message_id="assistant-message-1",
+        assistant_message_id=assistant_message_id,
         arguments=arguments or _ARGUMENTS,
         sanitized_arguments=_SANITIZED_ARGUMENTS,
         request_ref="request://1",
         side_effect_classification=effect,
         retry_policy=retry_policy,
+        provider_call_id=provider_call_id,
+        contract_version=contract_version,
         lease_owner="worker-1",
         lease_ttl_seconds=60,
         resume_safe_read=resume_safe_read,
@@ -326,6 +331,38 @@ async def test_new_reservation_atomically_persists_started_and_execution_metadat
 
 
 @pytest.mark.asyncio
+async def test_repeated_provider_id_creates_distinct_call_instance_receipts() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    first_db = _FakeSession(run_id, None)
+    second_db = _FakeSession(run_id, None)
+
+    first = await _reserve(
+        first_db,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        tool_call_id="call-instance-1",
+        assistant_message_id="assistant-message-1",
+        provider_call_id="provider-local-1",
+        contract_version="runtime:send_message:v1",
+    )
+    second = await _reserve(
+        second_db,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        tool_call_id="call-instance-2",
+        assistant_message_id="assistant-message-2",
+        provider_call_id="provider-local-1",
+        contract_version="runtime:send_message:v1",
+    )
+
+    assert first.execution.id != second.execution.id
+    assert first.execution.tool_call_id != second.execution.tool_call_id
+    assert first.execution.provider_call_id == second.execution.provider_call_id
+    assert first.execution.contract_version == second.execution.contract_version
+
+
+@pytest.mark.asyncio
 async def test_succeeded_reservation_reuses_receipt_and_never_executes_again():
     tenant_id = uuid.uuid4()
     run_id = uuid.uuid4()
@@ -382,6 +419,32 @@ async def test_legacy_embedded_policy_metadata_remains_readable_during_backfill(
         run_id=run_id,
         effect="read",
         retry_policy="safe",
+    )
+
+    assert reservation.reusable_result is not None
+    assert reservation.reusable_result.result_summary == "cached"
+
+
+@pytest.mark.asyncio
+async def test_legacy_receipt_with_null_identity_fields_remains_replayable() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    existing = _execution(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        status="succeeded",
+        result_summary="cached",
+    )
+    existing.provider_call_id = None
+    existing.contract_version = None
+    db = _FakeSession(run_id, existing)
+
+    reservation = await _reserve(
+        db,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        provider_call_id="provider-call-1",
+        contract_version="runtime:send_message:v1",
     )
 
     assert reservation.reusable_result is not None
@@ -818,7 +881,10 @@ async def test_expired_final_safe_read_attempt_closes_without_provider_replay():
     assert reservation.prior_failure is not None
     assert reservation.prior_failure.error_code == "tool_retry_exhausted"
     assert execution.status == "failed"
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert (
+        execution.result_metadata["runtime_attempt_count"]
+        == tool_execution.SAFE_READ_MAX_ATTEMPTS
+    )
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert db.flush_count == 1
 

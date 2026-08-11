@@ -1,8 +1,9 @@
 """Receipt-backed Runtime tool-step tests."""
 
-from contextlib import asynccontextmanager
-from collections import deque
+import asyncio
 import uuid
+from collections import deque
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -16,6 +17,13 @@ from app.services.agent_runtime.state import (
     RunRegistrySnapshot,
     RuntimeContext,
     RuntimeGraphState,
+)
+from app.services.agent_runtime.tool_contracts import (
+    AcceptedToolCall,
+    StepToolContext,
+    ToolExecutionBinding,
+    ToolWorksetEntry,
+    workset_version,
 )
 from app.services.agent_runtime.tool_execution import (
     RetryableToolNodeError,
@@ -218,6 +226,120 @@ async def _tools(agent_id: uuid.UUID) -> list[dict]:
             "function": {"name": "vercel_deploy"},
         },
     ]
+
+
+def _with_step_tool_context(
+    state: RuntimeGraphState,
+    call: dict,
+    *,
+    context_tool_name: str | None = None,
+    parameters_schema: dict | None = None,
+) -> None:
+    call_id = str(call["id"])
+    tool_name = context_tool_name or str(call["function"]["name"])
+    policy = tool_step_service._policy(tool_name)
+    entry = ToolWorksetEntry(
+        tool_name=tool_name,
+        contract_version=f"runtime:{tool_name}:v1",
+        parameters_schema=parameters_schema
+        or {"type": "object", "properties": {}},
+        binding=ToolExecutionBinding(kind="builtin", handler_key=tool_name),
+        effect=policy.side_effect_classification,  # type: ignore[arg-type]
+        retry_policy=policy.retry_policy,  # type: ignore[arg-type]
+    )
+    context = StepToolContext(
+        assistant_message_id="assistant-message-1",
+        model_step=1,
+        workset_version=workset_version((entry,)),
+        accepted_calls=(
+            AcceptedToolCall(
+                call_instance_id=call_id,
+                provider_call_id=call_id,
+                entry=entry,
+            ),
+        ),
+    )
+    state["lifecycle"]["step_tool_context"] = context.to_json()
+
+
+@pytest.mark.asyncio
+async def test_schema_failure_returns_one_repair_result_before_receipt(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = {
+        "id": "invalid-arguments-1",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"path":42,"credential":"must-not-echo"}',
+        },
+    }
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(
+        state,
+        call,
+        parameters_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    )
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"invalid call crossed the Receipt gate: {args}, {kwargs}")
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", forbidden)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert len(result.messages) == 1
+    message = result.messages[0]
+    assert message["tool_call_id"] == "invalid-arguments-1"
+    assert message["execution_status"] == "failed"
+    assert message["error_code"] == "tool_arguments_invalid"
+    assert message["model_action"] == "repair_arguments"
+    assert message["side_effect_state"] == "none"
+    assert "$.path must have type string" in str(message["content"])
+    assert "$.credential is not an accepted argument" in str(message["content"])
+    assert "must-not-echo" not in str(message)
+
+
+@pytest.mark.parametrize(
+    ("status", "model_action", "side_effect_state"),
+    (
+        ("pending", "wait", "possible"),
+        ("unknown", "reconcile", "unknown"),
+    ),
+)
+def test_control_outcomes_keep_distinct_model_visible_status(
+    status: str,
+    model_action: str,
+    side_effect_state: str,
+) -> None:
+    message = tool_step_service._result_message(
+        run_id=uuid.uuid4(),
+        call_id="call-1",
+        tool_name="write_file",
+        outcome=ToolExecutionOutcome(
+            status=status,  # type: ignore[arg-type]
+            result_summary="control state",
+            result_ref=None,
+        ),
+    )
+
+    assert message["execution_status"] == status
+    assert message["model_action"] == model_action
+    assert message["side_effect_state"] == side_effect_state
 
 
 def _execution(
@@ -470,10 +592,254 @@ async def test_success_is_reserved_before_execution_and_settled_afterwards(
             "role": "tool",
             "tool_call_id": "call-1",
             "name": "read_file",
-            "content": "file contents",
-            "execution_status": "succeeded",
-            "result_ref": None,
-        },
+                "content": "file contents",
+                "execution_status": "succeeded",
+                "result_ref": None,
+                    "model_action": "continue",
+                    "side_effect_state": "confirmed",
+                    "execution_id": str(execution.id),
+                    "call_instance_id": "call-1",
+                },
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_executes_frozen_binding_without_tool_provider(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-frozen", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call)
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-frozen",
+        "read_file",
+    )
+
+    async def forbidden_provider(_agent_id: uuid.UUID) -> list[dict]:
+        raise AssertionError("new checkpoint Tool Step rebuilt the Workset")
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def execute(*args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="frozen result",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db, kwargs
+        execution.status = "succeeded"
+        execution.result_summary = "frozen result"
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden_provider,
+        tool_executor=execute,
+    )
+
+    result = await service.execute_pending(state, context, (call,))
+
+    assert result.error is None
+    assert result.messages[0]["execution_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_context_mismatch_fails_before_provider_or_receipt() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-corrupt", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call, context_tool_name="write_file")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"corrupt context crossed execution boundary: {args}, {kwargs}")
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is not None
+    assert result.error["code"] == "tool_context_corrupt"
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_keeps_current_durable_cancel_gate_without_provider() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-cancelled", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call)
+    signal = CancelSignal(command_id="cancel-1", reason="user stopped")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"cancelled Call crossed execution boundary: {args}, {kwargs}")
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(signal),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.cancel_signal is signal
+    assert result.messages == ()
+
+
+@pytest.mark.asyncio
+async def test_legacy_pending_batch_resolves_workset_once_then_reuses_context(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    first_call = _call("legacy-call-1", "read_file")
+    second_call = _call("legacy-call-2", "write_file")
+    state = _state(tenant_id, agent, (first_call, second_call))
+    context = _context(state)
+    executions = {
+        call_id: _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            call_id,
+            tool_name,
+        )
+        for call_id, tool_name in (
+            ("legacy-call-1", "read_file"),
+            ("legacy-call-2", "write_file"),
+        )
+    }
+    provider_calls = 0
+
+    async def tools_once(agent_id: uuid.UUID) -> list[dict]:
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy pending batch rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db
+        return _reservation(executions[kwargs["tool_call_id"]])
+
+    async def execute(name, *args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=f"{name} done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution = executions[kwargs["execution_id"]] if isinstance(kwargs["execution_id"], str) else next(
+            item for item in executions.values() if item.id == kwargs["execution_id"]
+        )
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=execute,
+    )
+
+    first_result = await service.execute_pending(state, context, (first_call,))
+    assert first_result.step_tool_context is not None
+    assert first_result.step_tool_context["legacy_resolved"] is True
+    state["lifecycle"]["step_tool_context"] = first_result.step_tool_context
+    state["lifecycle"]["pending_tool_calls"] = [second_call]
+
+    second_result = await service.execute_pending(state, context, (second_call,))
+
+    assert second_result.error is None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_records_compatibility_usage_and_explicit_delete_gate(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("legacy-observed", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(state["registry"].run_id),
+        "legacy-observed",
+        "read_file",
+    )
+    warnings: list[tuple[object, ...]] = []
+
+    async def reserve(db, **_kwargs):
+        del db
+        return _reservation(execution)
+
+    async def execute(*_args, **_kwargs):
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    monkeypatch.setattr(
+        tool_step_service.logger,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        execute,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.step_tool_context is not None
+    assert result.step_tool_context["legacy_resolved"] is True
+    assert len(warnings) == 1
+    assert "legacy_tool_context_resolved" in str(warnings[0][0])
+    assert tool_step_service.legacy_tool_context_deletion_ready(
+        observed_legacy_batches=0,
+        full_supported_release_elapsed=True,
+        rollback_window_closed=True,
+    )
+    assert not tool_step_service.legacy_tool_context_deletion_ready(
+        observed_legacy_batches=1,
+        full_supported_release_elapsed=True,
+        rollback_window_closed=True,
     )
 
 
@@ -2611,7 +2977,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
         "call-read-exhausted",
         "read_file",
     )
-    execution.attempt_count = 3
+    execution.attempt_count = 10
 
     async def reserve(db, **kwargs):
         del db
@@ -2651,7 +3017,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
     assert "Do not repeat the identical tool call unchanged" in result.messages[0][
         "content"
     ]
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert execution.result_metadata["runtime_attempt_count"] == 10
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert execution.result_metadata["last_error_code"] == "temporary_read_failure"
 
@@ -2802,6 +3168,147 @@ async def test_started_receipt_waits_for_reconciliation_and_keeps_pending_call(
     assert result.waiting_request is not None
     assert result.waiting_request["waiting_type"] == "external"
     assert result.pending_tool_calls == (call,)
+
+
+def _accepted_for_control_test(
+    *,
+    tool_name: str,
+    effect: str,
+    retry_policy: str,
+    deadline_policy: str = "runtime_default",
+) -> AcceptedToolCall:
+    return AcceptedToolCall(
+        call_instance_id="controlled-call",
+        provider_call_id="provider-call",
+        entry=ToolWorksetEntry(
+            tool_name=tool_name,
+            contract_version=f"runtime:{tool_name}:v1",
+            parameters_schema={"type": "object", "properties": {}},
+            binding=ToolExecutionBinding(kind="builtin", handler_key=tool_name),
+            effect=effect,  # type: ignore[arg-type]
+            retry_policy=retry_policy,  # type: ignore[arg-type]
+            deadline_policy=deadline_policy,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_inflight_cancel_stops_waiting_and_marks_possible_write_unknown(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, agent, ())
+    context = _context(state)
+    signal = CancelSignal(command_id="cancel-live", reason="user_abort")
+    operation_cancelled = asyncio.Event()
+
+    async def execute(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            operation_cancelled.set()
+
+    service = _service(agent, _CancelSource(signal), execute)
+
+    async def fence(**_kwargs):
+        return None
+
+    monkeypatch.setattr(service, "_assert_execution_fence", fence)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "controlled-call",
+        "write_file",
+    )
+
+    outcome, observed_signal = await service._execute_application_with_controls(
+        state=state,
+        context=context,
+        tenant_id=tenant_id,
+        agent=agent,
+        accepted=_accepted_for_control_test(
+            tool_name="write_file",
+            effect="external_write",
+            retry_policy="never",
+        ),
+        arguments={},
+        reservation=_reservation(execution),
+        lease_owner=execution.lease_owner,
+    )
+
+    assert observed_signal == signal
+    assert operation_cancelled.is_set()
+    assert outcome.status == "unknown"
+    assert outcome.error_code == "tool_cancelled_outcome_unknown"
+    assert outcome.retryable is False
+    assert outcome.model_action == "reconcile"
+    assert outcome.side_effect_state == "unknown"
+    assert outcome.metadata["cancel_propagation"] == "stop_waiting_only"
+
+
+@pytest.mark.asyncio
+async def test_long_application_handler_renews_lease_and_fences_before_return(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, agent, ())
+    context = _context(state)
+    events: list[str] = []
+
+    async def execute(*_args, **_kwargs):
+        await asyncio.sleep(0.12)
+        events.append("handler_done")
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="done",
+            result_ref=None,
+        )
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(),
+        tool_provider=_tools,
+        tool_executor=execute,
+        lease_ttl_seconds=0.15,  # type: ignore[arg-type]
+    )
+
+    async def renew(**_kwargs):
+        events.append("renew")
+
+    async def fence(**_kwargs):
+        events.append("fence")
+
+    monkeypatch.setattr(service, "_renew_execution_lease", renew)
+    monkeypatch.setattr(service, "_assert_execution_fence", fence)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "controlled-call",
+        "read_file",
+    )
+
+    outcome, signal = await service._execute_application_with_controls(
+        state=state,
+        context=context,
+        tenant_id=tenant_id,
+        agent=agent,
+        accepted=_accepted_for_control_test(
+            tool_name="read_file",
+            effect="read",
+            retry_policy="safe",
+        ),
+        arguments={},
+        reservation=_reservation(execution),
+        lease_owner=execution.lease_owner,
+    )
+
+    assert signal is None
+    assert outcome.status == "succeeded"
+    assert events[0] == "fence"
+    assert "renew" in events
+    assert events[-1] == "fence"
 
 
 @pytest.mark.asyncio

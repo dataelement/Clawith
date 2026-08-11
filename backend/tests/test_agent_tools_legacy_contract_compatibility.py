@@ -145,3 +145,95 @@ async def test_legacy_image_generation_only_serializes_the_typed_outcome(
 
     assert calls == 1
     assert result == "✅ Image generated with a durable workspace receipt."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "adapter_name"),
+    (
+        ("read_file", {"path": "workspace/report.md"}, "_read_file_outcome"),
+        (
+            "agentbay_code_read_file",
+            {"remote_path": "/tmp/report.md"},
+            "_agentbay_read_outcome",
+        ),
+    ),
+)
+async def test_registered_builtin_and_agentbay_read_keep_typed_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    arguments: dict,
+    adapter_name: str,
+) -> None:
+    calls: list[tuple[tuple, dict]] = []
+
+    async def adapter(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=f"{tool_name} typed receipt",
+            result_ref=None,
+        )
+
+    monkeypatch.setattr(agent_tools, adapter_name, adapter)
+    if tool_name == "read_file":
+        async def tenant(_agent_id):
+            return str(uuid.uuid4())
+
+        monkeypatch.setattr(agent_tools, "_get_agent_tenant_id", tenant)
+
+    outcome = await agent_tools.execute_builtin_tool_outcome(
+        tool_name,
+        arguments,
+        uuid.uuid4(),
+        uuid.uuid4(),
+        session_id="session-registered",
+    )
+
+    assert isinstance(outcome, ToolExecutionOutcome)
+    assert outcome.status == "succeeded"
+    assert calls
+
+
+@pytest.mark.asyncio
+async def test_registered_dynamic_mcp_keeps_exact_typed_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_id = uuid.uuid4()
+    target = {
+        "full_name": "tenant_search",
+        "raw_name": "search",
+        "server_url": "https://mcp.example.test",
+    }
+    calls: list[tuple[dict, dict, uuid.UUID]] = []
+
+    async def resolve(tool_name, resolved_agent_id):
+        assert tool_name == "tenant_search"
+        assert resolved_agent_id == agent_id
+        return target
+
+    async def execute(resolved_target, arguments, *, agent_id):
+        calls.append((resolved_target, arguments, agent_id))
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="MCP typed receipt",
+            result_ref=None,
+        )
+
+    monkeypatch.setattr(agent_tools, "_resolve_mcp_execution_target", resolve)
+    monkeypatch.setattr(
+        agent_tools,
+        "_execute_resolved_mcp_target_outcome",
+        execute,
+    )
+
+    outcome = await agent_tools.execute_builtin_tool_outcome(
+        "tenant_search",
+        {"query": "contract"},
+        agent_id,
+        uuid.uuid4(),
+    )
+
+    assert isinstance(outcome, ToolExecutionOutcome)
+    assert outcome.status == "succeeded"
+    assert calls == [(target, {"query": "contract"}, agent_id)]

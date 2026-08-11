@@ -70,3 +70,10 @@ For non-trivial features or architecture refactoring, follow this workflow:
 - **[`frontend/AGENTS.md`](file:///Users/alex/Documents/Code/dataelem/Clawith/frontend/AGENTS.md)**: Frontend-specific coding standards, React/TS guidelines, HTTP wrapper usage.
 
 > **RULE**: Sub-directory `AGENTS.md` files extend root guidelines. Never duplicate root rules in sub-files. If a rule spans multiple components, put it here.
+
+## Active Technologies
+- Python 3.11+ + FastAPI, SQLAlchemy 2.x async ORM, PostgreSQL, LangGraph checkpoint, Pydantic, httpx (002-tool-runtime-contract)
+- PostgreSQL `agent_tool_executions` + LangGraph PostgreSQL checkpoint；不新增第二套 Run 生命周期状态机 (002-tool-runtime-contract)
+
+## Recent Changes
+- 002-tool-runtime-contract: Added Python 3.11+ + FastAPI, SQLAlchemy 2.x async ORM, PostgreSQL, LangGraph checkpoint, Pydantic, httpx

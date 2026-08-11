@@ -15,6 +15,7 @@ from app.services.llm.client import (
     extract_embedded_reasoning,
 )
 from app.services.llm import single_step
+from app.services.llm.utils import get_tool_params
 
 
 _TINY_PNG_DATA_URL = (
@@ -38,6 +39,42 @@ class _Client:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_provider_parallel_capability_is_independent_from_tool_choice() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    messages = [LLMMessage(role="user", content="Read it")]
+
+    serial_payload = OpenAICompatibleClient(
+        api_key="test",
+        model="serial-provider",
+        supports_tool_choice=True,
+        supports_parallel_tool_calls=False,
+    )._build_payload(messages, tools, 0.2, 256)
+    parallel_payload = OpenAICompatibleClient(
+        api_key="test",
+        model="parallel-provider",
+        supports_tool_choice=True,
+        supports_parallel_tool_calls=True,
+    )._build_payload(messages, tools, 0.2, 256)
+
+    assert serial_payload["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in serial_payload
+    assert parallel_payload["parallel_tool_calls"] is True
+    assert get_tool_params("deepseek") == {"tool_choice": "auto"}
+    assert get_tool_params("openai") == {
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+    }
 
 
 def _model():
