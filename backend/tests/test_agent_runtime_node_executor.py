@@ -941,17 +941,27 @@ async def test_user_resume_with_pending_tool_returns_to_tool_before_model() -> N
         _context(run_id, executor, "command-reconcile"),
         resume_value={
             "resume_type": "user_input",
-            "payload": {"content": "The write did not take effect."},
+            "payload": {
+                "content": "The write did not take effect.",
+                "confirmation_text": "The write did not take effect.",
+            },
         },
     )
 
     assert update["lifecycle"]["status"] == "running"
     assert update["lifecycle"]["next_route"] == "tool"
     assert update["lifecycle"]["pending_tool_calls"] == [pending_call]
+    assert update["lifecycle"]["resumed_waiting_request"] == {
+        "waiting_type": "user",
+        "correlation_id": "tool-confirm-1",
+    }
     assert "messages" not in update
     assert update["lifecycle"]["deferred_resume_messages"][0]["content"] == (
         "The write did not take effect."
     )
+    assert update["lifecycle"]["deferred_resume_messages"][0][
+        "runtime_confirmation_text"
+    ] == "The write did not take effect."
 
     tool_state = cast(
         RuntimeGraphState,
@@ -968,6 +978,88 @@ async def test_user_resume_with_pending_tool_returns_to_tool_before_model() -> N
         "user",
     ]
     assert tool_update["lifecycle"]["deferred_resume_messages"] == []
+    assert "resumed_waiting_request" not in tool_update["lifecycle"]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_resume_discards_unconfirmed_tail_calls() -> None:
+    run_id = uuid.uuid4()
+    approval_call: JsonObject = {
+        "id": "call-approval",
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_create",
+            "arguments": "{}",
+        },
+    }
+    unconfirmed_tail: JsonObject = {
+        "id": "call-tail",
+        "type": "function",
+        "function": {
+            "name": "send_channel_message",
+            "arguments": "{}",
+        },
+    }
+    tools = ToolService(
+        ToolStepResult(
+            messages=(
+                {
+                    "id": "tool-result-approval",
+                    "role": "tool",
+                    "tool_call_id": "call-approval",
+                    "name": "feishu_approval_create",
+                    "content": "Approval was not created.",
+                    "execution_status": "failed",
+                },
+            ),
+        )
+    )
+    executor = _executor(ModelService(), tools=tools)
+    state = _state(run_id)
+    state["lifecycle"].update(
+        {
+            "status": "waiting_user",
+            "next_route": "wait",
+            "pending_tool_calls": [approval_call, unconfirmed_tail],
+            "waiting_request": {
+                "waiting_type": "user",
+                "correlation_id": "approval-confirm-1",
+                "tool_call_id": "call-approval",
+                "discard_remaining_tool_calls_on_resume": True,
+            },
+        }
+    )
+
+    wait_update = await executor.execute(
+        "wait",
+        state,
+        _context(run_id, executor, "command-confirm"),
+        resume_value={
+            "resume_type": "user_input",
+            "payload": {
+                "content": "取消",
+                "confirmation_text": "取消",
+            },
+        },
+    )
+    tool_state = cast(
+        RuntimeGraphState,
+        {**state, "lifecycle": wait_update["lifecycle"]},
+    )
+
+    tool_update = await executor.execute(
+        "tool",
+        tool_state,
+        _context(run_id, executor, "command-confirm"),
+    )
+
+    assert tools.calls == [(approval_call,)]
+    assert tool_update["lifecycle"]["pending_tool_calls"] == []
+    assert tool_update["lifecycle"]["next_route"] == "compact"
+    assert [message["role"] for message in tool_update["messages"]] == [
+        "tool",
+        "user",
+    ]
 
 
 @pytest.mark.asyncio

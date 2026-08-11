@@ -574,6 +574,7 @@ async def enqueue_chat_runtime(
         display_content=display_content,
         file_name=file_name,
     )
+    confirmation_text = (display_content or content).strip()
     resumed_run: AgentRun | None = None
     if resume_run_id is not None:
         resumed_run = await _require_resume_run(
@@ -642,6 +643,7 @@ async def enqueue_chat_runtime(
                     "payload": {
                         "message_id": str(resolved_message_id),
                         "content": runtime_content,
+                        "confirmation_text": confirmation_text,
                     },
                 },
                 actor_user_id=user.id,

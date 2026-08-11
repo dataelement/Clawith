@@ -318,6 +318,42 @@ def test_outcome_normalizer_preserves_bounded_email_provider_receipt() -> None:
     assert "provider_response" not in normalized.metadata
 
 
+def test_outcome_normalizer_preserves_sanitized_feishu_provider_receipt() -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Feishu rejected approval_create: HTTP 400; code 1390001."
+            ),
+            result_ref=None,
+            error_code="feishu_approval_create_rejected",
+            metadata={
+                "provider_http_status": 400,
+                "provider_code": 1390001,
+                "provider_msg": "param is invalid",
+                "provider_response_body": {
+                    "code": 1390001,
+                    "msg": "param is invalid",
+                    "authorization": "must-not-persist",
+                },
+            },
+        ),
+        effect="external_write",
+        retry_policy="never",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.metadata["provider_http_status"] == 400
+    assert normalized.metadata["provider_code"] == 1390001
+    assert normalized.metadata["provider_msg"] == "param is invalid"
+    assert normalized.metadata["provider_response_body"] == {
+        "code": 1390001,
+        "msg": "param is invalid",
+        "authorization": "[REDACTED]",
+    }
+
+
 def test_outcome_normalizer_preserves_bounded_okr_transaction_receipt() -> None:
     normalized, archived_body = normalize_tool_outcome(
         ToolExecutionOutcome(

@@ -436,7 +436,8 @@ async def test_chat_resume_persists_explicit_correlation_with_the_user_message()
             user=user,
             session=session,
             model=model,
-            content="Yes, continue",
+            content="[发送者: Alice] 确认发起 ABC123",
+            display_content="确认发起 ABC123",
             message_id=message_id,
             resume_run_id=run_id,
             resume_correlation_id="confirm-7",
@@ -458,7 +459,8 @@ async def test_chat_resume_persists_explicit_correlation_with_the_user_message()
         "correlation_id": "confirm-7",
         "payload": {
             "message_id": str(message_id),
-            "content": "Yes, continue",
+            "content": "[发送者: Alice] 确认发起 ABC123",
+            "confirmation_text": "确认发起 ABC123",
         },
     }
     assert waiting_run.delivery_target == {
@@ -835,7 +837,11 @@ async def test_direct_resume_exact_retry_remains_idempotent_after_apply() -> Non
         payload={
             "resume_type": "user_input",
             "correlation_id": "confirm-1",
-            "payload": {"message_id": str(message_id), "content": "Continue"},
+            "payload": {
+                "message_id": str(message_id),
+                "content": "Continue",
+                "confirmation_text": "Continue",
+            },
         },
         actor_user_id=user.id,
         idempotency_key=f"resume:chat:{message_id}",

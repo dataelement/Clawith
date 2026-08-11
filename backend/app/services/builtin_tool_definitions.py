@@ -2497,9 +2497,87 @@ _BUILTIN_TOOL_SOURCE = [
         "config_schema": {},
     },
     {
+        "name": "feishu_approval_definition_get",
+        "display_name": "Feishu Approval Definition Get",
+        "description": (
+            "读取飞书审批定义的当前表单或流程节点结构，"
+            "用于构造后续审批实例请求。"
+        ),
+        "category": "feishu",
+        "icon": "🧩",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "审批定义的唯一代码 (approval_code)。",
+                },
+                "section": {
+                    "type": "string",
+                    "enum": ["summary", "form", "nodes"],
+                    "default": "summary",
+                    "description": "读取定义摘要、表单控件或流程节点。",
+                },
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "form 或 nodes 区段的零基偏移量。",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "form 或 nodes 区段本次最多返回的项目数。",
+                },
+            },
+            "required": ["approval_code"],
+            "additionalProperties": False,
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_file_upload",
+        "display_name": "Feishu Approval File Upload",
+        "description": (
+            "将一个工作区文件上传到飞书审批系统，返回可写入 image 或 "
+            "attachment 表单控件的文件 code。"
+        ),
+        "category": "feishu",
+        "icon": "📎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "工作区相对路径，例如 workspace/reimbursements/receipt.pdf。",
+                },
+                "file_type": {
+                    "type": "string",
+                    "enum": ["image", "attachment"],
+                    "description": "必须与审批定义中的目标控件类型一致。",
+                },
+            },
+            "required": ["file_path", "file_type"],
+            "additionalProperties": False,
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "feishu_approval_create",
         "display_name": "Feishu Approval Create",
-        "description": "发起一个飞书审批流实例。该外部写入当前仅保留兼容合同，Durable Runtime 在确认门禁接入前不会向模型暴露。",
+        "description": (
+            "发起一个飞书审批流实例。先读取审批定义，"
+            "并按需上传表单中的图片或附件。"
+        ),
         "category": "feishu",
         "icon": "📝",
         "is_default": False,
@@ -2509,6 +2587,7 @@ _BUILTIN_TOOL_SOURCE = [
                 "approval_code": {
                     "type": "string",
                     "minLength": 1,
+                    "maxLength": 256,
                     "description": "审批定义的唯一代码 (approval_code)。",
                 },
                 "target_member_id": {
@@ -2519,7 +2598,26 @@ _BUILTIN_TOOL_SOURCE = [
                 "form_data": {
                     "type": "string",
                     "minLength": 2,
+                    "maxLength": 100000,
                     "description": "表单字段数组的 JSON 字符串。该字段属于敏感参数。",
+                },
+                "department_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": (
+                        "可选的审批发起人所属 department_id；"
+                        "多部门成员需要显式指定。"
+                    ),
+                },
+                "uuid": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": (
+                        "可选的租户内幂等键；"
+                        "同一个 uuid 只能成功创建一个审批实例。"
+                    ),
                 },
             },
             "required": ["approval_code", "target_member_id", "form_data"],
@@ -3700,6 +3798,7 @@ _READ_TOOL_NAMES = frozenset(
         "feishu_doc_read",
         "feishu_calendar_list",
         "feishu_user_search",
+        "feishu_approval_definition_get",
         "feishu_approval_query",
         "feishu_approval_get",
         "read_emails",
