@@ -2306,6 +2306,8 @@ class ProviderSpec:
 
 # Provider aliases accepted for compatibility
 PROVIDER_ALIASES: dict[str, str] = {
+    "atlas": "atlascloud",
+    "atlas-cloud": "atlascloud",
     "openai_response": "openai-response",
     "openairesponses": "openai-response",
 }
@@ -2334,6 +2336,13 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_responses",
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
+    ),
+    "atlascloud": ProviderSpec(
+        provider="atlascloud",
+        display_name="Atlas Cloud",
+        protocol="openai_compatible",
+        default_base_url="https://api.atlascloud.ai/v1",
+        default_max_tokens=8192,
     ),
     "azure": ProviderSpec(
         provider="azure",
