@@ -983,11 +983,23 @@ _BUILTIN_TOOL_SOURCE = [
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
+            "workspace_mode": "merge",
+            "publication_owner": "workspace_cas",
             "default_timeout": 30,
             "max_timeout": 60,
         },
         "config_schema": {
             "fields": [
+                {
+                    "key": "workspace_mode",
+                    "label": "Workspace Write Mode",
+                    "type": "select",
+                    "default": "merge",
+                    "options": [
+                        {"label": "Merge workspace changes", "value": "merge"},
+                        {"label": "Session output only", "value": "isolated_output"},
+                    ],
+                },
                 {
                     "key": "cpu_limit",
                     "label": "CPU Limit",

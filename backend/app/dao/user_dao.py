@@ -107,13 +107,11 @@ class UserDAO(BaseDAO[User]):
     async def list_admin_users(self, tenant_id: Any = None) -> Sequence[User]:
         """Fetch all active org/platform admin users in a tenant.
 
-        If active tenant context exists in _tenant_ctx, enforces active tenant scope
-        to prevent cross-tenant queries by org_admin.
+        If active tenant context exists in _tenant_ctx, enforces active tenant scope.
         """
         from app.dao.base import _tenant_ctx
 
-        active_tenant = _tenant_ctx.get()
-        tid = active_tenant if active_tenant is not None else tenant_id
+        tid = _tenant_ctx.get() or tenant_id
         if not tid:
             return []
         async with self.session(readonly=True) as db:

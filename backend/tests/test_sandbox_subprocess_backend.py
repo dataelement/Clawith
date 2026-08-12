@@ -1,13 +1,15 @@
 """Local sandbox bootstrap must not block the Backend event loop."""
 
 import asyncio
+import signal
+import uuid
 from pathlib import Path
 
 import pytest
 
 from app.services.sandbox.config import SandboxConfig
 from app.services.sandbox.local import subprocess_backend
-from app.services.sandbox.local.subprocess_backend import SubprocessBackend
+from app.services.sandbox.local.subprocess_backend import SANDBOX_VENV_PATH, SubprocessBackend
 
 
 @pytest.mark.asyncio
@@ -75,6 +77,40 @@ async def test_workspace_venv_timeout_terminates_child(monkeypatch, tmp_path: Pa
     assert terminated == [456]
 
 
+@pytest.mark.asyncio
+async def test_terminate_and_reap_process_waits_after_group_termination(monkeypatch) -> None:
+    terminated: list[tuple[int, signal.Signals]] = []
+
+    class _Process:
+        returncode = None
+        pid = 789
+
+        def __init__(self) -> None:
+            self.wait_calls = 0
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            self.returncode = -signal.SIGTERM
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -signal.SIGKILL
+
+    proc = _Process()
+    monkeypatch.setattr(subprocess_backend.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        subprocess_backend.os,
+        "killpg",
+        lambda pid, sig: terminated.append((pid, sig)),
+    )
+
+    backend = SubprocessBackend(SandboxConfig())
+    await backend._terminate_and_reap_process(proc)  # type: ignore[arg-type]
+
+    assert terminated == [(789, signal.SIGTERM)]
+    assert proc.wait_calls == 1
+
+
 def test_subprocess_backend_proxy_env_propagation(tmp_path: Path) -> None:
     config = SandboxConfig(
         http_proxy="http://127.0.0.1:8080",
@@ -112,6 +148,40 @@ def test_subprocess_backend_proxy_bwrap_command(monkeypatch, tmp_path: Path) -> 
     assert cmd[idx_https + 1] == "http://proxy.example.com:8443"
 
 
+def test_isolated_bwrap_mounts_only_tmp_and_session_output_writable(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/bwrap" if cmd == "bwrap" else None)
+    staging = tmp_path / "staging"
+    (staging / ".tmp").mkdir(parents=True)
+    session_id = uuid.uuid4()
+    output_path = f"workspace/output/{session_id}"
+    backend = SubprocessBackend(SandboxConfig(workspace_mode="isolated_output"))
+
+    cmd = backend._build_bwrap_command(
+        ["python", "/workspace/.tmp/_exec_tmp.py"],
+        tmp_path,
+        tmp_path / ".venv",
+        staging_path=staging,
+        writable_path=output_path,
+    )
+
+    assert cmd is not None
+    root_index = cmd.index("/workspace")
+    assert cmd[root_index - 2] == "--ro-bind"
+    venv_index = cmd.index(SANDBOX_VENV_PATH)
+    assert cmd[venv_index - 2] == "--ro-bind"
+    assert cmd[venv_index - 1] == str(tmp_path / ".venv")
+    assert "/workspace/.venv" not in cmd
+    tmp_index = cmd.index("/workspace/.tmp")
+    output_index = cmd.index(f"/workspace/{output_path}")
+    assert cmd[tmp_index - 2] == "--bind"
+    assert cmd[output_index - 2] == "--bind"
+    assert root_index < tmp_index < output_index
+    env_index = cmd.index("CLAWITH_SESSION_OUTPUT_DIR")
+    assert cmd[env_index + 1] == f"/workspace/{output_path}"
+    virtual_env_index = cmd.index("VIRTUAL_ENV")
+    assert cmd[virtual_env_index + 1] == SANDBOX_VENV_PATH
+
+
 def test_sandbox_config_proxy_parsing() -> None:
     data = {
         "http_proxy": "http://10.0.0.1:3128",
@@ -123,3 +193,191 @@ def test_sandbox_config_proxy_parsing() -> None:
     assert config.https_proxy == "http://10.0.0.1:3128"
     assert config.no_proxy == ".local,10.0.0.0/8"
 
+
+@pytest.mark.asyncio
+async def test_sandbox_output_sanitization(tmp_path: Path) -> None:
+    # Setup staging and target directories
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    # 1. Create HTML file with malicious script tag
+    html_file = staging / "index.html"
+    html_file.write_text("<html><body><h1>Hello</h1><script>alert(1)</script></body></html>", encoding="utf-8")
+
+    # 2. Create SVG file with malicious onload handler
+    svg_file = staging / "image.svg"
+    svg_file.write_text('<svg onload="alert(1)"></svg>', encoding="utf-8")
+
+    # 3. Create a banned script file
+    script_file = staging / "evil.sh"
+    script_file.write_text("rm -rf /", encoding="utf-8")
+
+    # Run verification and merge
+    backend = SubprocessBackend(SandboxConfig())
+    await backend._verify_and_merge_outputs(staging, target)
+
+    # Assertions
+    # HTML should be cleaned
+    cleaned_html = (target / "index.html").read_text(encoding="utf-8")
+    assert "<script>" not in cleaned_html
+    assert "alert(1)" not in cleaned_html
+
+    # SVG should be cleaned
+    cleaned_svg = (target / "image.svg").read_text(encoding="utf-8")
+    assert "onload" not in cleaned_svg
+    assert "alert(1)" not in cleaned_svg
+
+    # Banned script should NOT be merged
+    assert not (target / "evil.sh").exists()
+
+
+def test_sandbox_pip_hijack_shebang(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "bin"
+    venv_bin.mkdir(parents=True)
+
+    # Create fake pip scripts
+    pip_file = venv_bin / "pip"
+    pip_file.write_text("original shebang", encoding="utf-8")
+
+    backend = SubprocessBackend(SandboxConfig())
+    backend._fix_pip_shebangs(tmp_path)
+
+    # Check wrapper content
+    content = pip_file.read_text(encoding="utf-8")
+    assert "if [ -d /workspace/.tmp ]; then" in content
+    assert "REQ_FILE=\"/workspace/.tmp/.pip_request_${REQ_ID}\"" in content
+
+
+@pytest.mark.asyncio
+async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / ".tmp").mkdir()
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("", encoding="utf-8")
+
+    # Mock subprocess run to avoid running actual uv pip in unit test
+    uv_calls = []
+    class FakeProc:
+        returncode = 0
+        async def wait(self):
+            return 0
+
+    async def fake_create_subprocess(*args, **kwargs):
+        uv_calls.append(args)
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
+
+    backend = SubprocessBackend(SandboxConfig())
+
+    # Simulate a pip request being written inside the clone's .tmp/ folder
+    req_file = staging / ".tmp" / ".pip_request_123"
+    req_file.write_text("install pandas", encoding="utf-8")
+
+    stop_event = asyncio.Event()
+
+    # Start watcher as a background task
+    watcher_task = asyncio.create_task(
+        backend._watch_pip_requests(staging, venv, stop_event)
+    )
+
+    # Wait for watcher to process request and write response
+    res_file = staging / ".tmp" / ".pip_response_123"
+    for _ in range(20):
+        if res_file.exists():
+            break
+        await asyncio.sleep(0.1)
+
+    # Stop watcher
+    stop_event.set()
+    await watcher_task
+
+    # Assertions
+    assert res_file.exists()
+    assert res_file.read_text(encoding="utf-8") == "0"
+    assert not req_file.exists()
+    assert uv_calls
+    # Should call uv pip install
+    assert "uv" in uv_calls[0]
+    assert "pandas" in uv_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_protected_system_files(tmp_path: Path) -> None:
+    # Setup staging and target directories
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    # Create target files
+    (target / "soul.md").write_text("original soul content", encoding="utf-8")
+    (target / "tasks.json").write_text("original tasks content", encoding="utf-8")
+
+    # Clone real workspace to staging
+    backend = SubprocessBackend(SandboxConfig())
+    backend._clone_workspace_to_staging(target, staging)
+
+    # Verify cloning worked
+    assert (staging / "soul.md").read_text(encoding="utf-8") == "original soul content"
+
+    # Simulate modification inside the sandbox
+    (staging / "soul.md").write_text("modified malicious soul", encoding="utf-8")
+    (staging / "tasks.json").write_text("modified tasks", encoding="utf-8")
+
+    # Run verification and merge
+    await backend._verify_and_merge_outputs(staging, target)
+
+    # Assertions: protected files should NOT be updated in the real workspace
+    assert (target / "soul.md").read_text(encoding="utf-8") == "original soul content"
+    assert (target / "tasks.json").read_text(encoding="utf-8") == "original tasks content"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_workspace_shadow_cloning(tmp_path: Path) -> None:
+    # Setup staging and target directories
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+
+    # Create workspace files on host
+    (target / "existing.txt").write_text("hello world", encoding="utf-8")
+    (target / "folder").mkdir()
+    (target / "folder" / "data.csv").write_text("1,2,3", encoding="utf-8")
+
+    # Excluded files/folders shouldn't be cloned
+    (target / ".venv").mkdir()
+    (target / ".venv" / "bin").mkdir(parents=True)
+    (target / ".venv" / "bin" / "pip").write_text("pip text", encoding="utf-8")
+    (target / ".tmp").mkdir()
+    (target / ".tmp" / "temp.log").write_text("logs", encoding="utf-8")
+
+    # Clone real workspace to staging
+    backend = SubprocessBackend(SandboxConfig())
+    backend._clone_workspace_to_staging(target, staging)
+
+    # Verify cloned files exist
+    assert (staging / "existing.txt").exists()
+    assert (staging / "folder" / "data.csv").read_text(encoding="utf-8") == "1,2,3"
+
+    # Verify excluded files DO NOT exist in staging
+    assert not (staging / ".venv").exists()
+    assert not (staging / ".tmp").exists()
+
+    # Simulate sandbox creating a new file, modifying an existing file, and deleting a file
+    (staging / "new_file.txt").write_text("new content", encoding="utf-8")
+    (staging / "existing.txt").write_text("modified hello world", encoding="utf-8")
+    (staging / "folder" / "data.csv").unlink()
+
+    # Run verification and merge
+    await backend._verify_and_merge_outputs(staging, target)
+
+    # Assertions: changes should be merged back
+    assert (target / "new_file.txt").read_text(encoding="utf-8") == "new content"
+    assert (target / "existing.txt").read_text(encoding="utf-8") == "modified hello world"
+    assert not (target / "folder" / "data.csv").exists()

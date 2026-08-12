@@ -40,8 +40,7 @@ class AgentAccessDAO(TenantScopedBaseDAO[Agent]):
 
     async def list_active_user_ids_by_tenant(self, tenant_id: Any = None) -> list[Any]:
         """Return active user ids in a tenant."""
-        ctx_tenant = self._require_tenant_id()
-        tid = ctx_tenant if ctx_tenant is not None else tenant_id
+        tid = self._require_tenant_id() or tenant_id
         async with self.session(readonly=True) as db:
             stmt = select(User.id).where(User.is_active == True)  # noqa: E712
             if tid is not None:
@@ -63,8 +62,7 @@ class AgentAccessDAO(TenantScopedBaseDAO[Agent]):
 
     async def list_active_admin_user_ids_by_tenant(self, tenant_id: Any = None) -> list[Any]:
         """Return active tenant admin user ids."""
-        ctx_tenant = self._require_tenant_id()
-        tid = ctx_tenant if ctx_tenant is not None else tenant_id
+        tid = self._require_tenant_id() or tenant_id
         async with self.session(readonly=True) as db:
             stmt = select(User.id).where(
                 User.is_active == True,  # noqa: E712
@@ -85,8 +83,7 @@ class AgentAccessDAO(TenantScopedBaseDAO[Agent]):
         """Return active org-member user ids already linked to an agent."""
         if not user_ids:
             return set()
-        ctx_tenant = self._require_tenant_id()
-        tid = ctx_tenant if ctx_tenant is not None else tenant_id
+        tid = self._require_tenant_id() or tenant_id
         async with self.session(readonly=True) as db:
             stmt = (
                 select(OrgMember.user_id)
@@ -106,8 +103,7 @@ class AgentAccessDAO(TenantScopedBaseDAO[Agent]):
         """Return active users by ids under one tenant."""
         if not user_ids:
             return []
-        ctx_tenant = self._require_tenant_id()
-        tid = ctx_tenant if ctx_tenant is not None else tenant_id
+        tid = self._require_tenant_id() or tenant_id
         async with self.session(readonly=True) as db:
             stmt = select(User).where(
                 User.id.in_(user_ids),

@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import String, create_engine, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.dao.base import BaseDAO, tenant_context
+from app.dao.base import BaseDAO, TenantScopedBaseDAO, tenant_context
 from app.database import Base, _session_ctx
 
 
@@ -136,3 +136,38 @@ def test_orm_session_injects_tenant_filter_for_direct_queries():
             records = session.scalars(select(TenantScopedRecord).order_by(TenantScopedRecord.id)).all()
 
     assert [record.id for record in records] == ["a"]
+
+
+def test_scoped_write_injects_tenant_from_context():
+    tenant_id = uuid.uuid4()
+    record = TenantScopedRecord(id="new", tenant_id=None)
+    session = RecordingSession()
+
+    with tenant_context(tenant_id):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(session, record)
+
+    assert record.tenant_id == tenant_id
+    assert session.added == [record]
+
+
+def test_scoped_write_accepts_explicit_tenant_without_context():
+    tenant_id = uuid.uuid4()
+    record = TenantScopedRecord(id="new", tenant_id=None)
+
+    TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record, tenant_id=tenant_id)
+
+    assert record.tenant_id == tenant_id
+
+
+def test_scoped_write_rejects_tenant_mismatch():
+    record = TenantScopedRecord(id="new", tenant_id=uuid.uuid4())
+
+    with tenant_context(uuid.uuid4()), pytest.raises(RuntimeError, match="Object tenant_id"):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record)
+
+
+def test_scoped_write_rejects_missing_tenant():
+    record = TenantScopedRecord(id="new", tenant_id=None)
+
+    with pytest.raises(RuntimeError, match="require a tenant_id"):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record)

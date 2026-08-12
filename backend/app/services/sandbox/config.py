@@ -2,7 +2,7 @@
 
 from loguru import logger
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +29,8 @@ class SandboxConfig(BaseModel):
     memory_limit: str = "256m"
     allow_network: bool = True
     allow_unsafe_fallback_when_bwrap_missing: bool = False
+    workspace_mode: Literal["merge", "isolated_output"] = "merge"
+    publication_owner: Literal["gateway", "workspace_cas"] = "workspace_cas"
 
     # API sandbox options
     api_key: str = ""
@@ -116,6 +118,8 @@ class SandboxConfig(BaseModel):
                 "allow_unsafe_fallback_when_bwrap_missing",
                 False,
             ),
+            workspace_mode=get_value("workspace_mode", "merge"),
+            publication_owner=get_value("publication_owner", "workspace_cas"),
             default_timeout=get_value("default_timeout", 30),
             max_timeout=get_value("max_timeout", 60),
             http_proxy=get_value("http_proxy", None),

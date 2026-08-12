@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.dao.chat_message_dao import chat_message_dao
 from app.core.permissions import (
     evaluate_agent_relationship_status,
     evaluate_roster_agent_visibility,
@@ -622,7 +623,8 @@ async def enqueue_gateway_a2a_runtime(
     )
     chat_message = await db.get(ChatMessage, chat_message_id)
     if chat_message is None:
-        db.add(
+        chat_message_dao.add_scoped(
+            db,
             ChatMessage(
                 id=chat_message_id,
                 agent_id=session.agent_id,
@@ -632,7 +634,8 @@ async def enqueue_gateway_a2a_runtime(
                 conversation_id=str(session.id),
                 participant_id=source_participant_id,
                 mentions=[],
-            )
+            ),
+            tenant_id=tenant_id,
         )
     elif (
         chat_message.conversation_id != str(session.id)
@@ -852,7 +855,8 @@ class RuntimeA2AService:
                     message_id = _input_message_id(source_run_id, tool_call_id)
                     message = await db.get(ChatMessage, message_id)
                     if message is None:
-                        db.add(
+                        chat_message_dao.add_scoped(
+                            db,
                             ChatMessage(
                                 id=message_id,
                                 agent_id=session.agent_id,
@@ -862,7 +866,8 @@ class RuntimeA2AService:
                                 conversation_id=str(session.id),
                                 participant_id=source_participant_id,
                                 mentions=[],
-                            )
+                            ),
+                            tenant_id=tenant_id,
                         )
                     elif (
                         message.conversation_id != str(session.id)

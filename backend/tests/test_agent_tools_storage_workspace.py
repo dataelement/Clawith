@@ -345,6 +345,34 @@ async def test_flush_temp_workspace_fails_on_conflict(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flush_temp_workspace_filters_manifest_deletions_to_publish_paths(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    session_path = f"workspace/output/{session_id}"
+    storage = MemoryStorageBackend({
+        f"{agent_id}/workspace/read-only.md": b"keep",
+        f"{agent_id}/{session_path}/result.txt": b"delete-me",
+    })
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        tenant_id=str(uuid.uuid4()),
+        paths=["workspace"],
+        publish_paths=[session_path],
+    )
+    try:
+        (temp_ws.root / session_path / "result.txt").unlink()
+        (temp_ws.root / "workspace" / "read-only.md").write_text("changed", encoding="utf-8")
+        result = await agent_tools.flush_temp_workspace(temp_ws)
+    finally:
+        temp_ws.cleanup()
+
+    assert result["deleted"] == [f"{session_path}/result.txt"]
+    assert storage.files[f"{agent_id}/workspace/read-only.md"] == b"keep"
+
+
+@pytest.mark.asyncio
 async def test_write_workspace_file_fails_on_expected_version_conflict(monkeypatch, tmp_path):
     agent_id = uuid.uuid4()
     storage = MemoryStorageBackend({

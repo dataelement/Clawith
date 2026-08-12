@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.dao.chat_message_dao import chat_message_dao
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_command import AgentRunCommand
@@ -442,7 +443,7 @@ async def _persist_user_message(
             mentions=[],
             created_at=now,
         )
-        db.add(message)
+        chat_message_dao.add_scoped(db, message, tenant_id=session.tenant_id)
     elif (
         existing.agent_id != (None if session.session_type == "group" else agent.id)
         or existing.user_id != (None if session.session_type == "group" else user.id)

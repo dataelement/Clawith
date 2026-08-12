@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging_config import get_trace_id
+from app.dao.chat_message_dao import chat_message_dao
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
@@ -916,7 +917,7 @@ async def deliver_runtime_message(
             mentions=[],
             created_at=now(),
         )
-        db.add(message)
+        chat_message_dao.add_scoped(db, message, tenant_id=run.tenant_id)
         session.last_message_at = now()
     channel_delivery = stage_channel_delivery(
         db,

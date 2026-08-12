@@ -1,4 +1,3 @@
-from typing import Any
 """File management API routes for agent workspaces."""
 
 import asyncio
@@ -227,7 +226,7 @@ async def list_files(
     agent_id: uuid.UUID,
     path: str = "",
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List files and directories in an agent's file system."""
     await check_agent_access(db, current_user, agent_id)
@@ -293,7 +292,7 @@ async def read_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Read the content of a file."""
     await check_agent_access(db, current_user, agent_id)
@@ -432,7 +431,7 @@ async def preview_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Return a browser-friendly preview payload for Workspace files."""
     await check_agent_access(db, current_user, agent_id)
@@ -563,7 +562,7 @@ async def download_file(
     token: str = "",
     inline: bool = False,
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Download / serve a file from the agent workspace (browser-friendly).
     
@@ -624,7 +623,7 @@ async def write_file(
     path: str,
     data: FileWrite,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
@@ -669,7 +668,7 @@ async def lock_file(
     agent_id: uuid.UUID,
     data: FileLockBody,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Acquire or refresh a short-lived human editing lock for a file."""
     await check_agent_access(db, current_user, agent_id)
@@ -691,7 +690,7 @@ async def unlock_file(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Release the current user's edit lock for a file."""
     await check_agent_access(db, current_user, agent_id)
@@ -705,7 +704,7 @@ async def get_file_revisions(
     agent_id: uuid.UUID,
     path: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List version history for the currently opened Workspace file."""
     await check_agent_access(db, current_user, agent_id)
@@ -736,7 +735,7 @@ async def restore_file_revision(
     agent_id: uuid.UUID,
     data: RestoreRevisionBody,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Restore a file to a previous revision's after-content."""
     await check_agent_access(db, current_user, agent_id)
@@ -776,7 +775,7 @@ async def delete_file(
     path: str,
     expected_version_token: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
     await _require_agent_file_delete_access(db, current_user, agent_id)
@@ -816,7 +815,7 @@ async def import_skill_to_agent(
     agent_id: uuid.UUID,
     body: ImportSkillBody,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Import a global skill into this agent's skills/ workspace folder.
 
@@ -866,7 +865,7 @@ async def upload_file_to_workspace(
     file: UploadFileType = FastFile(...),
     path: str = "workspace/knowledge_base",
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Upload a binary file to agent workspace."""
     await check_agent_access(db, current_user, agent_id)
@@ -1079,7 +1078,7 @@ async def agent_import_from_clawhub(
     agent_id: uuid.UUID,
     body: ClawhubImportBody,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Import a skill from ClawHub directly into this agent's skills/ workspace."""
     await check_agent_access(db, current_user, agent_id)
@@ -1134,7 +1133,7 @@ async def agent_import_from_url(
     agent_id: uuid.UUID,
     body: UrlImportBody,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Import a skill from a GitHub URL directly into this agent's skills/ workspace."""
     await check_agent_access(db, current_user, agent_id)

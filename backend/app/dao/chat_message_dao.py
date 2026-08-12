@@ -1,31 +1,16 @@
-"""DAO for ChatMessage model.
-
-Note: ChatMessage does not yet have a tenant_id column. Tenant isolation
-is applied via the agent_id -> agents.tenant_id join path.
-A migration to add tenant_id directly to chat_messages is tracked separately
-(see implementation_plan.md Q3).  Until then this DAO enforces isolation
-by requiring an agent_id or session conversation_id scoped within the
-caller's already-verified tenant context.
-"""
+"""Tenant-scoped persistence for ChatMessage rows."""
 
 import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import select
 
-from app.dao.base import BaseDAO
+from app.dao.base import TenantScopedBaseDAO
 from app.models.audit import ChatMessage
 
 
-class ChatMessageDAO(BaseDAO[ChatMessage]):
-    """DAO for ChatMessage entities.
-
-    Because chat_messages lacks a tenant_id column, callers must always
-    supply at least one of ``agent_id``, ``session_conversation_id``, or
-    ``user_id`` to scope the query. The DAO validates that the agent is
-    already confirmed to belong to the current tenant (callers are expected
-    to use AgentDAO.get_active() first before calling here).
-    """
+class ChatMessageDAO(TenantScopedBaseDAO[ChatMessage]):
+    """DAO for ChatMessage entities with automatic tenant write scoping."""
 
     def __init__(self) -> None:
         super().__init__(ChatMessage)
@@ -90,6 +75,7 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
         participant_id: uuid.UUID | None = None,
         thinking: str | None = None,
         mentions: list | None = None,
+        tenant_id: uuid.UUID | None = None,
     ) -> ChatMessage:
         """Create a single chat message."""
         async with self.session() as db:
@@ -103,7 +89,7 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
                 thinking=thinking,
                 mentions=mentions or [],
             )
-            db.add(msg)
+            self.add_scoped(db, msg, tenant_id=tenant_id)
             await db.flush()
             return msg
 
@@ -111,7 +97,8 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
         """Insert multiple messages in a single flush."""
         async with self.session() as db:
             objs = [ChatMessage(**m) for m in messages]
-            db.add_all(objs)
+            for obj in objs:
+                self.add_scoped(db, obj)
             await db.flush()
             return objs
 

@@ -375,7 +375,15 @@ class AutonomyService:
 
             # Import and call the tool's direct executor (no autonomy re-check)
             from app.services.agent_tools import _execute_tool_direct
-            result = await _execute_tool_direct(tool_name, arguments, agent_id)
+            approved_session_id = ""
+            if isinstance(runtime_scope, dict) and runtime_scope.get("session_id"):
+                approved_session_id = str(runtime_scope["session_id"])
+            result = await _execute_tool_direct(
+                tool_name,
+                arguments,
+                agent_id,
+                session_id=approved_session_id,
+            )
             return result
         except Exception as e:
             logger.error(f"Failed to execute approved action {tool_name}: {e}")
