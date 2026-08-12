@@ -952,6 +952,141 @@ async def test_async_pending_interrupts_with_a_deterministic_poll_call(
 
 
 @pytest.mark.asyncio
+async def test_async_poll_reuses_the_origin_frozen_tool_context(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    launch_call = _call("call-async-resume", "read_file")
+    state = _state(tenant_id, agent, (launch_call,))
+    _with_step_tool_context(state, launch_call)
+    context = _context(state)
+    executions = deque(
+        [
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "call-async-resume",
+                "read_file",
+            ),
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "poll-call",
+                "read_file",
+            ),
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "poll-call-2",
+                "read_file",
+            ),
+        ]
+    )
+    def async_outcome(status: str) -> ToolExecutionOutcome:
+        pending = status == "pending"
+        operation = {
+            "version": 1,
+            "operation_key": "operation-key",
+            "operation_id": "op-1",
+            "state": "running" if pending else "success",
+        }
+        if pending:
+            operation["poll"] = {
+                "tool": "read_file",
+                "arguments": {"operation_id": "op-1"},
+                "interval_ms": 0,
+            }
+        return ToolExecutionOutcome(
+            status=status,  # type: ignore[arg-type]
+            result_summary="still running" if pending else "done",
+            result_ref=None,
+            metadata={
+                "runtime_async_pending": pending,
+                "async_operation": operation,
+            },
+        )
+
+    outcomes = deque(
+        [async_outcome("pending"), async_outcome("pending"), async_outcome("succeeded")]
+    )
+    dispatched_arguments: list[dict] = []
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(executions.popleft())
+
+    async def execute(tool_name, arguments, *args, **kwargs):
+        del tool_name, args, kwargs
+        dispatched_arguments.append(arguments)
+        return outcomes.popleft()
+
+    async def mark_pending(db, **kwargs):
+        del db
+        execution = _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "call-async-resume",
+            "read_file",
+        )
+        execution.id = uuid.UUID(str(kwargs["execution_id"]))
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def settle_async(db, **kwargs):
+        del db
+        execution = _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "poll-call",
+            "read_file",
+        )
+        execution.status = kwargs["status"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_async_pending",
+        mark_pending,
+    )
+    monkeypatch.setattr(
+        tool_step_service,
+        "settle_async_operation_executions",
+        settle_async,
+    )
+    service = _service(agent, _CancelSource(None, None, None), execute)
+
+    launch = await service.execute_pending(state, context, (launch_call,))
+    poll_call = launch.pending_tool_calls[0]
+    state["lifecycle"]["run_messages"] = [
+        *state["lifecycle"]["run_messages"],
+        *launch.messages,
+    ]
+    state["lifecycle"]["pending_tool_calls"] = [poll_call]
+
+    first_poll = await service.execute_pending(state, context, (poll_call,))
+    next_poll_call = first_poll.pending_tool_calls[0]
+    state["lifecycle"]["run_messages"] = [
+        *state["lifecycle"]["run_messages"],
+        *first_poll.messages,
+    ]
+    state["lifecycle"]["pending_tool_calls"] = [next_poll_call]
+
+    poll = await service.execute_pending(state, context, (next_poll_call,))
+
+    assert poll.error is None
+    assert poll.messages[-1]["execution_status"] == "succeeded"
+    assert dispatched_arguments == [
+        {},
+        {"operation_id": "op-1"},
+        {"operation_id": "op-1"},
+    ]
+    assert state["lifecycle"]["step_tool_context"]["assistant_message_id"] == (
+        "assistant-message-1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_terminal_async_poll_settles_same_run_operation(
     monkeypatch,
 ) -> None:
