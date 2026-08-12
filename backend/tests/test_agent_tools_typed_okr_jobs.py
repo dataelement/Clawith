@@ -236,7 +236,7 @@ async def test_designated_okr_agent_gets_only_assigned_compound_jobs(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(
@@ -268,7 +268,7 @@ async def test_other_agents_cannot_see_compound_okr_jobs(monkeypatch) -> None:
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(

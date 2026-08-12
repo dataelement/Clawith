@@ -119,7 +119,7 @@ def _install_runtime_catalog(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned_tools)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", local_tool_config)

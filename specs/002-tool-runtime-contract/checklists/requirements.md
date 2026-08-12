@@ -33,4 +33,4 @@
 
 - 第一次校验即通过，无 `[NEEDS CLARIFICATION]` 项。
 - `Tool Call`、`Run`、`Receipt`、`checkpoint` 等词是本产品领域对象，不是具体实现方案；具体数据结构、文件和迁移步骤将在 Plan 阶段定义。
-- Spec 已覆盖用户确认的 10/20 repair budget、模型可见错误反馈、unknown write 禁止自动重放和旧 checkpoint 兼容边界。
+- Spec 已覆盖用户确认的 Tool repair/retry 上限统一为 10、模型可见错误反馈、unknown write 禁止自动重放和旧 checkpoint 兼容边界；计数结构统一重构已明确延期。

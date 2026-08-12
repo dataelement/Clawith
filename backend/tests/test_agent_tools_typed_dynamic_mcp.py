@@ -24,6 +24,18 @@ def _tool(name: str) -> dict:
     }
 
 
+def _binding(name: str) -> dict:
+    return {
+        "kind": "mcp",
+        "handler_key": name,
+        "target": {
+            "tool_id": str(uuid.uuid4()),
+            "route_digest": "digest",
+        },
+        "credential_ref": str(uuid.uuid4()),
+    }
+
+
 def _async_completion_contract() -> dict:
     return {
         "version": 1,
@@ -65,23 +77,14 @@ async def test_runtime_resolver_exposes_only_enabled_assigned_non_reserved_mcp(
     async def assigned(_agent_id):
         return tools
 
-    async def dynamic_names(_agent_id):
-        # The DB resolver returns only locally ready rows whose Tool and
-        # AgentTool records are both enabled.
-        return {
-            "mcp_visible_lookup",
-            "at",
-            "finish",
-            "wait",
-            "group_private_lookup",
-            "generate_image_openai",
-        }
+    async def dynamic_bindings(_agent_id):
+        return {"mcp_visible_lookup": _binding("mcp_visible_lookup")}
 
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
-        dynamic_names,
+        "_get_runtime_dynamic_mcp_bindings",
+        dynamic_bindings,
     )
 
     resolved = await agent_tools.get_runtime_agent_tools_for_llm(uuid.uuid4())
@@ -98,8 +101,8 @@ async def test_runtime_mcp_readiness_is_local_and_never_pings_provider(
     async def assigned(_agent_id):
         return [_tool("mcp_visible_lookup")]
 
-    async def dynamic_names(_agent_id):
-        return {"mcp_visible_lookup"}
+    async def dynamic_bindings(_agent_id):
+        return {"mcp_visible_lookup": _binding("mcp_visible_lookup")}
 
     async def network_forbidden(*_args, **_kwargs):
         raise AssertionError("model-step readiness must not ping MCP providers")
@@ -107,8 +110,8 @@ async def test_runtime_mcp_readiness_is_local_and_never_pings_provider(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
-        dynamic_names,
+        "_get_runtime_dynamic_mcp_bindings",
+        dynamic_bindings,
     )
     monkeypatch.setattr(MCPClient, "list_tools", network_forbidden)
 

@@ -219,7 +219,7 @@ async def _resolve_with_local_configs(
     monkeypatch.setattr(agent_tools, "_get_tool_config", config)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(

@@ -295,7 +295,7 @@ async def resolve_runtime_tools(
     monkeypatch.setattr(agent_tools, "_get_tool_config", config)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(httpx, "AsyncClient", NetworkMustNotBeUsed)

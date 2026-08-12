@@ -30,6 +30,8 @@ from app.services.builtin_tool_definitions import (
     is_reserved_custom_tool_name,
 )
 
+RUNTIME_TOOL_BINDING_KEY = "_runtime_binding"
+
 
 def _function_contract(model_definition: Mapping[str, object]) -> tuple[str, JsonObject]:
     function = model_definition.get("function")
@@ -188,6 +190,7 @@ def resolve_registered_tool(
 
 
 __all__ = [
+    "RUNTIME_TOOL_BINDING_KEY",
     "STATIC_REGISTERED_TOOL_NAMES",
     "RegisteredTool",
     "registered_dynamic_mcp",

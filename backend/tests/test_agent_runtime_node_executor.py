@@ -1351,15 +1351,16 @@ async def test_empty_output_is_repaired_once_then_fails_explicitly() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("repair_code", "instruction"),
+    ("repair_code", "instruction", "repair_limit"),
     [
-        ("invalid_finish", "Retry finish with valid content."),
-        ("invalid_tool_call", "Retry with valid JSON tool arguments."),
+        ("invalid_finish", "Retry finish with valid content.", 1),
+        ("invalid_tool_call", "Retry with valid JSON tool arguments.", 10),
     ],
 )
 async def test_repeated_model_tool_protocol_repair_code_fails_explicitly(
     repair_code: str,
     instruction: str,
+    repair_limit: int,
 ) -> None:
     run_id = uuid.uuid4()
     repair = ModelStepResult(
@@ -1368,7 +1369,7 @@ async def test_repeated_model_tool_protocol_repair_code_fails_explicitly(
         repair_instruction=instruction,
         repair_code=repair_code,
     )
-    model = ModelService(repair, repair)
+    model = ModelService(*([repair] * (repair_limit + 1)))
     executor = _executor(model)
 
     result = await _invoke(run_id, executor, model_turn_limit=50)
@@ -1377,13 +1378,13 @@ async def test_repeated_model_tool_protocol_repair_code_fails_explicitly(
     assert lifecycle["status"] == "failed"
     assert lifecycle["reason"] == "model_tool_protocol_violation"
     assert lifecycle["error"]["code"] == "model_tool_protocol_violation"
-    assert lifecycle["model_protocol_repairs"] == {repair_code: 1}
-    assert lifecycle["model_step_count"] == 2
-    assert model.calls == 2
+    assert lifecycle["model_protocol_repairs"] == {repair_code: repair_limit}
+    assert lifecycle["model_step_count"] == repair_limit + 1
+    assert model.calls == repair_limit + 1
 
 
 @pytest.mark.asyncio
-async def test_write_file_protocol_repair_uses_three_attempts_then_guides_user() -> None:
+async def test_write_file_protocol_repair_uses_ten_attempts_then_guides_user() -> None:
     run_id = uuid.uuid4()
     repair = ModelStepResult(
         intent="text",
@@ -1392,7 +1393,7 @@ async def test_write_file_protocol_repair_uses_three_attempts_then_guides_user()
         repair_code="invalid_tool_call",
         repair_tool_name="write_file",
     )
-    model = ModelService(repair, repair, repair, repair)
+    model = ModelService(*([repair] * 11))
     executor = _executor(model)
 
     result = await _invoke(run_id, executor, model_turn_limit=50)
@@ -1408,14 +1409,14 @@ async def test_write_file_protocol_repair_uses_three_attempts_then_guides_user()
         ),
     }
     assert lifecycle["model_protocol_repairs"] == {
-        "invalid_tool_call:write_file": 3,
+        "invalid_tool_call:write_file": 10,
     }
-    assert lifecycle["model_step_count"] == 4
-    assert model.calls == 4
+    assert lifecycle["model_step_count"] == 11
+    assert model.calls == 11
 
 
 @pytest.mark.asyncio
-async def test_write_file_protocol_can_recover_on_the_third_repair() -> None:
+async def test_write_file_protocol_can_recover_on_the_tenth_repair() -> None:
     run_id = uuid.uuid4()
     repair = ModelStepResult(
         intent="text",
@@ -1424,9 +1425,7 @@ async def test_write_file_protocol_can_recover_on_the_third_repair() -> None:
         repair_tool_name="write_file",
     )
     model = ModelService(
-        repair,
-        repair,
-        repair,
+        *([repair] * 10),
         ModelStepResult(intent="finish", finish_content="Recovered"),
     )
     executor = _executor(model)
@@ -1435,9 +1434,9 @@ async def test_write_file_protocol_can_recover_on_the_third_repair() -> None:
 
     assert result["lifecycle"]["status"] == "completed"
     assert result["lifecycle"]["model_protocol_repairs"] == {
-        "invalid_tool_call:write_file": 3,
+        "invalid_tool_call:write_file": 10,
     }
-    assert model.calls == 4
+    assert model.calls == 11
 
 
 @pytest.mark.asyncio

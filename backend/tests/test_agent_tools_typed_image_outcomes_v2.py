@@ -409,7 +409,7 @@ async def test_each_generate_tool_has_local_readiness_and_typed_visibility(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", configured)
@@ -439,7 +439,7 @@ async def test_each_generate_tool_is_hidden_when_its_local_config_is_incomplete(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", missing_config)

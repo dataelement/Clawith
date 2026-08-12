@@ -92,9 +92,12 @@ from app.services.agent_runtime.tool_execution import (
     sanitize_tool_arguments,
 )
 from app.services.agent_runtime.tool_contracts import (
+    ToolContractError,
+    ToolExecutionBinding,
     resolve_tool_deadline_seconds,
 )
 from app.services.agent_runtime.tool_registry import (
+    RUNTIME_TOOL_BINDING_KEY,
     STATIC_REGISTERED_TOOL_NAMES,
     resolve_registered_tool,
 )
@@ -1100,10 +1103,31 @@ async def _agent_is_designated_okr_agent(agent_id: uuid.UUID) -> bool:
         return False
 
 
-async def _get_runtime_dynamic_mcp_tool_names(
+def _mcp_route_digest(
+    *,
+    server_url: str,
+    server_name: str,
+    raw_name: str,
+    async_completion: object,
+) -> str:
+    encoded = json.dumps(
+        {
+            "server_url": server_url,
+            "server_name": server_name,
+            "raw_name": raw_name,
+            "async_completion": async_completion,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _get_runtime_dynamic_mcp_bindings(
     agent_id: uuid.UUID,
-) -> set[str]:
-    """Resolve locally ready dynamic MCP names without provider I/O."""
+) -> dict[str, dict]:
+    """Resolve ready MCP tools and freeze their secret-free route identity."""
     from urllib.parse import urlparse
 
     from app.models.tool import AgentTool, Tool
@@ -1111,7 +1135,7 @@ async def _get_runtime_dynamic_mcp_tool_names(
     try:
         async with async_session() as db:
             result = await db.execute(
-                select(Tool)
+                select(Tool, AgentTool)
                 .join(AgentTool, AgentTool.tool_id == Tool.id)
                 .where(
                     AgentTool.agent_id == agent_id,
@@ -1120,24 +1144,25 @@ async def _get_runtime_dynamic_mcp_tool_names(
                     Tool.type == "mcp",
                 )
             )
-            tools = result.scalars().all()
+            rows = result.all()
     except Exception as exc:
         logger.warning(
-            "[Tools] Dynamic MCP readiness lookup failed: {}",
+            "[Tools] Dynamic MCP binding lookup failed: {}",
             type(exc).__name__,
         )
-        return set()
+        return {}
 
-    ready: set[str] = set()
-    for tool in tools:
-        name = str(tool.name or "")
+    bindings: dict[str, dict] = {}
+    for tool, assignment in rows:
+        name = str(tool.name or "").strip()
         server_url = str(tool.mcp_server_url or "").strip()
+        raw_name = str(tool.mcp_tool_name or "").strip()
         parsed = urlparse(server_url)
         if (
             not name
             or name in BUILTIN_TOOL_NAMES
             or is_reserved_custom_tool_name(name)
-            or not str(tool.mcp_tool_name or "").strip()
+            or not raw_name
             or parsed.scheme not in {"http", "https"}
             or not parsed.netloc
         ):
@@ -1146,14 +1171,29 @@ async def _get_runtime_dynamic_mcp_tool_names(
                 name or "<unnamed>",
             )
             continue
-        ready.add(name)
-    return _project_active_tool_descriptions(ready)
+        binding = ToolExecutionBinding(
+            kind="mcp",
+            handler_key=name,
+            target={
+                "tool_id": str(tool.id),
+                "route_digest": _mcp_route_digest(
+                    server_url=server_url,
+                    server_name=str(tool.mcp_server_name or ""),
+                    raw_name=raw_name,
+                    async_completion=(tool.config or {}).get("async_completion"),
+                ),
+            },
+            credential_ref=str(assignment.id),
+        )
+        bindings[name] = binding.to_json()
+    return bindings
 
 
 async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Resolve the current Durable Runtime workset with typed-outcome gating."""
     tools = await get_agent_tools_for_llm(agent_id)
-    dynamic_mcp_names = await _get_runtime_dynamic_mcp_tool_names(agent_id)
+    dynamic_mcp_bindings = await _get_runtime_dynamic_mcp_bindings(agent_id)
+    dynamic_mcp_names = set(dynamic_mcp_bindings)
     resolved = _runtime_typed_tools(
         tools,
         dynamic_mcp_names=dynamic_mcp_names,
@@ -1162,6 +1202,9 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     is_designated_okr_agent: bool | None = None
     for tool in resolved:
         name = str(tool.get("function", {}).get("name") or "")
+        if name in dynamic_mcp_bindings:
+            tool = deepcopy(tool)
+            tool[RUNTIME_TOOL_BINDING_KEY] = dynamic_mcp_bindings[name]
         if name in _OKR_AGENT_ONLY_TOOL_NAMES:
             if is_designated_okr_agent is None:
                 is_designated_okr_agent = (
@@ -2613,6 +2656,8 @@ async def execute_builtin_tool_outcome(
     user_id: uuid.UUID,
     session_id: str = "",
     on_output=None,
+    *,
+    execution_binding: Mapping[str, object] | None = None,
 ) -> ToolExecutionOutcome | str:
     """Execute only explicitly migrated builtin branches as typed outcomes.
 
@@ -2962,7 +3007,13 @@ async def execute_builtin_tool_outcome(
         and tool_name not in BUILTIN_TOOL_NAMES
         and not is_reserved_custom_tool_name(tool_name)
     ):
-        mcp_target = await _resolve_mcp_execution_target(tool_name, agent_id)
+        if execution_binding is not None:
+            mcp_target = await _resolve_frozen_mcp_execution_target(
+                execution_binding,
+                agent_id,
+            )
+        else:
+            mcp_target = await _resolve_mcp_execution_target(tool_name, agent_id)
         if mcp_target is not None:
             return await _execute_resolved_mcp_target_outcome(
                 mcp_target,
@@ -5929,6 +5980,83 @@ def _mcp_call_response_outcome(
     return _typed_success(summary, metadata=metadata)
 
 
+async def _resolve_frozen_mcp_execution_target(
+    raw_binding: Mapping[str, object],
+    agent_id: uuid.UUID,
+) -> dict:
+    """Resolve credentials for one frozen route and reject live route drift."""
+    from app.models.tool import AgentTool, Tool
+
+    try:
+        binding = ToolExecutionBinding.from_json(raw_binding)
+        if binding.kind != "mcp" or binding.credential_ref is None:
+            raise ToolContractError("MCP execution binding is incomplete")
+        tool_id = uuid.UUID(str(binding.target.get("tool_id") or ""))
+        assignment_id = uuid.UUID(binding.credential_ref)
+    except (ToolContractError, ValueError, TypeError):
+        return {
+            "full_name": str(raw_binding.get("handler_key") or "mcp"),
+            "unavailable_error_code": "mcp_binding_invalid",
+        }
+
+    async with async_session() as db:
+        tool_result = await db.execute(
+            select(Tool).where(Tool.id == tool_id, Tool.type == "mcp")
+        )
+        tool = tool_result.scalar_one_or_none()
+        assignment_result = await db.execute(
+            select(AgentTool).where(
+                AgentTool.id == assignment_id,
+                AgentTool.agent_id == agent_id,
+                AgentTool.tool_id == tool_id,
+            )
+        )
+        assignment = assignment_result.scalar_one_or_none()
+
+    if tool is None or assignment is None or not tool.enabled or not assignment.enabled:
+        return {
+            "full_name": binding.handler_key,
+            "unavailable_error_code": "mcp_tool_not_available",
+        }
+
+    server_url = str(tool.mcp_server_url or "").strip()
+    server_name = str(tool.mcp_server_name or "")
+    raw_name = str(tool.mcp_tool_name or "").strip()
+    current_route_digest = _mcp_route_digest(
+        server_url=server_url,
+        server_name=server_name,
+        raw_name=raw_name,
+        async_completion=(tool.config or {}).get("async_completion"),
+    )
+    if (
+        str(tool.name or "") != binding.handler_key
+        or binding.target.get("route_digest") != current_route_digest
+    ):
+        return {
+            "full_name": binding.handler_key,
+            "unavailable_error_code": "mcp_binding_changed",
+        }
+
+    merged_config = {
+        **(tool.config or {}),
+        **(assignment.config or {}),
+    }
+    merged_config = _decrypt_sensitive_fields(
+        merged_config,
+        tool.config_schema,
+    )
+    return {
+        "full_name": binding.handler_key,
+        "raw_name": raw_name,
+        "server_url": server_url,
+        "server_name": server_name,
+        "config": merged_config,
+        "async_completion": deepcopy(
+            (tool.config or {}).get("async_completion")
+        ),
+    }
+
+
 async def _resolve_mcp_execution_target(
     tool_name: str,
     agent_id,
@@ -6041,8 +6169,21 @@ async def _execute_resolved_mcp_target_outcome(
 ) -> ToolExecutionOutcome:
     unavailable_error = target.get("unavailable_error_code")
     if unavailable_error:
-        return _typed_failure(
+        summary = {
+            "mcp_binding_changed": (
+                "MCP tool configuration changed after this call was selected. "
+                "Refresh the available tools before retrying."
+            ),
+            "mcp_binding_invalid": (
+                "The saved MCP execution route is invalid. Refresh the "
+                "available tools before retrying."
+            ),
+        }.get(
+            str(unavailable_error),
             "MCP tool is not enabled, assigned, or locally configured.",
+        )
+        return _typed_failure(
+            summary,
             str(unavailable_error),
         )
 
