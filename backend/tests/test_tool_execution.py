@@ -187,10 +187,16 @@ def _sql(statement) -> str:
     ],
 )
 @pytest.mark.parametrize(
-    ("tool_name", "effect", "retry_policy"),
+    ("tool_name", "effect", "retry_policy", "contract_version"),
     [
-        ("write_file", "write", "conditional"),
-        ("generate_image_openai", "external_write", "never"),
+        ("write_file", "write", "conditional", None),
+        ("generate_image_openai", "external_write", "never", None),
+        (
+            "tenant_search",
+            "external_write",
+            "never",
+            "registered:tenant_search:0123456789abcdef",
+        ),
     ],
 )
 async def test_user_reconcilable_unknown_receipt_can_be_settled(
@@ -199,6 +205,7 @@ async def test_user_reconcilable_unknown_receipt_can_be_settled(
     tool_name: str,
     effect: str,
     retry_policy: str,
+    contract_version: str | None,
 ) -> None:
     tenant_id = uuid.uuid4()
     run_id = uuid.uuid4()
@@ -211,6 +218,7 @@ async def test_user_reconcilable_unknown_receipt_can_be_settled(
         retry_policy=retry_policy,
     )
     execution.tool_name = tool_name
+    execution.contract_version = contract_version
     execution.completed_at = _NOW
     db = _FakeSession(execution)
 
@@ -249,7 +257,7 @@ async def test_unknown_reconciliation_rejects_unsupported_tool() -> None:
 
     with pytest.raises(
         tool_execution.ToolExecutionError,
-        match="only supported for conditional write_file or image-generation",
+        match="not supported for this Tool receipt",
     ):
         await tool_execution.reconcile_unknown_tool_execution(
             db,  # type: ignore[arg-type]
@@ -881,7 +889,10 @@ async def test_expired_final_safe_read_attempt_closes_without_provider_replay():
     assert reservation.prior_failure is not None
     assert reservation.prior_failure.error_code == "tool_retry_exhausted"
     assert execution.status == "failed"
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert (
+        execution.result_metadata["runtime_attempt_count"]
+        == tool_execution.SAFE_READ_MAX_ATTEMPTS
+    )
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert db.flush_count == 1
 

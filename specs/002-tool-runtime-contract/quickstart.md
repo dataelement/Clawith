@@ -26,7 +26,7 @@ Expected branch: `002-tool-runtime-contract`; base contains `upstream/main@251ae
 3. Remove ToolProvider access from new-format Tool Step; add legacy batch resolver.
 4. Add DB columns/migration and projection metadata.
 5. Add shared validation/authorization/failure envelope.
-6. Add repair episode state and 10/20 gates.
+6. Add repair episode state and uniform Tool repair/retry limit 10 gates.
 7. Harden operation deadlines/cancel/lease tests.
 8. Add RegisteredTool boundary and migrate representative tools only.
 
@@ -66,7 +66,7 @@ cd backend
 - checkpoint restart on another Worker uses the same binding and execution row;
 - repeated Provider-local ID in another Assistant Turn does not collide;
 - schema failure returns exactly one sanitized Tool Result;
-- failure 10 and 20 pause before the next model invocation;
+- the 10th repair failure pauses before the next model invocation;
 - provider retry, safe replay, pending, cancel and unknown do not increment repair budget;
 - lease loss blocks stale settlement; uncertain write is never auto-replayed;
 - legacy checkpoint resolves once per pending batch, new checkpoint never uses legacy fallback.

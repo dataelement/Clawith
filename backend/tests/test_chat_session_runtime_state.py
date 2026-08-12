@@ -239,7 +239,17 @@ async def test_runtime_state_exposes_unknown_write_and_blocks_plain_resume() -> 
 
 
 @pytest.mark.asyncio
-async def test_runtime_state_exposes_unknown_image_generation_for_user_confirmation() -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "contract_version"),
+    [
+        ("generate_image_openai", None),
+        ("tenant_search", "registered:tenant_search:0123456789abcdef"),
+    ],
+)
+async def test_runtime_state_exposes_reconcilable_unknown_tool_for_user_confirmation(
+    tool_name: str,
+    contract_version: str | None,
+) -> None:
     agent, user, session, run = _records()
     reader = SimpleNamespace(get_run_state=AsyncMock(return_value=_view(run)))
     execution = AgentToolExecution(
@@ -247,7 +257,8 @@ async def test_runtime_state_exposes_unknown_image_generation_for_user_confirmat
         tenant_id=run.tenant_id,
         run_id=run.id,
         tool_call_id="call-image-1",
-        tool_name="generate_image_openai",
+        tool_name=tool_name,
+        contract_version=contract_version,
         assistant_message_id="assistant-1",
         arguments_hash="hash",
         sanitized_arguments={},
@@ -287,7 +298,7 @@ async def test_runtime_state_exposes_unknown_image_generation_for_user_confirmat
 
     assert response.active_run is not None
     assert response.active_run.can_resume is False
-    assert response.active_run.pending_tool_reconciliations[0].tool_name == "generate_image_openai"
+    assert response.active_run.pending_tool_reconciliations[0].tool_name == tool_name
     assert response.active_run.pending_tool_reconciliations[0].can_reconcile is True
 
 
