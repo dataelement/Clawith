@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from app.services.agent_runtime.state import JsonObject
 
 SAME_FINGERPRINT_FAILURE_LIMIT = 10
-TOOL_EPISODE_FAILURE_LIMIT = 20
+TOOL_EPISODE_FAILURE_LIMIT = 10
 _REPAIRABLE_MODEL_ACTIONS = frozenset(
     {"repair_arguments", "choose_other_tool"}
 )

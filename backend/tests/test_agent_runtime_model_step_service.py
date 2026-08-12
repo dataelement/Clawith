@@ -598,7 +598,7 @@ async def test_fallback_tool_proposal_freezes_the_actual_fallback_workset() -> N
 
 
 @pytest.mark.asyncio
-async def test_invalid_write_file_arguments_request_three_protocol_repairs() -> None:
+async def test_invalid_write_file_arguments_request_ten_protocol_repairs() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)

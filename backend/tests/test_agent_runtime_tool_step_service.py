@@ -2977,7 +2977,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
         "call-read-exhausted",
         "read_file",
     )
-    execution.attempt_count = 3
+    execution.attempt_count = 10
 
     async def reserve(db, **kwargs):
         del db
@@ -3017,7 +3017,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
     assert "Do not repeat the identical tool call unchanged" in result.messages[0][
         "content"
     ]
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert execution.result_metadata["runtime_attempt_count"] == 10
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert execution.result_metadata["last_error_code"] == "temporary_read_failure"
 

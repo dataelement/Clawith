@@ -8,9 +8,34 @@ from app.services.agent_runtime.tool_contracts import (
     ToolContractError,
     ToolExecutionBinding,
     ToolWorksetEntry,
+    deadline_policy_for_tool,
+    resolve_tool_deadline_seconds,
     parse_step_tool_context,
     workset_version,
 )
+from app.services.builtin_tool_definitions import BUILTIN_TOOL_DEFINITIONS
+
+
+def test_runtime_deadlines_cover_declared_network_and_image_provider_budgets() -> None:
+    expected = {
+        "read_webpage": 60.0,
+        "jina_read": 60.0,
+        "generate_image_siliconflow": 120.0,
+        "generate_image_openai": 120.0,
+        "generate_image_google": 120.0,
+        "generate_image_custom": 600.0,
+    }
+
+    assert {
+        name: resolve_tool_deadline_seconds(deadline_policy_for_tool(name).name)
+        for name in expected
+    } == expected
+    declared = {
+        item["name"]: float(item["timeout_seconds"])
+        for item in BUILTIN_TOOL_DEFINITIONS
+        if item["name"] in expected
+    }
+    assert declared == expected
 
 
 def _entry() -> ToolWorksetEntry:

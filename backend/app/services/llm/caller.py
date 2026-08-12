@@ -66,7 +66,7 @@ TOOLS_REQUIRING_ARGS = frozenset({
     "send_message_to_agent", "send_feishu_message", "send_email"
 })
 
-WRITE_FILE_PROTOCOL_REPAIR_LIMIT = 3
+WRITE_FILE_PROTOCOL_REPAIR_LIMIT = 10
 WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY = "invalid_tool_call:write_file"
 WRITE_FILE_PROTOCOL_REPAIR_INSTRUCTION = (
     "Your previous `write_file` call was not executed because `function.arguments` "
@@ -788,7 +788,7 @@ async def call_llm(
             repair_limit = (
                 WRITE_FILE_PROTOCOL_REPAIR_LIMIT
                 if retry_tool_name == "write_file"
-                else 1
+                else 10
             )
             repair_counter_key = (
                 WRITE_FILE_PROTOCOL_REPAIR_COUNTER_KEY

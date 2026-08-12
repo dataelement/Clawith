@@ -44,7 +44,7 @@ ToolModelAction = Literal[
     "reconcile",
 ]
 ToolSideEffectState = Literal["none", "confirmed", "possible", "unknown"]
-SAFE_READ_MAX_ATTEMPTS = 3
+SAFE_READ_MAX_ATTEMPTS = 10
 
 # These tools dispatch an external image-generation request and can therefore
 # leave the provider outcome uncertain after a response timeout.  Direct Chat
