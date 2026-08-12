@@ -66,7 +66,13 @@ _DEADLINE_POLICIES = {
         "runtime_default", 60.0, 300.0, "stop_waiting_only"
     ),
     "network_read": ToolDeadlinePolicy(
-        "network_read", 30.0, 60.0, "stop_waiting_only"
+        "network_read", 60.0, 60.0, "stop_waiting_only"
+    ),
+    "image_generation": ToolDeadlinePolicy(
+        "image_generation", 120.0, 120.0, "stop_waiting_only"
+    ),
+    "custom_image_generation": ToolDeadlinePolicy(
+        "custom_image_generation", 600.0, 600.0, "stop_waiting_only"
     ),
     "local_code": ToolDeadlinePolicy(
         "local_code", 30.0, 3600.0, "cooperative"
@@ -93,6 +99,14 @@ def deadline_policy_for_tool(tool_name: str) -> ToolDeadlinePolicy:
         return _DEADLINE_POLICIES["agentbay_read"]
     if tool_name in {"read_emails", "read_webpage", "jina_read"}:
         return _DEADLINE_POLICIES["network_read"]
+    if tool_name == "generate_image_custom":
+        return _DEADLINE_POLICIES["custom_image_generation"]
+    if tool_name in {
+        "generate_image_siliconflow",
+        "generate_image_openai",
+        "generate_image_google",
+    }:
+        return _DEADLINE_POLICIES["image_generation"]
     return _DEADLINE_POLICIES["runtime_default"]
 
 

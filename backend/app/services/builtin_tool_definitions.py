@@ -3837,7 +3837,7 @@ _TIMEOUT_SECONDS: dict[str, int] = {
     "generate_image_siliconflow": 120,
     "generate_image_openai": 120,
     "generate_image_google": 120,
-    "generate_image_custom": 120,
+    "generate_image_custom": 600,
 }
 
 
