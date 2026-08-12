@@ -780,6 +780,147 @@ async def test_legacy_pending_batch_resolves_workset_once_then_reuses_context(
 
 
 @pytest.mark.asyncio
+async def test_legacy_unknown_wait_keeps_resolved_context_on_resume(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("legacy-unknown", "write_file")
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "legacy-unknown",
+        "write_file",
+    )
+    provider_calls = 0
+
+    async def tools_once(agent_id):
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy wait rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(
+            execution,
+            blocked=True,
+            requires_confirmation=True,
+            error_code="tool_outcome_unknown",
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=_unexpected_executor,
+    )
+
+    first = await service.execute_pending(state, context, (call,))
+    assert first.step_tool_context is not None
+    state["lifecycle"]["step_tool_context"] = first.step_tool_context
+    second = await service.execute_pending(state, context, (call,))
+
+    assert first.waiting_request is not None
+    assert second.waiting_request is not None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_a2a_wait_keeps_context_for_tail_call(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    delegate = _a2a_call("legacy-delegate", mode="task_delegate")
+    tail = _call("legacy-tail", "read_file")
+    state = _state(tenant_id, agent, (delegate, tail))
+    context = _context(state)
+    executions = {
+        "legacy-delegate": _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "legacy-delegate",
+            "send_message_to_agent",
+        ),
+        "legacy-tail": _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "legacy-tail",
+            "read_file",
+        ),
+    }
+    provider_calls = 0
+
+    async def tools_once(agent_id):
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy A2A wait rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db
+        return _reservation(executions[kwargs["tool_call_id"]])
+
+    async def execute(name, *args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=f"{name} done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution = next(
+            item for item in executions.values() if item.id == kwargs["execution_id"]
+        )
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    a2a = _A2AService(
+        A2ARuntimeToolResult(
+            outcome=ToolExecutionOutcome(
+                status="succeeded",
+                result_summary="accepted",
+                result_ref="agent-run:target",
+            ),
+            target_run_id=uuid.uuid4(),
+            waiting_request={
+                "waiting_type": "agent",
+                "correlation_id": "a2a:legacy",
+                "reason": "waiting_for_task_delegate",
+            },
+        )
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=execute,
+        a2a_service=a2a,
+    )
+
+    first = await service.execute_pending(state, context, (delegate, tail))
+    assert first.step_tool_context is not None
+    state["lifecycle"]["step_tool_context"] = first.step_tool_context
+    state["lifecycle"]["pending_tool_calls"] = [tail]
+    second = await service.execute_pending(state, context, (tail,))
+
+    assert first.waiting_request is not None
+    assert second.error is None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_batch_records_compatibility_usage_and_explicit_delete_gate(
     monkeypatch,
 ) -> None:
