@@ -20,7 +20,9 @@ from app.services.agent_runtime.model_step_service import (
     RuntimeModelStepService,
     _group_mention_mismatches,
     _message_token_counter,
+    _provider_tools,
     _prompt_messages,
+    _runtime_workset_entry,
     _tool_repair_reset_reason,
     _visible_mention_names,
 )
@@ -32,6 +34,7 @@ from app.services.agent_runtime.state import (
     runtime_message_to_json,
 )
 from app.services.agent_runtime.tool_contracts import parse_step_tool_context
+from app.services.agent_runtime.tool_registry import RUNTIME_TOOL_BINDING_KEY
 from app.services.llm.finish import FINISH_PROTOCOL_REMINDER
 from app.services.llm.single_step import LLMCompletionStep
 from app.services.token_tracker import TokenUsage
@@ -41,6 +44,39 @@ _TINY_PNG_BASE64 = (
     "x8AAusB9Wl2ZQAAAABJRU5ErkJggg=="
 )
 _TINY_PNG_DATA_URL = f"data:image/png;base64,{_TINY_PNG_BASE64}"
+
+
+def test_runtime_binding_is_checkpointed_but_not_sent_to_provider() -> None:
+    tool_id = uuid.uuid4()
+    assignment_id = uuid.uuid4()
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "tenant_search",
+            "description": "Search the tenant source",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        RUNTIME_TOOL_BINDING_KEY: {
+            "kind": "mcp",
+            "handler_key": "tenant_search",
+            "target": {
+                "tool_id": str(tool_id),
+                "route_digest": "digest",
+            },
+            "credential_ref": str(assignment_id),
+        },
+    }
+
+    entry = _runtime_workset_entry(tool)
+
+    assert entry.binding.target["tool_id"] == str(tool_id)
+    assert entry.binding.credential_ref == str(assignment_id)
+    assert _provider_tools((tool,)) == [
+        {
+            "type": "function",
+            "function": tool["function"],
+        }
+    ]
 
 
 class _Result:

@@ -76,6 +76,7 @@ from app.services.agent_runtime.tool_result_store import (
     ToolResultStoreError,
 )
 from app.services.agent_runtime.tool_registry import (
+    RUNTIME_TOOL_BINDING_KEY,
     resolve_registered_tool,
 )
 from app.services.agent_tools import get_runtime_agent_tools_for_llm
@@ -426,6 +427,16 @@ def _application_tools_for_model(
     ]
 
 
+def _provider_tools(tools: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Remove Runtime-only routing facts before sending Tool schemas to a model."""
+    result: list[dict] = []
+    for tool in tools:
+        model_tool = deepcopy(dict(tool))
+        model_tool.pop(RUNTIME_TOOL_BINDING_KEY, None)
+        result.append(model_tool)
+    return result
+
+
 def _runtime_workset_entry(tool: Mapping[str, object]) -> ToolWorksetEntry:
     """Join one model definition to a stable, secret-free execution route."""
     name = _tool_name(tool)
@@ -449,7 +460,16 @@ def _runtime_workset_entry(tool: Mapping[str, object]) -> ToolWorksetEntry:
         dynamic_mcp_names=dynamic_mcp_names,
     )
     if registered is not None:
-        return registered.to_workset_entry()
+        entry = registered.to_workset_entry()
+        raw_binding = tool.get(RUNTIME_TOOL_BINDING_KEY)
+        if raw_binding is None:
+            return entry
+        binding = ToolExecutionBinding.from_json(raw_binding)
+        if binding.kind != "mcp" or binding.handler_key != name:
+            raise ToolContractError(
+                "Runtime Tool binding does not match its model definition"
+            )
+        return replace(entry, binding=binding)
     if name in GROUP_READ_TOOL_NAMES:
         effect, retry_policy = "read", "safe"
         binding_kind = "group"
@@ -1456,7 +1476,7 @@ class RuntimeModelStepService:
             model,
             requested_max_output_tokens=requested_output,
             static_prompt_tokens=fixed_prompt_tokens,
-            tool_schema_tokens=_estimate_tokens(tools),
+            tool_schema_tokens=_estimate_tokens(_provider_tools(tools)),
             reserved_runtime_tokens=256,
             safety_margin_tokens=256,
             compact_threshold_ratio=0.80,
@@ -1511,7 +1531,7 @@ class RuntimeModelStepService:
             model,
             requested_max_output_tokens=requested_output,
             static_prompt_tokens=fixed_prompt_tokens,
-            tool_schema_tokens=_estimate_tokens(tools),
+            tool_schema_tokens=_estimate_tokens(_provider_tools(tools)),
             reserved_runtime_tokens=256,
             safety_margin_tokens=256,
         )
@@ -1661,7 +1681,7 @@ class RuntimeModelStepService:
         return await self._completion(
             model,
             messages,
-            tools=tools,
+            tools=_provider_tools(tools),
             agent_id=agent.id,
             supports_vision=bool(model.supports_vision),
         )

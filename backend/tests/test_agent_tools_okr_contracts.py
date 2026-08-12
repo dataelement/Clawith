@@ -387,7 +387,7 @@ async def test_runtime_rejects_okr_agent_only_tools_for_other_system_agents(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(
@@ -433,7 +433,7 @@ async def test_runtime_allows_ready_assigned_okr_agent_only_tools_only_for_desig
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(
@@ -476,7 +476,7 @@ async def test_unmigrated_okr_tools_remain_hidden_from_durable_runtime(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic,
     )
     monkeypatch.setattr(

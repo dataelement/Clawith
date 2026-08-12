@@ -657,6 +657,82 @@ async def test_new_checkpoint_executes_frozen_binding_without_tool_provider(
 
 
 @pytest.mark.asyncio
+async def test_mcp_checkpoint_dispatches_the_frozen_execution_binding(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-frozen-mcp", "mcp.demo.lookup")
+    state = _state(tenant_id, agent, (call,))
+    entry = ToolWorksetEntry(
+        tool_name="mcp.demo.lookup",
+        contract_version="registered:mcp.demo.lookup:v1",
+        parameters_schema={"type": "object", "properties": {}},
+        binding=ToolExecutionBinding(
+            kind="mcp",
+            handler_key="mcp.demo.lookup",
+            target={
+                "tool_id": str(uuid.uuid4()),
+                "route_digest": "digest",
+            },
+            credential_ref=str(uuid.uuid4()),
+        ),
+        effect="external_write",
+        retry_policy="never",
+    )
+    state["lifecycle"]["step_tool_context"] = StepToolContext(
+        assistant_message_id="assistant-message-1",
+        model_step=1,
+        workset_version=workset_version((entry,)),
+        accepted_calls=(
+            AcceptedToolCall(
+                call_instance_id="call-frozen-mcp",
+                provider_call_id="provider-frozen-mcp",
+                entry=entry,
+            ),
+        ),
+    ).to_json()
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-frozen-mcp",
+        "mcp.demo.lookup",
+    )
+    dispatched: list[tuple[tuple, dict]] = []
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def execute(*args, **kwargs):
+        dispatched.append((args, kwargs))
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="frozen result",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db, kwargs
+        execution.status = "succeeded"
+        execution.result_summary = "frozen result"
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    result = await _service(agent, _CancelSource(None), execute).execute_pending(
+        state,
+        context,
+        (call,),
+    )
+
+    assert result.error is None
+    assert dispatched[0][0][0] == "mcp.demo.lookup"
+    assert dispatched[0][1]["execution_binding"] == entry.binding.to_json()
+
+
+@pytest.mark.asyncio
 async def test_new_checkpoint_context_mismatch_fails_before_provider_or_receipt() -> None:
     tenant_id = uuid.uuid4()
     agent = _agent(tenant_id)

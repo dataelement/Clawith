@@ -183,6 +183,8 @@ class ToolExecutor(Protocol):
         user_id: uuid.UUID,
         session_id: str = "",
         on_output: object | None = None,
+        *,
+        execution_binding: Mapping[str, object] | None = None,
     ) -> ToolExecutionOutcome | str: ...
 
 
@@ -1313,9 +1315,14 @@ class RuntimeToolStepService:
         if accepted.entry.tool_name.startswith("agentbay_"):
             agentbay_run_token = agentbay_run_scope_id.set(context.run_id)
         try:
+            execution_kwargs = (
+                {"execution_binding": accepted.entry.binding.to_json()}
+                if accepted.entry.binding.kind == "mcp"
+                else {}
+            )
             operation_task = asyncio.create_task(
                 self._tool_executor(
-                    accepted.entry.tool_name,
+                    accepted.entry.binding.handler_key,
                     arguments,
                     agent.id,
                     (
@@ -1324,6 +1331,7 @@ class RuntimeToolStepService:
                         else agent.creator_id
                     ),
                     context.session_id or "",
+                    **execution_kwargs,
                 )
             )
         finally:
