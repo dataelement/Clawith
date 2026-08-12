@@ -53,6 +53,72 @@ def test_isolated_policy_requires_session() -> None:
         build_workspace_policy(mode="isolated_output", session_id=None, default_paths=["workspace"])
 
 
+def test_isolated_output_prompt_directs_code_to_session_output_env() -> None:
+    original = {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Execute code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Code to execute"},
+                },
+            },
+        },
+    }
+
+    patched = agent_tools._with_isolated_output_prompt(original)
+
+    description = patched["function"]["description"]
+    code_description = patched["function"]["parameters"]["properties"]["code"]["description"]
+    for value in (description, code_description):
+        assert "CLAWITH_SESSION_OUTPUT_DIR" in value
+        assert "workspace/output/<current-session-id>/" in value
+        assert "/workspace/.tmp" in value
+    assert original["function"]["description"] == "Execute code."
+
+
+@pytest.mark.asyncio
+async def test_runtime_tools_apply_isolated_output_prompt(monkeypatch) -> None:
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Execute code.",
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string"}},
+            },
+        },
+    }
+
+    async def agent_tools_for_llm(_agent_id):
+        return [tool]
+
+    async def tool_config(_agent_id, tool_name):
+        assert tool_name == "execute_code"
+        return {"workspace_mode": "isolated_output"}
+
+    async def no_dynamic_mcp(_agent_id):
+        return set()
+
+    monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", agent_tools_for_llm)
+    monkeypatch.setattr(agent_tools, "_get_tool_config", tool_config)
+    monkeypatch.setattr(
+        agent_tools,
+        "_get_runtime_dynamic_mcp_tool_names",
+        no_dynamic_mcp,
+    )
+
+    resolved = await agent_tools.get_runtime_agent_tools_for_llm(uuid.uuid4())
+
+    assert len(resolved) == 1
+    description = resolved[0]["function"]["description"]
+    assert "CLAWITH_SESSION_OUTPUT_DIR" in description
+    assert "workspace/output/<current-session-id>/" in description
+
+
 def test_session_uuid_must_be_canonical() -> None:
     value = uuid.uuid4()
     assert parse_canonical_uuid(str(value), label="session_id") == value

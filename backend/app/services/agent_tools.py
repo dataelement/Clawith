@@ -1056,9 +1056,67 @@ async def _get_runtime_dynamic_mcp_tool_names(
     return ready
 
 
+_ISOLATED_OUTPUT_TOOL_PROMPT = (
+    " Workspace write policy: isolated session output. The workspace root is "
+    "read-only. For persistent output from code, read the absolute writable "
+    "directory from the CLAWITH_SESSION_OUTPUT_DIR environment variable and "
+    "write every generated file beneath it; do not guess or hard-code an "
+    "absolute /workspace path. The corresponding path for workspace tools is "
+    "workspace/output/<current-session-id>/. Do not use /workspace/.tmp for "
+    "persistent output."
+)
+
+
+def _with_isolated_output_prompt(tool: dict) -> dict:
+    """Add the configured local write boundary to the model-facing tool schema."""
+    patched = deepcopy(tool)
+    function = patched.get("function")
+    if not isinstance(function, dict):
+        return patched
+    description = str(function.get("description") or "").rstrip()
+    if _ISOLATED_OUTPUT_TOOL_PROMPT.strip() not in description:
+        function["description"] = f"{description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict) and isinstance(properties.get("code"), dict):
+            code_schema = properties["code"]
+            code_description = str(
+                code_schema.get("description") or "Code to execute"
+            ).rstrip()
+            code_schema["description"] = (
+                f"{code_description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+            )
+    return patched
+
+
 async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Resolve the current Durable Runtime workset with typed-outcome gating."""
     tools = await get_agent_tools_for_llm(agent_id)
+    try:
+        execute_code_config = await _get_tool_config(agent_id, "execute_code") or {}
+        from app.config import get_sandbox_config
+        from app.services.sandbox.config import SandboxConfig
+
+        fallback_config = get_sandbox_config()
+        sandbox_config = (
+            SandboxConfig.from_dict(execute_code_config, fallback_config)
+            if execute_code_config
+            else fallback_config
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Tools] Code Executor workspace policy lookup failed: {}",
+            type(exc).__name__,
+        )
+        sandbox_config = None
+    if sandbox_config is not None and sandbox_config.workspace_mode == "isolated_output":
+        tools = [
+            _with_isolated_output_prompt(tool)
+            if tool.get("function", {}).get("name") == "execute_code"
+            else tool
+            for tool in tools
+        ]
     dynamic_mcp_names = await _get_runtime_dynamic_mcp_tool_names(agent_id)
     resolved = _runtime_typed_tools(
         tools,
