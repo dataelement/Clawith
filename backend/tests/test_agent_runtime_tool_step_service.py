@@ -504,7 +504,8 @@ async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair()
     assert result.error is None
     assert result.pending_group_at_changed is False
     assert result.messages[0]["execution_status"] == "failed"
-    assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+    assert result.messages[0]["error_code"] == "tool_arguments_invalid"
+    assert "UUID" in result.messages[0]["content"]
 
 
 @pytest.mark.asyncio
