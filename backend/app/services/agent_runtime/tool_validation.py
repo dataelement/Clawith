@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
+import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from app.services.agent_runtime.state import JsonObject
 
@@ -64,6 +67,39 @@ def _schema_object(value: object, *, field_name: str) -> Mapping[str, object]:
     return value
 
 
+def _positive_integer(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ToolValidationContractError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _number(value: object, *, field_name: str) -> int | float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
+        raise ToolValidationContractError(f"{field_name} must be a finite number")
+    return value
+
+
+def _matching_subschema(
+    value: object,
+    schema: object,
+    *,
+    field_name: str,
+    path: str,
+) -> tuple[bool, list[ToolValidationIssue]]:
+    candidate_issues: list[ToolValidationIssue] = []
+    _validate(
+        value,
+        _schema_object(schema, field_name=field_name),
+        path=path,
+        issues=candidate_issues,
+    )
+    return not candidate_issues, candidate_issues
+
+
 def _validate(
     value: object,
     schema: Mapping[str, object],
@@ -102,6 +138,76 @@ def _validate(
         if value not in enum:
             issues.append(_issue("enum", path, f"{path} must use one allowed value."))
 
+    if "const" in schema and value != schema["const"]:
+        issues.append(_issue("const", path, f"{path} must use the required value."))
+
+    if isinstance(value, str):
+        if "minLength" in schema:
+            minimum_length = _positive_integer(
+                schema["minLength"], field_name="schema minLength"
+            )
+            if len(value) < minimum_length:
+                issues.append(
+                    _issue(
+                        "min_length",
+                        path,
+                        f"{path} must contain at least {minimum_length} characters.",
+                    )
+                )
+        if "maxLength" in schema:
+            maximum_length = _positive_integer(
+                schema["maxLength"], field_name="schema maxLength"
+            )
+            if len(value) > maximum_length:
+                issues.append(
+                    _issue(
+                        "max_length",
+                        path,
+                        f"{path} must contain at most {maximum_length} characters.",
+                    )
+                )
+        pattern = schema.get("pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str):
+                raise ToolValidationContractError("schema pattern must be text")
+            try:
+                matches = re.search(pattern, value) is not None
+            except re.error as exc:
+                raise ToolValidationContractError("schema pattern is invalid") from exc
+            if not matches:
+                issues.append(
+                    _issue("pattern", path, f"{path} does not match the required format.")
+                )
+        format_name = schema.get("format")
+        if format_name is not None:
+            if format_name == "uuid":
+                try:
+                    uuid.UUID(value)
+                except ValueError:
+                    issues.append(_issue("format", path, f"{path} must be a UUID."))
+            elif format_name == "uri":
+                parsed = urlparse(value)
+                if not parsed.scheme or not parsed.netloc:
+                    issues.append(_issue("format", path, f"{path} must be a URI."))
+            else:
+                raise ToolValidationContractError(
+                    f"unsupported schema format {format_name!r}"
+                )
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema:
+            minimum = _number(schema["minimum"], field_name="schema minimum")
+            if value < minimum:
+                issues.append(
+                    _issue("minimum", path, f"{path} must be at least {minimum}.")
+                )
+        if "maximum" in schema:
+            maximum = _number(schema["maximum"], field_name="schema maximum")
+            if value > maximum:
+                issues.append(
+                    _issue("maximum", path, f"{path} must be at most {maximum}.")
+                )
+
     if isinstance(value, Mapping):
         raw_properties = schema.get("properties", {})
         properties = _schema_object(raw_properties, field_name="schema properties")
@@ -122,6 +228,30 @@ def _validate(
                 )
                 if len(issues) >= MAX_VALIDATION_ISSUES:
                     return
+        dependent_required = schema.get("dependentRequired", {})
+        dependent_required = _schema_object(
+            dependent_required,
+            field_name="schema dependentRequired",
+        )
+        for trigger, dependencies in dependent_required.items():
+            if not isinstance(dependencies, list) or any(
+                not isinstance(item, str) for item in dependencies
+            ):
+                raise ToolValidationContractError(
+                    "schema dependentRequired entries must be arrays of text"
+                )
+            if trigger not in value:
+                continue
+            for dependency in dependencies:
+                if dependency not in value:
+                    dependency_path = _path(path, dependency)
+                    issues.append(
+                        _issue(
+                            "dependent_required",
+                            dependency_path,
+                            f"{dependency_path} is required when {_path(path, trigger)} is provided.",
+                        )
+                    )
         for property_name, property_schema in properties.items():
             if property_name not in value:
                 continue
@@ -165,12 +295,25 @@ def _validate(
             if len(issues) >= MAX_VALIDATION_ISSUES:
                 return
 
-    if isinstance(value, list) and "items" in schema:
-        item_schema = _schema_object(schema["items"], field_name="schema items")
-        for index, item in enumerate(value):
-            _validate(item, item_schema, path=f"{path}[{index}]", issues=issues)
-            if len(issues) >= MAX_VALIDATION_ISSUES:
-                return
+    if isinstance(value, list):
+        if "minItems" in schema:
+            minimum_items = _positive_integer(
+                schema["minItems"], field_name="schema minItems"
+            )
+            if len(value) < minimum_items:
+                issues.append(
+                    _issue(
+                        "min_items",
+                        path,
+                        f"{path} must contain at least {minimum_items} items.",
+                    )
+                )
+        if "items" in schema:
+            item_schema = _schema_object(schema["items"], field_name="schema items")
+            for index, item in enumerate(value):
+                _validate(item, item_schema, path=f"{path}[{index}]", issues=issues)
+                if len(issues) >= MAX_VALIDATION_ISSUES:
+                    return
 
     alternatives = schema.get("anyOf")
     if alternatives is not None:
@@ -178,15 +321,13 @@ def _validate(
             raise ToolValidationContractError("schema anyOf must be a non-empty array")
         matched = False
         for alternative in alternatives:
-            candidate_issues: list[ToolValidationIssue] = []
-            _validate(
+            matched, _ = _matching_subschema(
                 value,
-                _schema_object(alternative, field_name="schema anyOf entry"),
+                alternative,
+                field_name="schema anyOf entry",
                 path=path,
-                issues=candidate_issues,
             )
-            if not candidate_issues:
-                matched = True
+            if matched:
                 break
         if not matched:
             issues.append(
@@ -195,6 +336,58 @@ def _validate(
                     path,
                     f"{path} must satisfy one accepted argument shape.",
                 )
+            )
+
+    alternatives = schema.get("oneOf")
+    if alternatives is not None:
+        if not isinstance(alternatives, list) or not alternatives:
+            raise ToolValidationContractError("schema oneOf must be a non-empty array")
+        match_count = sum(
+            _matching_subschema(
+                value,
+                alternative,
+                field_name="schema oneOf entry",
+                path=path,
+            )[0]
+            for alternative in alternatives
+        )
+        if match_count != 1:
+            issues.append(
+                _issue(
+                    "one_of",
+                    path,
+                    f"{path} must satisfy exactly one accepted argument shape.",
+                )
+            )
+
+    combined = schema.get("allOf")
+    if combined is not None:
+        if not isinstance(combined, list) or not combined:
+            raise ToolValidationContractError("schema allOf must be a non-empty array")
+        for entry in combined:
+            _, entry_issues = _matching_subschema(
+                value,
+                entry,
+                field_name="schema allOf entry",
+                path=path,
+            )
+            issues.extend(entry_issues[: MAX_VALIDATION_ISSUES - len(issues)])
+
+    condition = schema.get("if")
+    if condition is not None:
+        condition_matches, _ = _matching_subschema(
+            value,
+            condition,
+            field_name="schema if",
+            path=path,
+        )
+        branch_name = "then" if condition_matches else "else"
+        if branch_name in schema:
+            _validate(
+                value,
+                _schema_object(schema[branch_name], field_name=f"schema {branch_name}"),
+                path=path,
+                issues=issues,
             )
 
 

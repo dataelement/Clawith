@@ -881,7 +881,10 @@ async def test_expired_final_safe_read_attempt_closes_without_provider_replay():
     assert reservation.prior_failure is not None
     assert reservation.prior_failure.error_code == "tool_retry_exhausted"
     assert execution.status == "failed"
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert (
+        execution.result_metadata["runtime_attempt_count"]
+        == tool_execution.SAFE_READ_MAX_ATTEMPTS
+    )
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert db.flush_count == 1
 

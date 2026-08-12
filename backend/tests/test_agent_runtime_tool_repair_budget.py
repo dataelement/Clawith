@@ -50,7 +50,7 @@ def test_tenth_consecutive_fingerprint_pauses_without_off_by_one() -> None:
     assert _episode(state)["total_failures"] == 10
 
 
-def test_twentieth_tool_failure_pauses_even_when_fingerprint_changes() -> None:
+def test_tenth_tool_failure_pauses_even_when_fingerprint_changes() -> None:
     state: dict = {}
     transition = None
     for model_step in range(1, TOOL_EPISODE_FAILURE_LIMIT + 1):
@@ -63,7 +63,7 @@ def test_twentieth_tool_failure_pauses_even_when_fingerprint_changes() -> None:
 
     assert transition is not None
     assert transition.pause_reason == "tool_repair_episode_limit_reached"
-    assert _episode(state)["total_failures"] == 20
+    assert _episode(state)["total_failures"] == 10
     assert _episode(state)["same_fingerprint_failures"] == 1
 
 

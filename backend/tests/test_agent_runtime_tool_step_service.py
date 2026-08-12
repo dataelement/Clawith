@@ -504,7 +504,8 @@ async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair()
     assert result.error is None
     assert result.pending_group_at_changed is False
     assert result.messages[0]["execution_status"] == "failed"
-    assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+    assert result.messages[0]["error_code"] == "tool_arguments_invalid"
+    assert "UUID" in result.messages[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -2977,7 +2978,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
         "call-read-exhausted",
         "read_file",
     )
-    execution.attempt_count = 3
+    execution.attempt_count = 10
 
     async def reserve(db, **kwargs):
         del db
@@ -3017,7 +3018,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
     assert "Do not repeat the identical tool call unchanged" in result.messages[0][
         "content"
     ]
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert execution.result_metadata["runtime_attempt_count"] == 10
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert execution.result_metadata["last_error_code"] == "temporary_read_failure"
 
