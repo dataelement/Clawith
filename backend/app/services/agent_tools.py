@@ -448,6 +448,7 @@ _IMAGE_GENERATION_TOOL_NAMES = frozenset(
         "generate_image_siliconflow",
         "generate_image_openai",
         "generate_image_google",
+        "generate_image_minimax",
         "generate_image_custom",
     }
 )
@@ -456,6 +457,7 @@ _IMAGE_GENERATION_PROVIDER_BY_TOOL = {
     "generate_image_siliconflow": "siliconflow",
     "generate_image_openai": "openai",
     "generate_image_google": "google",
+    "generate_image_minimax": "minimax",
     "generate_image_custom": "custom",
 }
 
@@ -1246,6 +1248,7 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             "generate_image_siliconflow",
             "generate_image_openai",
             "generate_image_google",
+            "generate_image_minimax",
         } and str(config.get("api_key") or "").strip():
             ready.append(tool)
         elif name == "generate_image_custom" and all(
@@ -3270,6 +3273,13 @@ async def execute_tool(
                 agent_id,
                 _agent_tenant_id,
                 lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "google"),
+                sync_back=True,
+            )
+        elif tool_name == "generate_image_minimax":
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _generate_image(agent_id, temp_ws, arguments, "minimax"),
                 sync_back=True,
             )
         elif tool_name == "generate_image_custom":
@@ -11351,6 +11361,23 @@ async def _generate_image_outcome(
             "invalid_tool_arguments",
         )
 
+    minimax_seed = arguments.get("seed")
+    minimax_prompt_optimizer = arguments.get("prompt_optimizer", False)
+    if provider == "minimax" and (
+        (
+            minimax_seed is not None
+            and (
+                not isinstance(minimax_seed, int)
+                or isinstance(minimax_seed, bool)
+            )
+        )
+        or not isinstance(minimax_prompt_optimizer, bool)
+    ):
+        return _typed_failure(
+            "MiniMax seed must be an integer and prompt_optimizer must be a boolean.",
+            "invalid_tool_arguments",
+        )
+
     save_path_value = arguments.get("save_path", "")
     if save_path_value is not None and not isinstance(save_path_value, str):
         return _typed_failure(
@@ -11375,7 +11402,7 @@ async def _generate_image_outcome(
             "workspace_path_invalid",
         )
 
-    if provider not in {"siliconflow", "openai", "google", "custom"}:
+    if provider not in {"siliconflow", "openai", "google", "minimax", "custom"}:
         return _typed_failure(
             "Unknown image generation provider.",
             "invalid_tool_arguments",
@@ -11422,6 +11449,16 @@ async def _generate_image_outcome(
                 or "https://generativelanguage.googleapis.com/v1beta",
                 prompt,
                 size,
+            )
+        elif provider == "minimax":
+            image_bytes = await _generate_image_minimax(
+                api_key,
+                model or "image-01",
+                base_url or "https://api.minimax.io/v1/image_generation",
+                prompt,
+                size,
+                seed=minimax_seed,
+                prompt_optimizer=minimax_prompt_optimizer,
             )
         else:
             image_bytes = await _generate_image_custom_api(
@@ -11675,6 +11712,90 @@ async def _generate_image_openai(
         _image_generation_unknown(
             "image_provider_response_invalid",
             "OpenAI success response omitted the image receipt.",
+        )
+
+
+_MINIMAX_ASPECT_RATIO_BY_SIZE = {
+    "1024x1024": "1:1",
+    "1024x768": "4:3",
+    "768x1024": "3:4",
+    "1366x768": "16:9",
+    "768x1366": "9:16",
+    "1536x1024": "3:2",
+    "1024x1536": "2:3",
+}
+
+
+async def _generate_image_minimax(
+    api_key: str,
+    model: str,
+    endpoint: str,
+    prompt: str,
+    size: str,
+    *,
+    seed: object = None,
+    prompt_optimizer: object = False,
+) -> bytes:
+    """Generate one image with the native MiniMax image API."""
+    import httpx
+
+    payload: dict[str, object] = {
+        "model": model,
+        "prompt": prompt,
+        "aspect_ratio": _MINIMAX_ASPECT_RATIO_BY_SIZE[size],
+        "response_format": "base64",
+        "n": 1,
+        "prompt_optimizer": prompt_optimizer is True,
+    }
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        payload["seed"] = seed
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(endpoint, json=payload, headers=headers)
+        _settle_image_provider_status("MiniMax", resp.status_code)
+        try:
+            data = resp.json()
+        except Exception:
+            _image_generation_unknown(
+                "image_provider_response_invalid",
+                "MiniMax returned an unreadable success response.",
+            )
+        if not isinstance(data, Mapping):
+            _image_generation_unknown(
+                "image_provider_response_invalid",
+                "MiniMax returned an invalid success response.",
+            )
+
+        base_resp = data.get("base_resp")
+        if not isinstance(base_resp, Mapping):
+            _image_generation_unknown(
+                "image_provider_response_invalid",
+                "MiniMax success response omitted its status receipt.",
+            )
+        if base_resp.get("status_code") != 0:
+            _image_generation_failure(
+                "image_provider_rejected",
+                "MiniMax rejected the image generation request.",
+            )
+        result = data.get("data")
+        if not isinstance(result, Mapping):
+            _image_generation_unknown(
+                "image_provider_response_invalid",
+                "MiniMax success response omitted the image receipt.",
+            )
+        encoded_images = result.get("image_base64")
+        if isinstance(encoded_images, list) and encoded_images:
+            return _decode_generated_image_base64(encoded_images[0])
+        image_urls = result.get("image_urls")
+        if isinstance(image_urls, list) and image_urls:
+            return await _download_generated_image(image_urls[0], client)
+        _image_generation_unknown(
+            "image_provider_response_invalid",
+            "MiniMax success response omitted the image receipt.",
         )
 
 
