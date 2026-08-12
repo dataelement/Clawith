@@ -398,7 +398,7 @@ async def list_llm_models(
         .order_by(LLMModel.created_at.desc())
     )
     if tid:
-        query = query.where(LLMModel.tenant_id == uuid.UUID(tid))
+        query = query.where(LLMModel.tenant_id == tid)
     result = await db.execute(query)
     models = []
     for m in result.scalars().all():
