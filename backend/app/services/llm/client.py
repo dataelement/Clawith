@@ -1564,19 +1564,6 @@ class GeminiClient(LLMClient):
 
         return [{"text": str(content)}]
 
-    def _extract_tool_name_map(self, messages: list[LLMMessage]) -> dict[str, str]:
-        """Build tool_call_id -> function_name map from assistant messages."""
-        out: dict[str, str] = {}
-        for msg in messages:
-            if msg.role != "assistant" or not msg.tool_calls:
-                continue
-            for tc in msg.tool_calls:
-                tc_id = tc.get("id")
-                tc_name = tc.get("function", {}).get("name")
-                if tc_id and tc_name:
-                    out[tc_id] = tc_name
-        return out
-
     def _convert_tools(self, tools: list[dict] | None) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
         """Convert OpenAI-style tools to Gemini function declarations."""
         if not tools:
@@ -1617,7 +1604,7 @@ class GeminiClient(LLMClient):
         messages = normalize_provider_messages(messages)
         system_blocks: list[str] = []
         contents: list[dict[str, Any]] = []
-        tool_name_map = self._extract_tool_name_map(messages)
+        pending_tool_names: dict[str, str] = {}
 
         for msg in messages:
             if msg.role == "system":
@@ -1630,16 +1617,22 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "user":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if parts:
                     contents.append({"role": "user", "parts": parts})
                 continue
 
             if msg.role == "assistant":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
                         fn = tc.get("function", {})
+                        tc_id = tc.get("id")
+                        tc_name = fn.get("name")
+                        if tc_id and tc_name:
+                            pending_tool_names[tc_id] = tc_name
                         args = fn.get("arguments", "{}")
                         if isinstance(args, str):
                             try:
@@ -1666,7 +1659,7 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "tool":
-                name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
+                name = pending_tool_names.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
                 response_content = msg.content or ""
                 if isinstance(response_content, str):
                     try:

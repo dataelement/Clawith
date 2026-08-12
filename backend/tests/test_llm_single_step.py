@@ -119,6 +119,64 @@ def test_native_gemini_preserves_dynamic_system_context_once() -> None:
     ]
 
 
+def test_native_gemini_pairs_reused_tool_call_ids_with_their_assistant_turn() -> None:
+    client = GeminiClient(api_key="test", model="gemini-test")
+
+    payload = client._build_payload(
+        [
+            LLMMessage(role="user", content="Inspect and then update the record"),
+            LLMMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup_record", "arguments": "{}"},
+                        "_gemini_extra": {"id": "provider-call-1"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_policy", "arguments": "{}"},
+                        "_gemini_extra": {"id": "provider-call-2"},
+                    },
+                ],
+            ),
+            LLMMessage(role="tool", tool_call_id="call_1", content='{"record_id":"r1"}'),
+            LLMMessage(role="tool", tool_call_id="call_2", content='{"allowed":true}'),
+            LLMMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "update_record", "arguments": '{"id":"r1"}'},
+                        "_gemini_extra": {"id": "provider-call-1"},
+                    }
+                ],
+            ),
+            LLMMessage(role="tool", tool_call_id="call_1", content='{"updated":true}'),
+        ],
+        tools=None,
+        temperature=0.2,
+        max_tokens=1024,
+    )
+
+    function_response_names = [
+        content["parts"][0]["functionResponse"]["name"]
+        for content in payload["contents"]
+        if "functionResponse" in content["parts"][0]
+    ]
+    assert function_response_names == ["lookup_record", "read_policy", "update_record"]
+    function_call_ids = [
+        part["functionCall"]["id"]
+        for content in payload["contents"]
+        for part in content["parts"]
+        if "functionCall" in part
+    ]
+    assert function_call_ids == ["provider-call-1", "provider-call-2", "provider-call-1"]
+
+
 def test_provider_payloads_preserve_static_and_dynamic_system_context_once() -> None:
     messages = [
         LLMMessage(

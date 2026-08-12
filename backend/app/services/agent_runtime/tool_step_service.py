@@ -541,6 +541,7 @@ def _async_pending_step_result(
     run_id: uuid.UUID,
     execution_id: uuid.UUID,
     call_id: str,
+    origin_call_id: str,
     tool_name: str,
     outcome: ToolExecutionOutcome,
     prior_messages: Sequence[JsonObject],
@@ -597,6 +598,7 @@ def _async_pending_step_result(
         "tool_calls": [poll_call],
         "runtime_intent": "async_poll",
         "runtime_run_id": str(run_id),
+        "runtime_origin_tool_call_id": origin_call_id,
     }
     return ToolStepResult(
         messages=(
@@ -1678,6 +1680,7 @@ class RuntimeToolStepService:
         tool_calls: tuple[JsonObject, ...],
     ) -> ToolStepResult:
         step_context_update: JsonObject | None = None
+        async_origin_call_id: str | None = None
         try:
             tenant_id = uuid.UUID(context.tenant_id)
             run_id = uuid.UUID(context.run_id)
@@ -1708,7 +1711,18 @@ class RuntimeToolStepService:
                 )
             except ToolContractError as exc:
                 raise ToolExecutionError("tool_context_corrupt", str(exc)) from exc
-            if (
+            is_async_poll = assistant_message.get("runtime_intent") == "async_poll"
+            if is_async_poll:
+                raw_origin_call_id = assistant_message.get(
+                    "runtime_origin_tool_call_id"
+                )
+                if not isinstance(raw_origin_call_id, str) or not raw_origin_call_id:
+                    raise ToolExecutionError(
+                        "tool_context_corrupt",
+                        "async poll is missing its origin Tool Call ID",
+                    )
+                async_origin_call_id = raw_origin_call_id
+            elif (
                 step_context is not None
                 and step_context.assistant_message_id != assistant_message_id
             ):
@@ -1746,6 +1760,7 @@ class RuntimeToolStepService:
                     tools=legacy_tools,
                 )
                 step_context_update = step_context.to_json()
+                async_origin_call_id = None
                 logger.warning(
                     "[RuntimeToolCompatibility] event=legacy_tool_context_resolved "
                     "run_id={} assistant_message_id={} accepted_call_count={} "
@@ -1770,15 +1785,27 @@ class RuntimeToolStepService:
                         step_tool_context=step_context_update,
                     )
                 call_id, tool_name, arguments = _call_fields(call)
-                accepted = (
-                    _accepted_call(
+                if async_origin_call_id is not None:
+                    origin_call = _accepted_call(
                         step_context,
-                        call_id=call_id,
+                        call_id=async_origin_call_id,
                         tool_name=tool_name,
                     )
-                    if step_context is not None
-                    else None
-                )
+                    accepted = AcceptedToolCall(
+                        call_instance_id=call_id,
+                        provider_call_id=None,
+                        entry=origin_call.entry,
+                    )
+                else:
+                    accepted = (
+                        _accepted_call(
+                            step_context,
+                            call_id=call_id,
+                            tool_name=tool_name,
+                        )
+                        if step_context is not None
+                        else None
+                    )
                 if accepted is None:  # pragma: no cover - new contexts are mandatory here
                     raise ToolExecutionError(
                         "tool_context_corrupt",
@@ -1933,6 +1960,7 @@ class RuntimeToolStepService:
                             run_id=run_id,
                             execution_id=reservation.execution.id,
                             call_id=call_id,
+                            origin_call_id=async_origin_call_id or call_id,
                             tool_name=tool_name,
                             outcome=reservation.reusable_result,
                             prior_messages=messages,
@@ -2482,6 +2510,7 @@ class RuntimeToolStepService:
                         run_id=run_id,
                         execution_id=reservation.execution.id,
                         call_id=call_id,
+                        origin_call_id=async_origin_call_id or call_id,
                         tool_name=tool_name,
                         outcome=outcome,
                         prior_messages=messages,
