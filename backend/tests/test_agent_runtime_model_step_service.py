@@ -351,6 +351,60 @@ def test_prompt_messages_restore_provider_tool_call_pairing() -> None:
     assert tool.tool_call_id == "provider-call-1"
 
 
+@pytest.mark.parametrize(
+    ("status", "label"),
+    (("failed", "Tool failed"), ("unknown", "Tool outcome is unknown")),
+)
+def test_prompt_messages_make_tool_failure_actionable_for_the_model(
+    status: str,
+    label: str,
+) -> None:
+    build = _build(
+        current_run={"run_id": str(uuid.uuid4()), "goal": "Write"},
+        recent_session_messages_snapshot=(),
+        recent_thread_messages=(
+            {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-instance-1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "id": "tool-result-1",
+                "role": "tool",
+                "tool_call_id": "call-instance-1",
+                "content": "$.path is required",
+                "execution_status": status,
+                "safe_remediation": "Provide a non-empty path.",
+            },
+        ),
+        initial_input={"input_content": "Continue"},
+    )
+
+    messages = _prompt_messages(
+        static_prompt="Static",
+        dynamic_prompt="Dynamic",
+        build=build,
+    )
+
+    tool = next(message for message in messages if message.role == "tool")
+    assert tool.tool_call_id == "call-instance-1"
+    assert tool.is_error is True
+    assert tool.content == (
+        f"{label}: $.path is required\n\n"
+        "Suggested correction: Provide a non-empty path."
+    )
+
+
 def test_message_budget_does_not_treat_large_base64_as_text_tokens() -> None:
     padded_png = base64.b64encode(
         base64.b64decode(_TINY_PNG_BASE64) + b"x" * (1024 * 1024)
