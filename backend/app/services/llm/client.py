@@ -239,6 +239,7 @@ class LLMMessage:
     content: str | list | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
+    is_error: bool = False
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
     dynamic_content: str | None = None
@@ -303,6 +304,7 @@ class LLMMessage:
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
                         "content": result_content,
+                        "is_error": self.is_error,
                     }
                 ]
             }
@@ -1671,16 +1673,16 @@ class GeminiClient(LLMClient):
                 if isinstance(response_content, str):
                     try:
                         parsed = json.loads(response_content)
-                        if isinstance(parsed, dict):
-                            response_obj: dict[str, Any] = parsed
-                        else:
-                            response_obj = {"result": parsed}
+                        response_value: Any = parsed
                     except json.JSONDecodeError:
-                        response_obj = {"result": response_content}
+                        response_value = response_content
                 elif isinstance(response_content, dict):
-                    response_obj = response_content
+                    response_value = response_content
                 else:
-                    response_obj = {"result": str(response_content)}
+                    response_value = str(response_content)
+                response_obj = {
+                    "error" if msg.is_error else "output": response_value,
+                }
 
                 contents.append({
                     "role": "user",

@@ -740,7 +740,18 @@ def _model_message_content(raw: Mapping[str, object], build: RuntimeContextBuild
                 resumed_content = payload.get("content")
                 if isinstance(resumed_content, (str, list)):
                     return parse_multimodal_content(resumed_content)
-    return _message_content(content)
+    model_content = _message_content(content)
+    status = raw.get("execution_status")
+    if raw.get("role") != "tool" or status not in {"failed", "unknown"}:
+        return model_content
+    if not isinstance(model_content, str):
+        return model_content
+    label = "Tool failed" if status == "failed" else "Tool outcome is unknown"
+    result = f"{label}: {model_content}"
+    remediation = raw.get("safe_remediation")
+    if isinstance(remediation, str) and remediation.strip():
+        result += f"\n\nSuggested correction: {remediation.strip()}"
+    return result
 
 
 def _prompt_messages(
@@ -841,6 +852,10 @@ def _prompt_messages(
                 content=_model_message_content(raw, build),
                 tool_calls=provider_tool_calls,
                 tool_call_id=provider_tool_call_id,
+                is_error=(
+                    role == "tool"
+                    and raw.get("execution_status") in {"failed", "unknown"}
+                ),
                 reasoning_content=(
                     cast(str, raw.get("reasoning_content")) if isinstance(raw.get("reasoning_content"), str) else None
                 ),

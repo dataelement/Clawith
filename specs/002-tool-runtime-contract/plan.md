@@ -5,7 +5,7 @@
 
 ## Summary
 
-在现有 Durable Runtime、`AgentToolExecution` Receipt、safe-read replay 和 unknown/reconcile 机制之上，增加一次 Model Step 固化、checkpoint 可恢复的 `StepToolContext`。新 Tool Step 只使用已接受的 Tool Contract/Execution Binding，不再调用 ToolProvider 重建 Workset；同时把 Provider Call ID、Runtime Call Instance 和 Execution Receipt 分离，统一 schema validation、authorization/approval、模型可见失败反馈及 10/20 repair budget。操作 deadline、取消传播和 Receipt lease 继续保持三个独立控制面。长期通过可渐进迁移的 RegisteredTool 收敛模型定义与执行能力，不一次性替换现有 Handler。
+在现有 Durable Runtime、`AgentToolExecution` Receipt、safe-read replay 和 unknown/reconcile 机制之上，增加一次 Model Step 固化、checkpoint 可恢复的 `StepToolContext`。新 Tool Step 只使用已接受的 Tool Contract/Execution Binding，不再调用 ToolProvider 重建 Workset；同时把 Provider Call ID、Runtime Call Instance 和 Execution Receipt 分离，统一 schema validation、authorization/approval、模型可见失败反馈，并将现有独立 Tool repair/retry 上限统一为 10。操作 deadline、取消传播和 Receipt lease 继续保持三个独立控制面。长期通过可渐进迁移的 RegisteredTool 收敛模型定义与执行能力，不一次性替换现有 Handler。
 
 ## Technical Context
 
@@ -50,7 +50,7 @@
 ### Phase C — Repair budgets
 
 1. checkpoint 保存 per-tool repair episode、连续 fingerprint 计数和总计数。
-2. 第 10 次连续相同失败或第 20 次同 Tool episode 失败后暂停，且不发起下一次模型调用。
+2. 第 10 次连续相同失败或第 10 次同 Tool episode 失败后暂停，且不发起下一次模型调用；普通 Tool JSON repair、`write_file` JSON repair 和 safe-read replay 也只把现有独立上限改为 10，不在本轮重构计数结构。
 3. Tool 成功、新 Run、用户明确纠正按 contract 重置；Provider retry、safe internal replay、permission/confirmation、pending、cancel、unknown 不计数。
 4. Verifier repair 改为当前 issue episode 计数，保留全局 `model_turn_limit` 独立语义。
 
@@ -122,7 +122,7 @@ backend/
 2. Runtime integration tests：Model Step → checkpoint → 新 Worker Tool Step；普通 availability 变化不影响已接受 Call；安全状态变化仍阻断。
 3. Receipt tests：replay 复用同一 execution；lease renewal/loss/fence；unknown write no replay；safe read bounded retry。
 4. Compatibility tests：旧 checkpoint 单次 resolver、新 checkpoint 禁止 resolver、mixed-version nullable fields。
-5. Lifecycle tests：10/20 off-by-one、reset/exclusion、operation deadline、cancel propagation。
+5. Lifecycle tests：统一上限 10 的 off-by-one、reset/exclusion、operation deadline、cancel propagation。
 6. Static gates：scoped Ruff、pytest、Alembic single head + upgrade/downgrade、`scripts/arch-guard.sh`。
 
 ## Complexity Tracking

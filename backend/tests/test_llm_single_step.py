@@ -119,6 +119,75 @@ def test_native_gemini_preserves_dynamic_system_context_once() -> None:
     ]
 
 
+def test_tool_failure_uses_provider_native_error_signals() -> None:
+    tool_result = LLMMessage(
+        role="tool",
+        tool_call_id="call_1",
+        content="Tool failed: path is required",
+        is_error=True,
+    )
+
+    anthropic = tool_result.to_anthropic_format()
+    assert anthropic is not None
+    assert anthropic["content"][0]["is_error"] is True
+
+    gemini = GeminiClient(api_key="test", model="gemini-test")._build_payload(
+        [
+            LLMMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "write_file", "arguments": "{}"},
+                    }
+                ],
+            ),
+            tool_result,
+        ],
+        tools=None,
+        temperature=0.2,
+        max_tokens=1024,
+    )
+    response = gemini["contents"][-1]["parts"][0]["functionResponse"]["response"]
+    assert response == {"error": "Tool failed: path is required"}
+
+    gemini_success = GeminiClient(
+        api_key="test",
+        model="gemini-test",
+    )._build_payload(
+        [
+            LLMMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            ),
+            LLMMessage(
+                role="tool",
+                tool_call_id="call_1",
+                content='{"path":"README.md"}',
+            ),
+        ],
+        tools=None,
+        temperature=0.2,
+        max_tokens=1024,
+    )
+    success_response = gemini_success["contents"][-1]["parts"][0][
+        "functionResponse"
+    ]["response"]
+    assert success_response == {"output": {"path": "README.md"}}
+
+    openai = tool_result.to_openai_format()
+    assert openai == {
+        "role": "tool",
+        "content": "Tool failed: path is required",
+        "tool_call_id": "call_1",
+    }
 def test_provider_payloads_preserve_static_and_dynamic_system_context_once() -> None:
     messages = [
         LLMMessage(

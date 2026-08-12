@@ -70,11 +70,12 @@
 **Acceptance Scenarios**:
 
 1. **Given** 同一稳定错误已经连续作为模型可见失败出现 9 次，**When** 第 10 次相同失败被记录，**Then** 系统保存该失败并暂停，不能开始第 11 次模型调用。
-2. **Given** 同一个 Tool 在当前 episode 中出现 19 次可计数失败，错误指纹可以变化，**When** 第 20 次失败被记录，**Then** 系统暂停，不能开始下一次模型调用。
+2. **Given** 同一个 Tool 在当前 episode 中出现 9 次可计数失败，错误指纹可以变化，**When** 第 10 次失败被记录，**Then** 系统暂停，不能开始下一次模型调用。
 3. **Given** 失败指纹变化但 Tool 相同，**When** 记录新失败，**Then** 连续相同错误计数重新开始，但同 Tool episode 总数保留。
 4. **Given** 被跟踪 Tool 成功、新 Run 开始，或用户明确纠正后恢复，**When** 后续再发生失败，**Then** 按对应规则开启新的 repair episode。
 5. **Given** 事件属于 Provider transport retry、安全内部 replay、permission/confirmation wait、async pending、cancel 或 unknown external write，**When** 系统处理事件，**Then** 不增加模型修复计数。
 6. **Given** 全局 Run 模型轮次已经达到上限，**When** 本地 Tool repair budget 尚未耗尽，**Then** 全局上限仍独立生效并展示不同的停止原因。
+7. **Given** 普通 Tool 或 `write_file` 的 arguments JSON 无效或截断，**When** Runtime 请求模型修复，**Then** 两类 Tool 都分别最多提供 10 次重写机会；safe-read Runtime replay 最多执行同一调用 10 次。本轮只统一上限数值，不重构这些独立计数器。
 
 ---
 
@@ -121,7 +122,7 @@
 - 管理员关闭 Tool，但当前已接受调用仍在等待人工确认；用户随后拒绝、接受或取消。
 - Safe-read 内部 retry 已耗尽，最终只应产生一次模型可见失败和一次 repair 计数。
 - Tool Result 已写入 checkpoint，但节点被重新调度；结果消息和 repair counter 不能重复追加。
-- 同一 Tool 在不同错误之间交替，连续相同错误计数不断重置，但同 Tool episode 最终达到 20。
+- 同一 Tool 在不同错误之间交替，连续相同错误计数不断重置，但同 Tool episode 最终达到 10。
 - Unknown external write 在重启、重连、用户输入或模型继续推理时仍不得自动重放。
 - Handler 完成时 lease 已丢失；旧 owner 不能覆盖新 owner 或绕过 fence 结算。
 - 底层线程调用无法真正取消；系统必须停止等待并明确记录底层取消能力限制。
@@ -148,10 +149,10 @@
 - **FR-015**: Permission/confirmation、async pending、cancel、unknown external write 和协议损坏 MUST 使用各自独立状态，不得伪装成普通可修复 Tool failure。
 - **FR-016**: Unknown possible write MUST 阻止自动重放，直到通过外部查询、稳定幂等结果或明确人工处理完成协调。
 - **FR-017**: 系统 MUST 在第 10 次连续相同且模型可见的可修复失败后暂停，并且 MUST NOT 启动第 11 次模型调用。
-- **FR-018**: 系统 MUST 在同一个 Tool repair episode 的第 20 次可计数失败后暂停，并且 MUST NOT 启动下一次模型调用。
+- **FR-018**: 系统 MUST 在同一个 Tool repair episode 的第 10 次可计数失败后暂停，并且 MUST NOT 启动下一次模型调用。
 - **FR-019**: 不同错误指纹 MUST 只重置连续相同错误计数，不得清除同 Tool episode 总数。
 - **FR-020**: 对应 Tool 成功、新 Run 或用户明确纠正后恢复 MUST 按定义重置 repair episode；无关 Tool 成功不得清除其他 Tool 的失败 episode。
-- **FR-021**: Provider transport retry、安全内部 replay、permission/confirmation wait、async pending、cancel 和 unknown external write MUST NOT 增加模型修复计数。
+- **FR-021**: Provider transport retry、安全内部 replay、permission/confirmation wait、async pending、cancel 和 unknown external write MUST NOT 增加模型修复计数。普通 Tool protocol repair、`write_file` protocol repair 和 safe-read replay 保留独立计数结构，但各自上限 MUST 统一为 10；计数结构重构不属于本轮改动。
 - **FR-022**: 全局模型轮次上限 MUST 与 Tool repair budget、Provider retry、Command retry 和 Verifier repair 保持独立，并报告不同停止原因。
 - **FR-023**: Verifier repair MUST 按当前问题 episode 计数；历史已结束问题不得耗尽新的 verifier episode。
 - **FR-024**: 外部 I/O 和长时间操作 MUST 具有与具体操作匹配的最长等待规则；系统 MUST NOT 用单一固定秒数替代所有 Tool 的时限。
@@ -183,7 +184,7 @@
 - **SC-002**: 在所有受支持 Provider 的多轮 Tool 场景中，重复的 Provider-local Call ID 产生 0 次执行记录、Tool Result、Activity、Chat 或 A2A correlation 碰撞。
 - **SC-003**: 同一调用实例在至少一次 checkpoint replay 后仍只产生一条有效执行记录；未知外部写的自动重放次数为 0。
 - **SC-004**: 100% 带有效身份的可修复参数、binding 和明确业务失败产生恰好一个模型可见 Tool Result；敏感信息泄漏测试通过率为 100%。
-- **SC-005**: 第 10 次连续相同错误和第 20 次同 Tool episode 失败均在规定边界暂停，所有 off-by-one、reset 和 exclusion 测试通过率为 100%。
+- **SC-005**: 第 10 次连续相同错误和第 10 次同 Tool episode 失败均在规定边界暂停；普通 Tool JSON repair、`write_file` JSON repair 和 safe-read replay 的独立上限均为 10；所有 off-by-one、reset 和 exclusion 测试通过率为 100%。
 - **SC-006**: Permission、confirmation、pending、cancel、unknown write、Provider retry 和全局模型轮次上限均显示独立原因，测试中不存在跨预算误计数。
 - **SC-007**: 所有列入范围的 IMAP、DNS、AgentBay read 和代码执行路径在配置的最长等待内返回结果或明确状态，不产生无限等待测试用例。
 - **SC-008**: 长时间 Handler 的 lease renewal、lease loss 和 cancel 测试均不会产生并发双执行或旧 owner 越权结算。
@@ -198,4 +199,4 @@
 - 完整 Provider Schema capability matrix、默认 Tool 集合收窄、通用 Tool Search 和通用并行执行不属于本功能。
 - 未迁移的 AgentBay Action 继续保持隐藏，后续按 Tool family 分批迁移。
 - 旧 checkpoint 兼容路径只在有观测证据证明不再使用后删除。
-- 用户已经确定 repair budget 为：连续相同错误 10 次、同 Tool episode 20 次，并保留独立的全局 Run 模型轮次上限。
+- 用户已经确定所有 Tool 相关 repair/retry 上限统一为 10，并保留独立的计数结构与全局 Run 模型轮次上限；计数结构后续统一重构。
