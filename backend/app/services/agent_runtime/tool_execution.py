@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_run import AgentRun
 from app.models.agent_tool_execution import AgentToolExecution
+from app.services.builtin_tool_definitions import BUILTIN_TOOL_NAMES
 
 ToolExecutionStatus = Literal[
     "not_started",
@@ -2011,7 +2012,7 @@ async def reconcile_unknown_tool_execution(
     if not is_user_reconcilable_unknown_execution(execution):
         raise ToolExecutionError(
             "tool_execution_reconciliation_not_supported",
-            "manual reconciliation is only supported for conditional write_file or image-generation receipts",
+            "manual reconciliation is not supported for this Tool receipt",
         )
 
     prior_metadata = (
@@ -2078,12 +2079,21 @@ def is_user_reconcilable_unknown_execution(execution: AgentToolExecution) -> boo
     new tool call, so the original provider request is never replayed.
     """
     effect, retry_policy = _execution_metadata(execution)
-    return (
-        execution.tool_name == "write_file"
-        and effect == "write"
-        and retry_policy == "conditional"
-    ) or (
-        execution.tool_name in _IMAGE_GENERATION_TOOL_NAMES
+    contract_version = getattr(execution, "contract_version", None)
+    tool_name = str(getattr(execution, "tool_name", "") or "")
+    is_registered_dynamic_mcp = (
+        tool_name not in BUILTIN_TOOL_NAMES
+        and isinstance(contract_version, str)
+        and contract_version.startswith(f"registered:{tool_name}:")
         and effect == "external_write"
         and retry_policy == "never"
     )
+    return (
+        tool_name == "write_file"
+        and effect == "write"
+        and retry_policy == "conditional"
+    ) or (
+        tool_name in _IMAGE_GENERATION_TOOL_NAMES
+        and effect == "external_write"
+        and retry_policy == "never"
+    ) or is_registered_dynamic_mcp
