@@ -106,13 +106,13 @@
 
 ## Phase 6: User Story 4 — 修复次数按问题边界计算 (Priority: P2)
 
-**Goal**: 实现连续同错 10、同 Tool episode 20，并与其他 retry budget 分离。
+**Goal**: 实现连续同错 10、同 Tool episode 10，并将现有独立 Tool repair/retry 上限统一为 10；本轮不重构计数结构。
 
-**Independent Test**: 10/20 边界、fingerprint 变化、Tool success、新 Run、用户纠正、无关 Tool success 及所有 exclusion 均按 contract 转移。
+**Independent Test**: 统一上限 10 的边界、fingerprint 变化、Tool success、新 Run、用户纠正、无关 Tool success及所有 exclusion 均按 contract 转移。
 
 ### Tests
 
-- [x] T035 [P] [US4] 在 `backend/tests/test_agent_runtime_tool_repair_budget.py` 增加 10/20 off-by-one 与 fingerprint 测试
+- [x] T035 [P] [US4] 在 `backend/tests/test_agent_runtime_tool_repair_budget.py` 增加统一上限 10 的 off-by-one 与 fingerprint 测试
 - [x] T036 [P] [US4] 在 `backend/tests/test_agent_runtime_tool_repair_budget.py` 增加 success/new Run/user correction/reset scope 测试
 - [x] T037 [P] [US4] 在 `backend/tests/test_agent_runtime_tool_repair_budget.py` 增加 Provider retry/safe replay/approval/pending/cancel/unknown exclusion 测试
 - [x] T038 [P] [US4] 在 `backend/tests/test_agent_runtime_node_executor.py` 增加暂停发生在下一次 Model 调用之前的集成测试
@@ -237,7 +237,7 @@ T012 live safety revocation tests
 
 1. US1 消除已接受 Call 的 Workset 漂移。
 2. US2/US3 补齐模型可修复反馈和身份兼容。
-3. US4 落地 10/20 修复次数。
+3. US4 落地统一上限 10 的修复次数，保留现有独立计数结构。
 4. US5 加固长任务生命周期。
 5. US6 建立长期 Registry 迁移边界。
 

@@ -56,7 +56,7 @@
 
 ### D7. Repair budget 是 Tool episode，不是 Provider/Receipt retry
 
-**Decision**: 连续同 fingerprint 第 10 次、同 Tool episode 第 20 次暂停；只计模型可见、可修复失败。
+**Decision**: 连续同 fingerprint 第 10 次、同 Tool episode 第 10 次暂停；只计模型可见、可修复失败。普通 Tool protocol repair、`write_file` protocol repair 和 safe-read replay 继续使用各自现有计数入口，但上限统一为 10，状态结构后续再整体重构。
 
 **Rationale**: Provider transport retry 和 Receipt safe replay 都不代表模型做了错误决策；混计会过早停机或掩盖循环。
 

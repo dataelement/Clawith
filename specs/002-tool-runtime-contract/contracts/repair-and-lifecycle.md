@@ -3,7 +3,8 @@
 ## Tool Repair Episode
 
 - `same_fingerprint_failures` reaches 10: pause immediately after recording the 10th failure; do not invoke model step 11 for that loop.
-- `total_failures` reaches 20 for the same Tool episode: pause immediately; do not invoke the next model step.
+- `total_failures` reaches 10 for the same Tool episode: pause immediately; do not invoke the next model step.
+- Generic Tool protocol repair, `write_file` protocol repair, and safe-read replay retain their current independent counters but each uses a limit of 10; counter unification is deferred.
 - Changing fingerprint resets only the consecutive counter.
 - Success of the same Tool, new Run, or explicit user correction resets the Tool episode.
 - Success of another Tool does not reset it.

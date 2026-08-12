@@ -778,6 +778,8 @@ class DeterministicRuntimeNodeExecutor:
                 repair_limit = (
                     WRITE_FILE_PROTOCOL_REPAIR_LIMIT
                     if is_write_file_repair
+                    else 10
+                    if repair_code == "invalid_tool_call"
                     else 1
                 )
                 repair_counter_key = (
