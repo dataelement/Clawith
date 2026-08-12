@@ -11,13 +11,17 @@ import pytest
 
 from app.services import activity_logger, agent_tools
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
-from app.services.builtin_tool_definitions import builtin_model_definition
+from app.services.builtin_tool_definitions import (
+    BUILTIN_TOOL_DEFINITIONS,
+    builtin_model_definition,
+)
 
 
 IMAGE_GENERATION_TOOLS = (
     "generate_image_siliconflow",
     "generate_image_openai",
     "generate_image_google",
+    "generate_image_minimax",
     "generate_image_custom",
 )
 
@@ -113,6 +117,17 @@ def _provider_payload(
                     }
                 }
             ]
+        }
+    if tool_name == "generate_image_minimax":
+        data = (
+            {"image_urls": ["https://images.example.test/generated.png"]}
+            if use_download_url
+            else {"image_base64": [encoded]}
+        )
+        return {
+            "data": data,
+            "metadata": {"success_count": 1, "failed_count": 0},
+            "base_resp": {"status_code": 0, "status_msg": "success"},
         }
     image_ref = (
         "https://images.example.test/generated.png"
@@ -271,6 +286,27 @@ def test_image_contracts_validate_sources_prompt_size_and_save_path() -> None:
         assert schema["properties"]["prompt"]["minLength"] == 1
         assert "1024x1024" in schema["properties"]["size"]["enum"]
         assert schema["properties"]["save_path"]["pattern"]
+
+
+def test_minimax_definition_exposes_target_models_and_regional_endpoints() -> None:
+    definition = next(
+        item
+        for item in BUILTIN_TOOL_DEFINITIONS
+        if item["name"] == "generate_image_minimax"
+    )
+    fields = {
+        field["key"]: field
+        for field in definition["config_schema"]["fields"]
+    }
+
+    assert [option["value"] for option in fields["model"]["options"]] == [
+        "image-01",
+        "image-01-live",
+    ]
+    assert [option["value"] for option in fields["base_url"]["options"]] == [
+        "https://api.minimax.io/v1/image_generation",
+        "https://api.minimaxi.com/v1/image_generation",
+    ]
 
 
 @pytest.mark.asyncio
@@ -526,6 +562,7 @@ async def test_generate_provider_response_has_a_typed_settlement_boundary(
     (
         "generate_image_siliconflow",
         "generate_image_openai",
+        "generate_image_minimax",
         "generate_image_custom",
     ),
 )
@@ -653,6 +690,105 @@ async def test_sync_failure_after_generation_is_unknown_without_regeneration(
     assert outcome.retryable is False
     assert calls["post"] == 1
     assert calls["flush"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "https://api.minimax.io/v1/image_generation",
+        "https://api.minimaxi.com/v1/image_generation",
+    ),
+)
+async def test_minimax_uses_regional_native_endpoint_and_request_schema(
+    monkeypatch,
+    endpoint: str,
+) -> None:
+    request: dict = {}
+
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, *, json, headers):
+            request.update(url=url, json=json, headers=headers)
+            return FakeResponse(
+                200,
+                {
+                    "data": {"image_base64": [PNG_B64]},
+                    "metadata": {"success_count": 1, "failed_count": 0},
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+    image = await agent_tools._generate_image_minimax(
+        "image-secret",
+        "image-01-live",
+        endpoint,
+        "a quiet mountain",
+        "1366x768",
+        seed=42,
+        prompt_optimizer=True,
+    )
+
+    assert image == PNG_BYTES
+    assert request["url"] == endpoint
+    assert request["headers"]["Authorization"] == "Bearer image-secret"
+    assert request["json"] == {
+        "model": "image-01-live",
+        "prompt": "a quiet mountain",
+        "aspect_ratio": "16:9",
+        "response_format": "base64",
+        "n": 1,
+        "prompt_optimizer": True,
+        "seed": 42,
+    }
+
+
+@pytest.mark.asyncio
+async def test_minimax_explicit_provider_rejection_is_failed(monkeypatch) -> None:
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return FakeResponse(
+                200,
+                {
+                    "base_resp": {
+                        "status_code": 2013,
+                        "status_msg": "invalid input",
+                    }
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+    with pytest.raises(agent_tools._ImageGenerationBoundaryError) as exc_info:
+        await agent_tools._generate_image_minimax(
+            "image-secret",
+            "image-01",
+            "https://api.minimax.io/v1/image_generation",
+            "a quiet mountain",
+            "1024x1024",
+        )
+
+    assert exc_info.value.status == "failed"
+    assert exc_info.value.error_code == "image_provider_rejected"
 
 
 @pytest.mark.asyncio

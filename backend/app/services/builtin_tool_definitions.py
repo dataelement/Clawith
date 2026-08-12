@@ -1290,6 +1290,86 @@ _BUILTIN_TOOL_SOURCE = [
         },
     },
     {
+        "name": "generate_image_minimax",
+        "display_name": "Generate Image (MiniMax)",
+        "description": "Generate an image with the native MiniMax image API.",
+        "category": "media",
+        "icon": "🎨",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1500,
+                    "description": "Detailed image description.",
+                },
+                "size": {
+                    "type": "string",
+                    "enum": ["1024x1024", "1024x768", "768x1024", "1366x768", "768x1366", "1536x1024", "1024x1536"],
+                    "description": "Image size. Default 1024x1024.",
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Optional random seed for reproducible generation.",
+                },
+                "prompt_optimizer": {
+                    "type": "boolean",
+                    "description": "Enable automatic prompt optimization. Default false.",
+                },
+                "save_path": {
+                    "type": "string",
+                    "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+\\.(?:png|jpg|jpeg|webp)$",
+                    "description": "Workspace-relative image path. Default: auto.",
+                },
+            },
+            "required": ["prompt"],
+        },
+        "config": {
+            "model": "",
+            "api_key": "",
+            "base_url": "",
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "model",
+                    "label": "Model",
+                    "type": "select",
+                    "default": "image-01",
+                    "options": [
+                        {"value": "image-01", "label": "image-01"},
+                        {"value": "image-01-live", "label": "image-01-live"},
+                    ],
+                },
+                {
+                    "key": "api_key",
+                    "label": "API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "MiniMax API Key",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Regional Endpoint",
+                    "type": "select",
+                    "default": "https://api.minimax.io/v1/image_generation",
+                    "options": [
+                        {
+                            "value": "https://api.minimax.io/v1/image_generation",
+                            "label": "Global",
+                        },
+                        {
+                            "value": "https://api.minimaxi.com/v1/image_generation",
+                            "label": "China",
+                        },
+                    ],
+                },
+            ]
+        },
+    },
+    {
         "name": "generate_image_custom",
         "display_name": "Generate Image (Custom API)",
         "description": "Generate an image through a custom OpenAI-compatible or gateway API. Configure the request body template and response image path for providers such as TokenRouter or OpenRouter.",
@@ -3810,6 +3890,7 @@ _TIMEOUT_SECONDS: dict[str, int] = {
     "generate_image_siliconflow": 120,
     "generate_image_openai": 120,
     "generate_image_google": 120,
+    "generate_image_minimax": 120,
     "generate_image_custom": 120,
 }
 

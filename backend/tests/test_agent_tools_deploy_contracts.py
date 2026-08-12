@@ -33,6 +33,7 @@ IMAGE_TOOLS = (
     "generate_image_siliconflow",
     "generate_image_openai",
     "generate_image_google",
+    "generate_image_minimax",
     "generate_image_custom",
 )
 class FakeResponse:
