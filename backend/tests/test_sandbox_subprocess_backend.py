@@ -129,6 +129,17 @@ def test_subprocess_backend_proxy_env_propagation(tmp_path: Path) -> None:
     assert env.get("NO_PROXY") == "localhost,127.0.0.1"
 
 
+def test_bash_commands_enable_pipefail(tmp_path: Path) -> None:
+    backend = SubprocessBackend(SandboxConfig())
+
+    assert backend._build_command("bash", "/workspace/.tmp/test.sh") == [
+        "bash", "--noprofile", "--norc", "-o", "pipefail", "/workspace/.tmp/test.sh",
+    ]
+    assert backend._build_host_command("bash", tmp_path / "test.sh", tmp_path) == [
+        "bash", "--noprofile", "--norc", "-o", "pipefail", str(tmp_path / "test.sh"),
+    ]
+
+
 def test_subprocess_backend_proxy_bwrap_command(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/bwrap" if cmd == "bwrap" else None)
     config = SandboxConfig(
@@ -374,6 +385,7 @@ def test_sandbox_pip_hijack_shebang(tmp_path: Path) -> None:
     content = pip_file.read_text(encoding="utf-8")
     assert "if [ -d /workspace/.tmp ]; then" in content
     assert "REQ_FILE=\"/workspace/.tmp/.pip_request_${REQ_ID}\"" in content
+    assert "cat \"$OUT_FILE\"" in content
 
 
 @pytest.mark.asyncio
@@ -389,8 +401,8 @@ async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
     uv_calls = []
     class FakeProc:
         returncode = 0
-        async def wait(self):
-            return 0
+        async def communicate(self):
+            return b"installed pandas\n", b""
 
     async def fake_create_subprocess(*args, **kwargs):
         uv_calls.append(args)
@@ -425,11 +437,13 @@ async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
     # Assertions
     assert res_file.exists()
     assert res_file.read_text(encoding="utf-8") == "0"
+    output_file = staging / "workspace" / ".tmp" / ".pip_output_123"
+    assert output_file.read_text(encoding="utf-8") == "installed pandas\n"
     assert not req_file.exists()
     assert uv_calls
-    # Should call uv pip install
-    assert "uv" in uv_calls[0]
-    assert "pandas" in uv_calls[0]
+    assert uv_calls[0] == (
+        "uv", "pip", "install", "--python", str(venv / "bin" / "python"), "pandas",
+    )
 
 
 @pytest.mark.asyncio

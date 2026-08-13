@@ -168,14 +168,14 @@ class SubprocessBackend(BaseSandboxBackend):
         if language == "python":
             return [f"{SANDBOX_VENV_PATH}/bin/python", "-I", "-B", str(script_path)]
         if language == "bash":
-            return ["bash", "--noprofile", "--norc", str(script_path)]
+            return ["bash", "--noprofile", "--norc", "-o", "pipefail", str(script_path)]
         return ["node", str(script_path)]
 
     def _build_host_command(self, language: str, script_path: Path, work_path: Path) -> list[str]:
         if language == "python":
             return [self._host_venv_python(work_path), "-I", "-B", str(script_path)]
         if language == "bash":
-            return ["bash", "--noprofile", "--norc", str(script_path)]
+            return ["bash", "--noprofile", "--norc", "-o", "pipefail", str(script_path)]
         return ["node", str(script_path)]
 
     def _build_safe_env(self, work_path: Path) -> dict[str, str]:
@@ -291,10 +291,15 @@ class SubprocessBackend(BaseSandboxBackend):
             "    REQ_ID=$RANDOM\n"
             "    REQ_FILE=\"/workspace/.tmp/.pip_request_${REQ_ID}\"\n"
             "    RES_FILE=\"/workspace/.tmp/.pip_response_${REQ_ID}\"\n"
+            "    OUT_FILE=\"/workspace/.tmp/.pip_output_${REQ_ID}\"\n"
             "    echo \"$@\" > \"$REQ_FILE\"\n"
             "    while [ ! -f \"$RES_FILE\" ]; do\n"
             "        sleep 0.2\n"
             "    done\n"
+            "    if [ -f \"$OUT_FILE\" ]; then\n"
+            "        cat \"$OUT_FILE\"\n"
+            "        rm -f \"$OUT_FILE\"\n"
+            "    fi\n"
             "    EXIT_CODE=$(cat \"$RES_FILE\")\n"
             "    rm -f \"$RES_FILE\"\n"
             "    exit $EXIT_CODE\n"
@@ -498,12 +503,18 @@ class SubprocessBackend(BaseSandboxBackend):
 
                         req_id = request_file.name.split("_")[-1]
                         response_file = tmp_dir / f".pip_response_{req_id}"
+                        output_file = tmp_dir / f".pip_output_{req_id}"
                         if response_file.exists():
                             continue
 
                         args = args_str.split()
-                        # Run host-side uv pip --python venv_path/bin/python <args>
-                        cmd = ["uv", "pip", "--python", str(venv_path / "bin" / "python")] + args
+                        if not args:
+                            raise ValueError("Empty pip proxy request")
+                        cmd = [
+                            "uv", "pip", args[0],
+                            "--python", str(venv_path / "bin" / "python"),
+                            *args[1:],
+                        ]
                         logger.info(f"[Subprocess Sandbox Host] Proxying pip command: {' '.join(cmd)}")
 
                         try:
@@ -512,13 +523,16 @@ class SubprocessBackend(BaseSandboxBackend):
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                             )
-                            await proc.wait()
+                            stdout, stderr = await proc.communicate()
                             exit_code = proc.returncode
+                            output = (stdout + stderr).decode("utf-8", errors="replace")
                         except Exception as exc:
                             logger.error(f"[Subprocess Sandbox Host] Failed to run proxy pip: {exc}")
                             exit_code = 1
+                            output = f"pip proxy failed: {exc}\n"
 
                         try:
+                            output_file.write_text(output[-20000:], encoding="utf-8")
                             response_file.write_text(str(exit_code), encoding="utf-8")
                             request_file.unlink(missing_ok=True)
                         except Exception as exc:
