@@ -10,16 +10,16 @@
 
 ## 2. Problem Statement
 
-Clawith Runtime Workers already claim durable Agent commands from PostgreSQL and execute Tool steps in the claiming process. Local `execute_code` creates a fresh sandbox backend and a fresh bubblewrap process for each invocation.
+Clawith Runtime Workers already claim durable Agent commands from PostgreSQL and execute Tool steps in the claiming process. Local `execute_code` now reuses one bubblewrap process for code calls within the same Agent loop.
 
-Because no bubblewrap process survives between calls, routing later commands for the same Session back to the same Runtime Worker does not preserve useful Sandbox state. The state that must survive is file content, and that state belongs in the durable Agent Workspace.
+The loop-scoped process preserves temporary working-copy state between code calls in that loop. State that must survive later loops still belongs in the durable Agent Workspace.
 
 The requested behavior is therefore:
 
 1. any eligible Runtime Worker may execute a Session command through the existing Command Inbox;
 2. concurrent `execute_code` calls for the same Session are prevented with a Redis execution lease;
-3. every local invocation starts a fresh bubblewrap process;
-4. `isolated_output` exposes the Workspace as read-only except for a fixed Session output directory;
+3. one Agent loop reuses one bubblewrap process and closes it at settlement;
+4. `isolated_output` permits working-copy writes but publishes only a fixed Session output directory;
 5. output files are conditionally published to durable Workspace storage and can be rematerialized by any later Worker;
 6. no new Runtime Worker affinity or owner-specific queue is introduced.
 
@@ -33,19 +33,18 @@ Runtime Workers MUST continue claiming commands through the existing PostgreSQL 
 
 Redis MUST store a short-lived, tenant-scoped execution lease for an exact `(tenant_id, agent_id, session_id)` while local `execute_code` is active. The lease prevents overlapping code executions for one Session; it does not own the Agent Run or Session lifecycle.
 
-### G3. Fresh bubblewrap per invocation
+### G3. Loop-scoped bubblewrap
 
-Every local `execute_code` invocation MUST start a fresh bubblewrap process. The platform does not promise preservation of interpreter memory, background processes, environment mutations, `/tmp`, or namespaces between calls.
+Every Agent loop MUST own at most one local bubblewrap process. Code calls in the loop reuse that process and its writable working copy. The process MUST be closed when the loop settles; later loops do not inherit interpreter memory or background processes.
 
 ### G4. Fixed writable Session output
 
-In `isolated_output` mode, code MUST see this logical permission boundary. The
-existing Sandbox mount keeps the Agent root at `/workspace`, so the durable
-Workspace subtree remains `/workspace/workspace`:
+In `isolated_output` mode, code MUST see Workspace-tool-compatible paths and a
+separate publication boundary:
 
 ```text
-/workspace/                                      read-only
-/workspace/workspace/output/{session_id}/         read-write
+/workspace/                                      loop-scoped writable copy
+/workspace/output/{session_id}/                   published read-write output
 ```
 
 Files in the fixed directory MUST be conditionally published to the matching Agent Workspace path and MUST be available to later executions regardless of which Runtime Worker claims them.
@@ -135,7 +134,8 @@ workspace_mode = merge | isolated_output
 
 1. An exact canonical `session_id` is mandatory.
 2. Materialize the Workspace so code can read the current durable contents.
-3. Only `/workspace/workspace/output/{session_id}` is writable inside bubblewrap.
+3. Materialized Sandbox directories are writable within the current Agent loop;
+   only `/workspace/output/{session_id}` is eligible for host publication.
 4. The output directory MUST be included in materialization for every later invocation in that Session.
 5. At invocation settlement, collect changes only under `output/{session_id}`.
 6. Conditionally write those changes to the corresponding durable Agent Workspace path.
@@ -149,7 +149,7 @@ In `isolated_output` mode, the local backend MUST enforce the equivalent of:
 
 ```text
 ro-bind <materialized-agent-root> /workspace
-bind    <session-output-staging> /workspace/workspace/output/{session_id}
+bind    <staging-workspace> /workspace
 ```
 
 The implementation MAY use a safe equivalent mount topology, but tests MUST demonstrate that writes outside the fixed prefix fail and writes inside it succeed.
@@ -252,7 +252,9 @@ Given two calls in one Session, each starts a distinct bubblewrap child process.
 
 ### AC7. Isolated output permissions
 
-Given `workspace_mode=isolated_output`, code can read materialized Workspace files, can create and modify files beneath `/workspace/workspace/output/{session_id}`, and cannot write elsewhere.
+Given `workspace_mode=isolated_output`, code can read and modify the materialized
+working copy during one Agent loop, while only changes beneath
+`/workspace/output/{session_id}` are published to the host Workspace.
 
 ### AC8. Output survives Worker change
 
@@ -289,7 +291,7 @@ Implementation verification MUST include:
 - Redis lease acquire, contention, renew, expiry, and owner-only release tests;
 - two logical Runtime Worker identities contending for one Session execution;
 - Redis unavailable fail-closed tests;
-- fresh bubblewrap process tests;
+- one-bubblewrap-per-Agent-loop lifecycle tests;
 - `isolated_output` read/write mount-boundary tests;
 - path traversal, symlink, and cross-Session isolation tests;
 - materialize/publish/rematerialize tests across different logical Workers;

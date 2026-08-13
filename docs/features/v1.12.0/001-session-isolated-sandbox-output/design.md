@@ -18,16 +18,20 @@ Redis execution lease
     covers materialize -> bwrap execute -> conditional Workspace publish
 ```
 
-Every invocation still starts a fresh bubblewrap child. Cross-invocation continuity comes only from durable files under:
+One bubblewrap child and its writable working copy remain active for the duration
+of one Agent loop. The process is closed when that loop settles. Durable
+cross-loop continuity still comes only from files under:
 
 ```text
 workspace/output/{session_id}
 ```
 
-The Agent root remains mounted at `/workspace`, preserving existing relative paths for `skills/`, `memory/`, and `workspace/`. The writable Sandbox path is therefore:
+Guest paths follow the same logical names exposed by Workspace tools. In
+particular, `workspace/<path>` maps to `/workspace/<path>`; the Sandbox does not
+add a second `workspace` segment. The persistent output path is therefore:
 
 ```text
-/workspace/workspace/output/{session_id}
+/workspace/output/{session_id}
 ```
 
 ## 3. Current-State Snapshot
@@ -74,7 +78,7 @@ agent_tools code-execution orchestrator
   ├─ SandboxExecutionLease            one held lease + heartbeat
   ├─ SandboxWorkspacePolicy           mode/session/path validation
   ├─ TempWorkspace                    materialize roots + publish roots
-  ├─ SubprocessBackend                fresh bwrap + mount enforcement
+  ├─ SubprocessBackend                Agent-loop bwrap + publish enforcement
   └─ flush_temp_workspace             durable conditional publication
 ```
 
@@ -113,7 +117,7 @@ Responsibilities:
 - parse `workspace_mode`;
 - validate canonical Session UUID;
 - derive the durable relative prefix `workspace/output/{session_id}`;
-- derive the guest prefix `/workspace/workspace/output/{session_id}`;
+- derive the guest prefix `/workspace/output/{session_id}`;
 - declare materialization and publication roots;
 - reject unsupported backend/mode combinations.
 
@@ -366,20 +370,23 @@ Prepare three host paths:
 
 ```text
 staging_root/                                  full materialized Agent root
-staging_root/.tmp/                             runtime scripts and pip proxy files
+staging_root/workspace/.tmp/                   runtime scripts and pip proxy files
 staging_root/workspace/output/{session_id}/    Session output staging
 ```
 
 Build bubblewrap mounts in this order:
 
 ```text
---ro-bind staging_root /workspace
---bind staging_root/.tmp /workspace/.tmp
---bind session_output_dir /workspace/workspace/output/{session_id}
---ro-bind persistent_venv /workspace/.venv
+--bind staging_root /clawith
+--bind staging_root/workspace /workspace
+--bind staging_root/memory /memory
+--bind staging_root/skills /skills
+--ro-bind persistent_venv /opt/clawith/venv
 ```
 
-Nested writable binds are added after the read-only parent bind. Destination directories are created before bubblewrap starts.
+Destination directories are created before bubblewrap starts. The staging tree
+is a writable loop-local copy; publication filtering, not a nested read-only
+mount, defines persistence.
 
 The execution script moves to:
 
@@ -387,7 +394,10 @@ The execution script moves to:
 /workspace/.tmp/_exec_tmp.{py|sh|js}
 ```
 
-The working directory remains `/workspace` for compatibility. Code can read `workspace/...`, `skills/...`, and `memory/...`, but writes outside the nested Session output mount fail at the kernel mount boundary.
+The working directory is `/`, so relative logical Workspace-tool paths map
+directly: `workspace/...` is `/workspace/...`, `skills/...` is `/skills/...`,
+and `memory/...` is `/memory/...`. Writes outside Session output are allowed in
+the loop copy but are discarded at loop settlement.
 
 ### 8.3 Symlink policy
 
@@ -398,7 +408,9 @@ Materialization and staging MUST not allow a symlink under the writable prefix t
 - skip or reject staged symlink files;
 - verify every publication candidate remains beneath the resolved output root.
 
-The read-only tree may retain safe readable symlinks only where current Workspace path rules already permit them; no symlink may turn into a writable escape.
+The working-copy tree may retain safe readable symlinks only where current
+Workspace path rules already permit them; no symlink may turn into a
+publication escape.
 
 ## 9. Sandbox Output Gateway and Publication Ownership
 
@@ -412,7 +424,11 @@ candidates = await gateway.prepare(
 )
 ```
 
-For `isolated_output`, it scans only `workspace/output/{session_id}` for creates, modifications, and deletions. It preserves existing quotas and HTML/SVG sanitization. Temporary files and platform internals remain excluded.
+For `isolated_output`, all materialized directories in the loop working copy are
+readable and writable, but publication scans only
+`workspace/output/{session_id}` for creates, modifications, and deletions. It
+preserves existing quotas and HTML/SVG sanitization. Other writes remain
+ephemeral and are discarded when the Agent loop closes.
 
 Publication behavior is exclusive:
 
@@ -430,7 +446,7 @@ Both branches preserve path filtering, conditional conflict handling, artifact r
 4. For every local Session-scoped `execute_code`, in either `merge` or `isolated_output`, acquire the shared Redis execution lease.
 5. Start lease heartbeat.
 6. Materialize readable Agent paths and Session output manifest.
-7. Build a fresh backend and fresh bwrap invocation.
+7. Create or reuse the Run-scoped backend and bwrap process.
 8. Run code and capture exit/output.
 9. Gateway validates only policy-allowed staged changes and freezes the publication candidate set without durable mutation.
 10. Atomically extend the lease for the bounded publication window.
@@ -572,11 +588,11 @@ Pass with implementation constraint.
 
 ## 17. Known Gotchas
 
-1. **Same Agent root versus Workspace subtree:** guest `/workspace` is the Agent root; durable user Workspace is guest `/workspace/workspace`.
+1. **Workspace path identity:** Workspace-tool `workspace/<path>` maps directly to guest `/workspace/<path>`.
 2. **Two publication implementations:** trusted Executor configuration must select exactly one durable owner; runtime assertions prevent gateway and outer Workspace publication from both running.
 3. **Manifest deletion filtering:** filtering only newly collected files is insufficient; deletion checks must also filter the manifest by `publish_paths`.
-4. **Nested bind order:** writable nested binds must follow the read-only parent bind.
-5. **Pip proxy:** runtime `.tmp` must remain writable without making the whole Agent root writable.
+4. **Loop cleanup:** the command boundary must reap the bwrap process and discard non-published working-copy changes.
+5. **Pip proxy:** runtime `.tmp` remains under `/workspace/.tmp` in the loop copy.
 6. **Lease timing:** checking a 60-second lease and then starting publication is racy; publication requires atomic extension plus a shorter bounded deadline.
 7. **Legacy approvals:** approved execution may lack Session context; isolated mode must fail closed rather than guess.
 8. **Remote backends:** their filesystem contract cannot be inferred from the local bubblewrap interface.
@@ -608,11 +624,12 @@ Pass with implementation constraint.
 
 ### Bubblewrap tests
 
-- isolated command contains read-only root bind;
-- runtime `.tmp` and exact Session output are the only writable nested binds;
-- bind ordering is correct;
+- logical `workspace/<path>` maps to guest `/workspace/<path>`;
+- materialized directories are writable in the loop copy;
+- one bwrap process is reused across code calls in one Agent loop;
+- loop settlement reaps that process;
 - script runs from `.tmp`;
-- attempted writes outside output fail in a bwrap integration environment;
+- writes outside output remain available during the loop but are not published;
 - writes inside output succeed.
 
 ### Publication tests

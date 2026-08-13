@@ -35,7 +35,10 @@ class SandboxWorkspacePolicy:
     @property
     def guest_output_path(self) -> str | None:
         relative = self.session_output_path
-        return f"/workspace/{relative}" if relative else None
+        if relative is None:
+            return None
+        workspace_relative = relative.removeprefix("workspace/")
+        return f"/workspace/{workspace_relative}"
 
 
 def parse_canonical_uuid(value: str | uuid.UUID, *, label: str) -> uuid.UUID:

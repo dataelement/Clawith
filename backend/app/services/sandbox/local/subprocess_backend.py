@@ -1,9 +1,12 @@
 """Local subprocess-based sandbox backend."""
 
 import asyncio
+from dataclasses import dataclass
 import os
+import shlex
 import shutil
 import signal
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +22,23 @@ MAX_STDERR_CAPTURE_BYTES = 500_000
 VENV_CREATION_TIMEOUT_SECONDS = 120
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 SANDBOX_VENV_PATH = "/opt/clawith/venv"
+_BWRAP_DONE_PREFIX = "__CLAWITH_BWRAP_DONE__"
+
+
+@dataclass
+class _PersistentBwrapSession:
+    run_id: str
+    agent_id: uuid.UUID | None
+    session_id: str | None
+    workspace_mode: str
+    publish_paths: tuple[str, ...]
+    temp_dir: tempfile.TemporaryDirectory
+    staging_path: Path
+    venv_path: Path
+    process: asyncio.subprocess.Process
+    pip_stop_event: asyncio.Event
+    pip_watcher_task: asyncio.Task
+    lock: asyncio.Lock
 
 
 # Security patterns - reused from agent_tools.py
@@ -107,9 +127,32 @@ class SubprocessBackend(BaseSandboxBackend):
 
     name = "subprocess"
     _bwrap_missing_warned = False
+    _run_sessions: dict[str, _PersistentBwrapSession] = {}
 
     def __init__(self, config: SandboxConfig):
         self.config = config
+
+    @classmethod
+    async def close_run(cls, run_id: str) -> None:
+        """Stop and remove the bubblewrap process owned by one Agent loop."""
+        session = cls._run_sessions.pop(run_id, None)
+        if session is None:
+            return
+        session.pip_stop_event.set()
+        try:
+            await session.pip_watcher_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        if session.process.returncode is None:
+            try:
+                if session.process.stdin is not None:
+                    session.process.stdin.write(b"exit\n")
+                    await session.process.stdin.drain()
+                await asyncio.wait_for(session.process.wait(), timeout=2)
+            except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError):
+                backend = cls(SandboxConfig())
+                await backend._terminate_and_reap_process(session.process)
+        session.temp_dir.cleanup()
 
     def _venv_python(self, venv_path: Path) -> str:
         return f"{SANDBOX_VENV_PATH}/bin/python"
@@ -340,8 +383,10 @@ class SubprocessBackend(BaseSandboxBackend):
             + self._bind_if_exists("/etc")
         )
 
-        actual_workspace_mount = str(staging_path) if staging_path else str(work_path)
-        workspace_mount_flag = "--bind" if staging_path and writable_path is None else "--ro-bind"
+        if staging_path is not None:
+            for directory in ("workspace", "memory", "skills"):
+                (staging_path / directory).mkdir(parents=True, exist_ok=True)
+            (staging_path / "workspace" / ".tmp").mkdir(parents=True, exist_ok=True)
 
         cmd = [
             bwrap,
@@ -353,17 +398,27 @@ class SubprocessBackend(BaseSandboxBackend):
             "--unshare-cgroup-try",
             *base_binds,
             "--bind", "/data/agents/.uv-cache", "/uv-cache",
-            workspace_mount_flag, actual_workspace_mount, "/workspace",
         ]
+        if staging_path is not None:
+            cmd.extend([
+                "--bind", str(staging_path / "workspace"), "/workspace",
+                "--bind", str(staging_path / "memory"), "/memory",
+                "--bind", str(staging_path / "skills"), "/skills",
+            ])
+            for root_file in ("focus.md", "soul.md", "HEARTBEAT.md"):
+                source = staging_path / root_file
+                if source.exists():
+                    cmd.extend(["--bind", str(source), f"/{root_file}"])
+        else:
+            cmd.extend(["--bind", str(work_path), "/workspace"])
         if staging_path is not None and writable_path is not None:
             writable_host = (staging_path / writable_path).resolve()
             if not writable_host.is_relative_to(staging_path.resolve()):
                 raise ValueError("Sandbox writable path escapes staging root")
             writable_host.mkdir(parents=True, exist_ok=True)
+            guest_writable_path = writable_path.removeprefix("workspace/")
             cmd.extend([
-                "--bind", str(staging_path / ".tmp"), "/workspace/.tmp",
-                "--bind", str(writable_host), f"/workspace/{writable_path}",
-                "--setenv", "CLAWITH_SESSION_OUTPUT_DIR", f"/workspace/{writable_path}",
+                "--setenv", "CLAWITH_SESSION_OUTPUT_DIR", f"/workspace/{guest_writable_path}",
             ])
         cmd.extend([
             "--ro-bind", str(venv_path), SANDBOX_VENV_PATH,
@@ -394,7 +449,7 @@ class SubprocessBackend(BaseSandboxBackend):
             cmd.extend(["--setenv", "no_proxy", no_proxy, "--setenv", "NO_PROXY", no_proxy])
 
         cmd.append("--chdir")
-        cmd.append("/workspace")
+        cmd.append("/")
         if not self.config.allow_network:
             cmd.append("--unshare-net")
         cmd.extend(command)
@@ -427,7 +482,7 @@ class SubprocessBackend(BaseSandboxBackend):
         """Watch for pip request files in the staging directory's .tmp and execute them using uv on the host."""
         while not stop_event.is_set():
             try:
-                tmp_dir = staging_path / ".tmp"
+                tmp_dir = staging_path / "workspace" / ".tmp"
                 if tmp_dir.exists():
                     for request_file in tmp_dir.glob(".pip_request_*"):
                         if not request_file.exists():
@@ -725,6 +780,226 @@ class SubprocessBackend(BaseSandboxBackend):
             elif item.is_dir():
                 shutil.copytree(item, dest / item.name, symlinks=True, dirs_exist_ok=True)
 
+    async def _start_persistent_session(
+        self,
+        *,
+        run_id: str,
+        work_path: Path,
+        venv_path: Path,
+        agent_id: uuid.UUID | None,
+        session_id: str | None,
+        workspace_mode: str,
+        publish_paths: list[str] | None,
+    ) -> _PersistentBwrapSession | None:
+        temp_dir = tempfile.TemporaryDirectory(prefix=f"clawith-bwrap-{run_id[:8]}-")
+        staging_path = Path(temp_dir.name)
+        self._clone_workspace_to_staging(work_path, staging_path)
+        (staging_path / "workspace" / ".tmp" / "pip-cache").mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        writable_path = (
+            publish_paths[0]
+            if workspace_mode == "isolated_output" and publish_paths
+            else None
+        )
+        bwrap_command = self._build_bwrap_command(
+            ["bash", "--noprofile", "--norc"],
+            work_path,
+            venv_path,
+            staging_path=staging_path,
+            writable_path=writable_path,
+        )
+        if bwrap_command is None:
+            temp_dir.cleanup()
+            return None
+        process = await asyncio.create_subprocess_exec(
+            *bwrap_command,
+            cwd=str(work_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self._build_safe_env(work_path),
+            start_new_session=True,
+        )
+        pip_stop_event = asyncio.Event()
+        pip_watcher_task = asyncio.create_task(
+            self._watch_pip_requests(staging_path, venv_path, pip_stop_event)
+        )
+        persistent = _PersistentBwrapSession(
+            run_id=run_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            workspace_mode=workspace_mode,
+            publish_paths=tuple(publish_paths or ()),
+            temp_dir=temp_dir,
+            staging_path=staging_path,
+            venv_path=venv_path,
+            process=process,
+            pip_stop_event=pip_stop_event,
+            pip_watcher_task=pip_watcher_task,
+            lock=asyncio.Lock(),
+        )
+        SubprocessBackend._run_sessions[run_id] = persistent
+        return persistent
+
+    async def _persistent_session(
+        self,
+        *,
+        run_id: str,
+        work_path: Path,
+        venv_path: Path,
+        agent_id: uuid.UUID | None,
+        session_id: str | None,
+        workspace_mode: str,
+        publish_paths: list[str] | None,
+    ) -> _PersistentBwrapSession | None:
+        existing = SubprocessBackend._run_sessions.get(run_id)
+        expected_paths = tuple(publish_paths or ())
+        if existing is not None and (
+            existing.process.returncode is not None
+            or existing.agent_id != agent_id
+            or existing.session_id != session_id
+            or existing.workspace_mode != workspace_mode
+            or existing.publish_paths != expected_paths
+        ):
+            await SubprocessBackend.close_run(run_id)
+            existing = None
+        if existing is None:
+            return await self._start_persistent_session(
+                run_id=run_id,
+                work_path=work_path,
+                venv_path=venv_path,
+                agent_id=agent_id,
+                session_id=session_id,
+                workspace_mode=workspace_mode,
+                publish_paths=publish_paths,
+            )
+        self._clone_workspace_to_staging(work_path, existing.staging_path)
+        return existing
+
+    async def _run_in_persistent_session(
+        self,
+        session: _PersistentBwrapSession,
+        *,
+        code: str,
+        language: str,
+        timeout: int,
+        on_output,
+    ) -> tuple[int, str, str, bool]:
+        token = uuid.uuid4().hex
+        extension = {"python": ".py", "bash": ".sh", "node": ".js"}[language]
+        temp_path = session.staging_path / "workspace" / ".tmp"
+        script_path = temp_path / f"_exec_tmp_{token}{extension}"
+        stdout_path = temp_path / f"_exec_stdout_{token}"
+        stderr_path = temp_path / f"_exec_stderr_{token}"
+        script_path.write_text(code, encoding="utf-8")
+        command = self._build_command(
+            language,
+            f"/workspace/.tmp/{script_path.name}",
+        )
+        marker = f"{_BWRAP_DONE_PREFIX}{token}:"
+        shell_line = (
+            f"{shlex.join(command)} >{shlex.quote('/workspace/.tmp/' + stdout_path.name)} "
+            f"2>{shlex.quote('/workspace/.tmp/' + stderr_path.name)}; "
+            f"__clawith_rc=$?; printf '{marker}%s\\n' \"$__clawith_rc\"\n"
+        )
+        process = session.process
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError("Persistent bubblewrap control pipes are unavailable")
+        process.stdin.write(shell_line.encode("utf-8"))
+        await process.stdin.drain()
+
+        stream_stop = asyncio.Event()
+
+        async def stream_output_files() -> None:
+            offsets = {stdout_path: 0, stderr_path: 0}
+            labels = {stdout_path: "stdout", stderr_path: "stderr"}
+            while not stream_stop.is_set():
+                if on_output:
+                    for path, offset in tuple(offsets.items()):
+                        if not path.exists():
+                            continue
+                        with path.open("rb") as stream:
+                            stream.seek(offset)
+                            chunk = stream.read()
+                        if chunk:
+                            offsets[path] += len(chunk)
+                            try:
+                                await on_output(
+                                    chunk.decode("utf-8", errors="replace"),
+                                    labels[path],
+                                )
+                            except Exception:
+                                pass
+                try:
+                    await asyncio.wait_for(stream_stop.wait(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    pass
+
+            if on_output:
+                for path, offset in tuple(offsets.items()):
+                    if not path.exists():
+                        continue
+                    with path.open("rb") as stream:
+                        stream.seek(offset)
+                        chunk = stream.read()
+                    if chunk:
+                        try:
+                            await on_output(
+                                chunk.decode("utf-8", errors="replace"),
+                                labels[path],
+                            )
+                        except Exception:
+                            pass
+
+        stream_task = asyncio.create_task(stream_output_files())
+
+        timed_out = False
+        exit_code = 1
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        detail = ""
+                        if process.stderr is not None:
+                            detail = (await process.stderr.read()).decode(
+                                "utf-8",
+                                errors="replace",
+                            )[:500]
+                        raise RuntimeError(
+                            "Persistent bubblewrap exited before command settlement"
+                            + (f": {detail}" if detail else "")
+                        )
+                    decoded = line.decode("utf-8", errors="replace").strip()
+                    if decoded.startswith(marker):
+                        exit_code = int(decoded.removeprefix(marker))
+                        break
+        except asyncio.TimeoutError:
+            timed_out = True
+            await self._terminate_and_reap_process(process)
+            exit_code = 124
+        finally:
+            stream_stop.set()
+            await stream_task
+
+        stdout = (
+            stdout_path.read_bytes()[:MAX_STDOUT_CAPTURE_BYTES]
+            if stdout_path.exists()
+            else b""
+        )
+        stderr = (
+            stderr_path.read_bytes()[:MAX_STDERR_CAPTURE_BYTES]
+            if stderr_path.exists()
+            else b""
+        )
+        stdout_text = stdout.decode("utf-8", errors="replace")[:10000]
+        stderr_text = stderr.decode("utf-8", errors="replace")[:5000]
+        for path in (script_path, stdout_path, stderr_path):
+            path.unlink(missing_ok=True)
+        return exit_code, stdout_text, stderr_text, timed_out
+
     async def execute(
         self,
         code: str,
@@ -738,6 +1013,7 @@ class SubprocessBackend(BaseSandboxBackend):
         on_output = kwargs.get("on_output")
         agent_id = kwargs.get("agent_id")
         session_id = kwargs.get("session_id")
+        run_id = kwargs.get("run_id")
         workspace_mode = kwargs.get("workspace_mode", "merge")
         publication_owner = kwargs.get("publication_owner", "workspace_cas")
         publish_paths = kwargs.get("publish_paths")
@@ -786,14 +1062,7 @@ class SubprocessBackend(BaseSandboxBackend):
                 error=str(exc),
             )
         work_path.mkdir(parents=True, exist_ok=True)
-        (work_path / ".tmp").mkdir(parents=True, exist_ok=True)
         (work_path / ".tmp" / "pip-cache").mkdir(parents=True, exist_ok=True)
-
-        # Setup staging directory for secure output isolation
-        staging_id = str(uuid.uuid4())
-        staging_path = work_path / ".tmp" / f"staging_{staging_id}"
-        self._clone_workspace_to_staging(work_path, staging_path)
-        (staging_path / ".tmp").mkdir(parents=True, exist_ok=True)
         
         # Determine persistent venv path if possible
         if agent_id:
@@ -803,6 +1072,119 @@ class SubprocessBackend(BaseSandboxBackend):
             uv_cache.mkdir(parents=True, exist_ok=True)
         else:
             venv_path = work_path / ".venv"
+
+        try:
+            await self._ensure_workspace_venv(venv_path)
+            if isinstance(run_id, str) and run_id:
+                persistent = await self._persistent_session(
+                    run_id=run_id,
+                    work_path=work_path,
+                    venv_path=venv_path,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    workspace_mode=workspace_mode,
+                    publish_paths=publish_paths,
+                )
+                if persistent is not None:
+                    async with persistent.lock:
+                        exit_code, stdout_str, stderr_str, is_timeout = (
+                            await self._run_in_persistent_session(
+                                persistent,
+                                code=code,
+                                language=language,
+                                timeout=timeout,
+                                on_output=on_output,
+                            )
+                        )
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        try:
+                            if (
+                                publication_owner == "gateway"
+                                and before_gateway_publish is not None
+                                and not await before_gateway_publish()
+                            ):
+                                raise RuntimeError(
+                                    "Sandbox publication ownership could not be verified"
+                                )
+                            await self._verify_and_merge_outputs(
+                                persistent.staging_path,
+                                work_path,
+                                agent_id=agent_id,
+                                session_id=session_id,
+                                publish_paths=publish_paths,
+                                record_revisions=False,
+                            )
+                            if publication_owner == "gateway":
+                                if gateway_publish is None:
+                                    raise RuntimeError(
+                                        "Gateway publication callback is missing"
+                                    )
+                                await gateway_publish()
+                        except Exception as exc:
+                            return ExecutionResult(
+                                success=False,
+                                stdout=stdout_str,
+                                stderr=stderr_str,
+                                exit_code=1,
+                                duration_ms=duration_ms,
+                                error=(
+                                    "sandbox_publication_unknown: "
+                                    f"{type(exc).__name__}"
+                                ),
+                            )
+                        finally:
+                            if is_timeout:
+                                await SubprocessBackend.close_run(run_id)
+                        if is_timeout:
+                            return ExecutionResult(
+                                success=False,
+                                stdout=stdout_str,
+                                stderr=stderr_str,
+                                exit_code=124,
+                                duration_ms=duration_ms,
+                                error=(
+                                    f"Code execution timed out after {timeout}s. "
+                                    "The Agent-loop sandbox was reset."
+                                ),
+                            )
+                        return ExecutionResult(
+                            success=exit_code == 0,
+                            stdout=stdout_str,
+                            stderr=stderr_str,
+                            exit_code=exit_code,
+                            duration_ms=duration_ms,
+                            error=None if exit_code == 0 else f"Exit code: {exit_code}",
+                        )
+                if (
+                    workspace_mode == "isolated_output"
+                    or not self.config.allow_unsafe_fallback_when_bwrap_missing
+                ):
+                    return ExecutionResult(
+                        success=False,
+                        stdout="",
+                        stderr="",
+                        exit_code=1,
+                        duration_ms=int((time.time() - start_time) * 1000),
+                        error=(
+                            "bubblewrap (bwrap) is required for execute_code but "
+                            "is not available."
+                        ),
+                    )
+        except Exception as exc:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr="",
+                exit_code=1,
+                duration_ms=int((time.time() - start_time) * 1000),
+                error=f"sandbox_persistent_execution_failed: {type(exc).__name__}",
+            )
+
+        # Legacy calls without a Runtime Run retain one-shot isolation.
+        staging_id = str(uuid.uuid4())
+        staging_path = work_path / ".tmp" / f"staging_{staging_id}"
+        self._clone_workspace_to_staging(work_path, staging_path)
+        (staging_path / "workspace" / ".tmp").mkdir(parents=True, exist_ok=True)
 
         # Determine command and file extension
         if language == "python":
@@ -814,10 +1196,9 @@ class SubprocessBackend(BaseSandboxBackend):
         
         # Write code to temp file inside real work_path (read-only bound to guest /workspace via staging copy)
         # Note: script_path must be written inside staging_path so sandbox can see and run it!
-        script_path = staging_path / ".tmp" / f"_exec_tmp{ext}"
+        script_path = staging_path / "workspace" / ".tmp" / f"_exec_tmp{ext}"
 
         try:
-            await self._ensure_workspace_venv(venv_path)
             script_path.write_text(code, encoding="utf-8")
 
             # Start background task to watch for pip requests
@@ -958,7 +1339,6 @@ class SubprocessBackend(BaseSandboxBackend):
                 duration_ms=duration_ms,
                 error=None if proc.returncode == 0 else f"Exit code: {proc.returncode}"
             )
-
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
             logger.exception("[Subprocess] Execution error")
@@ -985,14 +1365,12 @@ class SubprocessBackend(BaseSandboxBackend):
                     await pip_watcher_task
                 except Exception:
                     pass
-
             # Clean up temp script inside staging if not done
             if 'script_path' in locals():
                 try:
                     script_path.unlink(missing_ok=True)
                 except Exception:
                     pass
-
             # Clean up staging folder
             if 'staging_path' in locals():
                 try:
@@ -1000,3 +1378,14 @@ class SubprocessBackend(BaseSandboxBackend):
                         shutil.rmtree(staging_path)
                 except Exception:
                     pass
+
+
+async def close_subprocess_sandbox_run(run_id: str) -> None:
+    """Release the persistent local sandbox associated with one Agent loop."""
+    try:
+        await SubprocessBackend.close_run(run_id)
+    except Exception:
+        logger.exception(
+            "[Subprocess] Failed to close Agent-loop sandbox for run {}",
+            run_id,
+        )

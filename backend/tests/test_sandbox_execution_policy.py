@@ -44,7 +44,7 @@ def test_isolated_policy_uses_exact_session_output() -> None:
     )
 
     assert policy.publish_paths == (f"workspace/output/{session_id}",)
-    assert policy.guest_output_path == f"/workspace/workspace/output/{session_id}"
+    assert policy.guest_output_path == f"/workspace/output/{session_id}"
     assert policy.materialized_paths == ("workspace", "memory", "skills")
 
 
@@ -74,8 +74,9 @@ def test_isolated_output_prompt_directs_code_to_session_output_env() -> None:
     code_description = patched["function"]["parameters"]["properties"]["code"]["description"]
     for value in (description, code_description):
         assert "CLAWITH_SESSION_OUTPUT_DIR" in value
-        assert "workspace/output/<current-session-id>/" in value
-        assert "/workspace/.tmp" in value
+        assert "/workspace/output/<current-session-id>/" in value
+        assert "workspace/<path> maps to /workspace/<path>" in value
+        assert "Other sandbox writes are temporary" in value
     assert original["function"]["description"] == "Execute code."
 
 
@@ -116,7 +117,7 @@ async def test_runtime_tools_apply_isolated_output_prompt(monkeypatch) -> None:
     assert len(resolved) == 1
     description = resolved[0]["function"]["description"]
     assert "CLAWITH_SESSION_OUTPUT_DIR" in description
-    assert "workspace/output/<current-session-id>/" in description
+    assert "/workspace/output/<current-session-id>/" in description
 
 
 def test_session_uuid_must_be_canonical() -> None:

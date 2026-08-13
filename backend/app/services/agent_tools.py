@@ -80,6 +80,7 @@ from app.services.sandbox.workspace_policy import (
     build_workspace_policy,
     parse_canonical_uuid,
 )
+from app.services.sandbox.run_scope import sandbox_run_scope_id
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_TOOL_NAME,
@@ -1057,13 +1058,13 @@ async def _get_runtime_dynamic_mcp_tool_names(
 
 
 _ISOLATED_OUTPUT_TOOL_PROMPT = (
-    " Workspace write policy: isolated session output. The workspace root is "
-    "read-only. For persistent output from code, read the absolute writable "
-    "directory from the CLAWITH_SESSION_OUTPUT_DIR environment variable and "
-    "write every generated file beneath it; do not guess or hard-code an "
-    "absolute /workspace path. The corresponding path for workspace tools is "
-    "workspace/output/<current-session-id>/. Do not use /workspace/.tmp for "
-    "persistent output."
+    " Workspace write policy: isolated session output. Materialized directories "
+    "inside the sandbox are readable and writable for the current Agent loop, "
+    "but only files under /workspace/output/<current-session-id>/ are published "
+    "back to the host Workspace. Other sandbox writes are temporary. Paths match "
+    "workspace tools: workspace/<path> maps to /workspace/<path>. Read the exact "
+    "persistent output directory from CLAWITH_SESSION_OUTPUT_DIR; do not add a "
+    "second workspace path segment."
 )
 
 
@@ -10362,6 +10363,7 @@ async def _execute_code_outcome(
             on_output=on_output,
             agent_id=agent_id,
             session_id=session_id,
+            run_id=sandbox_run_scope_id.get().strip() or None,
             workspace_mode=sandbox_config.workspace_mode,
             publication_owner=sandbox_config.publication_owner,
             publish_paths=publish_paths,

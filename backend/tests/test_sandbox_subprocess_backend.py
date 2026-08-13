@@ -2,6 +2,7 @@
 
 import asyncio
 import signal
+from types import SimpleNamespace
 import uuid
 from pathlib import Path
 
@@ -148,7 +149,7 @@ def test_subprocess_backend_proxy_bwrap_command(monkeypatch, tmp_path: Path) -> 
     assert cmd[idx_https + 1] == "http://proxy.example.com:8443"
 
 
-def test_isolated_bwrap_mounts_only_tmp_and_session_output_writable(monkeypatch, tmp_path: Path) -> None:
+def test_isolated_bwrap_uses_workspace_tool_paths_and_writable_copy(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/bwrap" if cmd == "bwrap" else None)
     staging = tmp_path / "staging"
     (staging / ".tmp").mkdir(parents=True)
@@ -166,20 +167,81 @@ def test_isolated_bwrap_mounts_only_tmp_and_session_output_writable(monkeypatch,
 
     assert cmd is not None
     root_index = cmd.index("/workspace")
-    assert cmd[root_index - 2] == "--ro-bind"
+    assert cmd[root_index - 2] == "--bind"
+    assert cmd[root_index - 1] == str(staging / "workspace")
     venv_index = cmd.index(SANDBOX_VENV_PATH)
     assert cmd[venv_index - 2] == "--ro-bind"
     assert cmd[venv_index - 1] == str(tmp_path / ".venv")
     assert "/workspace/.venv" not in cmd
-    tmp_index = cmd.index("/workspace/.tmp")
-    output_index = cmd.index(f"/workspace/{output_path}")
-    assert cmd[tmp_index - 2] == "--bind"
-    assert cmd[output_index - 2] == "--bind"
-    assert root_index < tmp_index < output_index
     env_index = cmd.index("CLAWITH_SESSION_OUTPUT_DIR")
-    assert cmd[env_index + 1] == f"/workspace/{output_path}"
+    assert cmd[env_index + 1] == f"/workspace/output/{session_id}"
+    assert f"/workspace/{output_path}" not in cmd
     virtual_env_index = cmd.index("VIRTUAL_ENV")
     assert cmd[virtual_env_index + 1] == SANDBOX_VENV_PATH
+    chdir_index = cmd.index("--chdir")
+    assert cmd[chdir_index + 1] == "/"
+
+
+@pytest.mark.asyncio
+async def test_persistent_bwrap_session_is_reused_for_same_agent_loop(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    backend = SubprocessBackend(SandboxConfig(workspace_mode="isolated_output"))
+    run_id = str(uuid.uuid4())
+    agent_id = uuid.uuid4()
+    session_id = str(uuid.uuid4())
+    publish_paths = [f"workspace/output/{session_id}"]
+    starts = 0
+    refreshes = 0
+    persistent = SimpleNamespace(
+        process=SimpleNamespace(returncode=None),
+        agent_id=agent_id,
+        session_id=session_id,
+        workspace_mode="isolated_output",
+        publish_paths=tuple(publish_paths),
+        staging_path=tmp_path / "persistent",
+    )
+
+    async def start(**_kwargs):
+        nonlocal starts
+        starts += 1
+        SubprocessBackend._run_sessions[run_id] = persistent
+        return persistent
+
+    def refresh(_source, _destination):
+        nonlocal refreshes
+        refreshes += 1
+
+    monkeypatch.setattr(backend, "_start_persistent_session", start)
+    monkeypatch.setattr(backend, "_clone_workspace_to_staging", refresh)
+    SubprocessBackend._run_sessions.pop(run_id, None)
+    try:
+        first = await backend._persistent_session(
+            run_id=run_id,
+            work_path=tmp_path / "first",
+            venv_path=tmp_path / "venv",
+            agent_id=agent_id,
+            session_id=session_id,
+            workspace_mode="isolated_output",
+            publish_paths=publish_paths,
+        )
+        second = await backend._persistent_session(
+            run_id=run_id,
+            work_path=tmp_path / "second",
+            venv_path=tmp_path / "venv",
+            agent_id=agent_id,
+            session_id=session_id,
+            workspace_mode="isolated_output",
+            publish_paths=publish_paths,
+        )
+    finally:
+        SubprocessBackend._run_sessions.pop(run_id, None)
+
+    assert first is persistent
+    assert second is persistent
+    assert starts == 1
+    assert refreshes == 1
 
 
 def test_sandbox_config_proxy_parsing() -> None:
@@ -254,7 +316,7 @@ def test_sandbox_pip_hijack_shebang(tmp_path: Path) -> None:
 async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
     staging = tmp_path / "staging"
     staging.mkdir()
-    (staging / ".tmp").mkdir()
+    (staging / "workspace" / ".tmp").mkdir(parents=True)
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").write_text("", encoding="utf-8")
@@ -275,7 +337,7 @@ async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
     backend = SubprocessBackend(SandboxConfig())
 
     # Simulate a pip request being written inside the clone's .tmp/ folder
-    req_file = staging / ".tmp" / ".pip_request_123"
+    req_file = staging / "workspace" / ".tmp" / ".pip_request_123"
     req_file.write_text("install pandas", encoding="utf-8")
 
     stop_event = asyncio.Event()
@@ -286,7 +348,7 @@ async def test_sandbox_pip_watcher_loop(tmp_path: Path, monkeypatch) -> None:
     )
 
     # Wait for watcher to process request and write response
-    res_file = staging / ".tmp" / ".pip_response_123"
+    res_file = staging / "workspace" / ".tmp" / ".pip_response_123"
     for _ in range(20):
         if res_file.exists():
             break
