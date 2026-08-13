@@ -1064,10 +1064,9 @@ _ISOLATED_OUTPUT_TOOL_PROMPT = (
     "back to the host Workspace. Other sandbox writes are temporary. The working "
     "directory is / and paths match workspace tools directly: workspace/<path> "
     "maps to /workspace/<path>, skills/<path> maps to /skills/<path>, and "
-    "memory/<path> maps to /memory/<path>. Prefer these canonical paths; "
-    "/workspace/skills is only a compatibility alias for legacy Skills. Read the "
-    "exact persistent output directory from CLAWITH_SESSION_OUTPUT_DIR; do not "
-    "add a second workspace path segment."
+    "memory/<path> maps to /memory/<path>. Read the exact persistent output "
+    "directory from CLAWITH_SESSION_OUTPUT_DIR; do not add a second workspace "
+    "path segment."
 )
 
 

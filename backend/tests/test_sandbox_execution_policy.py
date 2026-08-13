@@ -79,7 +79,6 @@ def test_isolated_output_prompt_directs_code_to_session_output_env() -> None:
         assert "skills/<path> maps to /skills/<path>" in value
         assert "memory/<path> maps to /memory/<path>" in value
         assert "working directory is /" in value
-        assert "/workspace/skills is only a compatibility alias" in value
         assert "Other sandbox writes are temporary" in value
     assert original["function"]["description"] == "Execute code."
 

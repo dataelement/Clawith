@@ -172,9 +172,7 @@ def test_isolated_bwrap_uses_workspace_tool_paths_and_writable_copy(monkeypatch,
     skills_index = cmd.index("/skills")
     assert cmd[skills_index - 2] == "--bind"
     assert cmd[skills_index - 1] == str(staging / "skills")
-    legacy_skills_index = cmd.index("/workspace/skills")
-    assert cmd[legacy_skills_index - 2] == "--bind"
-    assert cmd[legacy_skills_index - 1] == str(staging / "skills")
+    assert "/workspace/skills" not in cmd
     venv_index = cmd.index(SANDBOX_VENV_PATH)
     assert cmd[venv_index - 2] == "--ro-bind"
     assert cmd[venv_index - 1] == str(tmp_path / ".venv")

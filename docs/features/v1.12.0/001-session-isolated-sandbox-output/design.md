@@ -381,7 +381,6 @@ Build bubblewrap mounts in this order:
 --bind staging_root/workspace /workspace
 --bind staging_root/memory /memory
 --bind staging_root/skills /skills
---bind staging_root/skills /workspace/skills   # legacy Skill compatibility
 --ro-bind persistent_venv /opt/clawith/venv
 ```
 
@@ -399,11 +398,6 @@ The working directory is `/`, so relative logical Workspace-tool paths map
 directly: `workspace/...` is `/workspace/...`, `skills/...` is `/skills/...`,
 and `memory/...` is `/memory/...`. Writes outside Session output are allowed in
 the loop copy but are discarded at loop settlement.
-
-`/workspace/skills` is a compatibility mount for Skills authored against the
-legacy whole-Agent-root-at-`/workspace` layout. The model-facing contract keeps
-`/skills` canonical, and new Skills MUST use relative `skills/...` paths or the
-canonical absolute `/skills/...` path.
 
 ### 8.3 Symlink policy
 
@@ -610,7 +604,6 @@ Pass with implementation constraint.
 9. **Dirty worktree:** process-reaping and staging changes already in progress must be preserved during implementation.
 10. **Scope validation:** canonical UUID syntax is insufficient; tenant, Agent, and Session ownership must be verified together before any Session lease or output path is constructed.
 11. **Partial publication:** a timeout after the first conditional mutation is an `unknown` outcome with reconciliation metadata, not a retryable failure.
-12. **Legacy Skill paths:** existing Skill packages may hard-code `/workspace/skills`; keep the compatibility mount while prompting new code to use canonical `/skills` paths.
 
 ## 18. Verification Design
 
@@ -637,7 +630,7 @@ Pass with implementation constraint.
 ### Bubblewrap tests
 
 - logical `workspace/<path>` maps to guest `/workspace/<path>`;
-- logical `skills/<path>` maps to guest `/skills/<path>`, while legacy `/workspace/skills/<path>` resolves to the same staged Skill tree;
+- logical `skills/<path>` maps to guest `/skills/<path>`;
 - materialized directories are writable in the loop copy;
 - one bwrap process is reused across code calls in one Agent loop;
 - loop settlement reaps that process;
