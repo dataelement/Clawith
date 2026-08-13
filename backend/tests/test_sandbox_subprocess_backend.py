@@ -295,6 +295,66 @@ async def test_sandbox_output_sanitization(tmp_path: Path) -> None:
     assert not (target / "evil.sh").exists()
 
 
+@pytest.mark.asyncio
+async def test_sandbox_quota_ignores_unchanged_materialized_files(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging"
+    target = tmp_path / "target"
+    staging.mkdir()
+    target.mkdir()
+    for index in range(150):
+        relative = Path("skills") / f"existing-{index}.md"
+        (staging / relative).parent.mkdir(parents=True, exist_ok=True)
+        (target / relative).parent.mkdir(parents=True, exist_ok=True)
+        (staging / relative).write_text("unchanged", encoding="utf-8")
+        (target / relative).write_text("unchanged", encoding="utf-8")
+
+    await SubprocessBackend(SandboxConfig())._verify_and_merge_outputs(
+        staging,
+        target,
+    )
+
+    assert len(list((target / "skills").iterdir())) == 150
+
+
+@pytest.mark.asyncio
+async def test_sandbox_quota_rejects_too_many_changed_files(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging"
+    target = tmp_path / "target"
+    staging.mkdir()
+    target.mkdir()
+    for index in range(101):
+        (staging / f"generated-{index}.txt").write_text(
+            "generated",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(RuntimeError, match="too many changed files"):
+        await SubprocessBackend(SandboxConfig())._verify_and_merge_outputs(
+            staging,
+            target,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_quota_rejects_too_many_deletions(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    target = tmp_path / "target"
+    staging.mkdir()
+    target.mkdir()
+    for index in range(101):
+        (target / f"existing-{index}.txt").write_text("existing", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="deleted too many files"):
+        await SubprocessBackend(SandboxConfig())._verify_and_merge_outputs(
+            staging,
+            target,
+        )
+
+
 def test_sandbox_pip_hijack_shebang(tmp_path: Path) -> None:
     venv_bin = tmp_path / "bin"
     venv_bin.mkdir(parents=True)

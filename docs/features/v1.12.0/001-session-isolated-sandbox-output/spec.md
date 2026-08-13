@@ -246,9 +246,11 @@ Given a stale or foreign lease token, it cannot renew or delete the active execu
 
 Given Redis is unavailable before execution, local Session `execute_code` does not start and durable Runtime state remains recoverable.
 
-### AC6. Fresh bwrap invocation
+### AC6. Loop-scoped bwrap reuse
 
-Given two calls in one Session, each starts a distinct bubblewrap child process. State continuity is promised only for files published to durable Workspace.
+Given two code calls in one Agent loop, they reuse one bubblewrap child and its
+working copy. The child is reaped when the loop settles; continuity across
+later loops is promised only for files published to durable Workspace.
 
 ### AC7. Isolated output permissions
 

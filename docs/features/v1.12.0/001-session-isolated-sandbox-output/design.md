@@ -430,6 +430,11 @@ readable and writable, but publication scans only
 preserves existing quotas and HTML/SVG sanitization. Other writes remain
 ephemeral and are discarded when the Agent loop closes.
 
+Output quotas apply only to the publication delta: newly created or modified
+candidate files count toward the 100-file, 50-MB total, and 10-MB single-file
+limits. Unchanged materialized files do not consume output quota. Deletions use
+a separate 100-file limit so a loop cannot bypass protection with a mass delete.
+
 Publication behavior is exclusive:
 
 - after the publication lease is extended, `publication_owner=gateway` passes the prepared candidate set to the gateway's conditional durable publisher and disables outer sync-back for those roots;

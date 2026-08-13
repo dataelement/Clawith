@@ -23,6 +23,10 @@ VENV_CREATION_TIMEOUT_SECONDS = 120
 PROCESS_TERMINATION_GRACE_SECONDS = 5
 SANDBOX_VENV_PATH = "/opt/clawith/venv"
 _BWRAP_DONE_PREFIX = "__CLAWITH_BWRAP_DONE__"
+MAX_PUBLISHED_FILES_PER_EXECUTION = 100
+MAX_DELETED_FILES_PER_EXECUTION = 100
+MAX_PUBLISHED_TOTAL_BYTES = 50 * 1024 * 1024
+MAX_PUBLISHED_FILE_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -556,12 +560,6 @@ class SubprocessBackend(BaseSandboxBackend):
         except ImportError:
             cleaner = None
 
-        max_allowed_files = 100
-        max_total_size = 50 * 1024 * 1024  # 50 MB
-        max_single_file_size = 10 * 1024 * 1024  # 10 MB
-
-        file_count = 0
-        total_size = 0
         banned_suffixes = {".py", ".sh", ".js", ".elf", ".exe", ".so", ".dylib", ".dll", ".bat", ".cmd"}
         protected_files = {"soul.md", "tasks.json", "tasks.json.bak", "enterprise_info"}
 
@@ -604,20 +602,83 @@ class SubprocessBackend(BaseSandboxBackend):
                     continue
                 target_files[relative_path] = file_path
 
-        # Quota checks
+        publication_candidates: dict[Path, Path] = {}
         for rel_path, file_path in staging_files.items():
-            file_count += 1
-            if file_count > max_allowed_files:
-                raise RuntimeError(f"Sandbox generated too many files (limit: {max_allowed_files})")
+            rel_path_str = str(rel_path)
+            target_file = target_files.get(rel_path)
+            if rel_path_str in protected_files:
+                if target_file is None:
+                    logger.warning(
+                        f"[Sandbox Gateway] Blocked attempt to create protected file: {rel_path}"
+                    )
+                    continue
+                try:
+                    if file_path.read_bytes() != target_file.read_bytes():
+                        logger.warning(
+                            f"[Sandbox Gateway] Blocked attempt to modify protected file: {rel_path}"
+                        )
+                    continue
+                except OSError:
+                    continue
+            if file_path.suffix.lower() in banned_suffixes:
+                logger.warning(
+                    f"[Sandbox Gateway] Blocked banned file extension: {rel_path}"
+                )
+                continue
+            if target_file is not None:
+                try:
+                    if file_path.read_bytes() == target_file.read_bytes():
+                        continue
+                except OSError:
+                    pass
+            publication_candidates[rel_path] = file_path
+
+        deletion_candidates = {
+            rel_path: target_path
+            for rel_path, target_path in target_files.items()
+            if rel_path not in staging_files and str(rel_path) not in protected_files
+        }
+        for rel_path, target_path in target_files.items():
+            if rel_path in staging_files or str(rel_path) not in protected_files:
+                continue
+            logger.warning(
+                f"[Sandbox Gateway] Blocked attempt to delete protected file: {rel_path}"
+            )
+            try:
+                restored_path = staging_path / rel_path
+                restored_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target_path, restored_path)
+            except OSError:
+                pass
+
+        if len(publication_candidates) > MAX_PUBLISHED_FILES_PER_EXECUTION:
+            raise RuntimeError(
+                "Sandbox generated too many changed files "
+                f"(limit: {MAX_PUBLISHED_FILES_PER_EXECUTION})"
+            )
+        if len(deletion_candidates) > MAX_DELETED_FILES_PER_EXECUTION:
+            raise RuntimeError(
+                "Sandbox deleted too many files "
+                f"(limit: {MAX_DELETED_FILES_PER_EXECUTION})"
+            )
+
+        total_size = 0
+        for rel_path, file_path in publication_candidates.items():
             try:
                 file_size = file_path.stat().st_size
             except FileNotFoundError:
                 continue
             total_size += file_size
-            if total_size > max_total_size:
-                raise RuntimeError(f"Sandbox generated files exceeding total size limit (limit: {max_total_size} bytes)")
-            if file_size > max_single_file_size:
-                raise RuntimeError(f"File '{rel_path}' exceeds single file size limit ({max_single_file_size} bytes)")
+            if total_size > MAX_PUBLISHED_TOTAL_BYTES:
+                raise RuntimeError(
+                    "Sandbox generated changed files exceeding total size limit "
+                    f"(limit: {MAX_PUBLISHED_TOTAL_BYTES} bytes)"
+                )
+            if file_size > MAX_PUBLISHED_FILE_BYTES:
+                raise RuntimeError(
+                    f"File '{rel_path}' exceeds single file size limit "
+                    f"({MAX_PUBLISHED_FILE_BYTES} bytes)"
+                )
 
         # Dynamic imports for database revisions
         write_workspace_file = None
@@ -631,38 +692,8 @@ class SubprocessBackend(BaseSandboxBackend):
                 pass
 
         # 1. Process Created and Modified Files
-        for rel_path, file_path in staging_files.items():
+        for rel_path, file_path in publication_candidates.items():
             rel_path_str = str(rel_path)
-
-            # Check protected system files
-            if rel_path_str in protected_files:
-                target_file = target_files.get(rel_path)
-                if not target_file:
-                    logger.warning(f"[Sandbox Gateway] Blocked attempt to create protected file: {rel_path}")
-                    continue
-                try:
-                    if file_path.read_bytes() != target_file.read_bytes():
-                        logger.warning(f"[Sandbox Gateway] Blocked attempt to modify protected file: {rel_path}")
-                        continue
-                except Exception:
-                    continue
-
-            # Check banned extension
-            if file_path.suffix.lower() in banned_suffixes:
-                logger.warning(f"[Sandbox Gateway] Blocked banned file extension: {rel_path}")
-                continue
-
-            # Check if modified
-            is_new = rel_path not in target_files
-            is_modified = False
-            if not is_new:
-                try:
-                    is_modified = file_path.read_bytes() != target_files[rel_path].read_bytes()
-                except Exception:
-                    is_modified = True
-
-            if not is_new and not is_modified:
-                continue
 
             # Sanitize HTML/SVG if cleaner is available
             if file_path.suffix.lower() in (".html", ".svg"):
@@ -725,18 +756,8 @@ class SubprocessBackend(BaseSandboxBackend):
                     ) from e
 
         # 2. Process Deleted Files
-        for rel_path, target_path in target_files.items():
-            if rel_path in staging_files:
-                continue
+        for rel_path, target_path in deletion_candidates.items():
             rel_path_str = str(rel_path)
-
-            if rel_path_str in protected_files:
-                logger.warning(f"[Sandbox Gateway] Blocked attempt to delete protected file: {rel_path}")
-                try:
-                    shutil.copy2(target_path, staging_path / rel_path)
-                except Exception:
-                    pass
-                continue
 
             try:
                 target_path.unlink(missing_ok=True)
