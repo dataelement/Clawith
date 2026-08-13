@@ -408,6 +408,11 @@ class SubprocessBackend(BaseSandboxBackend):
                 "--bind", str(staging_path / "workspace"), "/workspace",
                 "--bind", str(staging_path / "memory"), "/memory",
                 "--bind", str(staging_path / "skills"), "/skills",
+                # Older Skills were authored against the pre-isolation layout,
+                # where the complete Agent root was mounted at /workspace.
+                # Keep their absolute paths working while /skills remains the
+                # canonical Workspace-tool-compatible mount.
+                "--bind", str(staging_path / "skills"), "/workspace/skills",
             ])
             for root_file in ("focus.md", "soul.md", "HEARTBEAT.md"):
                 source = staging_path / root_file

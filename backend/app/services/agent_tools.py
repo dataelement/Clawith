@@ -1061,10 +1061,13 @@ _ISOLATED_OUTPUT_TOOL_PROMPT = (
     " Workspace write policy: isolated session output. Materialized directories "
     "inside the sandbox are readable and writable for the current Agent loop, "
     "but only files under /workspace/output/<current-session-id>/ are published "
-    "back to the host Workspace. Other sandbox writes are temporary. Paths match "
-    "workspace tools: workspace/<path> maps to /workspace/<path>. Read the exact "
-    "persistent output directory from CLAWITH_SESSION_OUTPUT_DIR; do not add a "
-    "second workspace path segment."
+    "back to the host Workspace. Other sandbox writes are temporary. The working "
+    "directory is / and paths match workspace tools directly: workspace/<path> "
+    "maps to /workspace/<path>, skills/<path> maps to /skills/<path>, and "
+    "memory/<path> maps to /memory/<path>. Prefer these canonical paths; "
+    "/workspace/skills is only a compatibility alias for legacy Skills. Read the "
+    "exact persistent output directory from CLAWITH_SESSION_OUTPUT_DIR; do not "
+    "add a second workspace path segment."
 )
 
 
