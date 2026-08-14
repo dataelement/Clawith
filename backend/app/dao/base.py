@@ -12,6 +12,19 @@ from app.database import Base, _session_ctx, async_session
 
 ModelType = TypeVar("ModelType", bound=Base)
 
+_IDENTITY_MEMBERSHIP_SCOPE_OPTION = "clawith_identity_membership_scope"
+
+
+def identity_membership_query(statement: Any) -> Any:
+    """Allow an identity-bound User query to inspect all tenant memberships.
+
+    Only models that explicitly opt in via
+    ``__identity_membership_tenant_bypass__`` are affected. Callers must still
+    constrain the statement by ``identity_id`` and, for a switch, the requested
+    ``tenant_id``.
+    """
+    return statement.execution_options(**{_IDENTITY_MEMBERSHIP_SCOPE_OPTION: True})
+
 
 class BaseDAO(Generic[ModelType]):
     """Base class for data access objects, managing session context and basic CRUD."""
@@ -139,8 +152,17 @@ def _inject_tenant_scope(execute_state: Any) -> None:
         return
 
     statement = execute_state.statement
+    identity_membership_scope = (
+        execute_state.execution_options.get(_IDENTITY_MEMBERSHIP_SCOPE_OPTION) is True
+    )
     for mapper in execute_state.all_mappers:
         model = mapper.class_
+        if identity_membership_scope and getattr(
+            model,
+            "__identity_membership_tenant_bypass__",
+            False,
+        ):
+            continue
         if _is_tenant_scoped_model(model):
             statement = statement.options(
                 with_loader_criteria(

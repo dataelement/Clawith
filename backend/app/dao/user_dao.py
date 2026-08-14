@@ -3,7 +3,7 @@ from typing import Any, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.dao.base import BaseDAO
+from app.dao.base import BaseDAO, identity_membership_query
 from app.models.user import Identity, User
 from app.models.tenant import Tenant
 
@@ -17,7 +17,9 @@ class UserDAO(BaseDAO[User]):
     async def get_by_identity_and_tenant(self, identity_id: Any, tenant_id: Any | None) -> User | None:
         """Find a user in a specific tenant (or tenant-less) by identity ID."""
         async with self.session(readonly=True) as db:
-            query = select(User).where(User.identity_id == identity_id)
+            query = identity_membership_query(
+                select(User).where(User.identity_id == identity_id)
+            )
             if tenant_id is not None:
                 query = query.where(User.tenant_id == tenant_id)
             else:
@@ -28,7 +30,9 @@ class UserDAO(BaseDAO[User]):
     async def get_by_identity_id(self, identity_id: Any, include_identity: bool = False) -> Sequence[User]:
         """Find all users associated with an identity ID."""
         async with self.session(readonly=True) as db:
-            query = select(User).where(User.identity_id == identity_id)
+            query = identity_membership_query(
+                select(User).where(User.identity_id == identity_id)
+            )
             if include_identity:
                 query = query.options(selectinload(User.identity))
             result = await db.execute(query)
@@ -37,7 +41,7 @@ class UserDAO(BaseDAO[User]):
     async def get_login_users_with_tenants(self, identity_id: Any) -> Sequence[tuple[User, Tenant | None]]:
         """Fetch login candidate users with tenant metadata in one round trip."""
         async with self.session(readonly=True) as db:
-            query = (
+            query = identity_membership_query(
                 select(User, Tenant)
                 .outerjoin(Tenant, User.tenant_id == Tenant.id)
                 .where(User.identity_id == identity_id)
@@ -99,7 +103,12 @@ class UserDAO(BaseDAO[User]):
     async def get_representative_user_for_identity(self, identity_id: Any) -> User | None:
         """Find a representative user (e.g. latest created) associated with an identity ID."""
         async with self.session(readonly=True) as db:
-            query = select(User).where(User.identity_id == identity_id).order_by(User.created_at.desc()).limit(1)
+            query = identity_membership_query(
+                select(User)
+                .where(User.identity_id == identity_id)
+                .order_by(User.created_at.desc())
+                .limit(1)
+            )
             result = await db.execute(query)
             return result.scalar_one_or_none()
 
@@ -132,4 +141,3 @@ class UserDAO(BaseDAO[User]):
 
 
 user_dao = UserDAO()
-
