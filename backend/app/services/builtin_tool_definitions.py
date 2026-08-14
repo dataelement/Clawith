@@ -16,6 +16,40 @@ from typing import Any, Mapping
 WRITE_FILE_MAX_CONTENT_CHARS = 6_000
 
 
+# Model-facing paths use one Agent-root-relative namespace.  The same literal
+# path must work across file tools and execute_code; absolute Sandbox mount
+# paths are an internal implementation detail.
+AGENT_RELATIVE_PATH_ARGUMENTS: Mapping[str, tuple[str, ...]] = {
+    "list_files": ("path",),
+    "read_file": ("path",),
+    "write_file": ("path",),
+    "delete_file": ("path",),
+    "move_file": ("source_path", "destination_path"),
+    "edit_file": ("path",),
+    "search_files": ("path",),
+    "find_files": ("path",),
+    "read_document": ("path",),
+    "convert_csv_to_xlsx": ("source_path", "target_path"),
+    "convert_html_to_pdf": ("source_path", "target_path"),
+    "convert_html_to_pptx": ("source_path", "target_path"),
+    "convert_markdown_to_docx": ("source_path", "target_path"),
+    "convert_markdown_to_pdf": ("source_path", "target_path"),
+    "send_channel_file": ("file_path",),
+    "send_file_to_agent": ("file_path",),
+    "upload_image": ("file_path",),
+    "generate_image_siliconflow": ("save_path",),
+    "generate_image_openai": ("save_path",),
+    "generate_image_google": ("save_path",),
+    "generate_image_custom": ("save_path",),
+    "publish_page": ("path",),
+}
+
+_AGENT_RELATIVE_PATH_DESCRIPTION = (
+    "Use an Agent-root-relative path such as 'workspace/reports/report.md'; "
+    "never start the path with '/'."
+)
+
+
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
 _BUILTIN_TOOL_SOURCE = [
     {
@@ -3864,8 +3898,20 @@ def _readiness(definition: Mapping[str, Any]) -> str:
 
 def _canonical_definition(seed: Mapping[str, Any]) -> dict[str, Any]:
     effect, retry_policy, parallel_safe = _policy_for_name(str(seed["name"]))
+    canonical = deepcopy(dict(seed))
+    properties = (canonical.get("parameters_schema") or {}).get("properties")
+    if isinstance(properties, dict):
+        for field in AGENT_RELATIVE_PATH_ARGUMENTS.get(str(seed["name"]), ()):
+            property_schema = properties.get(field)
+            if not isinstance(property_schema, dict):
+                continue
+            current = str(property_schema.get("description") or "").strip()
+            if _AGENT_RELATIVE_PATH_DESCRIPTION not in current:
+                property_schema["description"] = (
+                    f"{current} {_AGENT_RELATIVE_PATH_DESCRIPTION}".strip()
+                )
     return {
-        **deepcopy(dict(seed)),
+        **canonical,
         "effect": effect,
         "retry_policy": retry_policy,
         "parallel_safe": parallel_safe,

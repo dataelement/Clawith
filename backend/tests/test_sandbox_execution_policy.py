@@ -8,6 +8,7 @@ import pytest
 from app.services import agent_tools
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
 from app.services.sandbox.config import SandboxConfig
+from app.services.sandbox.base import ExecutionResult
 from app.services.sandbox import execution_lease
 from app.services.sandbox.execution_lease import SandboxExecutionLeaseStore
 from app.services.sandbox.local.run_workspace import close_run_workspace
@@ -88,10 +89,10 @@ def test_isolated_output_prompt_directs_code_to_session_output_env() -> None:
     code_description = patched["function"]["parameters"]["properties"]["code"]["description"]
     for value in (description, code_description):
         assert "CLAWITH_SESSION_OUTPUT_DIR" in value
-        assert "/workspace/output/<current-session-id>/" in value
-        assert "workspace/<path> maps to /workspace/<path>" in value
-        assert "skills/<path> maps to /skills/<path>" in value
-        assert "memory/<path> maps to /memory/<path>" in value
+        assert "workspace/output/<current-session-id>/" in value
+        assert "/workspace/output/<current-session-id>/" not in value
+        assert "every model-visible path is relative" in value
+        assert "do not omit or duplicate any path segment" in value
         assert "working directory is /" in value
         assert "Other sandbox writes are temporary" in value
     assert original["function"]["description"] == "Execute code."
@@ -134,7 +135,72 @@ async def test_runtime_tools_apply_isolated_output_prompt(monkeypatch) -> None:
     assert len(resolved) == 1
     description = resolved[0]["function"]["description"]
     assert "CLAWITH_SESSION_OUTPUT_DIR" in description
-    assert "/workspace/output/<current-session-id>/" in description
+    assert "workspace/output/<current-session-id>/" in description
+    assert "/workspace/output/<current-session-id>/" not in description
+
+
+@pytest.mark.asyncio
+async def test_file_tools_reject_absolute_model_paths_before_storage() -> None:
+    outcome = await agent_tools.execute_builtin_tool_outcome(
+        "list_files",
+        {"path": "/workspace/output/session-1"},
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+    )
+
+    assert isinstance(outcome, ToolExecutionOutcome)
+    assert outcome.status == "failed"
+    assert outcome.error_code == "workspace_path_invalid"
+    assert "workspace/output/report.md" in (outcome.result_summary or "")
+
+    legacy_result = await agent_tools.execute_tool(
+        "read_file",
+        {"path": "/workspace/output/session-1/report.md"},
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+    )
+    assert "must be Agent-root-relative" in legacy_result
+
+
+@pytest.mark.asyncio
+async def test_isolated_execute_result_returns_agent_relative_output_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    session_id = uuid.uuid4()
+    output_path = f"workspace/output/{session_id}"
+
+    class Backend:
+        name = "subprocess"
+
+        async def execute(self, **_kwargs):
+            return ExecutionResult(True, "ok", "", 0, 1)
+
+        def _format_result(self, _result):
+            return "ok"
+
+    async def tool_config(*_args):
+        return {}
+
+    monkeypatch.setattr(agent_tools, "_get_tool_config", tool_config)
+    monkeypatch.setattr(
+        "app.services.sandbox.registry.get_sandbox_backend",
+        lambda _config: Backend(),
+    )
+
+    outcome = await agent_tools._execute_code_outcome(
+        uuid.uuid4(),
+        tmp_path,
+        {"language": "python", "code": "print('ok')"},
+        sandbox_config=SandboxConfig(workspace_mode="isolated_output"),
+        session_id=str(session_id),
+        publish_paths=[output_path],
+    )
+
+    assert outcome.status == "succeeded"
+    assert output_path in (outcome.result_summary or "")
+    assert f"/{output_path}" not in (outcome.result_summary or "")
+    assert outcome.metadata["workspace_path"] == output_path
 
 
 def test_session_uuid_must_be_canonical() -> None:

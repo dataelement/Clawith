@@ -193,7 +193,7 @@ def test_isolated_bwrap_uses_workspace_tool_paths_and_writable_copy(monkeypatch,
     assert cmd[venv_index - 1] == str(tmp_path / ".venv")
     assert "/workspace/.venv" not in cmd
     env_index = cmd.index("CLAWITH_SESSION_OUTPUT_DIR")
-    assert cmd[env_index + 1] == f"/workspace/output/{session_id}"
+    assert cmd[env_index + 1] == f"workspace/output/{session_id}"
     assert f"/workspace/{output_path}" not in cmd
     virtual_env_index = cmd.index("VIRTUAL_ENV")
     assert cmd[virtual_env_index + 1] == SANDBOX_VENV_PATH

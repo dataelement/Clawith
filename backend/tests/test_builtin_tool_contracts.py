@@ -12,6 +12,7 @@ import pytest
 
 from app.services import agent_tools, tool_seeder
 from app.services.builtin_tool_definitions import (
+    AGENT_RELATIVE_PATH_ARGUMENTS,
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
     BUILTIN_TOOL_SEEDS,
@@ -99,6 +100,9 @@ def test_known_schema_contracts_match_handler_validation() -> None:
     assert write_file["properties"]["mode"]["enum"] == ["overwrite", "append"]
     assert write_file["properties"]["mode"]["default"] == "overwrite"
     assert write_file["required"] == ["path", "content"]
+    assert "Agent-root-relative" in write_file["properties"]["path"]["description"]
+    assert "never start" in write_file["properties"]["path"]["description"]
+    assert "Agent-root-relative" in upload_image["properties"]["file_path"]["description"]
     assert send_channel["required"] == ["target_member_id", "message"]
     assert send_platform["required"] == ["message"]
     assert send_platform["anyOf"] == [
@@ -116,6 +120,18 @@ def test_known_schema_contracts_match_handler_validation() -> None:
     ]
     assert "webhook" in set_trigger["properties"]["type"]["enum"]
     assert "reauthorize" in import_mcp["properties"]
+
+
+def test_all_agent_path_arguments_publish_the_relative_path_contract() -> None:
+    for tool_name, fields in AGENT_RELATIVE_PATH_ARGUMENTS.items():
+        properties = builtin_model_definition(tool_name)["function"]["parameters"][
+            "properties"
+        ]
+        for field in fields:
+            assert field in properties, f"{tool_name}.{field} is not defined"
+            description = properties[field]["description"]
+            assert "Agent-root-relative" in description
+            assert "never start" in description
 
 
 @pytest.mark.parametrize(

@@ -90,6 +90,7 @@ from app.services.llm.finish import (
     FINISH_TOOL_NAME,
 )
 from app.services.builtin_tool_definitions import (
+    AGENT_RELATIVE_PATH_ARGUMENTS,
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
     WRITE_FILE_MAX_CONTENT_CHARS,
@@ -172,6 +173,26 @@ def _read_file_binary_error(path: str) -> str | None:
         f"read_file supports text files only; binary file type '{suffix}' "
         "must be opened with read_document instead."
     )
+
+
+def _agent_relative_path_error(tool_name: str, arguments: Mapping[str, object]) -> str | None:
+    """Reject model-facing absolute paths before they reach Storage adapters."""
+    for field in AGENT_RELATIVE_PATH_ARGUMENTS.get(tool_name, ()):
+        value = arguments.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized = value.strip().replace("\\", "/")
+        is_absolute = normalized.startswith("/") or bool(
+            re.match(r"^[A-Za-z]:/", normalized)
+        )
+        is_uri = bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", normalized))
+        if is_absolute or is_uri:
+            return (
+                f"{tool_name} {field} must be Agent-root-relative, for example "
+                "'workspace/output/report.md'; paths must not start with '/' "
+                "or use a URI scheme."
+            )
+    return None
 
 
 def _observability_arguments(tool_name: str, arguments: dict) -> dict:
@@ -1064,13 +1085,14 @@ async def _get_runtime_dynamic_mcp_tool_names(
 _ISOLATED_OUTPUT_TOOL_PROMPT = (
     " Workspace write policy: isolated session output. Materialized directories "
     "inside the sandbox are readable and writable for the current Agent loop, "
-    "but only files under /workspace/output/<current-session-id>/ are published "
+    "but only files under the Agent-relative path "
+    "workspace/output/<current-session-id>/ are published "
     "back to the host Workspace. Other sandbox writes are temporary. The working "
-    "directory is / and paths match workspace tools directly: workspace/<path> "
-    "maps to /workspace/<path>, skills/<path> maps to /skills/<path>, and "
-    "memory/<path> maps to /memory/<path>. Read the exact persistent output "
-    "directory from CLAWITH_SESSION_OUTPUT_DIR; do not add a second workspace "
-    "path segment."
+    "directory is / and every model-visible path is relative to that Agent root. "
+    "Use the same paths as file tools, including the leading workspace/, skills/, "
+    "or memory/ segment. Read the exact relative persistent output directory from "
+    "CLAWITH_SESSION_OUTPUT_DIR; do not omit or duplicate any path segment, and "
+    "do not return Sandbox absolute paths."
 )
 
 
@@ -2905,6 +2927,12 @@ async def execute_builtin_tool_outcome(
     Durable Runtime rejects those as ``untyped_tool_outcome``; this function
     never infers success from display text or from a non-raising handler.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return _typed_failure(
+            path_error,
+            "workspace_path_invalid",
+        )
     if (
         tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
         and arguments.get("workspace_scope", "agent") != "agent"
@@ -3270,6 +3298,9 @@ async def _execute_tool_direct(
     Used by the approval post-processing hook after an action
     has been approved and needs to actually run.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
     ws = _agent_workspace_root(agent_id)
     try:
@@ -3359,6 +3390,10 @@ async def execute_tool(
     if tool_name == FINISH_TOOL_NAME:
         content = arguments.get("content", "")
         return content if isinstance(content, str) else str(content)
+
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -10466,16 +10501,26 @@ async def _execute_code_outcome(
                 if result.success and result.exit_code == 0
                 else f"Code execution failed with exit code {result.exit_code}."
             )
+        output_metadata: dict[str, str] = {}
+        if sandbox_config.workspace_mode == "isolated_output" and publish_paths:
+            output_path = normalize_workspace_path(publish_paths[0])
+            output_metadata["workspace_path"] = output_path
+            summary = (
+                f"{summary}\n\nPersistent output directory: {output_path} "
+                "(Agent-relative; use this exact path with file tools)."
+            )
         if result.error and result.error.startswith("sandbox_publication_unknown:"):
             return _typed_unknown(
                 "Code ran but Sandbox publication could not be proven.",
                 "workspace_sync_outcome_unknown",
+                metadata=output_metadata,
             )
         if result.success and result.exit_code == 0:
-            return _typed_success(summary)
+            return _typed_success(summary, metadata=output_metadata)
         return _typed_failure(
             summary,
             "sandbox_execution_failed",
+            metadata=output_metadata,
         )
 
     except ValueError as e:

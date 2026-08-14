@@ -427,9 +427,8 @@ class SubprocessBackend(BaseSandboxBackend):
             if not writable_host.is_relative_to(staging_path.resolve()):
                 raise ValueError("Sandbox writable path escapes staging root")
             writable_host.mkdir(parents=True, exist_ok=True)
-            guest_writable_path = writable_path.removeprefix("workspace/")
             cmd.extend([
-                "--setenv", "CLAWITH_SESSION_OUTPUT_DIR", f"/workspace/{guest_writable_path}",
+                "--setenv", "CLAWITH_SESSION_OUTPUT_DIR", writable_path,
             ])
         cmd.extend([
             "--ro-bind", str(venv_path), SANDBOX_VENV_PATH,
