@@ -370,6 +370,39 @@ async def test_sandbox_quota_rejects_too_many_deletions(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_isolated_output_skips_shared_workspace_file_count_limits(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging"
+    target = tmp_path / "target"
+    output_path = Path("workspace/output/session-1")
+    staging_output = staging / output_path
+    target_output = target / output_path
+    staging_output.mkdir(parents=True)
+    target_output.mkdir(parents=True)
+
+    for index in range(120):
+        (staging_output / f"generated-{index}.txt").write_text(
+            "generated",
+            encoding="utf-8",
+        )
+        (target_output / f"deleted-{index}.txt").write_text(
+            "deleted",
+            encoding="utf-8",
+        )
+
+    await SubprocessBackend(SandboxConfig())._verify_and_merge_outputs(
+        staging,
+        target,
+        publish_paths=[output_path.as_posix()],
+        workspace_mode="isolated_output",
+    )
+
+    assert len(list(target_output.glob("generated-*.txt"))) == 120
+    assert not list(target_output.glob("deleted-*.txt"))
+
+
 def test_sandbox_pip_hijack_shebang(tmp_path: Path) -> None:
     venv_bin = tmp_path / "bin"
     venv_bin.mkdir(parents=True)

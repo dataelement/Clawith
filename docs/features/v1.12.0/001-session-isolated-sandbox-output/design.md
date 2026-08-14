@@ -430,10 +430,13 @@ readable and writable, but publication scans only
 preserves existing quotas and HTML/SVG sanitization. Other writes remain
 ephemeral and are discarded when the Agent loop closes.
 
-Output quotas apply only to the publication delta: newly created or modified
-candidate files count toward the 100-file, 50-MB total, and 10-MB single-file
-limits. Unchanged materialized files do not consume output quota. Deletions use
-a separate 100-file limit so a loop cannot bypass protection with a mass delete.
+In `merge` mode, output quotas apply only to the publication delta: newly
+created or modified candidate files count toward the 100-file, 50-MB total,
+and 10-MB single-file limits. Unchanged materialized files do not consume the
+quota, and deletions use a separate 100-file limit. In `isolated_output` mode,
+the Session-owned output directory is excluded from the changed-file and
+deleted-file count limits. The 50-MB total, 10-MB single-file, path-boundary,
+symlink, extension, and HTML/SVG safety checks still apply.
 
 Publication behavior is exclusive:
 
