@@ -1551,6 +1551,7 @@ async def flush_temp_workspace(
     selected_paths = [normalize_workspace_path(path) for path in temp_workspace.publish_paths]
     manifest = temp_workspace.manifest
     local_files = _collect_temp_workspace_files(temp_workspace.root, selected_paths)
+    run_id = sandbox_run_scope_id.get().strip() or None
 
     updated: list[str] = []
     conflicted: list[str] = []
@@ -1596,6 +1597,21 @@ async def flush_temp_workspace(
             )
             if not result.ok:
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=write "
+                    "path={} condition={} expected_version={} current_exists={} "
+                    "current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    "version_match" if entry else "require_absent",
+                    entry.base_version_token if entry else None,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
@@ -1628,6 +1644,20 @@ async def flush_temp_workspace(
             )
             if not result.ok:
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=delete "
+                    "path={} condition=version_match expected_version={} "
+                    "current_exists={} current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    entry.base_version_token,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
