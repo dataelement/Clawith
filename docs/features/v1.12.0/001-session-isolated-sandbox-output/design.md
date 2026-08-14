@@ -557,6 +557,7 @@ Pass with required implementation checks.
 - The Session lookup must match tenant, Agent, and Session together and include an explicit `tenant_id` filter.
 - Session-scoped Workspace lock keys also begin with `tenant:{tenant_id}:`; the legacy unscoped helper is not used by this flow.
 - Workspace storage remains Agent-prefixed and output is further Session-prefixed.
+- Automatic ORM tenant filtering remains the default for `User`. Identity membership discovery is a narrow DAO-only exception: it must include an exact `identity_id`, and tenant switching must additionally include the requested `tenant_id`, so `/auth/my-tenants` and `/auth/switch-tenant` can authorize memberships across the current JWT tenant without exposing unrelated users.
 
 ### C3 — Idempotent Side Effects and Reconciliation
 
