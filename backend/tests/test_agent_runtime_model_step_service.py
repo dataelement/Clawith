@@ -2702,6 +2702,45 @@ async def test_retryable_primary_error_recovers_on_same_model_before_fallback() 
 
 
 @pytest.mark.asyncio
+async def test_unknown_primary_error_retries_on_same_model() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    fallback = _model(tenant_id)
+    agent = _agent(tenant_id)
+    agent.fallback_model_id = fallback.id
+    state = _state(tenant_id, model, agent)
+    called_models: list[uuid.UUID] = []
+
+    async def complete(model_arg, *args, **kwargs):
+        del args, kwargs
+        called_models.append(model_arg.id)
+        if len(called_models) == 1:
+            raise json.JSONDecodeError("Expecting value", "", 0)
+        return LLMCompletionStep(
+            content="Recovered from malformed provider JSON",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(total_tokens=12),
+        )
+
+    result = await _failover_service(
+        model,
+        fallback,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+    ).complete_once(state, _context(state))
+
+    assert result.intent == "finish"
+    assert result.finish_content == "Recovered from malformed provider JSON"
+    assert called_models == [model.id, model.id]
+    assert result.assistant_message is not None
+    assert result.assistant_message["runtime_model_id"] == str(model.id)
+    assert "runtime_failover_from_model_id" not in result.assistant_message
+
+
+@pytest.mark.asyncio
 async def test_non_retryable_primary_error_never_calls_configured_fallback() -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)

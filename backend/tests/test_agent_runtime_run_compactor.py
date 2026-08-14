@@ -744,6 +744,26 @@ async def test_transient_provider_failure_is_typed_for_langgraph_retry() -> None
 
 
 @pytest.mark.asyncio
+async def test_unknown_provider_failure_is_typed_for_langgraph_retry() -> None:
+    state, context, tenant_id = _state(
+        [_normal("old", "old " * 300), _normal("current")]
+    )
+
+    async def complete(*_args, **_kwargs):
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    with pytest.raises(TransientRunCompactorError) as raised:
+        await _service(
+            model=_model(tenant_id),
+            completion=complete,
+            effective_budget=1_000,
+            current_tokens=900,
+        ).compact_if_needed(state, context)
+
+    assert raised.value.is_transient_compact_error is True
+
+
+@pytest.mark.asyncio
 async def test_invalid_summary_is_deterministic_and_never_committed() -> None:
     state, context, tenant_id = _state(
         [_normal("old", "old " * 300), _normal("current")]

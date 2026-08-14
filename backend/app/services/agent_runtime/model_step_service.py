@@ -61,7 +61,10 @@ from app.services.agent_runtime.thread_visibility import (
 from app.services.agent_tools import get_runtime_agent_tools_for_llm
 from app.services.vision_inject import compress_bytes_to_base64
 from app.services.llm.client import LLMMessage
-from app.services.llm.failover import FailoverErrorType, classify_error
+from app.services.llm.failover import (
+    classify_error,
+    is_retryable_classification,
+)
 from app.services.llm.finish import (
     content_claims_group_handoff,
     find_finish_call,
@@ -1473,11 +1476,12 @@ class RuntimeModelStepService:
                 )
             except Exception as exc:
                 classification = classify_error(exc)
+                is_retryable = is_retryable_classification(classification)
                 if (
-                    classification != FailoverErrorType.RETRYABLE
+                    not is_retryable
                     or attempt >= total_attempts
                 ):
-                    if classification == FailoverErrorType.RETRYABLE:
+                    if is_retryable:
                         logger.warning(
                             "[RuntimeModelRetry] exhausted provider={} model={} "
                             "attempts={} error_type={} http_status={} classification={}",
@@ -1606,7 +1610,7 @@ class RuntimeModelStepService:
                 )
             except Exception as primary_error:
                 primary_classification = classify_error(primary_error)
-                if primary_classification != FailoverErrorType.RETRYABLE:
+                if not is_retryable_classification(primary_classification):
                     logger.error(
                         "[RuntimeModelFailure] run_id={} agent_id={} stage=primary "
                         "provider={} model={} classification={} http_status={} "
@@ -1692,7 +1696,7 @@ class RuntimeModelStepService:
                     )
                 except Exception as fallback_error:
                     fallback_classification = classify_error(fallback_error)
-                    if fallback_classification == FailoverErrorType.RETRYABLE:
+                    if is_retryable_classification(fallback_classification):
                         return self._provider_retry_wait(
                             context=context,
                             model=fallback,
