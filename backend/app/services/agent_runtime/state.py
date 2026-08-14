@@ -110,6 +110,7 @@ class RuntimeLifecycle(TypedDict):
     pending_group_at: NotRequired[JsonObject | None]
     deferred_resume_messages: NotRequired[list[JsonObject]]
     waiting_request: NotRequired[JsonObject | None]
+    resumed_waiting_request: NotRequired[JsonObject]
     verification_result: NotRequired[JsonObject | None]
     final_answer: NotRequired[str | None]
     finish_delivery_intent: NotRequired[JsonObject | None]

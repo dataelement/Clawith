@@ -99,6 +99,9 @@ def test_group_at_schema_contains_only_bounded_participant_ids() -> None:
 
     function = AT_TOOL_DEFINITION["function"]
     assert function["name"] == "at"
+    assert "human targets are mentioned without starting a Run" in function[
+        "description"
+    ]
     parameters = function["parameters"]
     assert parameters["required"] == ["participant_ids"]
     assert parameters["additionalProperties"] is False

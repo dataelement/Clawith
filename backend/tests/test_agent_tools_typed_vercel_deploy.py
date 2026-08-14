@@ -128,27 +128,6 @@ def assert_outcome(
     return result
 
 
-def conditional_requirement(
-    schema: dict,
-    *,
-    discriminator: str,
-    value: str,
-    required: str,
-) -> bool:
-    for collection in ("allOf", "oneOf", "anyOf"):
-        for clause in schema.get(collection, []):
-            condition = clause.get("if", clause)
-            consequence = clause.get("then", clause)
-            property_schema = condition.get("properties", {}).get(
-                discriminator,
-                {},
-            )
-            matches = property_schema.get("const") == value or (property_schema.get("enum") == [value])
-            if matches and required in consequence.get("required", []):
-                return True
-    return False
-
-
 def create_workspace(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, Path]:
     workspace_root = tmp_path / "agent-root"
     source = workspace_root / "workspace" / "site"
@@ -305,6 +284,7 @@ def test_vercel_deploy_schema_separates_upload_from_existing_github_repo() -> No
         [
             str(definition.get("description") or ""),
             str(schema["properties"]["deploy_method"].get("description") or ""),
+            str(schema["properties"]["source_dir"].get("description") or ""),
             str(schema["properties"]["github_repo"].get("description") or ""),
             str(schema["properties"]["git_ref"].get("description") or ""),
         ]
@@ -312,18 +292,10 @@ def test_vercel_deploy_schema_separates_upload_from_existing_github_repo() -> No
 
     assert "project_name" in schema["required"]
     assert "source_dir" not in schema["required"]
-    assert conditional_requirement(
-        schema,
-        discriminator="deploy_method",
-        value="upload",
-        required="source_dir",
-    )
-    assert conditional_requirement(
-        schema,
-        discriminator="deploy_method",
-        value="github",
-        required="github_repo",
-    )
+    assert "github_repo" not in schema["required"]
+    assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
+    assert "required when deploy_method='upload'" in description
+    assert "required when deploy_method='github'" in description
     assert schema["properties"]["git_ref"]["default"] == "main"
     assert "push" not in description
     assert "existing" in description

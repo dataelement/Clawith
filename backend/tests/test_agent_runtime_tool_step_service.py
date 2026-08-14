@@ -304,6 +304,29 @@ def _at_call(call_id: str, participant_ids: list[str]) -> dict:
     }
 
 
+def _approval_create_call(
+    call_id: str = "call-approval-create",
+    *,
+    amount: str = "128.50",
+) -> dict:
+    target_member_id = "11111111-1111-1111-1111-111111111111"
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_create",
+            "arguments": (
+                "{"
+                '"approval_code":"expense-approval",'
+                f'"target_member_id":"{target_member_id}",'
+                '"form_data":"[{\\"id\\":\\"amount\\",'
+                f'\\"type\\":\\"amount\\",\\"value\\":\\"{amount}\\"}}]"'
+                "}"
+            ),
+        },
+    }
+
+
 async def _unexpected_executor(*args, **kwargs):
     raise AssertionError(f"at must not reach the application tool executor: {args}, {kwargs}")
 
@@ -383,6 +406,462 @@ async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair()
     assert result.pending_group_at_changed is False
     assert result.messages[0]["execution_status"] == "failed"
     assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_create_waits_for_chat_confirmation_before_receipt(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+
+    async def tools(agent_id):
+        assert agent_id == agent.id
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        raise AssertionError(
+            f"Unconfirmed approval created a tool receipt: {db}, {kwargs}"
+        )
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Unconfirmed approval reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.messages == ()
+    assert result.pending_tool_calls == (call,)
+    assert result.waiting_request is not None
+    assert result.waiting_request["waiting_type"] == "user"
+    assert result.waiting_request["reason"] == (
+        "feishu_approval_create_confirmation"
+    )
+    assert result.waiting_request["tool_call_id"] == "call-approval-create"
+    assert result.waiting_request["correlation_id"]
+    assert "审批定义标识" in str(result.waiting_request["question"])
+    assert "表单字段 1 项" in str(result.waiting_request["question"])
+    assert "128.50" not in str(result.waiting_request["question"])
+    assert result.waiting_request["confirmation_phrase"] in str(
+        result.waiting_request["question"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_create_executes_exact_call_after_chat_confirmation(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+    reservation_calls: list[dict] = []
+    execution_calls: list[dict] = []
+
+    async def tools(agent_id):
+        assert agent_id == agent.id
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db
+        reservation_calls.append(kwargs)
+        return _reservation(execution)
+
+    async def mark_succeeded(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        execution.result_ref = kwargs["result_ref"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def executor(
+        name,
+        arguments,
+        agent_id,
+        user_id,
+        session_id="",
+        on_output=None,
+        *,
+        runtime_authorization=None,
+        runtime_run_id=None,
+        runtime_tool_call_id=None,
+        runtime_execution_id=None,
+        runtime_lease_owner=None,
+        runtime_tenant_id=None,
+    ):
+        execution_calls.append(
+            {
+                "name": name,
+                "arguments": arguments,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "on_output": on_output,
+                "runtime_authorization": runtime_authorization,
+                "runtime_run_id": runtime_run_id,
+                "runtime_tool_call_id": runtime_tool_call_id,
+                "runtime_execution_id": runtime_execution_id,
+                "runtime_lease_owner": runtime_lease_owner,
+                "runtime_tenant_id": runtime_tenant_id,
+            }
+        )
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary='{"instance_code":"approval-1"}',
+            result_ref="approval-1",
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_succeeded",
+        mark_succeeded,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=executor,
+    )
+
+    waiting = await service.execute_pending(state, context, (call,))
+    assert waiting.waiting_request is not None
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting.waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting.waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (call,))
+
+    assert resumed.error is None
+    assert resumed.waiting_request is None
+    assert resumed.pending_tool_calls == ()
+    assert resumed.messages[0]["execution_status"] == "succeeded"
+    assert len(reservation_calls) == 1
+    assert len(execution_calls) == 1
+    assert execution_calls[0]["name"] == "feishu_approval_create"
+    assert isinstance(
+        execution_calls[0]["runtime_authorization"],
+        tool_step_service.FeishuApprovalCreateAuthorization,
+    )
+    assert execution_calls[0]["runtime_run_id"] == context.run_id
+    assert execution_calls[0]["runtime_tool_call_id"] == (
+        "call-approval-create"
+    )
+    assert execution_calls[0]["runtime_execution_id"] == str(execution.id)
+    assert execution_calls[0]["runtime_lease_owner"]
+    assert execution_calls[0]["runtime_tenant_id"] == context.tenant_id
+    assert execution_calls[0]["arguments"] == {
+        "approval_code": "expense-approval",
+        "target_member_id": "11111111-1111-1111-1111-111111111111",
+        "form_data": (
+            '[{"id":"amount","type":"amount","value":"128.50"}]'
+        ),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected_error"),
+    [
+        ("取消", "tool_confirmation_rejected"),
+        ("确认发起", "tool_confirmation_not_granted"),
+        ("确认发起 BAD999", "tool_confirmation_not_granted"),
+        ("金额改成 100 元", "tool_confirmation_not_granted"),
+        ("__synonym__", "tool_confirmation_not_granted"),
+        ("__lower_nonce__", "tool_confirmation_not_granted"),
+        ("__punctuation__", "tool_confirmation_not_granted"),
+        ("__altered_spacing__", "tool_confirmation_not_granted"),
+    ],
+)
+async def test_feishu_approval_create_never_dispatches_without_affirmative_reply(
+    monkeypatch,
+    reply: str,
+    expected_error: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+
+    async def tools(_agent_id):
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def mark_failed(db, **kwargs):
+        del db
+        execution.status = "failed"
+        execution.result_summary = kwargs["result_summary"]
+        execution.error_code = kwargs["error_code"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Non-affirmative reply reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_failed",
+        mark_failed,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+    if reply == "__lower_nonce__":
+        monkeypatch.setattr(
+            tool_step_service,
+            "_feishu_approval_confirmation_correlation",
+            lambda **_kwargs: (
+                "ABCDEF00-0000-0000-0000-000000000000",
+                "test-arguments-hash",
+            ),
+        )
+
+    waiting = await service.execute_pending(state, context, (call,))
+    assert waiting.waiting_request is not None
+    confirmation_phrase = str(waiting.waiting_request["confirmation_phrase"])
+    if reply == "__synonym__":
+        reply = confirmation_phrase.replace("确认发起", "同意")
+    elif reply == "__lower_nonce__":
+        reply = confirmation_phrase.lower()
+    elif reply == "__punctuation__":
+        reply = f"{confirmation_phrase}。"
+    elif reply == "__altered_spacing__":
+        reply = confirmation_phrase.replace(" ", "  ")
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": reply,
+            "runtime_confirmation_text": reply,
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (call,))
+
+    assert resumed.error is None
+    assert resumed.waiting_request is None
+    assert resumed.pending_tool_calls == ()
+    assert resumed.messages[0]["execution_status"] == "failed"
+    assert resumed.messages[0]["error_code"] == expected_error
+
+
+def test_feishu_approval_confirmation_rejects_different_actor() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    initial_context = _context(state)
+    call_id, tool_name, arguments = tool_step_service._call_fields(call)
+
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=initial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+    assert outcome is None
+    assert waiting_request is not None
+    assert confirmation_granted is False
+    state["lifecycle"]["resumed_waiting_request"] = dict(waiting_request)
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    different_actor_context = _context(state)
+    assert different_actor_context.actor_user_id != initial_context.actor_user_id
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=different_actor_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+
+    assert waiting_request is None
+    assert confirmation_granted is False
+    assert outcome is not None
+    assert outcome.error_code == "tool_confirmation_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_confirmation_rejects_changed_pending_arguments(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    original = _approval_create_call()
+    state = _state(tenant_id, agent, (original,))
+    context = _context(state)
+    changed = _approval_create_call(amount="999.00")
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+
+    async def tools(_agent_id):
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def mark_failed(db, **kwargs):
+        del db
+        execution.status = "failed"
+        execution.result_summary = kwargs["result_summary"]
+        execution.error_code = kwargs["error_code"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Changed approval arguments reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_failed",
+        mark_failed,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+
+    waiting = await service.execute_pending(state, context, (original,))
+    assert waiting.waiting_request is not None
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting.waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting.waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (changed,))
+
+    assert resumed.messages[0]["execution_status"] == "failed"
+    assert resumed.messages[0]["error_code"] == "tool_confirmation_mismatch"
+
+
+def test_feishu_approval_confirmation_is_unavailable_outside_chat() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,), source_type="task")
+    call_id, tool_name, arguments = tool_step_service._call_fields(call)
+
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=_context(state),
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+
+    assert waiting_request is None
+    assert confirmation_granted is False
+    assert outcome is not None
+    assert outcome.status == "failed"
+    assert outcome.error_code == "tool_confirmation_unavailable"
 
 
 @pytest.mark.asyncio

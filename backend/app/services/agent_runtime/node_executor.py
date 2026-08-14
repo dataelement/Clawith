@@ -400,6 +400,20 @@ def _resume_message_content(resume_value: Mapping[str, JsonValue]) -> str | list
     )
 
 
+def _resume_confirmation_text(
+    resume_value: Mapping[str, JsonValue],
+) -> str | None:
+    if resume_value.get("resume_type") != "user_input":
+        return None
+    payload = resume_value.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    confirmation_text = payload.get("confirmation_text")
+    if not isinstance(confirmation_text, str) or not confirmation_text.strip():
+        return None
+    return confirmation_text.strip()[:500]
+
+
 def _runtime_message_id(context: RuntimeContext, position: str) -> str:
     return str(uuid.uuid5(uuid.UUID(context.run_id), position))
 
@@ -844,8 +858,25 @@ class DeterministicRuntimeNodeExecutor:
             context,
             (current_call,),
         )
-        pending_calls = (*result.pending_tool_calls, *tail_calls)
+        resumed_waiting_request = state["lifecycle"].get(
+            "resumed_waiting_request"
+        )
+        discard_tail_calls = (
+            isinstance(resumed_waiting_request, Mapping)
+            and resumed_waiting_request.get(
+                "discard_remaining_tool_calls_on_resume"
+            )
+            is True
+            and resumed_waiting_request.get("tool_call_id")
+            == current_call.get("id")
+        )
+        pending_calls = (
+            tuple(result.pending_tool_calls)
+            if discard_tail_calls
+            else (*result.pending_tool_calls, *tail_calls)
+        )
         lifecycle = dict(state["lifecycle"])
+        lifecycle.pop("resumed_waiting_request", None)
         lifecycle.update(
             {
                 "pending_tool_calls": [dict(call) for call in pending_calls],
@@ -1086,6 +1117,9 @@ class DeterministicRuntimeNodeExecutor:
             )
         lifecycle = dict(state["lifecycle"])
         waiting_status = state["lifecycle"]["status"]
+        waiting_request = _validate_waiting_request(
+            cast(JsonObject | None, state["lifecycle"].get("waiting_request"))
+        )
         lifecycle.update(
             {
                 "status": "running",
@@ -1105,8 +1139,14 @@ class DeterministicRuntimeNodeExecutor:
             "runtime_input": "resume",
             "runtime_run_id": context.run_id,
         })
+        confirmation_text = _resume_confirmation_text(
+            cast(Mapping[str, JsonValue], resume_value)
+        )
+        if confirmation_text is not None:
+            resume_message["runtime_confirmation_text"] = confirmation_text
         pending_calls = _tool_calls(cast(RuntimeLifecycle, lifecycle))
         if waiting_status == "waiting_user" and pending_calls:
+            lifecycle["resumed_waiting_request"] = waiting_request
             deferred = lifecycle.get("deferred_resume_messages", [])
             if not isinstance(deferred, list) or any(
                 not isinstance(message, Mapping) for message in deferred

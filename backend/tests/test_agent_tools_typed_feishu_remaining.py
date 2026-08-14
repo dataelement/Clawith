@@ -11,6 +11,10 @@ import httpx
 import pytest
 
 from app.services import activity_logger, agent_tools
+from app.services.agent_runtime.feishu_approval_authorization import (
+    feishu_approval_create_arguments_hash,
+    issue_feishu_approval_create_authorization,
+)
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
 from app.services.builtin_tool_definitions import (
     builtin_model_definition,
@@ -153,10 +157,12 @@ def install_create_target(
     captured: dict[str, list] = {
         "resolver": [],
         "directory": [],
+        "authorization": [],
     }
     target = SimpleNamespace(
         member=SimpleNamespace(
             id=target_member_id,
+            user_id=target_member_id,
             external_id=provider_user_id,
             open_id="ou-should-not-be-used",
         ),
@@ -187,7 +193,18 @@ def install_create_target(
             ],
         }
 
+    async def consume_authorization(authorization, **kwargs):
+        captured["authorization"].append(
+            (authorization, dict(kwargs))
+        )
+        return None
+
     monkeypatch.setattr(agent_tools, "async_session", lambda: FakeDBContext())
+    monkeypatch.setattr(
+        agent_tools,
+        "_consume_feishu_approval_create_authorization",
+        consume_authorization,
+    )
     monkeypatch.setattr(agent_tools, "_resolve_roster_human_target", resolve)
     monkeypatch.setattr(agent_tools, "_query_directory_payload", query_directory)
     return captured
@@ -207,17 +224,45 @@ async def execute(
     )
 
 
-async def execute_hidden_create(
+async def execute_approval_create(
     arguments: dict,
     *,
     agent_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> ToolExecutionOutcome:
-    adapter = getattr(agent_tools, "_feishu_approval_create_outcome", None)
-    assert callable(adapter), (
-        "feishu_approval_create needs a typed adapter before its confirmation "
-        "gate can expose it"
+    resolved_agent_id = agent_id or uuid.uuid4()
+    resolved_actor_user_id = actor_user_id or uuid.UUID(
+        arguments["target_member_id"]
     )
-    return await adapter(agent_id or uuid.uuid4(), arguments)
+    run_id = str(uuid.uuid4())
+    tool_call_id = "call-approval-create"
+    execution_id = str(uuid.uuid4())
+    lease_owner = f"runtime:test:{tool_call_id}"
+    tenant_id = str(uuid.uuid4())
+    authorization = issue_feishu_approval_create_authorization(
+        run_id=run_id,
+        tool_call_id="call-approval-create",
+        execution_id=execution_id,
+        lease_owner=lease_owner,
+        tenant_id=tenant_id,
+        agent_id=str(resolved_agent_id),
+        actor_user_id=str(resolved_actor_user_id),
+        arguments=arguments,
+    )
+    outcome = await agent_tools.execute_builtin_tool_outcome(
+        APPROVAL_CREATE,
+        arguments,
+        agent_id=resolved_agent_id,
+        user_id=resolved_actor_user_id,
+        runtime_authorization=authorization,
+        runtime_run_id=run_id,
+        runtime_tool_call_id=tool_call_id,
+        runtime_execution_id=execution_id,
+        runtime_lease_owner=lease_owner,
+        runtime_tenant_id=tenant_id,
+    )
+    assert isinstance(outcome, ToolExecutionOutcome)
+    return outcome
 
 
 def assert_outcome(value: object, status: str) -> ToolExecutionOutcome:
@@ -353,7 +398,7 @@ async def test_f4_read_visibility_contains_only_ready_assigned_tools(
 
 
 @pytest.mark.asyncio
-async def test_approval_create_stays_hidden_until_confirmation_gate_is_wired(
+async def test_approval_create_is_visible_when_assigned_and_feishu_is_ready(
     monkeypatch,
 ) -> None:
     assigned = [builtin_model_definition(APPROVAL_CREATE)]
@@ -375,8 +420,9 @@ async def test_approval_create_stays_hidden_until_confirmation_gate_is_wired(
         no_dynamic,
     )
 
-    assert APPROVAL_CREATE not in agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES
-    assert await agent_tools.get_runtime_agent_tools_for_llm(uuid.uuid4()) == []
+    assert APPROVAL_CREATE in agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES
+    resolved = await agent_tools.get_runtime_agent_tools_for_llm(uuid.uuid4())
+    assert [tool["function"]["name"] for tool in resolved] == [APPROVAL_CREATE]
 
 
 def test_user_search_schema_uses_directory_query_and_bounded_pagination() -> None:
@@ -450,6 +496,8 @@ def test_approval_create_schema_uses_stable_member_id_and_sensitive_form() -> No
         "approval_code",
         "target_member_id",
         "form_data",
+        "department_id",
+        "uuid",
     }
     assert "user_id" not in schema["properties"]
     assert builtin_policy(APPROVAL_CREATE) == {
@@ -472,6 +520,206 @@ def test_approval_create_form_data_is_redacted_from_observability() -> None:
     )
 
     assert sanitized["form_data"] == "[REDACTED]"
+
+
+def test_approval_create_rejects_attachment_objects_before_confirmation() -> None:
+    validated, error = agent_tools.validate_feishu_approval_create_arguments(
+        {
+            "approval_code": "approval-definition-1",
+            "target_member_id": str(uuid.uuid4()),
+            "form_data": json.dumps(
+                [
+                    {
+                        "id": "receipt",
+                        "type": "attachmentV2",
+                        "value": [{"file_code": "file-code-1"}],
+                    }
+                ]
+            ),
+        }
+    )
+
+    assert validated is None
+    assert error is not None
+    assert error.error_code == "invalid_tool_arguments"
+    assert "string file codes" in (error.summary or "")
+
+
+def test_approval_create_accepts_attachment_file_code_strings() -> None:
+    validated, error = agent_tools.validate_feishu_approval_create_arguments(
+        {
+            "approval_code": "approval-definition-1",
+            "target_member_id": str(uuid.uuid4()),
+            "form_data": json.dumps(
+                [
+                    {
+                        "id": "receipt",
+                        "type": "attachmentV2",
+                        "value": ["file-code-1"],
+                    }
+                ]
+            ),
+        }
+    )
+
+    assert error is None
+    assert validated is not None
+
+
+@pytest.mark.asyncio
+async def test_approval_create_typed_dispatch_fails_without_runtime_proof() -> None:
+    outcome = assert_outcome(
+        await execute(
+            APPROVAL_CREATE,
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(uuid.uuid4()),
+                "form_data": "[]",
+            },
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "tool_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_approval_create_runtime_proof_rejects_changed_arguments() -> None:
+    agent_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    original_arguments = {
+        "approval_code": "approval-definition-1",
+        "target_member_id": str(uuid.uuid4()),
+        "form_data": (
+            '[{"id":"amount","type":"amount","value":"128.50"}]'
+        ),
+    }
+    run_id = str(uuid.uuid4())
+    tool_call_id = "call-approval-create"
+    execution_id = str(uuid.uuid4())
+    lease_owner = f"runtime:test:{tool_call_id}"
+    tenant_id = str(uuid.uuid4())
+    authorization = issue_feishu_approval_create_authorization(
+        run_id=run_id,
+        tool_call_id="call-approval-create",
+        execution_id=execution_id,
+        lease_owner=lease_owner,
+        tenant_id=tenant_id,
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=original_arguments,
+    )
+    changed_arguments = {
+        **original_arguments,
+        "form_data": (
+            '[{"id":"amount","type":"amount","value":"999.00"}]'
+        ),
+    }
+
+    outcome = assert_outcome(
+        await agent_tools.execute_builtin_tool_outcome(
+            APPROVAL_CREATE,
+            changed_arguments,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            runtime_authorization=authorization,
+            runtime_run_id=run_id,
+            runtime_tool_call_id=tool_call_id,
+            runtime_execution_id=execution_id,
+            runtime_lease_owner=lease_owner,
+            runtime_tenant_id=tenant_id,
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "tool_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_approval_create_runtime_proof_rejects_different_call() -> None:
+    agent_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    arguments = {
+        "approval_code": "approval-definition-1",
+        "target_member_id": str(uuid.uuid4()),
+        "form_data": "[]",
+    }
+    run_id = str(uuid.uuid4())
+    execution_id = str(uuid.uuid4())
+    lease_owner = "runtime:test:call-a"
+    tenant_id = str(uuid.uuid4())
+    authorization = issue_feishu_approval_create_authorization(
+        run_id=run_id,
+        tool_call_id="call-a",
+        execution_id=execution_id,
+        lease_owner=lease_owner,
+        tenant_id=tenant_id,
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=arguments,
+    )
+
+    outcome = assert_outcome(
+        await agent_tools.execute_builtin_tool_outcome(
+            APPROVAL_CREATE,
+            arguments,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            runtime_authorization=authorization,
+            runtime_run_id=run_id,
+            runtime_tool_call_id="call-b",
+            runtime_execution_id=execution_id,
+            runtime_lease_owner=lease_owner,
+            runtime_tenant_id=tenant_id,
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "tool_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_approval_create_runtime_proof_rejects_cross_tenant() -> None:
+    agent_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    arguments = {
+        "approval_code": "approval-definition-1",
+        "target_member_id": str(uuid.uuid4()),
+        "form_data": "[]",
+    }
+    run_id = str(uuid.uuid4())
+    execution_id = str(uuid.uuid4())
+    lease_owner = "runtime:test:call-approval-create"
+    proof_tenant_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    runtime_tenant_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    authorization = issue_feishu_approval_create_authorization(
+        run_id=run_id,
+        tool_call_id="call-approval-create",
+        execution_id=execution_id,
+        lease_owner=lease_owner,
+        tenant_id=proof_tenant_id,
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=arguments,
+    )
+
+    outcome = assert_outcome(
+        await agent_tools.execute_builtin_tool_outcome(
+            APPROVAL_CREATE,
+            arguments,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            runtime_authorization=authorization,
+            runtime_run_id=run_id,
+            runtime_tool_call_id="call-approval-create",
+            runtime_execution_id=execution_id,
+            runtime_lease_owner=lease_owner,
+            runtime_tenant_id=runtime_tenant_id,
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "tool_confirmation_required"
 
 
 @pytest.mark.asyncio
@@ -896,6 +1144,15 @@ async def test_approval_reads_classify_business_rejection_as_nonretryable(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 200
+    assert outcome.metadata["provider_code"] == 99991663
+    assert outcome.metadata["provider_msg"] == "permission denied"
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 99991663,
+        "msg": "permission denied",
+    }
+    assert "99991663" in (outcome.summary or "")
+    assert "permission denied" in (outcome.summary or "")
 
 
 @pytest.mark.parametrize("tool_name", sorted(F4_READ_TOOLS - {"feishu_user_search"}))
@@ -922,6 +1179,13 @@ async def test_approval_reads_classify_http_4xx_as_nonretryable(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 400
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 0,
+        "msg": "bad request",
+    }
+    assert "HTTP 400" in (outcome.summary or "")
+    assert "bad request" in (outcome.summary or "")
 
 
 @pytest.mark.parametrize("tool_name", sorted(F4_READ_TOOLS - {"feishu_user_search"}))
@@ -1002,7 +1266,10 @@ async def test_approval_create_resolves_stable_member_and_returns_receipt_once(
 ) -> None:
     target_member_id = uuid.uuid4()
     agent_id = uuid.uuid4()
-    form_data = '[{"id":"reason","value":"FORM-PRIVATE-VALUE"}]'
+    form_data = (
+        '[{"id":"reason","type":"textarea",'
+        '"value":"FORM-PRIVATE-VALUE"}]'
+    )
     transport = FakeHTTP()
     transport.add(
         "post",
@@ -1020,7 +1287,7 @@ async def test_approval_create_resolves_stable_member_and_returns_receipt_once(
     )
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1046,7 +1313,266 @@ async def test_approval_create_resolves_stable_member_and_returns_receipt_once(
         assert resolved_agent_id == agent_id
         assert resolver_args["target_member_id"] == str(target_member_id)
         assert resolver_args["provider_type"] == "feishu"
+        assert resolver_args["require_platform_user"] is True
         assert resolver_args["require_provider_identity"] is True
+
+
+@pytest.mark.asyncio
+async def test_approval_create_consumes_receipt_proof_before_provider_replay(
+    monkeypatch,
+) -> None:
+    agent_id = uuid.uuid4()
+    actor_user_id = uuid.uuid4()
+    target_member_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    execution_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    tool_call_id = "call-approval-create"
+    lease_owner = f"runtime:test:{tool_call_id}"
+    arguments = {
+        "approval_code": "approval-definition-1",
+        "target_member_id": str(target_member_id),
+        "form_data": (
+            '[{"id":"amount","type":"amount","value":"128.50"}]'
+        ),
+    }
+    execution = agent_tools.AgentToolExecution(
+        id=execution_id,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        tool_call_id=tool_call_id,
+        tool_name=APPROVAL_CREATE,
+        assistant_message_id="assistant-message-1",
+        arguments_hash=feishu_approval_create_arguments_hash(arguments),
+        sanitized_arguments={"form_data": "[REDACTED]"},
+        effect="external_write",
+        retry_policy="never",
+        result_metadata={},
+        status="started",
+        lease_owner=lease_owner,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return execution
+
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class LedgerDB:
+        def begin(self):
+            return Transaction()
+
+        async def execute(self, _statement):
+            return Result()
+
+    class LedgerDBContext:
+        async def __aenter__(self):
+            return LedgerDB()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    target = SimpleNamespace(
+        member=SimpleNamespace(
+            id=target_member_id,
+            user_id=actor_user_id,
+            external_id="user-applicant",
+            open_id="ou-applicant",
+        ),
+        provider=SimpleNamespace(provider_type="feishu"),
+        provider_type="feishu",
+    )
+
+    async def resolve_target(_db, _agent_id, **_kwargs):
+        return target, None
+
+    transport = FakeHTTP()
+    transport.add(
+        "post",
+        FakeResponse(
+            {
+                "code": 0,
+                "data": {"instance_code": "approval-instance-once"},
+            }
+        ),
+    )
+    install_feishu_provider(monkeypatch, transport)
+    monkeypatch.setattr(agent_tools, "async_session", lambda: LedgerDBContext())
+    monkeypatch.setattr(
+        agent_tools,
+        "_resolve_roster_human_target",
+        resolve_target,
+    )
+    authorization = issue_feishu_approval_create_authorization(
+        run_id=str(run_id),
+        tool_call_id=tool_call_id,
+        execution_id=str(execution_id),
+        lease_owner=lease_owner,
+        tenant_id=str(tenant_id),
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=arguments,
+    )
+    execution_context = {
+        "runtime_authorization": authorization,
+        "runtime_run_id": str(run_id),
+        "runtime_tool_call_id": tool_call_id,
+        "runtime_execution_id": str(execution_id),
+        "runtime_lease_owner": lease_owner,
+        "runtime_tenant_id": str(tenant_id),
+    }
+
+    first = assert_outcome(
+        await agent_tools.execute_builtin_tool_outcome(
+            APPROVAL_CREATE,
+            arguments,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            **execution_context,
+        ),
+        "succeeded",
+    )
+    replay = assert_outcome(
+        await agent_tools.execute_builtin_tool_outcome(
+            APPROVAL_CREATE,
+            arguments,
+            agent_id=agent_id,
+            user_id=actor_user_id,
+            **execution_context,
+        ),
+        "failed",
+    )
+
+    assert first.result_ref == "approval-instance-once"
+    assert replay.error_code == "tool_confirmation_required"
+    assert len(transport.calls_for("post")) == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_create_forwards_safe_optional_provider_fields(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    transport.add(
+        "post",
+        FakeResponse(
+            {
+                "code": 0,
+                "data": {"instance_code": "approval-instance-2"},
+            }
+        ),
+    )
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": (
+                    '[{"id":"amount","type":"amount","value":"128.50"}]'
+                ),
+                "department_id": "department-1",
+                "uuid": "reimbursement-2026-08-07-1",
+            }
+        ),
+        "succeeded",
+    )
+
+    request_body = transport.calls_for("post")[0][2]["json"]
+    assert request_body["department_id"] == "department-1"
+    assert request_body["uuid"] == "reimbursement-2026-08-07-1"
+
+
+@pytest.mark.asyncio
+async def test_approval_create_rejects_raw_approver_open_ids(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    outcome = assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": (
+                    '[{"id":"amount","type":"amount","value":"128.50"}]'
+                ),
+                "node_approver_open_id_list": [
+                    {"key": "approver-node", "value": ["ou-approver"]}
+                ],
+            }
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "invalid_tool_arguments"
+    assert transport.calls_for("post") == []
+
+
+@pytest.mark.asyncio
+async def test_approval_create_rejects_applicant_other_than_confirming_actor(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    outcome = assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": (
+                    '[{"id":"amount","type":"amount","value":"128.50"}]'
+                ),
+            },
+            actor_user_id=uuid.uuid4(),
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "feishu_approval_applicant_mismatch"
+    assert transport.calls_for("post") == []
+
+
+@pytest.mark.asyncio
+async def test_approval_create_rejects_confirmation_summary_before_dispatch(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    outcome = assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": (
+                    '[{"id":"amount","type":"amount","value":"128.50"}]'
+                ),
+                "confirmation_summary": "包含不可信模型内容",
+            }
+        ),
+        "failed",
+    )
+
+    assert outcome.retryable is False
+    assert outcome.error_code == "invalid_tool_arguments"
+    assert transport.calls == []
 
 
 @pytest.mark.asyncio
@@ -1059,7 +1585,7 @@ async def test_approval_create_rejects_non_array_form_before_dispatch(
     install_create_target(monkeypatch, target_member_id=target_member_id)
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1089,7 +1615,7 @@ async def test_approval_create_rejects_non_feishu_member_before_dispatch(
     )
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1115,7 +1641,7 @@ async def test_approval_create_missing_provider_receipt_is_unknown_without_repla
     install_create_target(monkeypatch, target_member_id=target_member_id)
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1141,7 +1667,7 @@ async def test_approval_create_dispatch_timeout_is_unknown_without_replay(
     install_create_target(monkeypatch, target_member_id=target_member_id)
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1170,7 +1696,7 @@ async def test_approval_create_business_rejection_is_failed_without_replay(
     install_create_target(monkeypatch, target_member_id=target_member_id)
 
     outcome = assert_outcome(
-        await execute_hidden_create(
+        await execute_approval_create(
             {
                 "approval_code": "approval-definition-1",
                 "target_member_id": str(target_member_id),
@@ -1182,4 +1708,61 @@ async def test_approval_create_business_rejection_is_failed_without_replay(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 200
+    assert outcome.metadata["provider_code"] == 1390001
+    assert outcome.metadata["provider_msg"] == "approval rejected"
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 1390001,
+        "msg": "approval rejected",
+    }
+    assert "1390001" in (outcome.summary or "")
+    assert "approval rejected" in (outcome.summary or "")
+    assert len(transport.calls_for("post")) == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_create_http_400_preserves_provider_response(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    transport.add(
+        "post",
+        FakeResponse(
+            {
+                "code": 1390001,
+                "msg": "param is invalid: control=receipt",
+                "data": {"control_id": "receipt"},
+            },
+            status_code=400,
+        ),
+    )
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    outcome = assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": "[]",
+            }
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "feishu_approval_create_rejected"
+    assert outcome.metadata == {
+        "provider_http_status": 400,
+        "provider_code": 1390001,
+        "provider_msg": "param is invalid: control=receipt",
+        "provider_response_body": {
+            "code": 1390001,
+            "msg": "param is invalid: control=receipt",
+            "data": {"control_id": "receipt"},
+        },
+    }
+    assert "HTTP 400" in (outcome.summary or "")
+    assert "1390001" in (outcome.summary or "")
+    assert "control=receipt" in (outcome.summary or "")
     assert len(transport.calls_for("post")) == 1

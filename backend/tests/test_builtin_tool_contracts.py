@@ -101,21 +101,32 @@ def test_known_schema_contracts_match_handler_validation() -> None:
     assert write_file["required"] == ["path", "content"]
     assert send_channel["required"] == ["target_member_id", "message"]
     assert send_platform["required"] == ["message"]
-    assert send_platform["anyOf"] == [
-        {"required": ["target_member_id"]},
-        {"required": ["platform_user_id"]},
-    ]
-    assert upload_image["oneOf"] == [
-        {"required": ["file_path"]},
-        {"required": ["url"]},
-    ]
-    assert "anyOf" not in upload_image
-    assert update_trigger["anyOf"] == [
-        {"required": ["config"]},
-        {"required": ["reason"]},
-    ]
+    assert update_trigger["required"] == ["name"]
+    assert upload_image.get("required", []) == []
+    for definition in BUILTIN_TOOL_DEFINITIONS:
+        schema = definition["parameters_schema"]
+        assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
     assert "webhook" in set_trigger["properties"]["type"]["enum"]
     assert "reauthorize" in import_mcp["properties"]
+
+
+@pytest.mark.asyncio
+async def test_composite_schema_constraints_remain_enforced_by_handlers() -> None:
+    agent_id = uuid.uuid4()
+
+    update = await agent_tools._handle_update_trigger_outcome(
+        agent_id,
+        {"name": "daily-report"},
+    )
+    platform_message = await agent_tools._send_platform_message_outcome(
+        agent_id,
+        {"message": "hello"},
+    )
+
+    assert update.status == "failed"
+    assert update.error_code == "invalid_tool_arguments"
+    assert platform_message.status == "failed"
+    assert platform_message.error_code == "invalid_tool_arguments"
 
 
 @pytest.mark.parametrize(
