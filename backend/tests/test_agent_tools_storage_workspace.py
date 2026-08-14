@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, Mock
 import uuid
 
 import pytest
@@ -163,6 +164,94 @@ async def test_temp_workspace_materializes_only_requested_paths(monkeypatch):
         assert not (temp_ws.root / "workspace" / "other.md").exists()
     finally:
         temp_ws.cleanup()
+
+
+def test_temp_workspace_materialization_limits_are_50_and_500_mib():
+    assert agent_tools.TOOL_MATERIALIZE_MAX_FILE_BYTES == 50 * 1024 * 1024
+    assert agent_tools.TOOL_MATERIALIZE_MAX_TOTAL_BYTES == 500 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_temp_workspace_materializes_file_above_previous_10_mib_limit(
+    monkeypatch,
+):
+    agent_id = uuid.uuid4()
+    content = b"x" * (11 * 1024 * 1024)
+    storage = MemoryStorageBackend({
+        f"{agent_id}/workspace/presentation.pptx": content,
+    })
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        paths=["workspace/presentation.pptx"],
+    )
+    try:
+        assert (temp_ws.root / "workspace" / "presentation.pptx").read_bytes() == content
+    finally:
+        temp_ws.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_temp_workspace_logs_file_skipped_by_per_file_limit(monkeypatch, tmp_path):
+    agent_id = uuid.uuid4()
+    storage_key = f"{agent_id}/workspace/oversized.pptx"
+    storage = MemoryStorageBackend({storage_key: b"too large"})
+    storage.get_version = AsyncMock(  # type: ignore[method-assign]
+        return_value=StorageVersion(
+            key=storage_key,
+            exists=True,
+            is_dir=False,
+            size=51 * 1024 * 1024,
+        )
+    )
+    warning = Mock()
+    monkeypatch.setattr(agent_tools.logger, "warning", warning)
+
+    await agent_tools._materialize_storage_path_with_budget(
+        storage,
+        storage_key,
+        "workspace/oversized.pptx",
+        tmp_path,
+        {"total": 0},
+        {},
+    )
+
+    assert not (tmp_path / "workspace" / "oversized.pptx").exists()
+    warning.assert_called_once_with(
+        "Tool workspace materialization skipped file: path={} size_bytes={} limit_bytes={} reason={}",
+        "workspace/oversized.pptx",
+        51 * 1024 * 1024,
+        50 * 1024 * 1024,
+        "per_file_limit",
+    )
+
+
+@pytest.mark.asyncio
+async def test_temp_workspace_logs_file_skipped_by_total_limit(monkeypatch, tmp_path):
+    agent_id = uuid.uuid4()
+    storage_key = f"{agent_id}/workspace/second.pptx"
+    storage = MemoryStorageBackend({storage_key: b"second"})
+    warning = Mock()
+    monkeypatch.setattr(agent_tools.logger, "warning", warning)
+
+    await agent_tools._materialize_storage_path_with_budget(
+        storage,
+        storage_key,
+        "workspace/second.pptx",
+        tmp_path,
+        {"total": agent_tools.TOOL_MATERIALIZE_MAX_TOTAL_BYTES},
+        {},
+    )
+
+    assert not (tmp_path / "workspace" / "second.pptx").exists()
+    warning.assert_called_once_with(
+        "Tool workspace materialization skipped file: path={} size_bytes={} limit_bytes={} reason={}",
+        "workspace/second.pptx",
+        len(b"second"),
+        500 * 1024 * 1024,
+        "total_limit",
+    )
 
 
 @pytest.mark.asyncio
