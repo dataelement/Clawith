@@ -15,7 +15,7 @@ Local Session code execution adds one narrow distributed coordination primitive:
 
 ```text
 Redis execution lease
-    covers materialize -> bwrap execute -> conditional Workspace publish
+    covers materialize -> bwrap execute -> mode-specific Workspace publish
 ```
 
 One bubblewrap child and its writable working copy remain active for the duration
@@ -62,7 +62,7 @@ The legacy path calls the same backend through `execute_tool`. Approved legacy a
 
 ### 3.3 Workspace publication
 
-`_prepare_temp_workspace` materializes durable Storage into a temporary Agent root. `flush_temp_workspace` uses Storage version tokens and conditional writes to publish changes. Redis Workspace path locks are an additional short-lived guard, while Storage conditional operations provide the conflict decision.
+`_prepare_temp_workspace` materializes durable Storage into a temporary Agent root. In `merge` mode, `flush_temp_workspace` uses Storage version tokens and conditional writes to publish changes. In `isolated_output`, the exact Session-owned output prefix is serialized by the tenant-scoped execution lease and is published with replacement semantics; it does not participate in shared-Workspace CAS conflict decisions. Redis Workspace path locks remain an additional short-lived guard for the physical write window.
 
 The local subprocess backend currently creates another staging tree, runs bubblewrap over that staging tree, validates generated files, and copies accepted changes back into the temporary Agent root. The outer temporary Workspace adapter then publishes to durable Storage.
 
@@ -79,7 +79,7 @@ agent_tools code-execution orchestrator
   ├─ SandboxWorkspacePolicy           mode/session/path validation
   ├─ TempWorkspace                    materialize roots + publish roots
   ├─ SubprocessBackend                Agent-loop bwrap + publish enforcement
-  └─ flush_temp_workspace             durable conditional publication
+  └─ flush_temp_workspace             durable mode-specific publication
 ```
 
 ### 4.1 `SandboxExecutionLeaseStore`
@@ -144,7 +144,7 @@ class ExecuteCodePlan:
 `publication_owner` is a trusted Executor configuration value, not a Tool argument. One Executor resolves exactly one publication owner for the whole invocation:
 
 - `gateway`: the Sandbox gateway performs the durable Workspace mutation and revision recording; the outer temporary Workspace adapter does not publish those files;
-- `workspace_cas`: the gateway only validates and copies into `TempWorkspace`; the outer adapter performs version-token conditional publication and any post-commit revision recording.
+- `workspace_cas`: the gateway only validates and copies into `TempWorkspace`; the outer adapter performs mode-specific publication and any post-commit revision recording. The historical name is retained even though `isolated_output` uses replacement semantics rather than shared-Workspace CAS.
 
 The two branches are mutually exclusive. Startup/configuration validation rejects an Executor definition that enables both or neither publication paths. The same resolved plan is used for lease TTL, Workspace materialization, backend selection, mount policy, and publication ownership. Configuration is not fetched independently at multiple stages.
 
@@ -228,7 +228,7 @@ Even if the normal heartbeat fails after the extension, another Worker cannot ac
 
 If the publication-window extension fails, publication does not start and the Tool settles `unknown` if code may already have run.
 
-The 60-second publication timeout covers path-lock acquisition, candidate validation, conditional writes/deletes, revision recording owned by the selected publication path, and result collection. Publication is a multi-file operation and is not transactionally atomic. If timeout, cancellation, Redis uncertainty, or an exception occurs after the first durable mutation may have started, the Tool settles `unknown`, never automatically retries code, and records the known committed, deleted, conflicted, and unverified paths/counts in outcome metadata for reconciliation. Cancellation of the caller does not convert a possibly partial publication into a normal failure.
+The 60-second publication timeout covers path-lock acquisition, candidate validation, durable writes/deletes, revision recording owned by the selected publication path, and result collection. Publication is a multi-file operation and is not transactionally atomic. If timeout, cancellation, Redis uncertainty, or an exception occurs after the first durable mutation may have started, the Tool settles `unknown`, never automatically retries code, and records the known committed, deleted, conflicted, and unverified paths/counts in outcome metadata for reconciliation. Cancellation of the caller does not convert a possibly partial publication into a normal failure.
 
 Workspace path locks used inside publication are updated to accept `tenant_id` and use keys beginning with:
 
@@ -236,7 +236,7 @@ Workspace path locks used inside publication are updated to accept `tenant_id` a
 tenant:{tenant_id}:workspace-lock:{agent_id}:{normalized_path}
 ```
 
-Session-scoped execution must not call the existing unscoped key builder. Owner-only release and Storage CAS remain required; the path lock is not a substitute for either.
+Session-scoped execution must not call the existing unscoped key builder. Owner-only lease release remains required. Storage CAS remains required for `merge`; exact-prefix replacement in `isolated_output` requires verified lease ownership. The path lock is not a substitute for either mode's authority check.
 
 ### 5.6 Release
 
@@ -257,7 +257,7 @@ A monotonic fencing counter is unnecessary in V1 because:
 
 - the lease is renewed immediately before a bounded publication window;
 - a second execution cannot acquire during that window;
-- whichever publication owner is selected must use conditional version-token writes/deletes and reject stale candidates;
+- whichever publication owner is selected must use conditional version-token writes/deletes for `merge`, and exact-prefix replacement only for `isolated_output` while the Session lease is valid;
 - no long-lived Sandbox resource accepts commands after the invocation.
 
 If publication cannot be bounded or future backends maintain long-lived mutable state, the contract must add durable fencing before supporting that behavior.
@@ -344,7 +344,7 @@ Path construction goes through `normalize_workspace_path` plus an exact UUID-der
 
 ### 7.3 Durable artifact references
 
-Successful conditional writes under the Session output prefix produce the existing form:
+Successful writes under the Session output prefix produce the existing form:
 
 ```text
 workspace://{agent_id}/workspace/output/{session_id}/{relative_file}
@@ -440,10 +440,10 @@ symlink, extension, and HTML/SVG safety checks still apply.
 
 Publication behavior is exclusive:
 
-- after the publication lease is extended, `publication_owner=gateway` passes the prepared candidate set to the gateway's conditional durable publisher and disables outer sync-back for those roots;
-- after the publication lease is extended, `publication_owner=workspace_cas` copies the prepared candidates into `TempWorkspace` without database revision or durable Storage mutation, then the outer adapter owns Storage CAS and records revisions only after the corresponding durable mutation is confirmed.
+- after the publication lease is extended, `publication_owner=gateway` passes the prepared candidate set to the gateway's durable publisher and disables outer sync-back for those roots;
+- after the publication lease is extended, `publication_owner=workspace_cas` copies the prepared candidates into `TempWorkspace` without database revision or durable Storage mutation, then the outer adapter owns durable publication and records revisions only after the corresponding mutation is confirmed.
 
-Both branches preserve path filtering, conditional conflict handling, artifact reporting, and `unknown` settlement. No invocation may execute both branches. Tests must spy on both publication interfaces and prove exactly one receives durable mutation calls for each configuration.
+Both branches preserve path filtering, artifact reporting, and `unknown` settlement. `merge` preserves conditional conflict handling. `isolated_output` replaces files only inside its exact Session output prefix after lease ownership is revalidated, so a previously published file in that prefix does not produce `workspace_sync_conflict`. No invocation may execute both branches. Tests must spy on both publication interfaces and prove exactly one receives durable mutation calls for each configuration.
 
 ## 10. End-to-End Execution Flow
 
@@ -458,7 +458,7 @@ Both branches preserve path filtering, conditional conflict handling, artifact r
 8. Run code and capture exit/output.
 9. Gateway validates only policy-allowed staged changes and freezes the publication candidate set without durable mutation.
 10. Atomically extend the lease for the bounded publication window.
-11. Invoke exactly one selected publication branch using the prepared candidates: gateway-owned conditional publication or outer conditional publication of only TempWorkspace.publish_paths.
+11. Invoke exactly one selected publication branch using the prepared candidates: gateway-owned publication or outer publication of only `TempWorkspace.publish_paths`, using the workspace mode's conflict policy.
 12. Compose code status, publication status, and artifact references.
 13. Stop heartbeat and compare-delete the lease.
 14. Existing Runtime Tool service settles the durable receipt/checkpoint.
@@ -499,7 +499,7 @@ An approved action configured for `isolated_output` but lacking an exact Session
 | Lease lost before code starts | failed | `sandbox_execution_lease_lost` | true |
 | Lease lost/unverifiable after code may run | unknown | `sandbox_execution_lease_lost` | false |
 | Code exits non-zero, publication succeeds | failed | `sandbox_execution_failed` | existing policy |
-| Code ran, publication conflicts/unprovable | unknown | existing `workspace_sync_conflict` / `workspace_sync_outcome_unknown` | false |
+| Code ran, merge publication conflicts or any publication is unprovable | unknown | existing `workspace_sync_conflict` / `workspace_sync_outcome_unknown` | false |
 | Publication timed out or may be partial | unknown | `workspace_sync_outcome_unknown` | false |
 
 For a failed code invocation whose isolated artifacts publish successfully, the returned `ToolExecutionOutcome` remains failed but includes those artifact references and publication counts in metadata.
@@ -522,7 +522,7 @@ A correct physical TTL requires at least:
 - a durable `sandbox_output_expires_at` product fact scoped to the Chat Session;
 - a tenant-aware cleanup scanner;
 - acquisition of the same Session execution lease before deletion;
-- per-file conditional deletion and conflict recovery;
+- per-file conditional deletion and conflict recovery for `merge`, plus exact-prefix replacement for `isolated_output`;
 - audit/version behavior for automated deletion.
 
 Using Redis expiry or a Worker-local timer would make deletion non-durable and inconsistent across restarts, violating the requested architecture boundary. Therefore V1 leaves output durable until the retention feature is separately implemented. No UI will claim that automatic deletion is active.
@@ -566,7 +566,8 @@ Pass.
 - `AgentToolExecution` remains the durable side-effect receipt.
 - Redis does not decide whether a Tool succeeded.
 - Trusted Executor configuration selects exactly one durable publication owner for an invocation; gateway and outer Workspace CAS publication cannot both run.
-- The selected owner preserves conditional conflict handling and never silently overwrites a newer durable file.
+- In `merge`, the selected owner preserves conditional conflict handling and never silently overwrites a newer durable file.
+- In `isolated_output`, the selected owner may replace only the exact Session-owned output prefix while holding the validated Session execution lease; shared Workspace paths remain unreachable by that publication.
 - Partial or unprovable multi-file publication settles `unknown` with reconciliation metadata.
 - Post-dispatch uncertainty settles as `unknown` rather than automatic replay.
 
@@ -607,7 +608,7 @@ Pass with implementation constraint.
 8. **Remote backends:** their filesystem contract cannot be inferred from the local bubblewrap interface.
 9. **Dirty worktree:** process-reaping and staging changes already in progress must be preserved during implementation.
 10. **Scope validation:** canonical UUID syntax is insufficient; tenant, Agent, and Session ownership must be verified together before any Session lease or output path is constructed.
-11. **Partial publication:** a timeout after the first conditional mutation is an `unknown` outcome with reconciliation metadata, not a retryable failure.
+11. **Partial publication:** a timeout after the first durable mutation is an `unknown` outcome with reconciliation metadata, not a retryable failure.
 
 ## 18. Verification Design
 
@@ -645,10 +646,11 @@ Pass with implementation constraint.
 ### Publication tests
 
 - materialize all default readable roots but publish only Session output;
-- creates, modifications, and deletions under Session output use conditional Storage operations;
+- creates, modifications, and deletions under Session output use replacement semantics after Session lease validation;
 - changes outside prefix are ignored and not deleted;
 - failed code can publish diagnostic output while remaining failed;
-- conflict produces unknown and no silent overwrite;
+- merge-mode conflict produces unknown and no silent overwrite;
+- an existing file under the exact isolated Session output prefix is replaced without a Workspace CAS conflict;
 - candidate preparation performs no durable mutation before the publication-window lease extension succeeds;
 - publication timeout after a simulated first-file commit produces unknown with partial/unverified metadata and never re-executes code;
 - Session-scoped Workspace locks use tenant-prefixed keys;

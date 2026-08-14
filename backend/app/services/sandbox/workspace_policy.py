@@ -10,6 +10,7 @@ from app.services.workspace_collaboration import normalize_workspace_path
 
 WorkspaceMode = Literal["merge", "isolated_output"]
 PublicationOwner = Literal["gateway", "workspace_cas"]
+PublicationConflictMode = Literal["fail", "overwrite"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,11 @@ class SandboxWorkspacePolicy:
             return None
         workspace_relative = relative.removeprefix("workspace/")
         return f"/workspace/{workspace_relative}"
+
+    @property
+    def publication_conflict_mode(self) -> PublicationConflictMode:
+        """Return the durable write policy for this workspace mode."""
+        return "overwrite" if self.mode == "isolated_output" else "fail"
 
 
 def parse_canonical_uuid(value: str | uuid.UUID, *, label: str) -> uuid.UUID:

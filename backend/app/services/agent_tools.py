@@ -28,7 +28,7 @@ import unicodedata
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Any, cast
+from typing import Optional, Any, Literal, cast
 import re
 
 from loguru import logger
@@ -1538,8 +1538,11 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
         logger.error(f"[AgentTools] Failed to sync tasks: {e}")
 
 
-async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str = "fail") -> dict[str, list[str]]:
-    """Flush local changes back to storage using manifest-based conflict checks."""
+async def flush_temp_workspace(
+    temp_workspace: TempWorkspace,
+    conflict_mode: Literal["fail", "overwrite"] = "fail",
+) -> dict[str, list[str]]:
+    """Flush local changes, optionally replacing Session-isolated output."""
     storage = get_storage_backend()
     selected_paths = [normalize_workspace_path(path) for path in temp_workspace.publish_paths]
     manifest = temp_workspace.manifest
@@ -1570,6 +1573,10 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
                 else WriteCondition(require_absent=True)
             )
             storage_key = entry.storage_key if entry else normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
+            if conflict_mode == "overwrite":
+                await storage.write_bytes(storage_key, data)
+                updated.append(rel_path)
+                continue
             result = await storage.write_bytes_if_match(
                 storage_key,
                 data,
@@ -1589,6 +1596,10 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
             ):
                 continue
             if rel_path in local_files:
+                continue
+            if conflict_mode == "overwrite":
+                await storage.delete(entry.storage_key)
+                deleted.append(rel_path)
                 continue
             result = await storage.delete_if_match(
                 entry.storage_key,
@@ -1889,7 +1900,10 @@ async def _execute_code_with_workspace_outcome(
             async def gateway_publish() -> None:
                 nonlocal gateway_flush_result
                 gateway_flush_result = await asyncio.wait_for(
-                    flush_temp_workspace(temp_workspace, conflict_mode="fail"),
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
                     timeout=60,
                 )
                 if gateway_flush_result["conflicted"]:
@@ -1935,7 +1949,10 @@ async def _execute_code_with_workspace_outcome(
                 )
             try:
                 flush_result = await asyncio.wait_for(
-                    flush_temp_workspace(temp_workspace, conflict_mode="fail"),
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
                     timeout=60,
                 )
             except Exception as exc:

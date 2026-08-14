@@ -345,6 +345,64 @@ async def test_flush_temp_workspace_fails_on_conflict(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flush_isolated_output_overwrites_unmanifested_existing_file(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_path = f"workspace/output/{uuid.uuid4()}"
+    storage_key = f"{agent_id}/{session_path}/result.json"
+    storage = MemoryStorageBackend()
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        paths=[],
+        publish_paths=[session_path],
+    )
+    try:
+        output_file = temp_ws.root / session_path / "result.json"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_bytes(b"session-result")
+        await storage.write_bytes(storage_key, b"previous-result")
+        result = await agent_tools.flush_temp_workspace(
+            temp_ws,
+            conflict_mode="overwrite",
+        )
+    finally:
+        temp_ws.cleanup()
+
+    assert result["updated"] == [f"{session_path}/result.json"]
+    assert result["conflicted"] == []
+    assert storage.files[storage_key] == b"session-result"
+
+
+@pytest.mark.asyncio
+async def test_flush_isolated_output_deletes_newer_existing_file(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_path = f"workspace/output/{uuid.uuid4()}"
+    storage_key = f"{agent_id}/{session_path}/result.json"
+    storage = MemoryStorageBackend({storage_key: b"materialized-result"})
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        paths=[session_path],
+        publish_paths=[session_path],
+    )
+    try:
+        (temp_ws.root / session_path / "result.json").unlink()
+        await storage.write_bytes(storage_key, b"newer-result")
+        result = await agent_tools.flush_temp_workspace(
+            temp_ws,
+            conflict_mode="overwrite",
+        )
+    finally:
+        temp_ws.cleanup()
+
+    assert result["deleted"] == [f"{session_path}/result.json"]
+    assert result["conflicted"] == []
+    assert storage_key not in storage.files
+
+
+@pytest.mark.asyncio
 async def test_flush_temp_workspace_filters_manifest_deletions_to_publish_paths(monkeypatch):
     agent_id = uuid.uuid4()
     session_id = uuid.uuid4()
