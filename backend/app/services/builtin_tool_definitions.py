@@ -380,7 +380,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "update_trigger",
         "display_name": "Update Trigger",
-        "description": "Patch an existing trigger's user configuration or reason. Omitted config keys and internal routing/webhook keys are preserved.",
+        "description": "Patch an existing trigger. Provide at least one of config or reason. Omitted config keys and internal routing/webhook keys are preserved.",
         "category": "aware",
         "icon": "🔄",
         "is_default": True,
@@ -392,10 +392,6 @@ _BUILTIN_TOOL_SOURCE = [
                 "reason": {"type": "string", "description": "New reason text"},
             },
             "required": ["name"],
-            "anyOf": [
-                {"required": ["config"]},
-                {"required": ["reason"]},
-            ],
         },
         "config": {},
         "config_schema": {},
@@ -479,7 +475,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "send_platform_message",
         "display_name": "Platform Message",
-        "description": "Send a proactive message to a human colleague on the Clawith first-party platform (web or app). Use query_directory first, then pass target_member_id or platform_user_id.",
+        "description": "Send a proactive message to a human colleague on the Clawith first-party platform (web or app). Use query_directory first, then provide at least one of target_member_id or platform_user_id.",
         "category": "communication",
         "icon": "🌐",
         "is_default": True,
@@ -491,10 +487,6 @@ _BUILTIN_TOOL_SOURCE = [
                 "message": {"type": "string", "description": "Message content"},
             },
             "required": ["message"],
-            "anyOf": [
-                {"required": ["target_member_id"]},
-                {"required": ["platform_user_id"]},
-            ],
         },
         "config": {},
         "config_schema": {},
@@ -1083,7 +1075,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "upload_image",
         "display_name": "Upload Image",
-        "description": "Upload images from the workspace or a URL to ImageKit CDN and get a public URL. Useful for sharing images externally or embedding them in reports.",
+        "description": "Upload an image to ImageKit CDN from exactly one source: a workspace file_path or a public URL. Returns a public URL for sharing or embedding.",
         "category": "code",
         "icon": "🖼️",
         "is_default": True,
@@ -1099,10 +1091,6 @@ _BUILTIN_TOOL_SOURCE = [
                 "file_name": {"type": "string", "description": "Custom filename (optional)"},
                 "folder": {"type": "string", "description": "CDN folder path (default /clawith)"},
             },
-            "oneOf": [
-                {"required": ["file_path"]},
-                {"required": ["url"]},
-            ],
         },
         "config": {"private_key": "", "url_endpoint": ""},
         "config_schema": {
@@ -3432,7 +3420,7 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 "source_dir": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Directory in workspace containing the project, e.g. 'workspace/my-app'"
+                    "description": "Directory in workspace containing the project, e.g. 'workspace/my-app'. Required when deploy_method='upload'."
                 },
                 "deploy_method": {
                     "type": "string",
@@ -3462,25 +3450,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 }
             },
             "required": ["project_name"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {
-                            "deploy_method": {"const": "upload"}
-                        }
-                    },
-                    "then": {"required": ["source_dir"]}
-                },
-                {
-                    "if": {
-                        "properties": {
-                            "deploy_method": {"const": "github"}
-                        },
-                        "required": ["deploy_method"]
-                    },
-                    "then": {"required": ["github_repo"]}
-                }
-            ],
             "additionalProperties": False,
         },
         "config": {"vercel_token": ""},
@@ -3541,7 +3510,7 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
     {
         "name": "vercel_set_env",
         "display_name": "Set Environment Variable",
-        "description": "Set an environment variable for a Vercel project. Use for database URLs, API keys, and other secrets.",
+        "description": "Set an environment variable for a Vercel project. Provide exactly one value source: inline value or private value_ref.",
         "category": "deploy",
         "icon": "🔐",
         "is_default": False,
@@ -3572,10 +3541,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 }
             },
             "required": ["project_name", "key"],
-            "oneOf": [
-                {"required": ["value"]},
-                {"required": ["value_ref"]},
-            ],
             "additionalProperties": False,
         },
         "config": {},
@@ -3600,15 +3565,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 "project_name": {"type": "string", "description": "Required for 'bind' action"}
             },
             "required": ["action", "domain"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {"action": {"const": "bind"}},
-                        "required": ["action"]
-                    },
-                    "then": {"required": ["project_name"]}
-                }
-            ]
         },
         "config": {},
         "config_schema": {},
@@ -4108,23 +4064,12 @@ def validate_builtin_tool_definitions() -> None:
             raise ValueError(
                 f"builtin tool {name!r} required fields must exist in properties"
             )
-        alternatives = schema.get("anyOf", [])
-        if not isinstance(alternatives, list):
-            raise ValueError(f"builtin tool {name!r} anyOf must be an array")
-        for alternative in alternatives:
-            alternative_required = (
-                alternative.get("required", [])
-                if isinstance(alternative, Mapping)
-                else None
+        unsupported_combinators = {"anyOf", "oneOf", "allOf"}.intersection(schema)
+        if unsupported_combinators:
+            raise ValueError(
+                f"builtin tool {name!r} uses provider-incompatible schema "
+                f"combinators: {sorted(unsupported_combinators)}"
             )
-            if (
-                not isinstance(alternative_required, list)
-                or any(not isinstance(item, str) for item in alternative_required)
-                or not set(alternative_required).issubset(properties)
-            ):
-                raise ValueError(
-                    f"builtin tool {name!r} anyOf required fields must exist in properties"
-                )
         for property_name, property_schema in properties.items():
             if not isinstance(property_schema, Mapping):
                 raise ValueError(

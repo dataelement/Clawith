@@ -235,11 +235,6 @@ def install_neon(
     monkeypatch.setattr(httpx, "AsyncClient", provider.factory)
 
 
-def one_of_required_sets(schema: dict) -> set[frozenset[str]]:
-    branches = schema.get("oneOf") or schema.get("anyOf") or []
-    return {frozenset(str(name) for name in branch.get("required", ())) for branch in branches}
-
-
 def test_simple_deploy_contracts_are_external_exactly_once_writes() -> None:
     for name in SIMPLE_DEPLOY_TOOL_NAMES:
         assert builtin_policy(name) == {
@@ -250,14 +245,14 @@ def test_simple_deploy_contracts_are_external_exactly_once_writes() -> None:
 
 
 def test_vercel_set_env_schema_accepts_exactly_one_value_source_and_nonempty_targets() -> None:
-    schema = builtin_model_definition("vercel_set_env")["function"]["parameters"]
+    definition = builtin_model_definition("vercel_set_env")["function"]
+    schema = definition["parameters"]
 
     assert {"project_name", "key"} <= set(schema["required"])
     assert "value" not in schema["required"]
-    assert one_of_required_sets(schema) == {
-        frozenset({"value"}),
-        frozenset({"value_ref"}),
-    }
+    assert "value_ref" not in schema["required"]
+    assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
+    assert "exactly one" in definition["description"].lower()
     assert schema["properties"]["target"]["minItems"] == 1
     assert schema["properties"]["value_ref"]["type"] == "string"
 

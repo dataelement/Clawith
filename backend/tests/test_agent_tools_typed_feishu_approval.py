@@ -334,6 +334,15 @@ async def test_approval_file_upload_business_rejection_is_failed_without_replay(
 
     assert outcome.retryable is False
     assert outcome.error_code == "feishu_approval_file_upload_rejected"
+    assert outcome.metadata["provider_http_status"] == 200
+    assert outcome.metadata["provider_code"] == 1390001
+    assert outcome.metadata["provider_msg"] == "file rejected"
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 1390001,
+        "msg": "file rejected",
+    }
+    assert "1390001" in (outcome.summary or "")
+    assert "file rejected" in (outcome.summary or "")
     assert len(transport.calls) == 1
 
 

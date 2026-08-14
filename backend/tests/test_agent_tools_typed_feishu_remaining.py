@@ -522,6 +522,50 @@ def test_approval_create_form_data_is_redacted_from_observability() -> None:
     assert sanitized["form_data"] == "[REDACTED]"
 
 
+def test_approval_create_rejects_attachment_objects_before_confirmation() -> None:
+    validated, error = agent_tools.validate_feishu_approval_create_arguments(
+        {
+            "approval_code": "approval-definition-1",
+            "target_member_id": str(uuid.uuid4()),
+            "form_data": json.dumps(
+                [
+                    {
+                        "id": "receipt",
+                        "type": "attachmentV2",
+                        "value": [{"file_code": "file-code-1"}],
+                    }
+                ]
+            ),
+        }
+    )
+
+    assert validated is None
+    assert error is not None
+    assert error.error_code == "invalid_tool_arguments"
+    assert "string file codes" in (error.summary or "")
+
+
+def test_approval_create_accepts_attachment_file_code_strings() -> None:
+    validated, error = agent_tools.validate_feishu_approval_create_arguments(
+        {
+            "approval_code": "approval-definition-1",
+            "target_member_id": str(uuid.uuid4()),
+            "form_data": json.dumps(
+                [
+                    {
+                        "id": "receipt",
+                        "type": "attachmentV2",
+                        "value": ["file-code-1"],
+                    }
+                ]
+            ),
+        }
+    )
+
+    assert error is None
+    assert validated is not None
+
+
 @pytest.mark.asyncio
 async def test_approval_create_typed_dispatch_fails_without_runtime_proof() -> None:
     outcome = assert_outcome(
@@ -1100,6 +1144,15 @@ async def test_approval_reads_classify_business_rejection_as_nonretryable(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 200
+    assert outcome.metadata["provider_code"] == 99991663
+    assert outcome.metadata["provider_msg"] == "permission denied"
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 99991663,
+        "msg": "permission denied",
+    }
+    assert "99991663" in (outcome.summary or "")
+    assert "permission denied" in (outcome.summary or "")
 
 
 @pytest.mark.parametrize("tool_name", sorted(F4_READ_TOOLS - {"feishu_user_search"}))
@@ -1126,6 +1179,13 @@ async def test_approval_reads_classify_http_4xx_as_nonretryable(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 400
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 0,
+        "msg": "bad request",
+    }
+    assert "HTTP 400" in (outcome.summary or "")
+    assert "bad request" in (outcome.summary or "")
 
 
 @pytest.mark.parametrize("tool_name", sorted(F4_READ_TOOLS - {"feishu_user_search"}))
@@ -1648,4 +1708,61 @@ async def test_approval_create_business_rejection_is_failed_without_replay(
 
     assert outcome.retryable is False
     assert outcome.error_code
+    assert outcome.metadata["provider_http_status"] == 200
+    assert outcome.metadata["provider_code"] == 1390001
+    assert outcome.metadata["provider_msg"] == "approval rejected"
+    assert outcome.metadata["provider_response_body"] == {
+        "code": 1390001,
+        "msg": "approval rejected",
+    }
+    assert "1390001" in (outcome.summary or "")
+    assert "approval rejected" in (outcome.summary or "")
+    assert len(transport.calls_for("post")) == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_create_http_400_preserves_provider_response(
+    monkeypatch,
+) -> None:
+    target_member_id = uuid.uuid4()
+    transport = FakeHTTP()
+    transport.add(
+        "post",
+        FakeResponse(
+            {
+                "code": 1390001,
+                "msg": "param is invalid: control=receipt",
+                "data": {"control_id": "receipt"},
+            },
+            status_code=400,
+        ),
+    )
+    install_feishu_provider(monkeypatch, transport)
+    install_create_target(monkeypatch, target_member_id=target_member_id)
+
+    outcome = assert_outcome(
+        await execute_approval_create(
+            {
+                "approval_code": "approval-definition-1",
+                "target_member_id": str(target_member_id),
+                "form_data": "[]",
+            }
+        ),
+        "failed",
+    )
+
+    assert outcome.error_code == "feishu_approval_create_rejected"
+    assert outcome.metadata == {
+        "provider_http_status": 400,
+        "provider_code": 1390001,
+        "provider_msg": "param is invalid: control=receipt",
+        "provider_response_body": {
+            "code": 1390001,
+            "msg": "param is invalid: control=receipt",
+            "data": {"control_id": "receipt"},
+        },
+    }
+    assert "HTTP 400" in (outcome.summary or "")
+    assert "1390001" in (outcome.summary or "")
+    assert "control=receipt" in (outcome.summary or "")
     assert len(transport.calls_for("post")) == 1

@@ -16104,6 +16104,98 @@ _FEISHU_APPROVAL_SECTION_KEYS = {
     "timeline": "timeline",
     "comments": "comment_list",
 }
+_FEISHU_PROVIDER_RESPONSE_MAX_BYTES = 8192
+
+
+def _feishu_provider_receipt(
+    response: object,
+) -> tuple[int | None, object | None, bool, dict[str, object]]:
+    """Capture one bounded Provider response before classifying it."""
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        status_code = None
+    try:
+        payload = response.json()  # type: ignore[attr-defined]
+        payload_is_json = True
+    except Exception:
+        payload = None
+        payload_is_json = False
+
+    if payload_is_json:
+        try:
+            serialized = json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            payload_is_json = False
+        else:
+            if len(serialized.encode("utf-8")) <= _FEISHU_PROVIDER_RESPONSE_MAX_BYTES:
+                response_body: object = json.loads(serialized)
+            else:
+                preview = serialized.encode("utf-8")[
+                    : _FEISHU_PROVIDER_RESPONSE_MAX_BYTES - 128
+                ].decode("utf-8", errors="ignore")
+                response_body = {"truncated": True, "preview": preview}
+    if not payload_is_json:
+        raw_text = getattr(response, "text", "")
+        if not isinstance(raw_text, str):
+            raw_text = str(raw_text)
+        encoded = raw_text.encode("utf-8")
+        response_body = (
+            raw_text
+            if len(encoded) <= _FEISHU_PROVIDER_RESPONSE_MAX_BYTES
+            else encoded[: _FEISHU_PROVIDER_RESPONSE_MAX_BYTES].decode(
+                "utf-8",
+                errors="ignore",
+            )
+        )
+
+    metadata: dict[str, object] = {
+        "provider_response_body": response_body,
+    }
+    if status_code is not None:
+        metadata["provider_http_status"] = status_code
+    if isinstance(payload, Mapping):
+        code = payload.get("code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            metadata["provider_code"] = code
+        msg = payload.get("msg")
+        if isinstance(msg, str):
+            metadata["provider_msg"] = msg
+    return status_code, payload, payload_is_json, metadata
+
+
+def _feishu_provider_error_summary(
+    operation: str,
+    prefix: str,
+    metadata: Mapping[str, object],
+) -> str:
+    """Expose the bounded Feishu receipt so the model can repair the request."""
+    facts: list[str] = []
+    status_code = metadata.get("provider_http_status")
+    if isinstance(status_code, int):
+        facts.append(f"HTTP {status_code}")
+    code = metadata.get("provider_code")
+    if isinstance(code, int):
+        facts.append(f"code {code}")
+    msg = metadata.get("provider_msg")
+    if isinstance(msg, str) and msg:
+        facts.append(f"msg {msg}")
+    body = metadata.get("provider_response_body")
+    try:
+        body_text = json.dumps(
+            body,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        body_text = str(body)
+    facts.append(f"response {body_text}")
+    return f"Feishu {prefix} {operation}: " + "; ".join(facts) + "."
 
 
 def _feishu_approval_read_response(
@@ -16111,62 +16203,107 @@ def _feishu_approval_read_response(
     operation: str,
 ) -> tuple[Mapping | None, ToolExecutionOutcome | None]:
     """Validate one approval read response without losing HTTP status facts."""
-    status_code = getattr(response, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
+    status_code, payload, payload_is_json, receipt = _feishu_provider_receipt(
+        response
+    )
+    if status_code is None:
         return None, _typed_failure(
-            f"Feishu {operation} returned no readable HTTP status.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned no readable HTTP status for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if status_code == 429 or status_code >= 500:
         return None, _typed_failure(
-            f"Feishu {operation} is temporarily unavailable.",
+            _feishu_provider_error_summary(
+                operation,
+                "temporarily rejected",
+                receipt,
+            ),
             f"feishu_{operation}_http_retryable",
             retryable=True,
+            metadata=receipt,
         )
     if 400 <= status_code < 500:
         return None, _typed_failure(
-            f"Feishu rejected {operation}.",
+            _feishu_provider_error_summary(
+                operation,
+                "rejected",
+                receipt,
+            ),
             f"feishu_{operation}_http_rejected",
+            metadata=receipt,
         )
     if not 200 <= status_code < 300:
         return None, _typed_failure(
-            f"Feishu {operation} returned an unexpected HTTP status.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an unexpected status for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
-    try:
-        payload = response.json()
-    except Exception:
+    if not payload_is_json:
         return None, _typed_failure(
-            f"Feishu {operation} returned unreadable JSON.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned unreadable JSON for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if not isinstance(payload, Mapping):
         return None, _typed_failure(
-            f"Feishu {operation} returned an invalid response.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an invalid response for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     code = payload.get("code")
     if isinstance(code, bool) or not isinstance(code, int):
         return None, _typed_failure(
-            f"Feishu {operation} returned no valid business code.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned no valid business code for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if code != 0:
         return None, _typed_failure(
-            f"Feishu rejected {operation}.",
+            _feishu_provider_error_summary(
+                operation,
+                "rejected",
+                receipt,
+            ),
             f"feishu_{operation}_rejected",
+            metadata=receipt,
         )
     data = payload.get("data")
     if not isinstance(data, Mapping):
         return None, _typed_failure(
-            f"Feishu {operation} returned an invalid data object.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an invalid data object for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     return data, None
 
@@ -16445,51 +16582,85 @@ async def _feishu_approval_file_upload_outcome(
             metadata=receipt_metadata,
         )
 
-    status_code = getattr(response, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
+    status_code, payload, payload_is_json, provider_receipt = (
+        _feishu_provider_receipt(response)
+    )
+    failure_metadata = {**receipt_metadata, **provider_receipt}
+    if status_code is None:
         return _typed_unknown(
-            "Feishu approval_file_upload returned no HTTP receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned no HTTP receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_file_upload_outcome_unknown",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     if status_code == 429 or status_code >= 500:
         return _typed_unknown(
-            "Feishu approval_file_upload may have taken effect; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an uncertain result for",
+                provider_receipt,
+            )
+            + " It may have taken effect; reconcile before retrying.",
             "feishu_approval_file_upload_outcome_unknown",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     if not 200 <= status_code < 300:
         return _typed_failure(
-            "Feishu rejected approval_file_upload.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_file_upload_rejected",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
-    try:
-        payload = response.json()
-    except Exception:
+    if not payload_is_json:
         return _typed_unknown(
-            "Feishu approval_file_upload returned an unreadable receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an unreadable receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_file_upload_outcome_unknown",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     if not isinstance(payload, Mapping):
         return _typed_unknown(
-            "Feishu approval_file_upload returned an invalid receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an invalid receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_file_upload_outcome_unknown",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     code = payload.get("code")
     if isinstance(code, bool) or not isinstance(code, int):
         return _typed_unknown(
-            "Feishu approval_file_upload returned no business receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned no business receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_file_upload_outcome_unknown",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     if code != 0:
         return _typed_failure(
-            "Feishu rejected approval_file_upload.",
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_file_upload_rejected",
-            metadata=receipt_metadata,
+            metadata=failure_metadata,
         )
     data = payload.get("data")
     file_code = (
@@ -16959,6 +17130,21 @@ def validate_feishu_approval_create_arguments(
                 "feishu_approval_create form_data control id and type must be non-empty strings.",
                 "invalid_tool_arguments",
             )
+        if control.get("type") in {"attachmentV2", "image", "imageV2"}:
+            value = control.get("value")
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(
+                    isinstance(file_code, str) and file_code.strip()
+                    for file_code in value
+                )
+            ):
+                return None, _typed_failure(
+                    "feishu_approval_create attachment and image controls "
+                    "require a non-empty array of string file codes.",
+                    "invalid_tool_arguments",
+                )
 
     optional_strings: dict[str, str] = {}
     for key in ("department_id", "uuid"):
@@ -17213,39 +17399,74 @@ async def _feishu_approval_create_outcome(
             exc,
         )
 
-    status_code = getattr(response, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
+    status_code, payload, payload_is_json, provider_receipt = (
+        _feishu_provider_receipt(response)
+    )
+    if status_code is None:
         return _typed_unknown(
-            "Feishu approval_create returned no readable HTTP receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned no readable HTTP receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if status_code == 429 or status_code >= 500:
         return _typed_unknown(
-            "Feishu approval_create may have taken effect; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an uncertain result for",
+                provider_receipt,
+            )
+            + " It may have taken effect; reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if 400 <= status_code < 500:
         return _typed_failure(
-            "Feishu rejected approval_create.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_create_rejected",
+            metadata=provider_receipt,
         )
-    try:
-        payload = response.json()
-    except Exception:
+    if not payload_is_json:
         return _typed_unknown(
-            "Feishu approval_create returned an unreadable receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an unreadable receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if not isinstance(payload, Mapping):
         return _typed_unknown(
-            "Feishu approval_create returned an invalid receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an invalid receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     code = payload.get("code")
     if isinstance(code, bool) or not isinstance(code, int):
         return _typed_unknown(
-            "Feishu approval_create returned no business receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned no business receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     reconciliation_ref = optional_strings.get("uuid")
     if code == 60012:
@@ -17253,11 +17474,17 @@ async def _feishu_approval_create_outcome(
             "Feishu reported an approval_create uuid conflict; reconcile the existing instance before retrying.",
             "feishu_approval_create_uuid_conflict",
             result_ref=reconciliation_ref,
+            metadata=provider_receipt,
         )
     if code != 0:
         return _typed_failure(
-            "Feishu rejected approval_create.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_create_rejected",
+            metadata=provider_receipt,
         )
     data = payload.get("data")
     instance_code = (

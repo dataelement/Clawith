@@ -258,12 +258,10 @@ async def _execute_generate(
 
 
 def test_image_contracts_validate_sources_prompt_size_and_save_path() -> None:
-    upload = builtin_model_definition("upload_image")["function"]["parameters"]
-    assert upload.get("oneOf") == [
-        {"required": ["file_path"]},
-        {"required": ["url"]},
-    ]
-    assert "anyOf" not in upload
+    upload_definition = builtin_model_definition("upload_image")["function"]
+    upload = upload_definition["parameters"]
+    assert {"anyOf", "oneOf", "allOf"}.isdisjoint(upload)
+    assert "exactly one" in upload_definition["description"].lower()
     assert upload["properties"]["url"]["format"] == "uri"
 
     for tool_name in IMAGE_GENERATION_TOOLS:
