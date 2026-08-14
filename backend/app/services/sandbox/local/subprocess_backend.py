@@ -548,6 +548,7 @@ class SubprocessBackend(BaseSandboxBackend):
         agent_id: uuid.UUID | None = None,
         session_id: str | None = None,
         publish_paths: list[str] | None = None,
+        workspace_mode: str = "merge",
         record_revisions: bool = False,
     ) -> None:
         """Scan staging directory, enforce safety checks, sanitize HTML/SVG, and merge to workspace with DB revisions."""
@@ -665,16 +666,20 @@ class SubprocessBackend(BaseSandboxBackend):
             except OSError:
                 pass
 
-        if len(publication_candidates) > MAX_PUBLISHED_FILES_PER_EXECUTION:
-            raise RuntimeError(
-                "Sandbox generated too many changed files "
-                f"(limit: {MAX_PUBLISHED_FILES_PER_EXECUTION})"
-            )
-        if len(deletion_candidates) > MAX_DELETED_FILES_PER_EXECUTION:
-            raise RuntimeError(
-                "Sandbox deleted too many files "
-                f"(limit: {MAX_DELETED_FILES_PER_EXECUTION})"
-            )
+        # Session-isolated output has one serialized writer and cannot mutate the
+        # shared Workspace tree, so shared-workspace change-count limits do not
+        # apply. Content safety and byte-size limits remain enforced below.
+        if workspace_mode != "isolated_output":
+            if len(publication_candidates) > MAX_PUBLISHED_FILES_PER_EXECUTION:
+                raise RuntimeError(
+                    "Sandbox generated too many changed files "
+                    f"(limit: {MAX_PUBLISHED_FILES_PER_EXECUTION})"
+                )
+            if len(deletion_candidates) > MAX_DELETED_FILES_PER_EXECUTION:
+                raise RuntimeError(
+                    "Sandbox deleted too many files "
+                    f"(limit: {MAX_DELETED_FILES_PER_EXECUTION})"
+                )
 
         total_size = 0
         for rel_path, file_path in publication_candidates.items():
@@ -1147,6 +1152,7 @@ class SubprocessBackend(BaseSandboxBackend):
                                 agent_id=agent_id,
                                 session_id=session_id,
                                 publish_paths=publish_paths,
+                                workspace_mode=workspace_mode,
                                 record_revisions=False,
                             )
                             if publication_owner == "gateway":
@@ -1340,6 +1346,7 @@ class SubprocessBackend(BaseSandboxBackend):
                     agent_id=agent_id,
                     session_id=session_id,
                     publish_paths=publish_paths,
+                    workspace_mode=workspace_mode,
                     record_revisions=False,
                 )
                 if publication_owner == "gateway":
