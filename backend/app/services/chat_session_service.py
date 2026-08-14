@@ -411,7 +411,18 @@ async def save_tool_call_log(
 
     try:
         async with async_session() as db:
+            session_result = await db.execute(
+                select(ChatSession.tenant_id).where(
+                    ChatSession.id == uuid.UUID(conversation_id),
+                    ChatSession.agent_id == agent_id,
+                    ChatSession.deleted_at.is_(None),
+                )
+            )
+            tenant_id = session_result.scalar_one_or_none()
+            if tenant_id is None:
+                raise ValueError("Tool call log session is unavailable or outside the Agent scope")
             db.add(ChatMessage(
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 user_id=user_id,
                 role="tool_call",

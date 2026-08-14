@@ -166,6 +166,8 @@ class Settings(BaseSettings):
     MAX_AGENT_CYCLE_COUNT: int = Field(default=5, gt=0)
 
     # Docker (for Agent containers)
+    AGENT_DOCKER_ENABLED: bool = True
+    AGENT_CONTAINER_PREFIX: str = "clawith-agent"
     DOCKER_NETWORK: str = "clawith_network"
     OPENCLAW_IMAGE: str = "openclaw:local"
     OPENCLAW_GATEWAY_PORT: int = 18789

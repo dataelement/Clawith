@@ -130,7 +130,7 @@ def _dedupe_agent_relationships(items: list[AgentRelationshipIn], agent_id: uuid
 async def get_relationships(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: get manually stored human relationship rows for this agent."""
     from app.models.identity import IdentityProvider
@@ -188,7 +188,7 @@ async def search_human_relationship_candidates(
     agent_id: uuid.UUID,
     search: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: search org members that can be stored as relationship rows."""
     from app.models.identity import IdentityProvider
@@ -298,7 +298,7 @@ async def save_relationships(
     agent_id: uuid.UUID,
     data: RelationshipBatchIn,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: replace all manually stored human relationship rows."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
@@ -380,7 +380,7 @@ async def delete_relationship(
     agent_id: uuid.UUID,
     rel_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a single human relationship."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
@@ -406,7 +406,7 @@ async def search_visible_agents(
     agent_id: uuid.UUID,
     search: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Search manageable agent candidates for relationship creation."""
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
@@ -446,7 +446,7 @@ async def search_visible_agents(
 async def get_agent_relationships(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: get manually stored agent-to-agent relationship rows."""
     await check_agent_access(db, current_user, agent_id)
@@ -481,7 +481,7 @@ async def get_agent_relationships(
 async def get_agent_relationship_candidates(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: backward-compatible alias for searchable agent candidates."""
     return await search_visible_agents(
@@ -497,7 +497,7 @@ async def save_agent_relationships(
     agent_id: uuid.UUID,
     data: AgentRelationshipBatchIn,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: replace all manually stored agent-to-agent relationship rows."""
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
@@ -542,7 +542,7 @@ async def delete_agent_relationship(
     agent_id: uuid.UUID,
     rel_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Legacy: delete a single manually stored agent-to-agent relationship row."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)

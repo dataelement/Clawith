@@ -625,6 +625,7 @@ async def enqueue_gateway_a2a_runtime(
         db.add(
             ChatMessage(
                 id=chat_message_id,
+                tenant_id=tenant_id,
                 agent_id=session.agent_id,
                 user_id=owner_user_id,
                 role="user",
@@ -855,6 +856,7 @@ class RuntimeA2AService:
                         db.add(
                             ChatMessage(
                                 id=message_id,
+                                tenant_id=tenant_id,
                                 agent_id=session.agent_id,
                                 user_id=owner_user_id,
                                 role="user",

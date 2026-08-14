@@ -209,6 +209,7 @@ class A2ARuntimeCompletionHandler:
                     db.add(
                         ChatMessage(
                             id=receipt_id,
+                            tenant_id=target_run.tenant_id,
                             agent_id=session.agent_id,
                             user_id=target_run.origin_user_id,
                             role="assistant",
@@ -377,6 +378,7 @@ class A2ARuntimeCompletionHandler:
                 db.add(
                     ChatMessage(
                         id=receipt_id,
+                        tenant_id=target_run.tenant_id,
                         agent_id=session.agent_id,
                         user_id=target_run.origin_user_id,
                         role="assistant",

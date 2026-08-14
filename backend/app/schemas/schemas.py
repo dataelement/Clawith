@@ -404,8 +404,9 @@ class LLMModelCreate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool = True
     supports_vision: bool = False
-    max_output_tokens: int | None = None
-    request_timeout: int | None = None
+    max_output_tokens: int | None = Field(None, gt=0)
+    context_window_tokens: int | None = Field(None, gt=0)
+    request_timeout: int | None = Field(None, gt=0)
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -417,8 +418,9 @@ class LLMModelUpdate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool | None = None
     supports_vision: bool | None = None
-    max_output_tokens: int | None = None
-    request_timeout: int | None = None
+    max_output_tokens: int | None = Field(None, gt=0)
+    context_window_tokens: int | None = Field(None, gt=0)
+    request_timeout: int | None = Field(None, gt=0)
 
 
 class LLMModelOut(BaseModel):
@@ -437,6 +439,7 @@ class LLMModelOut(BaseModel):
     tool_calling_checked_at: datetime | None = None
     tool_calling_error: str | None = None
     max_output_tokens: int | None = None
+    context_window_tokens: int | None = None
     request_timeout: int | None = None
     created_at: datetime
     deleted_at: datetime | None = None

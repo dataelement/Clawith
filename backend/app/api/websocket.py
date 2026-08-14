@@ -1161,7 +1161,10 @@ class WebSocketChatHandler:
             await self.websocket.send_json(
                 _runtime_error_packet(
                     code=getattr(exc, "code", "runtime_stream_failed"),
-                    message="Runtime execution continues, but its live event stream was interrupted.",
+                    message=(
+                        "The chat response could not be restored from the live event stream. "
+                        "Reconnect or retry to load the latest run state."
+                    ),
                     agent_id=self.agent_id,
                     stage="stream",
                     run_id=intake.handle.run_id,
@@ -1365,6 +1368,11 @@ class WebSocketChatHandler:
 
     async def _save_user_message(self, content: str, display_content: str, file_name: str, is_onboarding_trigger: bool):
         """Saves user message to the database and updates session title/time."""
+        if self.agent is None or self.agent.tenant_id is None:
+            raise ChatRuntimeIntakeError(
+                "chat_connection_not_ready",
+                "Web Chat connection has no authenticated tenant scope",
+            )
         has_image_marker = "[image_data:" in content
         if has_image_marker:
             saved_content = f"[file:{file_name}]\n{content}" if file_name else content
@@ -1384,6 +1392,7 @@ class WebSocketChatHandler:
         else:
             async with async_session() as db:
                 user_msg = ChatMessage(
+                    tenant_id=self.agent.tenant_id,
                     agent_id=self.agent_id,
                     user_id=self.user.id,
                     role="user",

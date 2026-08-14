@@ -29,7 +29,7 @@ def _is_platform_admin(user: User) -> bool:
 async def list_users(
     tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List users, optionally filtered by tenant."""
     query = (
@@ -54,7 +54,7 @@ async def admin_update_user(
     user_id: uuid.UUID,
     data: UserUpdate,
     current_user: User = Depends(get_current_admin),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Admin update user profile."""
     query = (

@@ -1,12 +1,4 @@
-"""DAO for ChatMessage model.
-
-Note: ChatMessage does not yet have a tenant_id column. Tenant isolation
-is applied via the agent_id -> agents.tenant_id join path.
-A migration to add tenant_id directly to chat_messages is tracked separately
-(see implementation_plan.md Q3).  Until then this DAO enforces isolation
-by requiring an agent_id or session conversation_id scoped within the
-caller's already-verified tenant context.
-"""
+"""Tenant-safe DAO for the unified ChatMessage model."""
 
 import uuid
 from collections.abc import Sequence
@@ -18,14 +10,7 @@ from app.models.audit import ChatMessage
 
 
 class ChatMessageDAO(BaseDAO[ChatMessage]):
-    """DAO for ChatMessage entities.
-
-    Because chat_messages lacks a tenant_id column, callers must always
-    supply at least one of ``agent_id``, ``session_conversation_id``, or
-    ``user_id`` to scope the query. The DAO validates that the agent is
-    already confirmed to belong to the current tenant (callers are expected
-    to use AgentDAO.get_active() first before calling here).
-    """
+    """DAO for ChatMessage entities with explicit tenant ownership."""
 
     def __init__(self) -> None:
         super().__init__(ChatMessage)
@@ -82,6 +67,7 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
     async def create_message(
         self,
         *,
+        tenant_id: uuid.UUID,
         agent_id: uuid.UUID | None,
         user_id: uuid.UUID | None,
         role: str,
@@ -94,6 +80,7 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
         """Create a single chat message."""
         async with self.session() as db:
             msg = ChatMessage(
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 user_id=user_id,
                 role=role,
@@ -110,7 +97,19 @@ class ChatMessageDAO(BaseDAO[ChatMessage]):
     async def bulk_create(self, messages: list[dict]) -> Sequence[ChatMessage]:
         """Insert multiple messages in a single flush."""
         async with self.session() as db:
-            objs = [ChatMessage(**m) for m in messages]
+            missing_tenant = [index for index, message in enumerate(messages) if not message.get("tenant_id")]
+            if missing_tenant:
+                raise ValueError(
+                    "Every ChatMessage requires tenant_id; missing at indexes "
+                    + ", ".join(str(index) for index in missing_tenant)
+                )
+            objs = [
+                ChatMessage(
+                    tenant_id=message["tenant_id"],
+                    **{key: value for key, value in message.items() if key != "tenant_id"},
+                )
+                for message in messages
+            ]
             db.add_all(objs)
             await db.flush()
             return objs

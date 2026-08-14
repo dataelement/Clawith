@@ -56,7 +56,7 @@ class ScheduleOut(BaseModel):
 async def list_schedules(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List all schedules for an agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -85,7 +85,7 @@ async def create_schedule(
     agent_id: uuid.UUID,
     data: ScheduleCreate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new schedule for an agent."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -117,7 +117,7 @@ async def update_schedule(
     schedule_id: uuid.UUID,
     data: ScheduleUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a schedule."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -151,7 +151,7 @@ async def delete_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a schedule."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -174,7 +174,7 @@ async def trigger_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger a schedule execution."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -217,7 +217,7 @@ async def get_schedule_history(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get execution history for a schedule from activity logs."""
     await check_agent_access(db, current_user, agent_id)

@@ -32,7 +32,7 @@ async def configure_atlassian_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure Atlassian Rovo MCP for an agent.
 
@@ -91,7 +91,7 @@ async def configure_atlassian_channel(
 async def get_atlassian_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await query_dao.execute(db, 
@@ -110,7 +110,7 @@ async def get_atlassian_channel(
 async def delete_atlassian_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -132,7 +132,7 @@ async def delete_atlassian_channel(
 async def test_atlassian_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Test connectivity to Atlassian Rovo MCP and list available tools."""
     await check_agent_access(db, current_user, agent_id)

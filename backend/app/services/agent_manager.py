@@ -53,8 +53,13 @@ class AgentManager:
     """Manage OpenClaw Gateway Docker containers for digital employees."""
 
     def __init__(self):
+        if not settings.AGENT_DOCKER_ENABLED:
+            logger.info("Agent Docker management disabled — using the built-in runtime")
+            self.docker_client = None
+            return
         try:
             self.docker_client = docker.from_env()
+            self.docker_client.ping()
         except DockerException:
             logger.warning("Docker not available — agent containers will not be managed")
             self.docker_client = None
@@ -286,7 +291,7 @@ class AgentManager:
             container = self.docker_client.containers.run(
                 settings.OPENCLAW_IMAGE,
                 detach=True,
-                name=f"clawith-agent-{str(agent.id)[:8]}",
+                name=f"{settings.AGENT_CONTAINER_PREFIX}-{str(agent.id)[:8]}",
                 network=settings.DOCKER_NETWORK,
                 ports={f"{settings.OPENCLAW_GATEWAY_PORT}/tcp": container_port},
                 volumes={

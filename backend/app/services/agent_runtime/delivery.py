@@ -906,6 +906,7 @@ async def deliver_runtime_message(
     else:
         message = ChatMessage(
             id=message_id,
+            tenant_id=run.tenant_id,
             agent_id=run.agent_id,
             user_id=session.user_id if session.session_type == "direct" else None,
             role="system" if participant is None else "assistant",

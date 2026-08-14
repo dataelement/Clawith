@@ -438,6 +438,7 @@ async def _persist_message(
 
     message = ChatMessage(
         id=message_id,
+        tenant_id=scope.session.tenant_id,
         agent_id=scope.agent_id,
         user_id=scope.user_id,
         role=scope.role,
@@ -590,6 +591,7 @@ async def _persist_planning_configuration_failure(
     created_at = clock + timedelta(microseconds=1)
     message = ChatMessage(
         id=message_id,
+        tenant_id=scope.session.tenant_id,
         agent_id=None,
         user_id=None,
         role="system",

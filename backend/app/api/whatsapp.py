@@ -54,7 +54,7 @@ async def configure_whatsapp_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -106,7 +106,7 @@ async def configure_whatsapp_channel(
 async def get_whatsapp_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
@@ -122,7 +122,7 @@ async def get_whatsapp_channel(
 
 
 @router.get("/agents/{agent_id}/whatsapp-channel/webhook-url")
-async def get_whatsapp_webhook_url(agent_id: uuid.UUID, request: Request, db: Any = None):
+async def get_whatsapp_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.platform_service import platform_service
 
     public_base = await platform_service.get_public_base_url(db, request)
@@ -133,7 +133,7 @@ async def get_whatsapp_webhook_url(agent_id: uuid.UUID, request: Request, db: An
 async def delete_whatsapp_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -157,7 +157,7 @@ async def whatsapp_verify_webhook(
     hub_mode: str = Query("", alias="hub.mode"),
     hub_verify_token: str = Query("", alias="hub.verify_token"),
     hub_challenge: str = Query("", alias="hub.challenge"),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(ChannelConfig).where(
@@ -178,7 +178,7 @@ async def whatsapp_verify_webhook(
 async def whatsapp_event_webhook(
     agent_id: uuid.UUID,
     request: Request,
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
     result = await db.execute(

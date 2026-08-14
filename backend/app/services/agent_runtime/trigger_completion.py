@@ -168,6 +168,7 @@ class TriggerRuntimeCompletionHandler:
                 db.add(
                     ChatMessage(
                         id=receipt_id,
+                        tenant_id=stored_run.tenant_id,
                         agent_id=stored_run.agent_id,
                         user_id=session.user_id,
                         role="assistant",

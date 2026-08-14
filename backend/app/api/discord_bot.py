@@ -28,7 +28,7 @@ async def configure_discord_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure Discord bot for an agent.
 
@@ -98,7 +98,7 @@ async def configure_discord_channel(
 async def get_discord_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
@@ -114,7 +114,7 @@ async def get_discord_channel(
 
 
 @router.get("/agents/{agent_id}/discord-channel/webhook-url")
-async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: Any = None):
+async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.platform_service import platform_service
     public_base = await platform_service.get_public_base_url(db, request)
     return {"webhook_url": f"{public_base}/api/channel/discord/{agent_id}/webhook"}
@@ -124,7 +124,7 @@ async def get_discord_webhook_url(agent_id: uuid.UUID, request: Request, db: Any
 async def delete_discord_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -199,7 +199,7 @@ def _verify_discord_signature(public_key: str, body: bytes, headers: dict) -> bo
 async def discord_interaction_webhook(
     agent_id: uuid.UUID,
     request: Request,
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Handle Discord Interaction webhooks (PING + slash commands)."""
     body_bytes = await request.body()

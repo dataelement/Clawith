@@ -2216,7 +2216,7 @@ export default function AgentDetailPage() {
         setActiveTab,
     } = useAgentDetailRoute({ agentId: id });
 
-    const { data: agent, isLoading } = useQuery({
+    const { data: agent, isLoading, isError, error, refetch: refetchAgent } = useQuery({
         queryKey: ['agent', id],
         queryFn: () => agentApi.get(id!),
         enabled: !!id,
@@ -4792,8 +4792,22 @@ export default function AgentDetailPage() {
         },
     });
 
-    if (isLoading || !agent) {
+    if (isLoading) {
         return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>;
+    }
+    if (isError || !agent) {
+        const message = error instanceof Error ? error.message : t('agentDetail.errorMessage');
+        return (
+            <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>
+                <div style={{ marginBottom: '12px', color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {t('agentDetail.errorTitle')}
+                </div>
+                <div style={{ marginBottom: '16px' }}>{message}</div>
+                <button className="btn btn-primary" onClick={() => void refetchAgent()}>
+                    {t('common.retry', 'Retry')}
+                </button>
+            </div>
+        );
     }
 
     // Compute display status (including OpenClaw disconnected detection)

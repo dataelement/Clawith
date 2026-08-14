@@ -433,6 +433,7 @@ async def _persist_user_message(
         group_message = session.session_type == "group"
         message = ChatMessage(
             id=message_id,
+            tenant_id=session.tenant_id,
             agent_id=None if group_message else agent.id,
             user_id=None if group_message else user.id,
             role="user",
