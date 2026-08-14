@@ -10,6 +10,8 @@ from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
 from app.services.sandbox.config import SandboxConfig
 from app.services.sandbox import execution_lease
 from app.services.sandbox.execution_lease import SandboxExecutionLeaseStore
+from app.services.sandbox.local.run_workspace import close_run_workspace
+from app.services.sandbox.run_scope import sandbox_run_scope_id
 from app.services.sandbox.workspace_policy import (
     SandboxExecutionScope,
     build_workspace_policy,
@@ -424,6 +426,8 @@ async def test_isolated_execution_uses_replacement_publication(
     agent_id = uuid.uuid4()
     session_id = uuid.uuid4()
     conflict_modes = []
+    prepare_count = 0
+    cleanup_count = 0
 
     class Lease:
         ownership_lost = False
@@ -450,7 +454,14 @@ async def test_isolated_execution_uses_replacement_publication(
         return Lease()
 
     async def prepare(*_args, **_kwargs):
-        return SimpleNamespace(root=tmp_path, cleanup=lambda: None)
+        nonlocal prepare_count, cleanup_count
+        prepare_count += 1
+
+        def cleanup():
+            nonlocal cleanup_count
+            cleanup_count += 1
+
+        return SimpleNamespace(root=tmp_path, cleanup=cleanup)
 
     async def flush(_workspace, conflict_mode):
         conflict_modes.append(conflict_mode)
@@ -469,13 +480,29 @@ async def test_isolated_execution_uses_replacement_publication(
     monkeypatch.setattr(agent_tools, "_execute_code_outcome", execute)
     monkeypatch.setattr("app.config.get_sandbox_config", lambda: SandboxConfig())
 
-    outcome = await agent_tools._execute_code_with_workspace_outcome(
-        agent_id=agent_id,
-        tenant_id=str(tenant_id),
-        session_id=str(session_id),
-        arguments={"language": "python", "code": "print(1)"},
-        tool_name="execute_code",
-    )
+    run_id = str(uuid.uuid4())
+    token = sandbox_run_scope_id.set(run_id)
+    try:
+        first = await agent_tools._execute_code_with_workspace_outcome(
+            agent_id=agent_id,
+            tenant_id=str(tenant_id),
+            session_id=str(session_id),
+            arguments={"language": "python", "code": "print(1)"},
+            tool_name="execute_code",
+        )
+        second = await agent_tools._execute_code_with_workspace_outcome(
+            agent_id=agent_id,
+            tenant_id=str(tenant_id),
+            session_id=str(session_id),
+            arguments={"language": "python", "code": "print(2)"},
+            tool_name="execute_code",
+        )
+    finally:
+        sandbox_run_scope_id.reset(token)
+        await close_run_workspace(run_id)
 
-    assert outcome.status == "succeeded"
-    assert conflict_modes == ["overwrite"]
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert conflict_modes == ["overwrite", "overwrite"]
+    assert prepare_count == 1
+    assert cleanup_count == 1

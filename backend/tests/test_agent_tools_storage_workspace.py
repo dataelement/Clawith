@@ -325,6 +325,32 @@ async def test_flush_temp_workspace_only_writes_changed_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flush_temp_workspace_refreshes_manifest_for_reused_workspace(monkeypatch):
+    agent_id = uuid.uuid4()
+    storage_key = f"{agent_id}/workspace/input.md"
+    storage = MemoryStorageBackend({storage_key: b"first"})
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(agent_id, paths=["workspace"])
+    try:
+        local_file = temp_ws.root / "workspace" / "input.md"
+        local_file.write_bytes(b"second")
+        first = await agent_tools.flush_temp_workspace(temp_ws)
+        first_token = temp_ws.manifest["workspace/input.md"].base_version_token
+
+        local_file.write_bytes(b"first")
+        second = await agent_tools.flush_temp_workspace(temp_ws)
+    finally:
+        temp_ws.cleanup()
+
+    assert first["updated"] == ["workspace/input.md"]
+    assert second["updated"] == ["workspace/input.md"]
+    assert storage.files[storage_key] == b"first"
+    assert temp_ws.manifest["workspace/input.md"].base_hash == agent_tools.content_hash_bytes(b"first")
+    assert temp_ws.manifest["workspace/input.md"].base_version_token != first_token
+
+
+@pytest.mark.asyncio
 async def test_flush_temp_workspace_fails_on_conflict(monkeypatch):
     agent_id = uuid.uuid4()
     storage = MemoryStorageBackend({
@@ -372,6 +398,7 @@ async def test_flush_isolated_output_overwrites_unmanifested_existing_file(monke
     assert result["updated"] == [f"{session_path}/result.json"]
     assert result["conflicted"] == []
     assert storage.files[storage_key] == b"session-result"
+    assert f"{session_path}/result.json" in temp_ws.manifest
 
 
 @pytest.mark.asyncio
@@ -400,6 +427,7 @@ async def test_flush_isolated_output_deletes_newer_existing_file(monkeypatch):
     assert result["deleted"] == [f"{session_path}/result.json"]
     assert result["conflicted"] == []
     assert storage_key not in storage.files
+    assert f"{session_path}/result.json" not in temp_ws.manifest
 
 
 @pytest.mark.asyncio
