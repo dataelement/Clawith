@@ -10,7 +10,11 @@ import pytest
 
 from app.services.sandbox.config import SandboxConfig
 from app.services.sandbox.local import subprocess_backend
-from app.services.sandbox.local.subprocess_backend import SANDBOX_VENV_PATH, SubprocessBackend
+from app.services.sandbox.local.subprocess_backend import (
+    SANDBOX_VENV_PATH,
+    SubprocessBackend,
+    close_subprocess_sandbox_run,
+)
 
 
 @pytest.mark.asyncio
@@ -208,13 +212,13 @@ async def test_persistent_bwrap_session_is_reused_for_same_agent_loop(
     session_id = str(uuid.uuid4())
     publish_paths = [f"workspace/output/{session_id}"]
     starts = 0
-    refreshes = 0
     persistent = SimpleNamespace(
         process=SimpleNamespace(returncode=None),
         agent_id=agent_id,
         session_id=session_id,
         workspace_mode="isolated_output",
         publish_paths=tuple(publish_paths),
+        work_path=(tmp_path / "workspace").resolve(),
         staging_path=tmp_path / "persistent",
     )
 
@@ -224,17 +228,12 @@ async def test_persistent_bwrap_session_is_reused_for_same_agent_loop(
         SubprocessBackend._run_sessions[run_id] = persistent
         return persistent
 
-    def refresh(_source, _destination):
-        nonlocal refreshes
-        refreshes += 1
-
     monkeypatch.setattr(backend, "_start_persistent_session", start)
-    monkeypatch.setattr(backend, "_clone_workspace_to_staging", refresh)
     SubprocessBackend._run_sessions.pop(run_id, None)
     try:
         first = await backend._persistent_session(
             run_id=run_id,
-            work_path=tmp_path / "first",
+            work_path=tmp_path / "workspace",
             venv_path=tmp_path / "venv",
             agent_id=agent_id,
             session_id=session_id,
@@ -243,7 +242,7 @@ async def test_persistent_bwrap_session_is_reused_for_same_agent_loop(
         )
         second = await backend._persistent_session(
             run_id=run_id,
-            work_path=tmp_path / "second",
+            work_path=tmp_path / "workspace",
             venv_path=tmp_path / "venv",
             agent_id=agent_id,
             session_id=session_id,
@@ -256,7 +255,24 @@ async def test_persistent_bwrap_session_is_reused_for_same_agent_loop(
     assert first is persistent
     assert second is persistent
     assert starts == 1
-    assert refreshes == 1
+
+
+@pytest.mark.asyncio
+async def test_close_subprocess_sandbox_run_releases_process_and_workspace(monkeypatch) -> None:
+    closed = []
+
+    async def close_process(run_id):
+        closed.append(("process", run_id))
+
+    async def close_workspace(run_id):
+        closed.append(("workspace", run_id))
+
+    monkeypatch.setattr(SubprocessBackend, "close_run", close_process)
+    monkeypatch.setattr(subprocess_backend, "close_run_workspace", close_workspace)
+
+    await close_subprocess_sandbox_run("run-1")
+
+    assert closed == [("process", "run-1"), ("workspace", "run-1")]
 
 
 def test_sandbox_config_proxy_parsing() -> None:

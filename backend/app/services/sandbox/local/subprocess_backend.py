@@ -15,6 +15,7 @@ from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
+from app.services.sandbox.local.run_workspace import close_run_workspace
 from app.services.workspace_paths import WorkspacePathError, resolve_path_within_root
 
 MAX_STDOUT_CAPTURE_BYTES = 1_000_000
@@ -36,6 +37,7 @@ class _PersistentBwrapSession:
     session_id: str | None
     workspace_mode: str
     publish_paths: tuple[str, ...]
+    work_path: Path
     temp_dir: tempfile.TemporaryDirectory
     staging_path: Path
     venv_path: Path
@@ -872,6 +874,7 @@ class SubprocessBackend(BaseSandboxBackend):
             session_id=session_id,
             workspace_mode=workspace_mode,
             publish_paths=tuple(publish_paths or ()),
+            work_path=work_path.resolve(),
             temp_dir=temp_dir,
             staging_path=staging_path,
             venv_path=venv_path,
@@ -902,6 +905,7 @@ class SubprocessBackend(BaseSandboxBackend):
             or existing.session_id != session_id
             or existing.workspace_mode != workspace_mode
             or existing.publish_paths != expected_paths
+            or existing.work_path != work_path.resolve()
         ):
             await SubprocessBackend.close_run(run_id)
             existing = None
@@ -915,7 +919,6 @@ class SubprocessBackend(BaseSandboxBackend):
                 workspace_mode=workspace_mode,
                 publish_paths=publish_paths,
             )
-        self._clone_workspace_to_staging(work_path, existing.staging_path)
         return existing
 
     async def _run_in_persistent_session(
@@ -1423,7 +1426,7 @@ class SubprocessBackend(BaseSandboxBackend):
 
 
 async def close_subprocess_sandbox_run(run_id: str) -> None:
-    """Release the persistent local sandbox associated with one Agent loop."""
+    """Release all local sandbox resources associated with one Agent loop."""
     try:
         await SubprocessBackend.close_run(run_id)
     except Exception:
@@ -1431,3 +1434,11 @@ async def close_subprocess_sandbox_run(run_id: str) -> None:
             "[Subprocess] Failed to close Agent-loop sandbox for run {}",
             run_id,
         )
+    finally:
+        try:
+            await close_run_workspace(run_id)
+        except Exception:
+            logger.exception(
+                "[Subprocess] Failed to discard Agent-loop workspace for run {}",
+                run_id,
+            )

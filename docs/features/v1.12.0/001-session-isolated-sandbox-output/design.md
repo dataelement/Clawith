@@ -340,6 +340,13 @@ The materialization manifest may include all readable files. `flush_temp_workspa
 
 The exact output directory is created inside the temporary Agent root even when it does not yet exist in Storage. Existing files under the prefix are materialized with Storage version tokens.
 
+The temporary Agent root is Run-scoped. The first local sandbox use in one
+Agent loop materializes it once, and later `execute_code` calls reuse the same
+root and manifest. Each successful publication refreshes that manifest with the
+new durable version/hash (or removes a deleted entry), so a later call compares
+against the immediately preceding publication instead of the loop-entry
+snapshot. The command boundary discards the root only after the loop settles.
+
 Path construction goes through `normalize_workspace_path` plus an exact UUID-derived suffix. No model-provided relative path participates in the writable mount root.
 
 ### 7.3 Durable artifact references
@@ -453,7 +460,7 @@ Both branches preserve path filtering, artifact reporting, and `unknown` settlem
 3. Validate backend + workspace_mode + publication_owner and resolve the exact tenant/Agent/Session ownership.
 4. For every local Session-scoped `execute_code`, in either `merge` or `isolated_output`, acquire the shared Redis execution lease.
 5. Start lease heartbeat.
-6. Materialize readable Agent paths and Session output manifest.
+6. Create or reuse the Run-scoped materialized Agent paths and Session output manifest.
 7. Create or reuse the Run-scoped backend and bwrap process.
 8. Run code and capture exit/output.
 9. Gateway validates only policy-allowed staged changes and freezes the publication candidate set without durable mutation.
@@ -464,7 +471,12 @@ Both branches preserve path filtering, artifact reporting, and `unknown` settlem
 14. Existing Runtime Tool service settles the durable receipt/checkpoint.
 ```
 
-The lease covers steps 4 through 13. It intentionally includes materialization so the second execution cannot read a snapshot taken before the first execution publishes. A local `merge` call and a local `isolated_output` call with the same validated scope therefore contend on the same key. Only a non-Session `merge` compatibility call omits the lease.
+The lease covers steps 4 through 13. The first local sandbox call materializes
+under the lease; subsequent calls access the same Run-scoped working copy only
+after acquiring that lease, and the preceding call publishes before releasing
+it. A local `merge` call and a local `isolated_output` call with the same
+validated scope therefore contend on the same key. Only a non-Session `merge`
+compatibility call omits the lease.
 
 ## 11. Entry-Point Coverage
 
@@ -602,6 +614,9 @@ Pass with implementation constraint.
 2. **Two publication implementations:** trusted Executor configuration must select exactly one durable owner; runtime assertions prevent gateway and outer Workspace publication from both running.
 3. **Manifest deletion filtering:** filtering only newly collected files is insufficient; deletion checks must also filter the manifest by `publish_paths`.
 4. **Loop cleanup:** the command boundary must reap the bwrap process and discard non-published working-copy changes.
+   The materialized `TempWorkspace`, its manifest, and the bwrap staging tree
+   share this boundary; a later code call must not re-materialize or re-clone
+   the full tree while the loop remains active.
 5. **Pip proxy:** runtime `.tmp` remains under `/workspace/.tmp` in the loop copy.
 6. **Lease timing:** checking a 60-second lease and then starting publication is racy; publication requires atomic extension plus a shorter bounded deadline.
 7. **Legacy approvals:** approved execution may lack Session context; isolated mode must fail closed rather than guess.
@@ -638,6 +653,8 @@ Pass with implementation constraint.
 - logical `skills/<path>` maps to guest `/skills/<path>`;
 - materialized directories are writable in the loop copy;
 - one bwrap process is reused across code calls in one Agent loop;
+- one materialized `TempWorkspace` and refreshed manifest are reused across those calls;
+- bwrap reuse does not copy the full materialized tree again;
 - loop settlement reaps that process;
 - script runs from `.tmp`;
 - writes outside output remain available during the loop but are not published;

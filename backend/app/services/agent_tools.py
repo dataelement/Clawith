@@ -75,12 +75,16 @@ from app.services.storage import get_storage_backend, normalize_storage_key
 from app.services.storage_runtime.base import WriteCondition, content_hash_bytes
 from app.services.workspace_locking import workspace_locks
 from app.services.sandbox.execution_lease import SandboxExecutionLeaseStore
+from app.services.sandbox.local.run_workspace import (
+    RunWorkspaceIdentity,
+    use_run_workspace,
+)
+from app.services.sandbox.run_scope import sandbox_run_scope_id
 from app.services.sandbox.workspace_policy import (
     SandboxExecutionScope,
     build_workspace_policy,
     parse_canonical_uuid,
 )
-from app.services.sandbox.run_scope import sandbox_run_scope_id
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_TOOL_NAME,
@@ -1575,6 +1579,14 @@ async def flush_temp_workspace(
             storage_key = entry.storage_key if entry else normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
             if conflict_mode == "overwrite":
                 await storage.write_bytes(storage_key, data)
+                version = await storage.get_version(storage_key)
+                manifest[rel_path] = TempWorkspaceManifestEntry(
+                    rel_path=rel_path,
+                    storage_key=storage_key,
+                    base_version_token=version.token,
+                    base_hash=current_hash,
+                    size=len(data),
+                )
                 updated.append(rel_path)
                 continue
             result = await storage.write_bytes_if_match(
@@ -1587,9 +1599,17 @@ async def flush_temp_workspace(
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            version = result.current_version or await storage.get_version(storage_key)
+            manifest[rel_path] = TempWorkspaceManifestEntry(
+                rel_path=rel_path,
+                storage_key=storage_key,
+                base_version_token=version.token,
+                base_hash=current_hash,
+                size=len(data),
+            )
             updated.append(rel_path)
 
-        for rel_path, entry in manifest.items():
+        for rel_path, entry in list(manifest.items()):
             if not any(
                 rel_path == selected or rel_path.startswith(selected.rstrip("/") + "/")
                 for selected in selected_paths
@@ -1599,6 +1619,7 @@ async def flush_temp_workspace(
                 continue
             if conflict_mode == "overwrite":
                 await storage.delete(entry.storage_key)
+                manifest.pop(rel_path, None)
                 deleted.append(rel_path)
                 continue
             result = await storage.delete_if_match(
@@ -1610,6 +1631,7 @@ async def flush_temp_workspace(
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            manifest.pop(rel_path, None)
             deleted.append(rel_path)
 
     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
@@ -1878,16 +1900,34 @@ async def _execute_code_with_workspace_outcome(
 
     execution_started = False
     gateway_flush_result: dict[str, list[str]] | None = None
-    try:
-        temp_workspace = await _prepare_temp_workspace(
+    run_id = sandbox_run_scope_id.get().strip() or None
+    workspace_identity = RunWorkspaceIdentity(
+        agent_id=str(agent_id),
+        tenant_id=str(scope.tenant_id) if scope else tenant_id,
+        session_id=str(scope.session_id) if scope else None,
+        workspace_mode=policy.mode,
+        materialized_paths=policy.materialized_paths,
+        publish_paths=policy.publish_paths,
+    )
+
+    async def prepare_workspace() -> TempWorkspace:
+        workspace = await _prepare_temp_workspace(
             agent_id,
             tenant_id=tenant_id,
             paths=list(policy.materialized_paths),
             publish_paths=list(policy.publish_paths),
         )
         if policy.session_output_path:
-            (temp_workspace.root / policy.session_output_path).mkdir(parents=True, exist_ok=True)
-        try:
+            (workspace.root / policy.session_output_path).mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    try:
+        async with use_run_workspace(
+            run_id=run_id,
+            identity=workspace_identity,
+            factory=prepare_workspace,
+        ) as run_workspace:
+            temp_workspace = cast(TempWorkspace, run_workspace)
             execution_started = True
             async def before_gateway_publish() -> bool:
                 if lease is None:
@@ -1976,8 +2016,6 @@ async def _execute_code_with_workspace_outcome(
                 artifact_refs=tuple(dict.fromkeys((*outcome.artifact_refs, *changed_refs))),
                 metadata=metadata,
             )
-        finally:
-            temp_workspace.cleanup()
     except Exception as exc:
         if execution_started:
             return _typed_unknown(
