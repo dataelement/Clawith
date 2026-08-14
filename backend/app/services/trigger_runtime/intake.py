@@ -182,6 +182,7 @@ async def _ensure_trigger_session(
         db.add(
             ChatMessage(
                 id=message_id,
+                tenant_id=agent.tenant_id,
                 agent_id=agent.id,
                 conversation_id=str(session.id),
                 role="user",

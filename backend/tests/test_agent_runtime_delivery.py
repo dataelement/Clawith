@@ -288,6 +288,7 @@ async def test_direct_delivery_accepts_the_session_scoped_langgraph_thread() -> 
     assert run.runtime_thread_id == str(session.id)
     assert receipt.status == "delivered"
     assert receipt.actual_session_id == session.id
+    assert _added(db, ChatMessage)[0].tenant_id == tenant_id
     assert _added(db, ChatMessage)[0].conversation_id == str(session.id)
     assert _added(db, ChatMessage)[0].thinking == "Checked the requested scope"
 

@@ -39,7 +39,7 @@ async def list_notifications(
     unread_only: bool = Query(False),
     category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List notifications for the current user, newest first."""
     query = select(Notification).where(Notification.user_id == current_user.id)
@@ -69,7 +69,7 @@ async def list_notifications(
 async def get_unread_count(
     category: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get the number of unread notifications for the current user."""
     query = select(func.count(Notification.id)).where(
@@ -85,7 +85,7 @@ async def get_unread_count(
 async def mark_read(
     notification_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Mark a single notification as read."""
     await query_dao.execute(db, 
@@ -100,7 +100,7 @@ async def mark_read(
 @router.post("/notifications/read-all")
 async def mark_all_read(
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Mark all notifications as read for the current user."""
     await query_dao.execute(db, 
@@ -125,7 +125,7 @@ async def broadcast_notification(
     req: BroadcastRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Send a notification to all users and agents in the current tenant.
     Requires org_admin or platform_admin role."""

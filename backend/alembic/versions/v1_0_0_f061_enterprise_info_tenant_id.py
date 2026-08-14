@@ -18,33 +18,84 @@ Create Date: 2026-08-06 14:00:00.000000
 
 """
 
-from typing import Sequence, Union
+from __future__ import annotations
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision: str = "f061_enterprise_info_tenant_id"
-down_revision: Union[str, None] = "f060_tenant_id_backfill"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "f060_tenant_id_backfill"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # 1. Add tenant_id column with default uuid generator or nullable first if populated
-    op.add_column("enterprise_info", sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.create_index(op.f("ix_enterprise_info_tenant_id"), "enterprise_info", ["tenant_id"], unique=False)
+    inspector = sa.inspect(op.get_bind())
 
-    # 2. Drop legacy single info_type unique constraint
-    op.drop_constraint("enterprise_info_info_type_key", "enterprise_info", type_="unique")
+    # Fresh deployments build the current ORM schema in ``initial_schema``, so
+    # these objects may already exist before Alembic reaches this revision.
+    columns = {column["name"] for column in inspector.get_columns("enterprise_info")}
+    if "tenant_id" not in columns:
+        op.add_column(
+            "enterprise_info",
+            sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True),
+        )
 
-    # 3. Create new composite unique constraint (tenant_id, info_type)
-    op.create_unique_constraint("uq_enterprise_info_tenant_type", "enterprise_info", ["tenant_id", "info_type"])
+    indexes = {index["name"] for index in inspector.get_indexes("enterprise_info")}
+    if op.f("ix_enterprise_info_tenant_id") not in indexes:
+        op.create_index(
+            op.f("ix_enterprise_info_tenant_id"),
+            "enterprise_info",
+            ["tenant_id"],
+            unique=False,
+        )
+
+    constraints = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("enterprise_info")
+    }
+    if "enterprise_info_info_type_key" in constraints:
+        op.drop_constraint(
+            "enterprise_info_info_type_key",
+            "enterprise_info",
+            type_="unique",
+        )
+    if "uq_enterprise_info_tenant_type" not in constraints:
+        op.create_unique_constraint(
+            "uq_enterprise_info_tenant_type",
+            "enterprise_info",
+            ["tenant_id", "info_type"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_enterprise_info_tenant_type", "enterprise_info", type_="unique")
-    op.create_unique_constraint("enterprise_info_info_type_key", "enterprise_info", ["info_type"])
-    op.drop_index(op.f("ix_enterprise_info_tenant_id"), table_name="enterprise_info")
-    op.drop_column("enterprise_info", "tenant_id")
+    inspector = sa.inspect(op.get_bind())
+    constraints = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("enterprise_info")
+    }
+    if "uq_enterprise_info_tenant_type" in constraints:
+        op.drop_constraint(
+            "uq_enterprise_info_tenant_type",
+            "enterprise_info",
+            type_="unique",
+        )
+    if "enterprise_info_info_type_key" not in constraints:
+        op.create_unique_constraint(
+            "enterprise_info_info_type_key",
+            "enterprise_info",
+            ["info_type"],
+        )
+
+    indexes = {index["name"] for index in inspector.get_indexes("enterprise_info")}
+    if op.f("ix_enterprise_info_tenant_id") in indexes:
+        op.drop_index(op.f("ix_enterprise_info_tenant_id"), table_name="enterprise_info")
+
+    columns = {column["name"] for column in inspector.get_columns("enterprise_info")}
+    if "tenant_id" in columns:
+        op.drop_column("enterprise_info", "tenant_id")

@@ -53,7 +53,7 @@ def _to_response(cred: AgentCredential) -> dict:
 async def list_credentials(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List all credentials for an agent (sensitive data excluded)."""
     # Verify the user has manage-level access to this agent
@@ -73,7 +73,7 @@ async def create_credential(
     agent_id: uuid.UUID,
     data: AgentCredentialCreate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new credential for an agent.
 
@@ -122,7 +122,7 @@ async def update_credential(
     credential_id: uuid.UUID,
     data: AgentCredentialUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update an existing credential.
 
@@ -178,7 +178,7 @@ async def delete_credential(
     agent_id: uuid.UUID,
     credential_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a credential."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)

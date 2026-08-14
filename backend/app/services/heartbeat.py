@@ -246,6 +246,16 @@ async def _heartbeat_tick():
                 interval = timedelta(minutes=agent.heartbeat_interval_minutes or 240)
                 if agent.last_heartbeat_at and (now - agent.last_heartbeat_at) < interval:
                     continue
+                if agent.primary_model_id is None:
+                    # A missing model is an administrator configuration state,
+                    # not a transient Runtime failure. Record the attempt so the
+                    # scheduler waits for the normal heartbeat interval.
+                    agent.last_heartbeat_at = now
+                    logger.warning(
+                        "Heartbeat deferred for {}: no primary model is configured",
+                        agent_name,
+                    )
+                    continue
 
                 runtime_decision = decide_runtime_v2(
                     agent_id=agent.id,
@@ -298,7 +308,16 @@ async def _heartbeat_tick():
                             )
                     await db.commit()
                 except HeartbeatRuntimeIntakeError as exc:
-                    logger.error(
+                    # The nested claim rolls back on intake failure. Persist an
+                    # attempt timestamp separately so the scheduler applies the
+                    # normal interval as backoff instead of retrying every tick.
+                    await db.execute(
+                        update(Agent)
+                        .where(Agent.id == agent_id)
+                        .values(last_heartbeat_at=now)
+                    )
+                    await db.commit()
+                    logger.warning(
                         "Heartbeat Runtime intake failed for {} ({}): {}",
                         agent_name,
                         exc.code,

@@ -229,7 +229,7 @@ class CategoryConfigUpdate(BaseModel):
 async def list_tools(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List platform tools scoped by tenant (builtin + tenant-specific)."""
     _require_tool_manager(current_user)
@@ -274,7 +274,7 @@ async def list_tools(
 async def create_tool(
     data: ToolCreate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new tool (typically MCP).
 
@@ -327,7 +327,7 @@ class BulkToolUpdateItem(BaseModel):
 async def update_tools_bulk(
     updates: list[BulkToolUpdateItem],
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Bulk update the enabled status of multiple tools."""
     _require_tool_manager(current_user)
@@ -351,7 +351,7 @@ async def update_tool(
     tool_id: uuid.UUID,
     data: ToolUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a tool."""
     _require_tool_manager(current_user)
@@ -386,7 +386,7 @@ async def update_tool(
 async def delete_tool(
     tool_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a tool (only non-builtin)."""
     _require_tool_manager(current_user)
@@ -409,7 +409,7 @@ async def delete_tool(
 async def get_agent_tools(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get tools for a specific agent with their enabled status."""
     # Determine if this is a system agent (e.g. OKR Agent).
@@ -498,7 +498,7 @@ async def update_agent_tools(
     agent_id: uuid.UUID,
     updates: list[AgentToolUpdate],
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update tool assignments for an agent."""
     agent_obj = await _require_agent_tool_manager(db, current_user, agent_id)
@@ -542,7 +542,7 @@ async def get_mcp_authorization_status(
     tool_id: uuid.UUID,
     response: Response,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Read one assigned Smithery connection for an authorized manager."""
     response.headers["Cache-Control"] = "no-store"
@@ -653,7 +653,7 @@ class MCPServerUpdate(BaseModel):
 async def update_mcp_server(
     data: MCPServerUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Bulk-update the Server URL and API Key for all tools from an MCP server.
 
@@ -705,7 +705,7 @@ async def update_mcp_server(
 async def list_agent_installed_tools(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Admin endpoint: list user-installed tools scoped by tenant."""
     _require_tool_manager(current_user)
@@ -757,7 +757,7 @@ async def list_agent_installed_tools(
 async def delete_agent_tool(
     agent_tool_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Admin: remove an agent-tool assignment. Also deletes the tool record if no other agents use it."""
     _require_tool_manager(current_user)
@@ -791,7 +791,7 @@ async def get_agent_tool_config(
     agent_id: uuid.UUID,
     tool_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get merged tool config (global defaults + agent overrides) and config_schema.
 
@@ -836,7 +836,7 @@ async def update_agent_tool_config(
     tool_id: uuid.UUID,
     data: AgentToolConfigUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Save per-agent config override for a tool."""
     agent = await _require_agent_tool_manager(db, current_user, agent_id)
@@ -874,7 +874,7 @@ async def update_agent_tool_config(
 async def get_agent_tools_with_config(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get agent's enabled tools with per-agent config info and config_schema for settings UI.
 
@@ -1017,7 +1017,7 @@ async def get_category_config(
     agent_id: uuid.UUID,
     category: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get shared configuration for a tool category.
 
@@ -1100,7 +1100,7 @@ async def update_category_config(
     category: str,
     data: CategoryConfigUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update or create shared configuration for a tool category."""
     from app.core.permissions import is_agent_creator
@@ -1157,7 +1157,7 @@ async def delete_category_config(
     agent_id: uuid.UUID,
     category: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Remove shared configuration for a tool category."""
     from app.core.permissions import is_agent_creator
@@ -1181,7 +1181,7 @@ async def test_category_config(
     agent_id: uuid.UUID,
     category: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Test connectivity for a tool category."""
     await _require_agent_tool_manager(db, current_user, agent_id)

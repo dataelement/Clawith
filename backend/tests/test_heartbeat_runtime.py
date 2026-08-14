@@ -127,6 +127,44 @@ def test_default_heartbeat_prompt_does_not_advertise_hardcoded_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_model_heartbeat_is_deferred_until_the_next_interval() -> None:
+    agent = _agent()
+    agent.primary_model_id = None
+    agent.last_heartbeat_at = None
+    agent.heartbeat_active_hours = "00:00-23:59"
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [agent]
+
+    class _HeartbeatSession:
+        async def execute(self, _statement):
+            return _Result()
+
+        async def commit(self):
+            return None
+
+    @asynccontextmanager
+    async def fake_session():
+        yield _HeartbeatSession()
+
+    enqueue = AsyncMock()
+    with (
+        patch("app.database.async_session", new=fake_session),
+        patch("app.services.timezone_utils.get_agent_timezone_sync", return_value="UTC"),
+        patch("app.services.heartbeat_runtime.enqueue_heartbeat_runtime", new=enqueue),
+        patch("app.services.audit_logger.write_audit_log", new=AsyncMock()),
+    ):
+        await heartbeat_service._heartbeat_tick()
+
+    assert agent.last_heartbeat_at is not None
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_intake_error_does_not_read_expired_agent_identity() -> None:
     class _ExpiringAgent:
         def __init__(self) -> None:
@@ -140,6 +178,7 @@ async def test_heartbeat_intake_error_does_not_read_expired_agent_identity() -> 
             self.heartbeat_active_hours = "00:00-23:59"
             self.heartbeat_interval_minutes = 1
             self.last_heartbeat_at = None
+            self.primary_model_id = uuid.uuid4()
 
         @property
         def id(self):

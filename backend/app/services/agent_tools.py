@@ -8393,6 +8393,7 @@ async def _send_feishu_message_to_member_outcome(
                 )
                 db.add(
                     ChatMessage(
+                        tenant_id=session.tenant_id,
                         agent_id=agent_id,
                         user_id=platform_user.id,
                         role="assistant",
@@ -8633,6 +8634,7 @@ async def _sync_proactive_channel_history(
         )
         db.add(
             ChatMessage(
+                tenant_id=session.tenant_id,
                 agent_id=agent_id,
                 user_id=platform_user.id,
                 role="assistant",
@@ -8933,6 +8935,7 @@ async def _send_slack_message(
                     first_message_title=message_text[:30],
                 )
                 db.add(ChatMessage(
+                    tenant_id=sess.tenant_id,
                     agent_id=agent_id,
                     user_id=platform_user.id,
                     role="assistant",
@@ -9012,6 +9015,7 @@ async def _send_teams_channel_message(
             )
 
             db.add(ChatMessage(
+                tenant_id=session.tenant_id,
                 agent_id=agent_id,
                 user_id=platform_user.id,
                 role="assistant",
@@ -9094,6 +9098,7 @@ async def _send_wechat_channel_message(
                 first_message_title=message_text[:30],
             )
             db.add(ChatMessage(
+                tenant_id=sess.tenant_id,
                 agent_id=agent_id,
                 user_id=platform_user.id,
                 role="assistant",
@@ -9151,6 +9156,7 @@ async def _send_platform_message_outcome(
             )
             db.add(
                 ChatMessage(
+                    tenant_id=session.tenant_id,
                     agent_id=agent_id,
                     user_id=target_user.id,
                     role="assistant",
@@ -9348,6 +9354,7 @@ async def _send_file_to_agent_outcome(
                 )
             source_agent_name = source_agent.name if source_agent else "Unknown agent"
             source_creator_id = source_agent.creator_id if source_agent else from_agent_id
+            source_tenant_id = source_agent.tenant_id
 
             target_agent, target_error = await _resolve_a2a_target_by_id(db, source_agent, target_agent_id)
             if target_error:
@@ -9472,6 +9479,8 @@ async def _send_file_to_agent_outcome(
                     )
                     src_participant = src_part_r.scalar_one_or_none()
                     chat_session = ChatSession(
+                        tenant_id=source_tenant_id,
+                        session_type="a2a",
                         agent_id=session_agent_id,
                         user_id=source_creator_id,
                         title=f"{source_name} ↔ {target_name}",
@@ -9498,6 +9507,7 @@ async def _send_file_to_agent_outcome(
                 src_part2 = src_part_r2.scalar_one_or_none()
 
                 db2.add(ChatMessage(
+                    tenant_id=chat_session.tenant_id,
                     agent_id=session_agent_id,
                     user_id=source_creator_id,
                     role="user",
