@@ -47,6 +47,17 @@ def test_isolated_policy_uses_exact_session_output() -> None:
     assert policy.publish_paths == (f"workspace/output/{session_id}",)
     assert policy.guest_output_path == f"/workspace/output/{session_id}"
     assert policy.materialized_paths == ("workspace", "memory", "skills")
+    assert policy.publication_conflict_mode == "overwrite"
+
+
+def test_merge_policy_preserves_conflict_detection() -> None:
+    policy = build_workspace_policy(
+        mode="merge",
+        session_id=uuid.uuid4(),
+        default_paths=["workspace"],
+    )
+
+    assert policy.publication_conflict_mode == "fail"
 
 
 def test_isolated_policy_requires_session() -> None:
@@ -400,3 +411,71 @@ async def test_invalid_session_scope_fails_before_lease(monkeypatch) -> None:
     assert acquired is False
     assert materialized is False
     assert executed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publication_owner", ["gateway", "workspace_cas"])
+async def test_isolated_execution_uses_replacement_publication(
+    monkeypatch,
+    tmp_path,
+    publication_owner,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    conflict_modes = []
+
+    class Lease:
+        ownership_lost = False
+
+        async def start_heartbeat(self):
+            return None
+
+        async def ensure_publication_window(self, _seconds):
+            return True
+
+        async def release(self):
+            return None
+
+    async def tool_config(*_args):
+        return {
+            "workspace_mode": "isolated_output",
+            "publication_owner": publication_owner,
+        }
+
+    async def resolve_scope(**_kwargs):
+        return SandboxExecutionScope(tenant_id, agent_id, session_id)
+
+    async def acquire(*_args, **_kwargs):
+        return Lease()
+
+    async def prepare(*_args, **_kwargs):
+        return SimpleNamespace(root=tmp_path, cleanup=lambda: None)
+
+    async def flush(_workspace, conflict_mode):
+        conflict_modes.append(conflict_mode)
+        return {"updated": [], "deleted": [], "conflicted": [], "skipped": []}
+
+    async def execute(*_args, gateway_publish=None, **_kwargs):
+        if gateway_publish is not None and publication_owner == "gateway":
+            await gateway_publish()
+        return ToolExecutionOutcome("succeeded", "ok", None)
+
+    monkeypatch.setattr(agent_tools, "_get_tool_config", tool_config)
+    monkeypatch.setattr(agent_tools, "_resolve_sandbox_execution_scope", resolve_scope)
+    monkeypatch.setattr(SandboxExecutionLeaseStore, "acquire", acquire)
+    monkeypatch.setattr(agent_tools, "_prepare_temp_workspace", prepare)
+    monkeypatch.setattr(agent_tools, "flush_temp_workspace", flush)
+    monkeypatch.setattr(agent_tools, "_execute_code_outcome", execute)
+    monkeypatch.setattr("app.config.get_sandbox_config", lambda: SandboxConfig())
+
+    outcome = await agent_tools._execute_code_with_workspace_outcome(
+        agent_id=agent_id,
+        tenant_id=str(tenant_id),
+        session_id=str(session_id),
+        arguments={"language": "python", "code": "print(1)"},
+        tool_name="execute_code",
+    )
+
+    assert outcome.status == "succeeded"
+    assert conflict_modes == ["overwrite"]
