@@ -1017,7 +1017,7 @@ _BUILTIN_TOOL_SOURCE = [
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
-            "workspace_mode": "merge",
+            "workspace_mode": "isolated_output",
             "publication_owner": "workspace_cas",
             "default_timeout": 30,
             "max_timeout": 60,
