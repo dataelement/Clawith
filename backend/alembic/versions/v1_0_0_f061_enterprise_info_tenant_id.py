@@ -31,20 +31,50 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _column_names() -> set[str]:
+    return {
+        column["name"]
+        for column in sa.inspect(op.get_bind()).get_columns("enterprise_info")
+    }
+
+
+def _index_names() -> set[str]:
+    return {
+        index["name"]
+        for index in sa.inspect(op.get_bind()).get_indexes("enterprise_info")
+    }
+
+
+def _unique_constraint_names() -> set[str]:
+    return {
+        constraint["name"]
+        for constraint in sa.inspect(op.get_bind()).get_unique_constraints("enterprise_info")
+        if constraint["name"]
+    }
+
+
 def upgrade() -> None:
     # 1. Add tenant_id column with default uuid generator or nullable first if populated
-    op.add_column("enterprise_info", sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.create_index(op.f("ix_enterprise_info_tenant_id"), "enterprise_info", ["tenant_id"], unique=False)
+    if "tenant_id" not in _column_names():
+        op.add_column("enterprise_info", sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True))
+    if "ix_enterprise_info_tenant_id" not in _index_names():
+        op.create_index(op.f("ix_enterprise_info_tenant_id"), "enterprise_info", ["tenant_id"], unique=False)
 
     # 2. Drop legacy single info_type unique constraint
-    op.drop_constraint("enterprise_info_info_type_key", "enterprise_info", type_="unique")
+    if "enterprise_info_info_type_key" in _unique_constraint_names():
+        op.drop_constraint("enterprise_info_info_type_key", "enterprise_info", type_="unique")
 
     # 3. Create new composite unique constraint (tenant_id, info_type)
-    op.create_unique_constraint("uq_enterprise_info_tenant_type", "enterprise_info", ["tenant_id", "info_type"])
+    if "uq_enterprise_info_tenant_type" not in _unique_constraint_names():
+        op.create_unique_constraint("uq_enterprise_info_tenant_type", "enterprise_info", ["tenant_id", "info_type"])
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_enterprise_info_tenant_type", "enterprise_info", type_="unique")
-    op.create_unique_constraint("enterprise_info_info_type_key", "enterprise_info", ["info_type"])
-    op.drop_index(op.f("ix_enterprise_info_tenant_id"), table_name="enterprise_info")
-    op.drop_column("enterprise_info", "tenant_id")
+    if "uq_enterprise_info_tenant_type" in _unique_constraint_names():
+        op.drop_constraint("uq_enterprise_info_tenant_type", "enterprise_info", type_="unique")
+    if "enterprise_info_info_type_key" not in _unique_constraint_names():
+        op.create_unique_constraint("enterprise_info_info_type_key", "enterprise_info", ["info_type"])
+    if "ix_enterprise_info_tenant_id" in _index_names():
+        op.drop_index(op.f("ix_enterprise_info_tenant_id"), table_name="enterprise_info")
+    if "tenant_id" in _column_names():
+        op.drop_column("enterprise_info", "tenant_id")

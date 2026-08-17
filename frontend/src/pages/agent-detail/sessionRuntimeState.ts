@@ -123,6 +123,11 @@ export const runtimeCompletionNeedsMessageRefresh = (
     next: SessionActiveRun | null,
 ): boolean => previous !== null && next === null;
 
+export const runtimeTerminalPacketNeedsMessageRefresh = (
+    runtimeStatus: unknown,
+): boolean => typeof runtimeStatus === 'string'
+    && ['completed', 'failed', 'cancelled'].includes(runtimeStatus);
+
 type TerminalAssistantMessageLike = {
     id?: string;
     role?: string;

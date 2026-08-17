@@ -28,7 +28,7 @@ import unicodedata
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Any, cast
+from typing import Optional, Any, Literal, cast
 import re
 
 from loguru import logger
@@ -39,6 +39,7 @@ from app.core.permissions import (
     evaluate_roster_human_visibility,
 )
 from app.database import async_session
+from app.dao.chat_session_dao import chat_session_dao
 from app.models.agent import Agent as AgentModel
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -73,11 +74,23 @@ from app.services.workspace_collaboration import (
 from app.services.storage import get_storage_backend, normalize_storage_key
 from app.services.storage_runtime.base import WriteCondition, content_hash_bytes
 from app.services.workspace_locking import workspace_locks
+from app.services.sandbox.execution_lease import SandboxExecutionLeaseStore
+from app.services.sandbox.local.run_workspace import (
+    RunWorkspaceIdentity,
+    use_run_workspace,
+)
+from app.services.sandbox.run_scope import sandbox_run_scope_id
+from app.services.sandbox.workspace_policy import (
+    SandboxExecutionScope,
+    build_workspace_policy,
+    parse_canonical_uuid,
+)
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_TOOL_NAME,
 )
 from app.services.builtin_tool_definitions import (
+    AGENT_RELATIVE_PATH_ARGUMENTS,
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
     WRITE_FILE_MAX_CONTENT_CHARS,
@@ -160,6 +173,26 @@ def _read_file_binary_error(path: str) -> str | None:
         f"read_file supports text files only; binary file type '{suffix}' "
         "must be opened with read_document instead."
     )
+
+
+def _agent_relative_path_error(tool_name: str, arguments: Mapping[str, object]) -> str | None:
+    """Reject model-facing absolute paths before they reach Storage adapters."""
+    for field in AGENT_RELATIVE_PATH_ARGUMENTS.get(tool_name, ()):
+        value = arguments.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized = value.strip().replace("\\", "/")
+        is_absolute = normalized.startswith("/") or bool(
+            re.match(r"^[A-Za-z]:/", normalized)
+        )
+        is_uri = bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", normalized))
+        if is_absolute or is_uri:
+            return (
+                f"{tool_name} {field} must be Agent-root-relative, for example "
+                "'workspace/output/report.md'; paths must not start with '/' "
+                "or use a URI scheme."
+            )
+    return None
 
 
 def _observability_arguments(tool_name: str, arguments: dict) -> dict:
@@ -1049,9 +1082,70 @@ async def _get_runtime_dynamic_mcp_tool_names(
     return ready
 
 
+_ISOLATED_OUTPUT_TOOL_PROMPT = (
+    " Workspace write policy: isolated session output. Materialized directories "
+    "inside the sandbox are readable and writable for the current Agent loop, "
+    "but only files under the Agent-relative path "
+    "workspace/output/<current-session-id>/ are published "
+    "back to the host Workspace. Other sandbox writes are temporary. The working "
+    "directory is / and every model-visible path is relative to that Agent root. "
+    "Use the same paths as file tools, including the leading workspace/, skills/, "
+    "or memory/ segment. Read the exact relative persistent output directory from "
+    "CLAWITH_SESSION_OUTPUT_DIR; do not omit or duplicate any path segment, and "
+    "do not return Sandbox absolute paths."
+)
+
+
+def _with_isolated_output_prompt(tool: dict) -> dict:
+    """Add the configured local write boundary to the model-facing tool schema."""
+    patched = deepcopy(tool)
+    function = patched.get("function")
+    if not isinstance(function, dict):
+        return patched
+    description = str(function.get("description") or "").rstrip()
+    if _ISOLATED_OUTPUT_TOOL_PROMPT.strip() not in description:
+        function["description"] = f"{description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict) and isinstance(properties.get("code"), dict):
+            code_schema = properties["code"]
+            code_description = str(
+                code_schema.get("description") or "Code to execute"
+            ).rstrip()
+            code_schema["description"] = (
+                f"{code_description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+            )
+    return patched
+
+
 async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Resolve the current Durable Runtime workset with typed-outcome gating."""
     tools = await get_agent_tools_for_llm(agent_id)
+    try:
+        execute_code_config = await _get_tool_config(agent_id, "execute_code") or {}
+        from app.config import get_sandbox_config
+        from app.services.sandbox.config import SandboxConfig
+
+        fallback_config = get_sandbox_config()
+        sandbox_config = (
+            SandboxConfig.from_dict(execute_code_config, fallback_config)
+            if execute_code_config
+            else fallback_config
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Tools] Code Executor workspace policy lookup failed: {}",
+            type(exc).__name__,
+        )
+        sandbox_config = None
+    if sandbox_config is not None and sandbox_config.workspace_mode == "isolated_output":
+        tools = [
+            _with_isolated_output_prompt(tool)
+            if tool.get("function", {}).get("name") == "execute_code"
+            else tool
+            for tool in tools
+        ]
     dynamic_mcp_names = await _get_runtime_dynamic_mcp_tool_names(agent_id)
     resolved = _runtime_typed_tools(
         tools,
@@ -1336,8 +1430,14 @@ class TempWorkspace:
     root: Path
     agent_id: uuid.UUID
     tenant_id: str | None
-    selected_paths: list[str]
+    materialized_paths: list[str]
+    publish_paths: list[str]
     manifest: dict[str, TempWorkspaceManifestEntry]
+
+    @property
+    def selected_paths(self) -> list[str]:
+        """Backward-compatible alias for callers that use one path set."""
+        return self.materialized_paths
 
     def cleanup(self) -> None:
         self.temp_dir.cleanup()
@@ -1368,6 +1468,7 @@ async def _prepare_temp_workspace(
     agent_id: uuid.UUID,
     tenant_id: str | None = None,
     paths: list[str] | None = None,
+    publish_paths: list[str] | None = None,
 ) -> TempWorkspace:
     tmp = tempfile.TemporaryDirectory(prefix=f"clawith-agent-{str(agent_id)[:8]}-")
     temp_ws = Path(tmp.name)
@@ -1388,7 +1489,8 @@ async def _prepare_temp_workspace(
         root=temp_ws,
         agent_id=agent_id,
         tenant_id=tenant_id,
-        selected_paths=list(selected),
+        materialized_paths=list(selected),
+        publish_paths=list(selected if publish_paths is None else publish_paths),
         manifest=manifest,
     )
 
@@ -1462,19 +1564,27 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
         logger.error(f"[AgentTools] Failed to sync tasks: {e}")
 
 
-async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str = "fail") -> dict[str, list[str]]:
-    """Flush local changes back to storage using manifest-based conflict checks."""
+async def flush_temp_workspace(
+    temp_workspace: TempWorkspace,
+    conflict_mode: Literal["fail", "overwrite"] = "fail",
+) -> dict[str, list[str]]:
+    """Flush local changes, optionally replacing Session-isolated output."""
     storage = get_storage_backend()
-    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.selected_paths]
+    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.publish_paths]
     manifest = temp_workspace.manifest
     local_files = _collect_temp_workspace_files(temp_workspace.root, selected_paths)
+    run_id = sandbox_run_scope_id.get().strip() or None
 
     updated: list[str] = []
     conflicted: list[str] = []
     deleted: list[str] = []
     skipped: list[str] = []
 
-    async with workspace_locks(temp_workspace.agent_id, selected_paths):
+    async with workspace_locks(
+        temp_workspace.agent_id,
+        selected_paths,
+        tenant_id=temp_workspace.tenant_id,
+    ):
         for rel_path, local_path in local_files.items():
             if local_path.name.startswith("_exec_tmp") or "__pycache__" in local_path.parts:
                 continue
@@ -1490,6 +1600,18 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
                 else WriteCondition(require_absent=True)
             )
             storage_key = entry.storage_key if entry else normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
+            if conflict_mode == "overwrite":
+                await storage.write_bytes(storage_key, data)
+                version = await storage.get_version(storage_key)
+                manifest[rel_path] = TempWorkspaceManifestEntry(
+                    rel_path=rel_path,
+                    storage_key=storage_key,
+                    base_version_token=version.token,
+                    base_hash=current_hash,
+                    size=len(data),
+                )
+                updated.append(rel_path)
+                continue
             result = await storage.write_bytes_if_match(
                 storage_key,
                 data,
@@ -1497,13 +1619,46 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
             )
             if not result.ok:
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=write "
+                    "path={} condition={} expected_version={} current_exists={} "
+                    "current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    "version_match" if entry else "require_absent",
+                    entry.base_version_token if entry else None,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            version = result.current_version or await storage.get_version(storage_key)
+            manifest[rel_path] = TempWorkspaceManifestEntry(
+                rel_path=rel_path,
+                storage_key=storage_key,
+                base_version_token=version.token,
+                base_hash=current_hash,
+                size=len(data),
+            )
             updated.append(rel_path)
 
-        for rel_path, entry in manifest.items():
+        for rel_path, entry in list(manifest.items()):
+            if not any(
+                rel_path == selected or rel_path.startswith(selected.rstrip("/") + "/")
+                for selected in selected_paths
+            ):
+                continue
             if rel_path in local_files:
+                continue
+            if conflict_mode == "overwrite":
+                await storage.delete(entry.storage_key)
+                manifest.pop(rel_path, None)
+                deleted.append(rel_path)
                 continue
             result = await storage.delete_if_match(
                 entry.storage_key,
@@ -1511,9 +1666,24 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
             )
             if not result.ok:
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=delete "
+                    "path={} condition=version_match expected_version={} "
+                    "current_exists={} current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    entry.base_version_token,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            manifest.pop(rel_path, None)
             deleted.append(rel_path)
 
     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
@@ -1528,15 +1698,20 @@ def _collect_temp_workspace_files(root: Path, selected_paths: list[str]) -> dict
         target = (root_resolved / selected).resolve()
         if not target.is_relative_to(root_resolved):
             continue
+        if (root_resolved / selected).is_symlink():
+            continue
         if target.is_file():
             files[normalize_workspace_path(selected)] = target
             continue
         if not target.exists() or not target.is_dir():
             continue
         for path in target.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 continue
-            rel = path.resolve().relative_to(root_resolved).as_posix()
+            resolved = path.resolve()
+            if not resolved.is_relative_to(target):
+                continue
+            rel = resolved.relative_to(root_resolved).as_posix()
             files[normalize_workspace_path(rel)] = path
     return files
 
@@ -1676,6 +1851,239 @@ async def _run_with_temp_workspace_outcome(
         )
     finally:
         temp_workspace.cleanup()
+
+
+async def _resolve_sandbox_execution_scope(
+    *,
+    tenant_id: str | None,
+    agent_id: uuid.UUID,
+    session_id: str,
+) -> SandboxExecutionScope:
+    if not tenant_id:
+        raise ValueError("Session sandbox execution requires a tenant")
+    tenant_uuid = parse_canonical_uuid(tenant_id, label="tenant_id")
+    session_uuid = parse_canonical_uuid(session_id, label="session_id")
+    chat_session = await chat_session_dao.get_active_for_agent(
+        tenant_id=tenant_uuid,
+        agent_id=agent_id,
+        session_id=session_uuid,
+    )
+    if chat_session is None:
+        raise ValueError("Session does not belong to the tenant and Agent")
+    return SandboxExecutionScope(tenant_uuid, agent_id, session_uuid)
+
+
+async def _execute_code_with_workspace_outcome(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: str | None,
+    session_id: str,
+    arguments: dict,
+    tool_name: str,
+    on_output=None,
+) -> ToolExecutionOutcome:
+    """Resolve policy once and guard materialize/execute/publish for local Session code."""
+    if tool_name == "execute_code_e2b":
+        return await _run_with_temp_workspace_outcome(
+            agent_id,
+            tenant_id,
+            lambda temp_ws: _execute_code_outcome(
+                agent_id,
+                temp_ws,
+                arguments,
+                tool_name=tool_name,
+                on_output=on_output,
+            ),
+            sync_back=True,
+            sync_back_on_non_success=True,
+        )
+
+    from app.config import get_sandbox_config
+    from app.services.sandbox.config import SandboxConfig
+
+    tool_config = await _get_tool_config(agent_id, tool_name)
+    fallback_config = get_sandbox_config()
+    sandbox_config = (
+        SandboxConfig.from_dict(tool_config, fallback_config)
+        if tool_config and tool_name == "execute_code"
+        else None
+    )
+    if sandbox_config is None:
+        sandbox_config = fallback_config
+
+    try:
+        session_uuid = parse_canonical_uuid(session_id, label="session_id") if session_id else None
+        policy = build_workspace_policy(
+            mode=sandbox_config.workspace_mode,
+            session_id=session_uuid,
+            default_paths=TEMP_WORKSPACE_DEFAULT_PATHS,
+        )
+    except ValueError as exc:
+        return _typed_failure(str(exc), "sandbox_session_required")
+
+    scope: SandboxExecutionScope | None = None
+    if session_id:
+        try:
+            scope = await _resolve_sandbox_execution_scope(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+        except ValueError as exc:
+            return _typed_failure(str(exc), "sandbox_execution_scope_invalid")
+
+    lease = None
+    if scope is not None:
+        try:
+            lease = await SandboxExecutionLeaseStore().acquire(scope, ttl_seconds=60)
+        except Exception:
+            return _typed_failure(
+                "Sandbox coordination is unavailable.",
+                "sandbox_coordination_unavailable",
+                retryable=True,
+            )
+        if lease is None:
+            return _typed_failure(
+                "Another code execution is active for this Session.",
+                "sandbox_session_busy",
+                retryable=True,
+            )
+        await lease.start_heartbeat()
+
+    execution_started = False
+    gateway_flush_result: dict[str, list[str]] | None = None
+    run_id = sandbox_run_scope_id.get().strip() or None
+    workspace_identity = RunWorkspaceIdentity(
+        agent_id=str(agent_id),
+        tenant_id=str(scope.tenant_id) if scope else tenant_id,
+        session_id=str(scope.session_id) if scope else None,
+        workspace_mode=policy.mode,
+        materialized_paths=policy.materialized_paths,
+        publish_paths=policy.publish_paths,
+    )
+
+    async def prepare_workspace() -> TempWorkspace:
+        workspace = await _prepare_temp_workspace(
+            agent_id,
+            tenant_id=tenant_id,
+            paths=list(policy.materialized_paths),
+            publish_paths=list(policy.publish_paths),
+        )
+        if policy.session_output_path:
+            (workspace.root / policy.session_output_path).mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    try:
+        async with use_run_workspace(
+            run_id=run_id,
+            identity=workspace_identity,
+            factory=prepare_workspace,
+        ) as run_workspace:
+            temp_workspace = cast(TempWorkspace, run_workspace)
+            execution_started = True
+            async def before_gateway_publish() -> bool:
+                if lease is None:
+                    return True
+                try:
+                    return await lease.ensure_publication_window(120)
+                except Exception:
+                    return False
+
+            async def gateway_publish() -> None:
+                nonlocal gateway_flush_result
+                gateway_flush_result = await asyncio.wait_for(
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
+                    timeout=60,
+                )
+                if gateway_flush_result["conflicted"]:
+                    raise RuntimeError("Gateway workspace publication conflicted")
+
+            outcome = await _execute_code_outcome(
+                agent_id,
+                temp_workspace.root,
+                arguments,
+                tool_name=tool_name,
+                on_output=on_output,
+                sandbox_config=sandbox_config,
+                session_id=str(scope.session_id) if scope else None,
+                publish_paths=list(policy.publish_paths),
+                before_gateway_publish=before_gateway_publish,
+                gateway_publish=gateway_publish,
+            )
+            if lease is not None and lease.ownership_lost:
+                return _typed_unknown(
+                    "Code may have run after the Session execution lease was lost.",
+                    "sandbox_execution_lease_lost",
+                )
+            if sandbox_config.publication_owner == "gateway":
+                flush_result = gateway_flush_result or {
+                    "updated": [],
+                    "deleted": [],
+                    "conflicted": [],
+                    "skipped": [],
+                }
+                changed_refs = tuple(
+                    _workspace_artifact_ref(agent_id, path)
+                    for path in flush_result["updated"]
+                )
+                return replace(
+                    outcome,
+                    artifact_refs=tuple(dict.fromkeys((*outcome.artifact_refs, *changed_refs))),
+                    metadata={**outcome.metadata, "workspace_publication": flush_result},
+                )
+            if lease is not None and not await lease.ensure_publication_window(120):
+                return _typed_unknown(
+                    "Code ran but publication ownership could not be verified.",
+                    "sandbox_execution_lease_lost",
+                )
+            try:
+                flush_result = await asyncio.wait_for(
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
+                    timeout=60,
+                )
+            except Exception as exc:
+                return _typed_unknown(
+                    f"Local execution completed but workspace sync is unknown: {type(exc).__name__}.",
+                    "workspace_sync_outcome_unknown",
+                )
+            metadata = {**outcome.metadata, "workspace_publication": flush_result}
+            if flush_result["conflicted"]:
+                return _typed_unknown(
+                    "Local execution completed but workspace sync conflicted.",
+                    "workspace_sync_conflict",
+                    metadata=metadata,
+                )
+            changed_refs = tuple(
+                _workspace_artifact_ref(agent_id, path)
+                for path in flush_result["updated"]
+            )
+            return replace(
+                outcome,
+                artifact_refs=tuple(dict.fromkeys((*outcome.artifact_refs, *changed_refs))),
+                metadata=metadata,
+            )
+    except Exception as exc:
+        if execution_started:
+            return _typed_unknown(
+                f"Sandbox execution outcome is unknown after {type(exc).__name__}.",
+                "sandbox_execution_outcome_unknown",
+            )
+        return _typed_failure(
+            f"Sandbox execution could not start: {type(exc).__name__}.",
+            "sandbox_execution_failed",
+        )
+    finally:
+        if lease is not None:
+            try:
+                await asyncio.shield(lease.release())
+            except Exception:
+                logger.exception("[SandboxLease] Failed to release Session execution lease")
 
 
 async def _execute_workspace_mutation(
@@ -2519,6 +2927,12 @@ async def execute_builtin_tool_outcome(
     Durable Runtime rejects those as ``untyped_tool_outcome``; this function
     never infers success from display text or from a non-raising handler.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return _typed_failure(
+            path_error,
+            "workspace_path_invalid",
+        )
     if (
         tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
         and arguments.get("workspace_scope", "agent") != "agent"
@@ -2632,18 +3046,13 @@ async def execute_builtin_tool_outcome(
             sync_back=True,
         )
     if tool_name in {"execute_code", "execute_code_e2b"}:
-        return await _run_with_temp_workspace_outcome(
-            agent_id,
-            tenant_id,
-            lambda temp_ws: _execute_code_outcome(
-                agent_id,
-                temp_ws,
-                arguments,
-                tool_name=tool_name,
-                on_output=on_output,
-            ),
-            sync_back=True,
-            sync_back_on_non_success=True,
+        return await _execute_code_with_workspace_outcome(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            arguments=arguments,
+            tool_name=tool_name,
+            on_output=on_output,
         )
     if tool_name == "read_webpage":
         return await _read_webpage_outcome(arguments)
@@ -2882,12 +3291,16 @@ async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
     agent_id: uuid.UUID,
+    session_id: str = "",
 ) -> str:
     """Execute a tool directly, bypassing autonomy checks.
 
     Used by the approval post-processing hook after an action
     has been approved and needs to actually run.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
     ws = _agent_workspace_root(agent_id)
     try:
@@ -2905,12 +3318,14 @@ async def _execute_tool_direct(
                 tool_name,
                 _observability_arguments(tool_name, arguments),
             )
-            return await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name),
-                sync_back=True,
+            outcome = await _execute_code_with_workspace_outcome(
+                agent_id=agent_id,
+                tenant_id=_agent_tenant_id,
+                session_id=session_id,
+                arguments=arguments,
+                tool_name=tool_name,
             )
+            return _legacy_tool_outcome_text(outcome, fallback="Code execution returned no summary.")
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -2975,6 +3390,10 @@ async def execute_tool(
     if tool_name == FINISH_TOOL_NAME:
         content = arguments.get("content", "")
         return content if isinstance(content, str) else str(content)
+
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -3237,12 +3656,15 @@ async def execute_tool(
                 tool_name,
                 _observability_arguments(tool_name, arguments),
             )
-            result = await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name, on_output=on_output),
-                sync_back=True,
+            outcome = await _execute_code_with_workspace_outcome(
+                agent_id=agent_id,
+                tenant_id=_agent_tenant_id,
+                session_id=session_id,
+                arguments=arguments,
+                tool_name=tool_name,
+                on_output=on_output,
             )
+            result = _legacy_tool_outcome_text(outcome, fallback="Code execution returned no summary.")
         elif tool_name == "upload_image":
             file_path = (arguments.get("file_path") or "").strip()
             result = await _run_with_temp_workspace(
@@ -9919,6 +10341,11 @@ async def _execute_code_outcome(
     *,
     tool_name: str = "execute_code",
     on_output=None,
+    sandbox_config=None,
+    session_id: str | None = None,
+    publish_paths: list[str] | None = None,
+    before_gateway_publish=None,
+    gateway_publish=None,
 ) -> ToolExecutionOutcome:
     """Execute code using the configured sandbox backend.
 
@@ -10008,7 +10435,7 @@ async def _execute_code_outcome(
                 default_timeout=default_timeout,
                 max_timeout=max_timeout,
             )
-        else:
+        elif sandbox_config is None:
             # The default execute_code tool retains the established platform
             # fallback behavior; it is a distinct explicit tool contract.
             fallback_config = get_sandbox_config()
@@ -10028,6 +10455,11 @@ async def _execute_code_outcome(
         timeout = min(requested_timeout, sandbox_config.max_timeout)
 
         backend = get_sandbox_backend(sandbox_config)
+        if sandbox_config.workspace_mode == "isolated_output" and getattr(backend, "name", None) != "subprocess":
+            return _typed_failure(
+                "The configured sandbox backend cannot enforce isolated Session output.",
+                "sandbox_workspace_mode_unsupported",
+            )
         if is_e2b_tool:
             if getattr(backend, "name", None) != "e2b":
                 return _typed_failure(
@@ -10052,6 +10484,13 @@ async def _execute_code_outcome(
             work_dir=str(work_dir),
             on_output=on_output,
             agent_id=agent_id,
+            session_id=session_id,
+            run_id=sandbox_run_scope_id.get().strip() or None,
+            workspace_mode=sandbox_config.workspace_mode,
+            publication_owner=sandbox_config.publication_owner,
+            publish_paths=publish_paths,
+            before_gateway_publish=before_gateway_publish,
+            gateway_publish=gateway_publish,
         )
 
         try:
@@ -10062,11 +10501,26 @@ async def _execute_code_outcome(
                 if result.success and result.exit_code == 0
                 else f"Code execution failed with exit code {result.exit_code}."
             )
+        output_metadata: dict[str, str] = {}
+        if sandbox_config.workspace_mode == "isolated_output" and publish_paths:
+            output_path = normalize_workspace_path(publish_paths[0])
+            output_metadata["workspace_path"] = output_path
+            summary = (
+                f"{summary}\n\nPersistent output directory: {output_path} "
+                "(Agent-relative; use this exact path with file tools)."
+            )
+        if result.error and result.error.startswith("sandbox_publication_unknown:"):
+            return _typed_unknown(
+                "Code ran but Sandbox publication could not be proven.",
+                "workspace_sync_outcome_unknown",
+                metadata=output_metadata,
+            )
         if result.success and result.exit_code == 0:
-            return _typed_success(summary)
+            return _typed_success(summary, metadata=output_metadata)
         return _typed_failure(
             summary,
             "sandbox_execution_failed",
+            metadata=output_metadata,
         )
 
     except ValueError as e:

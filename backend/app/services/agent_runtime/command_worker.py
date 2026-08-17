@@ -37,6 +37,8 @@ from app.services.agent_runtime.thread_lock import ThreadLockNotAcquired, run_wi
 from app.services.agent_runtime.tool_execution import (
     ToolExecutionReconciliationPending,
 )
+from app.services.sandbox.local.subprocess_backend import close_subprocess_sandbox_run
+from app.services.sandbox.run_scope import sandbox_run_scope_id
 from app.services.group_realtime import publish_stored_group_message
 
 
@@ -819,6 +821,7 @@ class RuntimeCommandWorker:
                 checkpoint=checkpoint,
             )
 
+        sandbox_run_token = sandbox_run_scope_id.set(str(run.run_id))
         try:
             await self._command_executor.execute(
                 connection=connection,
@@ -833,6 +836,9 @@ class RuntimeCommandWorker:
                 error_message=str(exc),
                 run=run,
             )
+        finally:
+            sandbox_run_scope_id.reset(sandbox_run_token)
+            await close_subprocess_sandbox_run(str(run.run_id))
 
         observed = await self._checkpoint_reader.read_for_command(
             connection=connection,

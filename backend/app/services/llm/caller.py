@@ -38,7 +38,7 @@ from .client import (
     normalize_llm_finish_reason,
     normalize_textual_tool_protocol,
 )
-from .failover import classify_error, FailoverErrorType
+from .failover import classify_error, is_retryable_classification
 from .finish import find_finish_call
 from .utils import LLMMessage, create_llm_client, get_max_tokens, get_model_api_key
 
@@ -189,7 +189,7 @@ def is_retryable_error(result: str) -> bool:
     if not (result.startswith("[LLM Error]") or result.startswith("[LLM call error]") or result.startswith("[Error]")):
         return False
         
-    return classify_error(Exception(result)) != FailoverErrorType.NON_RETRYABLE
+    return is_retryable_classification(classify_error(Exception(result)))
 
 
 def _get_model_timeout(model: "LLMModel") -> float:

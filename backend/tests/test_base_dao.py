@@ -5,7 +5,12 @@ import pytest
 from sqlalchemy import String, create_engine, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.dao.base import BaseDAO, tenant_context
+from app.dao.base import (
+    BaseDAO,
+    TenantScopedBaseDAO,
+    identity_membership_query,
+    tenant_context,
+)
 from app.database import Base, _session_ctx
 
 
@@ -19,6 +24,18 @@ class TenantScopedRecord(Base):
     __tablename__ = "test_tenant_scoped_records"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class IdentityMembershipRecord(Base):
+    """Mapped stand-in for User's controlled identity-membership exception."""
+
+    __tablename__ = "test_identity_membership_records"
+    __tenant_scoped__ = True
+    __identity_membership_tenant_bypass__ = True
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(String, nullable=False)
     tenant_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
@@ -136,3 +153,87 @@ def test_orm_session_injects_tenant_filter_for_direct_queries():
             records = session.scalars(select(TenantScopedRecord).order_by(TenantScopedRecord.id)).all()
 
     assert [record.id for record in records] == ["a"]
+
+
+def test_identity_membership_query_can_read_all_tenants_for_one_identity():
+    engine = create_engine("sqlite://")
+    IdentityMembershipRecord.__table__.create(engine)
+    TenantScopedRecord.__table__.create(engine)
+    tenant_a = str(uuid.uuid4())
+    tenant_b = str(uuid.uuid4())
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                IdentityMembershipRecord(
+                    id="membership-a",
+                    identity_id="identity-1",
+                    tenant_id=tenant_a,
+                ),
+                IdentityMembershipRecord(
+                    id="membership-b",
+                    identity_id="identity-1",
+                    tenant_id=tenant_b,
+                ),
+                IdentityMembershipRecord(
+                    id="other-identity",
+                    identity_id="identity-2",
+                    tenant_id=tenant_b,
+                ),
+                TenantScopedRecord(id="ordinary-a", tenant_id=tenant_a),
+                TenantScopedRecord(id="ordinary-b", tenant_id=tenant_b),
+            ]
+        )
+        session.commit()
+
+        with tenant_context(tenant_a):
+            memberships = session.scalars(
+                identity_membership_query(
+                    select(IdentityMembershipRecord)
+                    .where(IdentityMembershipRecord.identity_id == "identity-1")
+                    .order_by(IdentityMembershipRecord.id)
+                )
+            ).all()
+            ordinary_records = session.scalars(
+                identity_membership_query(
+                    select(TenantScopedRecord).order_by(TenantScopedRecord.id)
+                )
+            ).all()
+
+    assert [record.id for record in memberships] == ["membership-a", "membership-b"]
+    assert [record.id for record in ordinary_records] == ["ordinary-a"]
+
+
+def test_scoped_write_injects_tenant_from_context():
+    tenant_id = uuid.uuid4()
+    record = TenantScopedRecord(id="new", tenant_id=None)
+    session = RecordingSession()
+
+    with tenant_context(tenant_id):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(session, record)
+
+    assert record.tenant_id == tenant_id
+    assert session.added == [record]
+
+
+def test_scoped_write_accepts_explicit_tenant_without_context():
+    tenant_id = uuid.uuid4()
+    record = TenantScopedRecord(id="new", tenant_id=None)
+
+    TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record, tenant_id=tenant_id)
+
+    assert record.tenant_id == tenant_id
+
+
+def test_scoped_write_rejects_tenant_mismatch():
+    record = TenantScopedRecord(id="new", tenant_id=uuid.uuid4())
+
+    with tenant_context(uuid.uuid4()), pytest.raises(RuntimeError, match="Object tenant_id"):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record)
+
+
+def test_scoped_write_rejects_missing_tenant():
+    record = TenantScopedRecord(id="new", tenant_id=None)
+
+    with pytest.raises(RuntimeError, match="require a tenant_id"):
+        TenantScopedBaseDAO(TenantScopedRecord).add_scoped(RecordingSession(), record)

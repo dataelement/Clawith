@@ -18,6 +18,11 @@ class FailoverErrorType(Enum):
     UNKNOWN = "unknown"
 
 
+def is_retryable_classification(classification: FailoverErrorType) -> bool:
+    """Retry every provider failure that is not explicitly deterministic."""
+    return classification != FailoverErrorType.NON_RETRYABLE
+
+
 def classify_error(error: Exception) -> FailoverErrorType:
     """Classify an exception as retryable or non-retryable.
 
@@ -81,4 +86,5 @@ def classify_error(error: Exception) -> FailoverErrorType:
 __all__ = [
     "FailoverErrorType",
     "classify_error",
+    "is_retryable_classification",
 ]

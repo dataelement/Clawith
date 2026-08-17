@@ -206,6 +206,7 @@ async def test_completed_checkpoint_settles_execution_and_reflection_once() -> N
     assert len(db.added) == 1
     message = db.added[0]
     assert isinstance(message, ChatMessage)
+    assert message.tenant_id == run.tenant_id
     assert message.id == uuid.uuid5(
         run.run_id,
         "trigger-terminal:checkpoint-terminal",

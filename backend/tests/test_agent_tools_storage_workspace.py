@@ -325,6 +325,32 @@ async def test_flush_temp_workspace_only_writes_changed_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flush_temp_workspace_refreshes_manifest_for_reused_workspace(monkeypatch):
+    agent_id = uuid.uuid4()
+    storage_key = f"{agent_id}/workspace/input.md"
+    storage = MemoryStorageBackend({storage_key: b"first"})
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(agent_id, paths=["workspace"])
+    try:
+        local_file = temp_ws.root / "workspace" / "input.md"
+        local_file.write_bytes(b"second")
+        first = await agent_tools.flush_temp_workspace(temp_ws)
+        first_token = temp_ws.manifest["workspace/input.md"].base_version_token
+
+        local_file.write_bytes(b"first")
+        second = await agent_tools.flush_temp_workspace(temp_ws)
+    finally:
+        temp_ws.cleanup()
+
+    assert first["updated"] == ["workspace/input.md"]
+    assert second["updated"] == ["workspace/input.md"]
+    assert storage.files[storage_key] == b"first"
+    assert temp_ws.manifest["workspace/input.md"].base_hash == agent_tools.content_hash_bytes(b"first")
+    assert temp_ws.manifest["workspace/input.md"].base_version_token != first_token
+
+
+@pytest.mark.asyncio
 async def test_flush_temp_workspace_fails_on_conflict(monkeypatch):
     agent_id = uuid.uuid4()
     storage = MemoryStorageBackend({
@@ -342,6 +368,94 @@ async def test_flush_temp_workspace_fails_on_conflict(monkeypatch):
 
     assert result["conflicted"] == ["workspace/input.md"]
     assert storage.files[f"{agent_id}/workspace/input.md"] == b"# Remote change\n"
+
+
+@pytest.mark.asyncio
+async def test_flush_isolated_output_overwrites_unmanifested_existing_file(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_path = f"workspace/output/{uuid.uuid4()}"
+    storage_key = f"{agent_id}/{session_path}/result.json"
+    storage = MemoryStorageBackend()
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        paths=[],
+        publish_paths=[session_path],
+    )
+    try:
+        output_file = temp_ws.root / session_path / "result.json"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_bytes(b"session-result")
+        await storage.write_bytes(storage_key, b"previous-result")
+        result = await agent_tools.flush_temp_workspace(
+            temp_ws,
+            conflict_mode="overwrite",
+        )
+    finally:
+        temp_ws.cleanup()
+
+    assert result["updated"] == [f"{session_path}/result.json"]
+    assert result["conflicted"] == []
+    assert storage.files[storage_key] == b"session-result"
+    assert f"{session_path}/result.json" in temp_ws.manifest
+
+
+@pytest.mark.asyncio
+async def test_flush_isolated_output_deletes_newer_existing_file(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_path = f"workspace/output/{uuid.uuid4()}"
+    storage_key = f"{agent_id}/{session_path}/result.json"
+    storage = MemoryStorageBackend({storage_key: b"materialized-result"})
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        paths=[session_path],
+        publish_paths=[session_path],
+    )
+    try:
+        (temp_ws.root / session_path / "result.json").unlink()
+        await storage.write_bytes(storage_key, b"newer-result")
+        result = await agent_tools.flush_temp_workspace(
+            temp_ws,
+            conflict_mode="overwrite",
+        )
+    finally:
+        temp_ws.cleanup()
+
+    assert result["deleted"] == [f"{session_path}/result.json"]
+    assert result["conflicted"] == []
+    assert storage_key not in storage.files
+    assert f"{session_path}/result.json" not in temp_ws.manifest
+
+
+@pytest.mark.asyncio
+async def test_flush_temp_workspace_filters_manifest_deletions_to_publish_paths(monkeypatch):
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    session_path = f"workspace/output/{session_id}"
+    storage = MemoryStorageBackend({
+        f"{agent_id}/workspace/read-only.md": b"keep",
+        f"{agent_id}/{session_path}/result.txt": b"delete-me",
+    })
+    monkeypatch.setattr(agent_tools, "get_storage_backend", lambda: storage)
+
+    temp_ws = await agent_tools._prepare_temp_workspace(
+        agent_id,
+        tenant_id=str(uuid.uuid4()),
+        paths=["workspace"],
+        publish_paths=[session_path],
+    )
+    try:
+        (temp_ws.root / session_path / "result.txt").unlink()
+        (temp_ws.root / "workspace" / "read-only.md").write_text("changed", encoding="utf-8")
+        result = await agent_tools.flush_temp_workspace(temp_ws)
+    finally:
+        temp_ws.cleanup()
+
+    assert result["deleted"] == [f"{session_path}/result.txt"]
+    assert storage.files[f"{agent_id}/workspace/read-only.md"] == b"keep"
 
 
 @pytest.mark.asyncio

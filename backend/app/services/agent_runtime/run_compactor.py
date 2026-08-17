@@ -33,7 +33,10 @@ from app.services.agent_runtime.tool_exchange import (
 )
 from app.services.llm.client import LLMMessage
 from app.services.llm.single_step import LLMCompletionStep, complete_llm_once
-from app.services.llm.failover import FailoverErrorType, classify_error
+from app.services.llm.failover import (
+    classify_error,
+    is_retryable_classification,
+)
 from app.services.llm.multimodal_content import (
     MultimodalContentError,
     estimate_multimodal_tokens,
@@ -597,7 +600,7 @@ class RuntimeRunCompactorService:
                     supports_vision=False,
                 )
             except Exception as exc:
-                if classify_error(exc) == FailoverErrorType.RETRYABLE:
+                if is_retryable_classification(classify_error(exc)):
                     raise TransientRunCompactorError(
                         "thread_compact_provider_transient",
                         "Thread Compact provider call failed transiently",

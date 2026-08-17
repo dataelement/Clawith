@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   failClosedSessionActiveRun,
   runtimeCompletionNeedsMessageRefresh,
+  runtimeTerminalPacketNeedsMessageRefresh,
   sessionActiveRunFromResponse,
   sessionRuntimeStateResponseIsValid,
   mergeTerminalAssistantMessage,
@@ -38,6 +39,14 @@ test('settled lane transition refreshes canonical messages after websocket loss'
   assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, null), true);
   assert.equal(runtimeCompletionNeedsMessageRefresh(null, null), false);
   assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, waitingRun), false);
+});
+
+test('terminal websocket packet refreshes canonical tool-call history', () => {
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('completed'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('failed'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('cancelled'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('waiting_user'), false);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh(undefined), false);
 });
 
 test('websocket terminal packet does not duplicate a canonical refreshed answer', () => {

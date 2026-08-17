@@ -56,6 +56,9 @@ class User(Base):
 
     __tablename__ = "users"
     __tenant_scoped__ = True
+    # Identity membership discovery is the sole controlled exception to the
+    # active-tenant read filter. DAO queries still require an exact identity_id.
+    __identity_membership_tenant_bypass__ = True
     # Note: Unique constraints for (tenant_id, username), (tenant_id, email) and (tenant_id, primary_mobile)
     # are handled via partial unique indexes in migration to allow NULL values
 

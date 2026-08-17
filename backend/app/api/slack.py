@@ -1,4 +1,3 @@
-from typing import Any
 """Slack Bot Channel API routes."""
 
 import hashlib
@@ -35,7 +34,7 @@ async def configure_slack_channel(
     agent_id: uuid.UUID,
     data: dict,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Configure Slack bot for an agent. Fields: bot_token, signing_secret."""
     agent, _ = await check_agent_access(db, current_user, agent_id)
@@ -78,7 +77,7 @@ async def configure_slack_channel(
 async def get_slack_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
@@ -94,7 +93,7 @@ async def get_slack_channel(
 
 
 @router.get("/agents/{agent_id}/slack-channel/webhook-url")
-async def get_slack_webhook_url(agent_id: uuid.UUID, request: Request, db: Any = None):
+async def get_slack_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     from app.services.platform_service import platform_service
     public_base = await platform_service.get_public_base_url(db, request)
     return {"webhook_url": f"{public_base}/api/channel/slack/{agent_id}/webhook"}
@@ -104,7 +103,7 @@ async def get_slack_webhook_url(agent_id: uuid.UUID, request: Request, db: Any =
 async def delete_slack_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -157,7 +156,7 @@ async def _send_slack_messages(bot_token: str, channel: str, text: str) -> None:
 async def slack_event_webhook(
     agent_id: uuid.UUID,
     request: Request,
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Handle Slack Event API callbacks."""
     body_bytes = await request.body()

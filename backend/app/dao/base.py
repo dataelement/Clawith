@@ -12,6 +12,19 @@ from app.database import Base, _session_ctx, async_session
 
 ModelType = TypeVar("ModelType", bound=Base)
 
+_IDENTITY_MEMBERSHIP_SCOPE_OPTION = "clawith_identity_membership_scope"
+
+
+def identity_membership_query(statement: Any) -> Any:
+    """Allow an identity-bound User query to inspect all tenant memberships.
+
+    Only models that explicitly opt in via
+    ``__identity_membership_tenant_bypass__`` are affected. Callers must still
+    constrain the statement by ``identity_id`` and, for a switch, the requested
+    ``tenant_id``.
+    """
+    return statement.execution_options(**{_IDENTITY_MEMBERSHIP_SCOPE_OPTION: True})
+
 
 class BaseDAO(Generic[ModelType]):
     """Base class for data access objects, managing session context and basic CRUD."""
@@ -139,8 +152,17 @@ def _inject_tenant_scope(execute_state: Any) -> None:
         return
 
     statement = execute_state.statement
+    identity_membership_scope = (
+        execute_state.execution_options.get(_IDENTITY_MEMBERSHIP_SCOPE_OPTION) is True
+    )
     for mapper in execute_state.all_mappers:
         model = mapper.class_
+        if identity_membership_scope and getattr(
+            model,
+            "__identity_membership_tenant_bypass__",
+            False,
+        ):
+            continue
         if _is_tenant_scoped_model(model):
             statement = statement.options(
                 with_loader_criteria(
@@ -192,6 +214,30 @@ class TenantScopedBaseDAO(BaseDAO[ModelType]):
     def _require_tenant_id(self) -> uuid.UUID | None:
         """Return the active tenant_id or None if not set."""
         return _tenant_ctx.get()
+
+    def add_scoped(
+        self,
+        db: AsyncSession,
+        obj: ModelType,
+        *,
+        tenant_id: uuid.UUID | None = None,
+    ) -> ModelType:
+        """Add a tenant-owned row after injecting and validating its tenant."""
+        context_tenant_id = self._require_tenant_id()
+        if tenant_id is not None and context_tenant_id is not None and tenant_id != context_tenant_id:
+            raise RuntimeError("Explicit tenant_id does not match the active tenant context")
+
+        resolved_tenant_id = tenant_id or context_tenant_id
+        if resolved_tenant_id is None:
+            raise RuntimeError("Tenant-scoped writes require a tenant_id or active tenant context")
+
+        object_tenant_id = getattr(obj, "tenant_id", None)
+        if object_tenant_id is not None and object_tenant_id != resolved_tenant_id:
+            raise RuntimeError("Object tenant_id does not match the write tenant scope")
+
+        obj.tenant_id = resolved_tenant_id
+        db.add(obj)
+        return obj
 
     async def get_scoped(self, id: Any, db: Any = None) -> ModelType | None:
         """Fetch a single record by PK, automatically scoped to current tenant."""

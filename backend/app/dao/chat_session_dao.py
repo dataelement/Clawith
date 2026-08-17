@@ -29,6 +29,24 @@ class ChatSessionDAO(TenantScopedBaseDAO[ChatSession]):
                 stmt = stmt.where(ChatSession.tenant_id == tenant_id)
             return (await session_db.execute(stmt)).scalar_one_or_none()
 
+    async def get_active_for_agent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        session_id: uuid.UUID,
+        db: Any = None,
+    ) -> ChatSession | None:
+        """Fetch an active Session for one exact tenant and Agent scope."""
+        async with self.session(db=db, readonly=True) as session_db:
+            stmt = select(ChatSession).where(
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.id == session_id,
+                ChatSession.deleted_at.is_(None),
+            )
+            return (await session_db.execute(stmt)).scalar_one_or_none()
+
     async def get_including_deleted(self, session_id: uuid.UUID, db: Any = None) -> ChatSession | None:
         """Fetch a session by ID including soft-deleted records."""
         tenant_id = self._require_tenant_id()
