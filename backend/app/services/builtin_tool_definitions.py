@@ -2188,7 +2188,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "feishu_user_search",
         "display_name": "Feishu User Search",
-        "description": "Search the visible tenant directory for contactable Feishu colleagues. Returns stable member IDs and display facts only; use target_member_id with channel tools.",
+        "description": "Search colleagues visible to the Agent's configured Feishu app. Synced contacts include stable member IDs; live Feishu matches expose display facts only.",
         "category": "feishu",
         "icon": "🔍",
         "is_default": False,
