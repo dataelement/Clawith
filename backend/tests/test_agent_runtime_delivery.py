@@ -671,6 +671,73 @@ async def test_external_group_delivery_uses_channel_scope_without_native_members
 
 
 @pytest.mark.asyncio
+async def test_exact_no_reply_suppresses_feishu_group_outbox() -> None:
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    sender_user_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(), tenant_id=tenant_id, session_type="group", group_id=None,
+        agent_id=agent_id, user_id=sender_user_id, created_by_participant_id=uuid.uuid4(),
+        title="Feishu Group", source_channel="feishu",
+        external_conv_id="feishu_group_oc_123", is_group=True,
+        is_primary=False, deleted_at=None,
+    )
+    run = _run(
+        tenant_id=tenant_id, session=session, agent_id=agent_id,
+        origin_user_id=sender_user_id,
+        delivery_target={
+            "kind": "session", "session_id": str(session.id),
+            "channel_delivery": {
+                "version": 1, "channel": "feishu",
+                "target": {"receive_id": "oc_123", "receive_id_type": "chat_id"},
+            },
+        },
+    )
+    db = _RecordingDB(run, None, session, _agent(tenant_id, agent_id), _participant(agent_id))
+
+    receipt = await deliver_runtime_message(
+        db, _terminal_request(run, content="  no_reply  "), clock=lambda: NOW,
+    )
+
+    assert receipt.status == "delivered"
+    assert _added(db, ChatMessage)[0].content == "no_reply"
+    assert _added(db, ChannelDelivery) == []
+    assert run.delivery_status == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_no_reply_with_visible_text_still_stages_feishu_group_outbox() -> None:
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    sender_user_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(), tenant_id=tenant_id, session_type="group", group_id=None,
+        agent_id=agent_id, user_id=sender_user_id, created_by_participant_id=uuid.uuid4(),
+        title="Feishu Group", source_channel="feishu",
+        external_conv_id="feishu_group_oc_123", is_group=True,
+        is_primary=False, deleted_at=None,
+    )
+    run = _run(
+        tenant_id=tenant_id, session=session, agent_id=agent_id,
+        origin_user_id=sender_user_id,
+        delivery_target={
+            "kind": "session", "session_id": str(session.id),
+            "channel_delivery": {
+                "version": 1, "channel": "feishu",
+                "target": {"receive_id": "oc_123", "receive_id_type": "chat_id"},
+            },
+        },
+    )
+    db = _RecordingDB(run, None, session, _agent(tenant_id, agent_id), _participant(agent_id))
+
+    await deliver_runtime_message(
+        db, _terminal_request(run, content="我来处理\nNO_REPLY"), clock=lambda: NOW,
+    )
+
+    assert len(_added(db, ChannelDelivery)) == 1
+
+
+@pytest.mark.asyncio
 async def test_duplicate_delivery_returns_the_stored_receipt_without_a_message() -> None:
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()

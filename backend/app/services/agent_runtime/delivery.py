@@ -919,14 +919,30 @@ async def deliver_runtime_message(
         )
         chat_message_dao.add_scoped(db, message, tenant_id=run.tenant_id)
         session.last_message_at = now()
-    channel_delivery = stage_channel_delivery(
-        db,
-        run=run,
-        session=session,
-        message_id=message.id,
-        idempotency_key=request.idempotency_key,
-        clock=now,
+    route = (run.delivery_target or {}).get("channel_delivery")
+    route_target = route.get("target") if isinstance(route, dict) else None
+    suppress_feishu_group_reply = (
+        request.kind == "terminal"
+        and request.lifecycle_status == "completed"
+        and session.session_type == "group"
+        and session.group_id is None
+        and session.source_channel == "feishu"
+        and isinstance(route, dict)
+        and route.get("channel") == "feishu"
+        and isinstance(route_target, dict)
+        and route_target.get("receive_id_type") == "chat_id"
+        and message.content.strip().casefold() == "no_reply"
     )
+    channel_delivery = None
+    if not suppress_feishu_group_reply:
+        channel_delivery = stage_channel_delivery(
+            db,
+            run=run,
+            session=session,
+            message_id=message.id,
+            idempotency_key=request.idempotency_key,
+            clock=now,
+        )
     receipt = DeliveryReceipt(
         tenant_id=run.tenant_id,
         run_id=run.id,

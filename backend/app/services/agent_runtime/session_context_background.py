@@ -128,9 +128,40 @@ class SessionCompactPolicyResolver:
             )
 
         if session.group_id is None:
-            raise SessionContextBackgroundError(
-                "session_compact_budget_unavailable",
-                "Group session has no group identity",
+            if session.source_channel != "feishu" or session.agent_id is None:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "External Group session has no owning Agent",
+                )
+            agent_result = await db.execute(
+                select(Agent).where(
+                    Agent.id == session.agent_id,
+                    Agent.tenant_id == tenant_id,
+                    Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                    Agent.is_expired.is_(False),
+                    Agent.deleted_at.is_(None),
+                )
+            )
+            agent = agent_result.scalar_one_or_none()
+            if agent is None:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "External Group Session Agent is unavailable",
+                )
+            model = await resolve_active_agent_model(db, agent)
+            if model is None:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "External Group Session Agent has no active model",
+                )
+            try:
+                threshold = _model_threshold(model, self._settings)
+            except ModelCapabilityError as exc:
+                raise SessionContextBackgroundError(exc.code, str(exc)) from exc
+            return SessionCompactPolicy(
+                source_agent_id=agent.id,
+                threshold_tokens=threshold,
+                contributing_model_ids=(model.id,),
             )
         group_result = await db.execute(
             select(Group.id).where(
@@ -411,19 +442,16 @@ class SessionContextCompactionScanner:
 
     async def scan_once(self) -> int:
         async with self._session_factory() as db:
-            statement = (
-                select(ChatSession.tenant_id, ChatSession.id)
-                .join(
-                    Group,
-                    (Group.id == ChatSession.group_id)
-                    & (Group.tenant_id == ChatSession.tenant_id),
-                )
-                .where(
-                    ChatSession.deleted_at.is_(None),
-                    ChatSession.last_message_at.is_not(None),
-                    ChatSession.session_type == "group",
-                    Group.deleted_at.is_(None),
-                    sa.exists(
+            native_group = sa.and_(
+                ChatSession.group_id.is_not(None),
+                sa.exists(
+                    select(1).where(
+                        Group.id == ChatSession.group_id,
+                        Group.tenant_id == ChatSession.tenant_id,
+                        Group.deleted_at.is_(None),
+                    )
+                ),
+                sa.exists(
                         select(1)
                         .select_from(GroupMember)
                         .join(
@@ -445,6 +473,28 @@ class SessionContextCompactionScanner:
                             Agent.deleted_at.is_(None),
                         )
                     ),
+            )
+            external_feishu_group = sa.and_(
+                ChatSession.group_id.is_(None),
+                ChatSession.source_channel == "feishu",
+                ChatSession.agent_id.is_not(None),
+                sa.exists(
+                    select(1).where(
+                        Agent.id == ChatSession.agent_id,
+                        Agent.tenant_id == ChatSession.tenant_id,
+                        Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                        Agent.is_expired.is_(False),
+                        Agent.deleted_at.is_(None),
+                    )
+                ),
+            )
+            statement = (
+                select(ChatSession.tenant_id, ChatSession.id)
+                .where(
+                    ChatSession.deleted_at.is_(None),
+                    ChatSession.last_message_at.is_not(None),
+                    ChatSession.session_type == "group",
+                    sa.or_(native_group, external_feishu_group),
                 )
                 .order_by(ChatSession.id)
                 .limit(self._settings.AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE)
