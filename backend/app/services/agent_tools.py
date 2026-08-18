@@ -603,6 +603,7 @@ RUNTIME_TYPED_APPLICATION_TOOL_NAMES = frozenset(
         "tavily_search",
         "google_search",
         "bing_search",
+        "doubao_search",
         "search_experience",
         "read_experience",
         "propose_experience_draft",
@@ -1543,7 +1544,12 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             ready.append(tool)
         elif name == "import_mcp_server" and config.get("smithery_api_key"):
             ready.append(tool)
-        elif name in {"tavily_search", "google_search", "bing_search"} and (
+        elif name in {
+            "tavily_search",
+            "google_search",
+            "bing_search",
+            "doubao_search",
+        } and (
             config.get("api_key")
         ):
             ready.append(tool)
@@ -4025,6 +4031,8 @@ async def execute_builtin_tool_outcome(
         return await _google_search_outcome(arguments, agent_id)
     if tool_name == "bing_search":
         return await _bing_search_outcome(arguments, agent_id)
+    if tool_name == "doubao_search":
+        return await _doubao_search_outcome(arguments, agent_id)
     if tool_name == "search_experience":
         from app.services.experience_retrieval import search_experience_outcome
 
@@ -4277,6 +4285,8 @@ async def _execute_tool_direct(
             return await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
             return await _bing_search_tool(arguments, agent_id)
+        elif tool_name == "doubao_search":
+            return await _doubao_search_tool(arguments, agent_id)
         elif tool_name == "send_feishu_message":
             return await _send_feishu_message(agent_id, arguments)
         elif tool_name == "query_directory":
@@ -4570,6 +4580,8 @@ async def execute_tool(
             result = await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
             result = await _bing_search_tool(arguments, agent_id)
+        elif tool_name == "doubao_search":
+            result = await _doubao_search_tool(arguments, agent_id)
         elif tool_name == "jina_read":
             result = await _jina_read(arguments, agent_id)
         elif tool_name == "read_webpage":
@@ -6279,6 +6291,205 @@ async def _bing_search_tool(
     return _legacy_tool_outcome_text(
         outcome,
         fallback="Bing search returned no summary.",
+    )
+
+
+async def _doubao_search_outcome(
+    arguments: dict,
+    agent_id: uuid.UUID | None = None,
+) -> ToolExecutionOutcome:
+    """Search the public web through the Doubao Search global API."""
+    query = arguments.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _typed_failure(
+            "doubao_search requires query.",
+            "invalid_tool_arguments",
+        )
+    query = query.strip()
+    config = await _get_tool_config(agent_id, "doubao_search") or {}
+    api_key = config.get("api_key", "")
+    if not isinstance(api_key, str):
+        return _typed_failure(
+            "Doubao Search API key configuration is invalid.",
+            "search_configuration_invalid",
+        )
+    api_key = api_key.strip()
+    if not api_key:
+        return _typed_failure(
+            "Doubao Search credentials are not configured.",
+            "search_credentials_missing",
+        )
+    try:
+        max_results = int(
+            arguments.get("max_results", config.get("max_results", 10))
+        )
+        max_snippet_length = int(
+            arguments.get(
+                "max_snippet_length",
+                config.get("max_snippet_length", 600),
+            )
+        )
+        max_images = int(
+            arguments.get("max_images", config.get("max_images", 0))
+        )
+    except (TypeError, ValueError):
+        return _typed_failure(
+            "doubao_search numeric arguments must be integers.",
+            "invalid_tool_arguments",
+        )
+    if not 1 <= max_results <= 20:
+        return _typed_failure(
+            "doubao_search max_results must be between 1 and 20.",
+            "invalid_tool_arguments",
+        )
+    if not 50 <= max_snippet_length <= 2000:
+        return _typed_failure(
+            "doubao_search max_snippet_length must be between 50 and 2000.",
+            "invalid_tool_arguments",
+        )
+    if not 0 <= max_images <= 3:
+        return _typed_failure(
+            "doubao_search max_images must be between 0 and 3.",
+            "invalid_tool_arguments",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://open.feedcoopapi.com/search_api/global_search",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": query,
+                    "doc_count": max_results,
+                    "max_snippet_length": max_snippet_length,
+                    "max_image_count_per_doc": max_images,
+                },
+            )
+    except httpx.TimeoutException:
+        return _typed_failure(
+            "Doubao Search timed out.",
+            "doubao_search_timeout",
+            retryable=True,
+        )
+    except httpx.TransportError as exc:
+        return _typed_failure(
+            f"Doubao Search transport failed: {type(exc).__name__}.",
+            "doubao_search_transport_failed",
+            retryable=True,
+        )
+    except Exception as exc:
+        return _typed_failure(
+            f"Doubao Search failed: {type(exc).__name__}.",
+            "doubao_search_failed",
+        )
+
+    if response.status_code != 200:
+        return _typed_failure(
+            f"Doubao Search returned HTTP {response.status_code}.",
+            "doubao_search_http_error",
+            retryable=_read_http_status_retryable(response.status_code),
+        )
+    try:
+        data = response.json()
+    except Exception:
+        return _typed_failure(
+            "Doubao Search returned invalid JSON.",
+            "doubao_search_response_invalid",
+            retryable=True,
+        )
+    if not isinstance(data, Mapping):
+        return _typed_failure(
+            "Doubao Search returned an invalid response.",
+            "doubao_search_response_invalid",
+            retryable=True,
+        )
+    response_metadata = data.get("ResponseMetadata")
+    response_error = (
+        response_metadata.get("Error")
+        if isinstance(response_metadata, Mapping)
+        else None
+    )
+    if response_error:
+        return _typed_failure(
+            "Doubao Search rejected the request.",
+            "doubao_search_provider_error",
+        )
+    result = data.get("Result")
+    documents = result.get("Documents") if isinstance(result, Mapping) else None
+    if not isinstance(documents, list):
+        return _typed_failure(
+            "Doubao Search returned an invalid result collection.",
+            "doubao_search_response_invalid",
+            retryable=True,
+        )
+    documents = documents[:max_results]
+    if any(not isinstance(document, Mapping) for document in documents):
+        return _typed_failure(
+            "Doubao Search returned an invalid result entry.",
+            "doubao_search_response_invalid",
+            retryable=True,
+        )
+    if not documents:
+        return _typed_success(f'No Doubao Search results found for "{query}".')
+
+    formatted: list[str] = []
+    for index, document in enumerate(documents, 1):
+        title = str(document.get("Title") or "Untitled")
+        url = str(document.get("Url") or "")
+        host_info = document.get("HostInfo")
+        document_info = document.get("DocumentInfo")
+        host = host_info.get("Hostname") if isinstance(host_info, Mapping) else ""
+        published = document_info.get("PublishTime") if isinstance(document_info, Mapping) else ""
+        token_count = document_info.get("ContentTokenCount") if isinstance(document_info, Mapping) else None
+        snippets = document.get("Snippet")
+        text_parts = [
+            str(part.get("Text")).strip()
+            for part in snippets or []
+            if isinstance(part, Mapping) and part.get("Type") == "text" and part.get("Text")
+        ]
+        image_urls = [
+            str(image.get("ImageUrl")).strip()
+            for part in snippets or []
+            if isinstance(part, Mapping) and part.get("Type") == "image"
+            for image in [part.get("Image")]
+            if isinstance(image, Mapping) and image.get("ImageUrl")
+        ][:max_images]
+        metadata = " | ".join(
+            str(value)
+            for value in (
+                host,
+                published,
+                f"{token_count} tokens" if token_count else "",
+            )
+            if value
+        )
+        lines = [f"**{index}. {title}**"]
+        if metadata:
+            lines.append(f"Source: {metadata}")
+        lines.extend((url, "\n".join(text_parts)))
+        lines.extend(
+            f"![{title} image {image_index}]({image_url})"
+            for image_index, image_url in enumerate(image_urls, 1)
+        )
+        formatted.append("\n".join(line for line in lines if line))
+    return _typed_success(
+        f'Doubao Search results for "{query}" ({len(documents)} items):\n\n'
+        + "\n\n---\n\n".join(formatted)
+    )
+
+
+async def _doubao_search_tool(
+    arguments: dict,
+    agent_id: uuid.UUID | None = None,
+) -> str:
+    """Legacy display adapter for typed Doubao Search."""
+    outcome = await _doubao_search_outcome(arguments, agent_id)
+    return _legacy_tool_outcome_text(
+        outcome,
+        fallback="Doubao Search returned no summary.",
     )
 
 
