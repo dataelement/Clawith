@@ -936,10 +936,10 @@ _BUILTIN_TOOL_SOURCE = [
     },
     {
         "name": "doubao_search",
-        "display_name": "豆包搜索",
+        "display_name": "豆包搜索（测试）",
         "description": (
-            "使用火山引擎豆包搜索检索互联网，返回标题、网址、来源、发布时间和正文摘要。"
-            "需要豆包搜索 API Key。"
+            "测试功能：按火山引擎国内豆包搜索文档接入，尚未使用真实 API Key 完成联调。"
+            "可返回标题、网址、来源、发布时间、正文摘要和图片。"
         ),
         "category": "search",
         "icon": "🔎",
@@ -981,7 +981,7 @@ _BUILTIN_TOOL_SOURCE = [
             "fields": [
                 {
                     "key": "api_key",
-                    "label": "豆包搜索 API Key",
+                    "label": "豆包搜索 API Key（测试功能）",
                     "type": "password",
                     "default": "",
                     "placeholder": "从火山引擎豆包搜索控制台获取",
