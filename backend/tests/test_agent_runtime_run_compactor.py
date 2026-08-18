@@ -757,7 +757,7 @@ async def test_unknown_provider_failure_is_typed_for_langgraph_retry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invalid_summary_is_deterministic_and_never_committed() -> None:
+async def test_empty_summary_is_transient_and_never_committed() -> None:
     state, context, tenant_id = _state(
         [_normal("old", "old " * 300), _normal("current")]
     )
@@ -771,7 +771,7 @@ async def test_invalid_summary_is_deterministic_and_never_committed() -> None:
             usage=TokenUsage(total_tokens=1),
         )
 
-    with pytest.raises(RunCompactorError) as raised:
+    with pytest.raises(TransientRunCompactorError) as raised:
         await _service(
             model=_model(tenant_id),
             completion=complete,
@@ -780,6 +780,7 @@ async def test_invalid_summary_is_deterministic_and_never_committed() -> None:
         ).compact_if_needed(state, context)
 
     assert raised.value.code == "empty_thread_compact_output"
+    assert raised.value.is_transient_compact_error is True
     assert "thread_summary" not in state
     assert "summary_covered_through_message_id" not in state
 

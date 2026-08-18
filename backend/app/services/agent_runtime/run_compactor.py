@@ -8,6 +8,8 @@ import json
 from typing import Protocol, cast
 import uuid
 
+from loguru import logger
+
 from app.config import Settings, get_settings
 from app.models.llm import LLMModel
 from app.services.agent_runtime.model_capabilities import (
@@ -441,7 +443,13 @@ def _prompt_messages(payload: JsonObject) -> list[LLMMessage]:
 def _summary_from_step(step: LLMCompletionStep) -> JsonObject:
     text = step.content.strip()
     if not text:
-        raise RunCompactorError(
+        logger.warning(
+            "[ThreadCompact] Provider returned no summary text "
+            f"(finish_reason={step.finish_reason!r}, "
+            f"reasoning_present={bool(step.reasoning_content)}, "
+            f"tool_call_count={len(step.tool_calls)})"
+        )
+        raise TransientRunCompactorError(
             "empty_thread_compact_output",
             "Thread Compact model returned no summary text",
         )
