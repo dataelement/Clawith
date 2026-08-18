@@ -29,6 +29,19 @@ from app.services.storage import store_agent_upload
 
 router = APIRouter(tags=["feishu"])
 
+_FEISHU_GROUP_PASSIVE_INSTRUCTION = (
+    "You are passively listening in a Feishu group. A message directly addresses you if it "
+    "@mentions you, names you or your Agent name, asks you a question or gives you an "
+    "instruction, or explicitly asks you to reply. You must visibly answer every directly "
+    "addressed message even when it is outside your usual responsibilities. For messages "
+    "that do not directly address you, reply normally only when your responsibilities require "
+    "a visible response; otherwise your entire final response must be exactly NO_REPLY, with "
+    "no other text. Your final response is automatically delivered to the input Feishu group. "
+    "Never call send_channel_message to reply to the current conversation. Use that Tool only "
+    "when the user explicitly asks you to send a separate message to another person or group, "
+    "and then set cross_session_confirmed=true."
+)
+
 _USER_RESOLUTION_ERROR_TIP = (
     "抱歉，我暂时无法稳定识别你的飞书账号，已停止本次处理以避免重复创建账号。"
     "请稍后重试，或联系管理员检查飞书 Contact API 权限。"
@@ -402,10 +415,17 @@ async def _accept_feishu_runtime_message(
             created_by_user_id=user.id,
         )
         _, model, _ = await _load_agent_and_model(db, agent_id)
-        sender_name = (user.display_name or "").strip()
-        executable_content = (
-            f"[发送者: {sender_name}] {content}" if sender_name else content
+        sender_name = (user.display_name or "").strip() or "未知用户"
+        sender_identity = " | ".join(
+            part
+            for part in (
+                f"飞书发送者: {sender_name}",
+                f"user_id: {sender_user_id.strip()}" if sender_user_id.strip() else "",
+                f"open_id: {sender_open_id.strip()}" if sender_open_id.strip() else "",
+            )
+            if part
         )
+        executable_content = f"[{sender_identity}] {content}"
         intake = await enqueue_channel_chat_runtime(
             db,
             agent=agent,
@@ -414,6 +434,9 @@ async def _accept_feishu_runtime_message(
             model=model,
             content=executable_content,
             display_content=display_content,
+            runtime_instruction=(
+                _FEISHU_GROUP_PASSIVE_INSTRUCTION if is_group else ""
+            ),
             source_channel="feishu",
             channel_delivery_target={
                 "receive_id": chat_id if is_group else sender_open_id,
@@ -492,11 +515,19 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
     if event_type == "im.message.receive_v1":
         message = event.get("message", {})
         sender = event.get("sender", {}).get("sender_id", {})
+        sender_type = event.get("sender", {}).get("sender_type", "")
         sender_open_id = sender.get("open_id", "")
         sender_user_id_from_event = sender.get("user_id", "")  # tenant-stable ID, available directly in event body
         msg_type = message.get("message_type", "text")
         chat_type = message.get("chat_type", "p2p")  # p2p or group
         chat_id = message.get("chat_id", "")
+
+        if chat_type == "group" and sender_type and sender_type != "user":
+            logger.info(
+                "[Feishu] Ignoring non-user group message sender_type={}",
+                sender_type,
+            )
+            return {"code": 0, "msg": "non-user group message ignored"}
 
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, open_id={sender_open_id!r}, user_id_from_event={sender_user_id_from_event!r}")
 
@@ -574,7 +605,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 sender_user_id=sender_user_id_from_event,
                 chat_type=chat_type,
                 chat_id=chat_id,
-                external_event_id=event_id or message.get("message_id"),
+                external_event_id=message.get("message_id") or event_id,
             )
             if attachment is not None:
                 if event_id:
@@ -612,7 +643,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 chat_id=chat_id,
                 content=user_text,
                 display_content=display_content,
-                external_event_id=event_id or message.get("message_id"),
+                external_event_id=message.get("message_id") or event_id,
             )
         except Exception as exc:
             from app.services.channel_user_service import ChannelUserResolutionError

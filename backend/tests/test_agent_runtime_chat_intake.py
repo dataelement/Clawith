@@ -348,10 +348,16 @@ async def test_external_group_chat_uses_unified_session_without_native_group_sco
     assert message.user_id is None
     assert message.participant_id == participant.id
     command = start_run.await_args.args[0]
-    assert command.runtime_thread_id is None
-    assert command.scheduling_lane_key is None
-    assert command.scheduling_position_created_at is None
-    assert command.scheduling_position_id is None
+    assert command.runtime_thread_id == str(session.id)
+    assert command.scheduling_lane_key == (
+        f"external_group_thread:{agent.tenant_id}:{session.id}"
+    )
+    assert command.scheduling_position_created_at == message.created_at
+    assert command.scheduling_position_id == message.id
+    assert command.payload["context_cutoff"] == {
+        "message_id": str(message.id),
+        "created_at": message.created_at.isoformat(),
+    }
     assert command.delivery_target == {
         "kind": "session",
         "session_id": str(session.id),

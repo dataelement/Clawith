@@ -3785,6 +3785,24 @@ async def _edit_file_outcome(
     )
 
 
+def _channel_cross_session_error(arguments: Mapping[str, object], session_id: str) -> str | None:
+    if not session_id:
+        return None
+    target_recipient_id = str(arguments.get("target_recipient_id") or "").strip()
+    target_member_id = str(arguments.get("target_member_id") or "").strip()
+    cross_session = bool(
+        target_member_id
+        or (target_recipient_id and target_recipient_id != session_id)
+    )
+    if cross_session and arguments.get("cross_session_confirmed") is not True:
+        return (
+            "Cross-Session channel delivery rejected. Normal replies are automatically "
+            "returned to the input Session. Set cross_session_confirmed=true only when the "
+            "user explicitly requested another person or group."
+        )
+    return None
+
+
 async def execute_builtin_tool_outcome(
     tool_name: str,
     arguments: dict,
@@ -3813,6 +3831,13 @@ async def execute_builtin_tool_outcome(
             path_error,
             "workspace_path_invalid",
         )
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return _typed_failure(
+                cross_session_error,
+                "cross_session_delivery_not_confirmed",
+            )
     if (
         tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
         and arguments.get("workspace_scope", "agent") != "agent"
@@ -4340,6 +4365,11 @@ async def execute_tool(
             "Feishu approval creation is blocked outside Durable Runtime "
             "conversation confirmation."
         )
+
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return f"❌ {cross_session_error}"
 
     path_error = _agent_relative_path_error(tool_name, arguments)
     if path_error is not None:

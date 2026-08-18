@@ -114,6 +114,7 @@ async def enqueue_channel_chat_runtime(
     channel_delivery_target: dict,
     display_content: str = "",
     file_name: str = "",
+    runtime_instruction: str = "",
 ) -> ChatRuntimeIntake:
     """Atomically attach a channel message to a new or waiting Chat Run."""
     if agent.tenant_id is None or model is None:
@@ -139,6 +140,7 @@ async def enqueue_channel_chat_runtime(
             content=content,
             display_content=display_content,
             file_name=file_name,
+            runtime_instruction=runtime_instruction,
             message_id=message_id,
             resume_run_id=resume[0] if resume is not None else None,
             resume_correlation_id=resume[1] if resume is not None else None,
