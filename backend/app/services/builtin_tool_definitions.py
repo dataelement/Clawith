@@ -938,7 +938,7 @@ _BUILTIN_TOOL_SOURCE = [
         "name": "doubao_search",
         "display_name": "豆包搜索（测试）",
         "description": (
-            "测试功能：按火山引擎国内豆包搜索文档接入，尚未使用真实 API Key 完成联调。"
+            "该功能仍在测试阶段，服务可能不稳定；如遇失败，请稍后重试。"
             "可返回标题、网址、来源、发布时间、正文摘要和图片。"
         ),
         "category": "search",
