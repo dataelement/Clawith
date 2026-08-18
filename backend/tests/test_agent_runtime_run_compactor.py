@@ -363,7 +363,8 @@ async def test_large_image_base64_is_excluded_from_recent_budget_and_compact_pro
     assert result.recent_messages[-1]["content"] == marker
     serialized = json.dumps(payloads, ensure_ascii=False)
     assert "base64," not in serialized
-    assert "image omitted from compact prompt" in serialized
+    assert "image omitted from compact prompt" not in serialized
+    assert "inspect" not in serialized
 
 
 @pytest.mark.asyncio
@@ -398,9 +399,8 @@ async def test_long_single_run_compacts_safe_work_after_exact_current_input() ->
         "recent",
     ]
     assert result.recent_messages[0]["content"] == "EXACT CURRENT INPUT"
-    assert payloads[0]["authoritative_exact_inputs"][0]["content"] == (
-        "EXACT CURRENT INPUT"
-    )
+    assert "authoritative_exact_inputs" not in payloads[0]
+    assert "EXACT CURRENT INPUT" not in json.dumps(payloads, ensure_ascii=False)
 
 
 @pytest.mark.asyncio
@@ -536,9 +536,9 @@ async def test_current_run_repair_state_stays_raw_but_out_of_compact_prompt() ->
         "current-draft",
         "current-repair",
     ]
-    exact_inputs = payloads[0]["authoritative_exact_inputs"]
-    assert [message["id"] for message in exact_inputs] == ["current"]
     serialized_payload = json.dumps(payloads, ensure_ascii=False)
+    assert "authoritative_exact_inputs" not in payloads[0]
+    assert "EXACT CURRENT INPUT" not in serialized_payload
     assert "CURRENT PRIVATE DRAFT" not in serialized_payload
     assert FINISH_PROTOCOL_REMINDER not in serialized_payload
 
