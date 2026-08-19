@@ -2309,7 +2309,24 @@ async def test_group_handoff_preflight_failure_repairs_without_finishing() -> No
 
 
 @pytest.mark.asyncio
-async def test_group_run_repairs_waiting_user_instead_of_entering_unresumable_wait() -> None:
+@pytest.mark.parametrize(
+    "group_input",
+    (
+        {"group_context": {"group": {"group_id": str(uuid.uuid4())}}},
+        {
+            "source_channel": "feishu",
+            "chat_session_type": "group",
+            "context_cutoff": {
+                "message_id": str(uuid.uuid4()),
+                "created_at": "2026-08-19T01:50:31+00:00",
+            },
+        },
+    ),
+    ids=("native-group", "external-feishu-group"),
+)
+async def test_group_run_repairs_waiting_user_instead_of_entering_unresumable_wait(
+    group_input: dict[str, object],
+) -> None:
     tenant_id = uuid.uuid4()
     model = _model(tenant_id)
     agent = _agent(tenant_id)
@@ -2319,7 +2336,7 @@ async def test_group_run_repairs_waiting_user_instead_of_entering_unresumable_wa
         session_context_version=1,
         recent_session_messages=state["snapshots"].recent_session_messages,
         related_run_summaries=(),
-        initial_input={"group_context": {"group": {"group_id": str(uuid.uuid4())}}},
+        initial_input=group_input,
     )
 
     async def complete(*args, **kwargs):

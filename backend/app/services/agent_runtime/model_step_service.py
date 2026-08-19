@@ -391,6 +391,20 @@ def _is_group_agent_run(state: RuntimeGraphState) -> bool:
     )
 
 
+def _is_public_group_chat_run(state: RuntimeGraphState) -> bool:
+    initial_input = state["snapshots"].initial_input
+    if _is_group_agent_run(state):
+        return True
+    if initial_input.get("chat_session_type") == "group":
+        return True
+    # Backward compatibility for external-group checkpoints created before
+    # chat_session_type became an explicit immutable Run input.
+    return (
+        initial_input.get("source_channel") not in {None, "web"}
+        and isinstance(initial_input.get("context_cutoff"), Mapping)
+    )
+
+
 def _with_runtime_tools(
     tools: list[dict],
     *,
@@ -1435,7 +1449,8 @@ class RuntimeModelStepService:
     ) -> RunCompactInputs:
         """Profile the exact business request shape used by the Compact node."""
         model, agent, ledger = await self._load(context, state)
-        allow_user_wait = not _is_group_agent_run(state)
+        is_native_group = _is_group_agent_run(state)
+        allow_user_wait = not _is_public_group_chat_run(state)
         application_tools = (
             with_group_runtime_tools(
                 await self._tool_provider(agent.id),
@@ -1451,7 +1466,7 @@ class RuntimeModelStepService:
         tools = _with_runtime_tools(
             application_tools,
             allow_user_wait=allow_user_wait,
-            allow_group_handoff=not allow_user_wait,
+            allow_group_handoff=is_native_group,
         )
         allowed_names = frozenset(
             name for name in (_tool_name(tool) for tool in tools) if name
@@ -1785,7 +1800,8 @@ class RuntimeModelStepService:
     ) -> ModelStepResult:
         try:
             model, agent, ledger = await self._load(context, state)
-            allow_user_wait = not _is_group_agent_run(state)
+            is_native_group = _is_group_agent_run(state)
+            allow_user_wait = not _is_public_group_chat_run(state)
             application_tools = (
                 with_group_runtime_tools(
                     await self._tool_provider(agent.id),
@@ -1802,7 +1818,7 @@ class RuntimeModelStepService:
             tools = _with_runtime_tools(
                 application_tools,
                 allow_user_wait=allow_user_wait,
-                allow_group_handoff=not allow_user_wait,
+                allow_group_handoff=is_native_group,
             )
             allowed_names = frozenset(
                 name for name in (_tool_name(tool) for tool in tools) if name
@@ -1887,7 +1903,7 @@ class RuntimeModelStepService:
                 fallback_tools = _with_runtime_tools(
                     fallback_application_tools,
                     allow_user_wait=allow_user_wait,
-                    allow_group_handoff=not allow_user_wait,
+                    allow_group_handoff=is_native_group,
                 )
                 fallback_allowed_names = frozenset(
                     name
@@ -1970,7 +1986,7 @@ class RuntimeModelStepService:
                 step,
                 allowed_tool_names=active_allowed_names,
                 allow_user_wait=allow_user_wait,
-                allow_group_handoff=not allow_user_wait,
+                allow_group_handoff=is_native_group,
             )
             reset_reason = _tool_repair_reset_reason(state)
             if reset_reason is not None:
@@ -1985,7 +2001,7 @@ class RuntimeModelStepService:
                         active_tools,
                     ),
                 )
-            if result.intent == "finish" and not allow_user_wait:
+            if result.intent == "finish" and is_native_group:
                 try:
                     staged_participant_ids = _pending_group_at_participant_ids(state)
                     legacy_participant_ids = result.finish_mention_participant_ids

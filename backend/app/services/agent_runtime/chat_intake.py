@@ -729,6 +729,7 @@ async def enqueue_chat_runtime(
                 "message_id": str(resolved_message_id),
                 "input_content": runtime_content,
                 "source_channel": normalized_channel,
+                "chat_session_type": session.session_type,
                 "user_id": str(user.id),
                 "application_tools_enabled": application_tools_enabled,
                 **(

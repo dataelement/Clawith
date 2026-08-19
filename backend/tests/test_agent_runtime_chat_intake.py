@@ -358,6 +358,7 @@ async def test_external_group_chat_uses_unified_session_without_native_group_sco
         "message_id": str(message.id),
         "created_at": message.created_at.isoformat(),
     }
+    assert command.payload["chat_session_type"] == "group"
     assert command.delivery_target == {
         "kind": "session",
         "session_id": str(session.id),
