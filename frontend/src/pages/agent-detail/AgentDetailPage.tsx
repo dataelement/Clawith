@@ -78,6 +78,7 @@ import {
     toolReconciliationsByCallId,
     waitingSessionActiveRunHint,
 } from './sessionRuntimeState';
+import { belongsInOtherSessions } from './sessionVisibility';
 import { onboardingKickoffKey, shouldKickoffOnboarding } from './onboardingKickoff';
 import { fetchAuth } from './utils/fetchAuth';
 import {
@@ -2617,10 +2618,6 @@ export default function AgentDetailPage() {
     /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
     const sessionUserIdStr = (s: any) => (s?.user_id == null ? '' : String(s.user_id));
     const viewerUserIdStr = () => (currentUser?.id == null ? '' : String(currentUser.id));
-    const isAgentChatSession = (s: any) =>
-        String(s?.source_channel || '').toLowerCase() === 'agent' ||
-        String(s?.participant_type || '').toLowerCase() === 'agent';
-
     /** Ensure session shape from POST/list so P2P "mine" is never mistaken for read-only or agent thread. */
     const normalizeChatSession = (sess: any) => {
         if (!sess || typeof sess !== 'object') return sess;
@@ -2669,18 +2666,10 @@ export default function AgentDetailPage() {
 
     const isViewingOtherUsersSessions = canViewAllAgentChatSessions && chatScope === 'all';
 
-    /** Sessions in scope=all that are not the current viewer's own P2P rows (for admin「其他用户」tab).
-     *  Agent-to-agent sessions (source_channel === 'agent') store the creator's user_id, so we must
-     *  exempt them from the user_id check — otherwise they'd always be hidden. */
+    /** Sessions in scope=all that belong on the admin-facing "Other sessions" surface. */
     const otherUsersSessions = useMemo(() => {
         const vu = viewerUserIdStr();
-        return allSessions.filter((s: any) => {
-            // Always show agent-to-agent sessions in the "Other users" tab
-            if (isAgentChatSession(s)) return true;
-            const su = sessionUserIdStr(s);
-            if (vu && su === vu) return false;
-            return true;
-        });
+        return allSessions.filter((s: any) => belongsInOtherSessions(s, vu));
     }, [allSessions, currentUser?.id]);
 
     const othersListForPicker = otherUsersSessions;
