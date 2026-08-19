@@ -231,7 +231,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────
-const FEISHU_PERM_BASIC_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.group_msg","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource"],"user":[]}}';
+const FEISHU_PERM_BASIC_JSON = '{"scopes":{"tenant":["contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","im:chat","im:message","im:message.group_at_msg:readonly","im:message.group_msg","im:message.p2p_msg:readonly","im:message.reactions:write_only","im:message:send_as_bot","im:resource"],"user":[]}}';
 
 const FEISHU_PERM_BASIC_DISPLAY = `{
   "scopes": {
@@ -245,6 +245,7 @@ const FEISHU_PERM_BASIC_DISPLAY = `{
       "im:message.group_at_msg:readonly",
       "im:message.group_msg",
       "im:message.p2p_msg:readonly",
+      "im:message.reactions:write_only",
       "im:message:send_as_bot",
       "im:resource"
     ],
@@ -252,7 +253,7 @@ const FEISHU_PERM_BASIC_DISPLAY = `{
   }
 }`;
 
-const FEISHU_PERM_FULL_JSON = '{"scopes":{"tenant":["approval:approval","base:app:create","base:dashboard:create","base:field_group:create","bitable:app","bitable:app:readonly","board:whiteboard:node:create","calendar:calendar.event:create","calendar:calendar.event:delete","calendar:calendar.event:read","calendar:calendar.event:update","calendar:calendar.free_busy:read","calendar:calendar:readonly","contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","docx:document","docx:document:create","drive:drive","im:chat","im:message","im:message.group_at_msg:readonly","im:message.group_msg","im:message.p2p_msg:readonly","im:message:send_as_bot","im:resource","sheets:spreadsheet:create","slides:presentation:create","slides:presentation:write_only","wiki:wiki","wiki:wiki:readonly"],"user":[]}}';
+const FEISHU_PERM_FULL_JSON = '{"scopes":{"tenant":["approval:approval","base:app:create","base:dashboard:create","base:field_group:create","bitable:app","bitable:app:readonly","board:whiteboard:node:create","calendar:calendar.event:create","calendar:calendar.event:delete","calendar:calendar.event:read","calendar:calendar.event:update","calendar:calendar.free_busy:read","calendar:calendar:readonly","contact:contact.base:readonly","contact:user.base:readonly","contact:user.employee_id:readonly","contact:user.id:readonly","docx:document","docx:document:create","drive:drive","im:chat","im:message","im:message.group_at_msg:readonly","im:message.group_msg","im:message.p2p_msg:readonly","im:message.reactions:write_only","im:message:send_as_bot","im:resource","sheets:spreadsheet:create","slides:presentation:create","slides:presentation:write_only","wiki:wiki","wiki:wiki:readonly"],"user":[]}}';
 
 const FEISHU_PERM_FULL_DISPLAY = `{
   "scopes": {
@@ -282,6 +283,7 @@ const FEISHU_PERM_FULL_DISPLAY = `{
       "im:message.group_at_msg:readonly",
       "im:message.group_msg",
       "im:message.p2p_msg:readonly",
+      "im:message.reactions:write_only",
       "im:message:send_as_bot",
       "im:resource",
       "sheets:spreadsheet:create",

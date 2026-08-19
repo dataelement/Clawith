@@ -935,6 +935,17 @@ async def deliver_runtime_message(
     )
     channel_delivery = None
     if not suppress_feishu_group_reply:
+        reaction_target_overrides = (
+            {"reaction_emoji_type": "GLANCE"}
+            if (
+                request.kind == "terminal"
+                and request.lifecycle_status == "completed"
+                and session.session_type == "group"
+                and session.group_id is None
+                and session.source_channel == "feishu"
+            )
+            else None
+        )
         channel_delivery = stage_channel_delivery(
             db,
             run=run,
@@ -942,6 +953,7 @@ async def deliver_runtime_message(
             message_id=message.id,
             idempotency_key=request.idempotency_key,
             clock=now,
+            target_overrides=reaction_target_overrides,
         )
     receipt = DeliveryReceipt(
         tenant_id=run.tenant_id,

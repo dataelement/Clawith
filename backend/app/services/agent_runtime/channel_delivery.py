@@ -148,12 +148,15 @@ def stage_channel_delivery(
     message_id: uuid.UUID,
     idempotency_key: str,
     clock: Callable[[], datetime],
+    target_overrides: dict | None = None,
 ) -> ChannelDelivery | None:
     """Add one provider outbox row to the caller's ChatMessage transaction."""
     route = _route(run, session)
     if route is None:
         return None
     channel, target = route
+    if target_overrides:
+        target.update(target_overrides)
     delivery = ChannelDelivery(
         id=_delivery_id(run.id, idempotency_key),
         tenant_id=run.tenant_id,

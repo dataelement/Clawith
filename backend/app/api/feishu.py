@@ -441,6 +441,11 @@ async def _accept_feishu_runtime_message(
             channel_delivery_target={
                 "receive_id": chat_id if is_group else sender_open_id,
                 "receive_id_type": "chat_id" if is_group else "open_id",
+                **(
+                    {"source_message_id": external_event_id.strip()}
+                    if is_group and external_event_id and external_event_id.strip()
+                    else {}
+                ),
             },
             message_id=channel_message_id(
                 agent_id,

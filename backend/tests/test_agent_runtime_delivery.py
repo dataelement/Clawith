@@ -666,6 +666,7 @@ async def test_external_group_delivery_uses_channel_scope_without_native_members
     assert outbox[0].message_id == message.id
     assert outbox[0].channel == "feishu"
     assert outbox[0].target["receive_id"] == "oc_123"
+    assert outbox[0].target["reaction_emoji_type"] == "GLANCE"
     assert run.delivery_status == "pending"
     assert len(db.statements) == 5
 

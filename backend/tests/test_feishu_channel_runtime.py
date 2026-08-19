@@ -185,6 +185,7 @@ async def test_feishu_group_message_uses_runtime_intake(monkeypatch) -> None:
     assert intake_call["channel_delivery_target"] == {
         "receive_id": "oc_group_1",
         "receive_id_type": "chat_id",
+        "source_message_id": event_id,
     }
     assert intake_call["message_id"] == feishu.channel_message_id(
         agent_id,
