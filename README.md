@@ -245,7 +245,7 @@ You can also scan the QR code below to join our community on mobile:
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left&v=2)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=dataelement/Clawith&type=date&legend=top-left)](https://star-history.dera.page/#dataelement/Clawith&type=date&legend=top-left)
 
 ## 📄 License
 

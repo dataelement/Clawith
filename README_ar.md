@@ -253,7 +253,7 @@ docker compose up -d --build
 
 ## ⭐ تاريخ النجوم
 
-[![Star History Chart](https://api.star-history.com/image?repos=dataelement/Clawith&type=date&legend=top-left)](https://www.star-history.com/?repos=dataelement%2FClawith&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=dataelement/Clawith&type=date&legend=top-left)](https://star-history.dera.page/#dataelement/Clawith&type=date&legend=top-left)
 
 ## 📄 الترخيص
 
