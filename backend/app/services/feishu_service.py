@@ -429,6 +429,28 @@ class FeishuService:
             data = self._parse_api_response(resp, stage=stage, message_id=message_id)
             return data
 
+    async def add_message_reaction(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        emoji_type: str,
+        stage: str = "add_message_reaction",
+    ) -> dict:
+        """Add one bot-identity reaction to an existing Feishu message."""
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": app_id, "app_secret": app_secret},
+            )
+            app_token = token_resp.json().get("app_access_token", "")
+            resp = await client.post(
+                f"{FEISHU_SEND_MSG_URL}/{message_id}/reactions",
+                json={"reaction_type": {"emoji_type": emoji_type}},
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+        return self._parse_api_response(resp, stage=stage, message_id=message_id)
+
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:
         """Resolve a user's open_id for a specific app using email or mobile.

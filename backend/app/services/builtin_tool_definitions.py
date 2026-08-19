@@ -554,7 +554,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "send_channel_message",
         "display_name": "Channel Message",
-        "description": "Send a message through an external channel. For a person, use query_directory then target_member_id. For a Feishu group, use query_directory(member_type='group') then target_recipient_id. Do not guess IDs.",
+        "description": "Send a proactive message through an external channel. Normal replies are automatically delivered to the current input Session and must not use this Tool. Use it only when the user explicitly asks to message another person or group. For a person, use query_directory then target_member_id. For a Feishu group, use query_directory(member_type='group') then target_recipient_id. Do not guess IDs.",
         "category": "communication",
         "icon": "💬",
         "is_default": False,
@@ -568,6 +568,10 @@ _BUILTIN_TOOL_SOURCE = [
                     "type": "string",
                     "description": "Optional: specific external channel to use.",
                     "enum": ["feishu", "dingtalk", "wecom", "slack", "teams", "microsoft_teams", "wechat"],
+                },
+                "cross_session_confirmed": {
+                    "type": "boolean",
+                    "description": "Set true only when the user explicitly requested sending to another person or group outside the current input Session.",
                 },
             },
             "required": ["message"],
@@ -2184,7 +2188,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "feishu_user_search",
         "display_name": "Feishu User Search",
-        "description": "Search the visible tenant directory for contactable Feishu colleagues. Returns stable member IDs and display facts only; use target_member_id with channel tools.",
+        "description": "Search colleagues visible to the Agent's configured Feishu app. Synced contacts include stable member IDs; live Feishu matches expose display facts only.",
         "category": "feishu",
         "icon": "🔍",
         "is_default": False,

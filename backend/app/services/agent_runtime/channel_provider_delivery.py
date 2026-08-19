@@ -7,6 +7,7 @@ import json
 import os
 
 import httpx
+from loguru import logger
 from sqlalchemy import select
 
 from app.models.channel_config import ChannelConfig
@@ -115,6 +116,8 @@ class DatabaseChannelDeliverySender:
                 "channel_target_invalid",
                 "Unsupported Feishu receive_id_type",
             )
+        if receive_id_type == "chat_id":
+            await self._add_feishu_group_reply_reaction(envelope, config)
         response = await feishu_service.send_message(
             config.app_id,
             config.app_secret,
@@ -128,6 +131,36 @@ class DatabaseChannelDeliverySender:
         return ChannelSendResult(
             provider_message_id=str(message_id) if message_id else None,
         )
+
+    @staticmethod
+    async def _add_feishu_group_reply_reaction(
+        envelope: ChannelDeliveryEnvelope,
+        config: _ProviderConfig,
+    ) -> None:
+        source_message_id = envelope.target.get("source_message_id")
+        emoji_type = envelope.target.get("reaction_emoji_type")
+        if (
+            not isinstance(source_message_id, str)
+            or not source_message_id.strip()
+            or emoji_type != "GLANCE"
+        ):
+            return
+        try:
+            from app.services.feishu_service import feishu_service
+
+            await feishu_service.add_message_reaction(
+                config.app_id,
+                config.app_secret,
+                source_message_id.strip(),
+                emoji_type,
+                stage="runtime_group_reply_reaction",
+            )
+        except Exception as exc:
+            # A cosmetic acknowledgement must never block the durable reply.
+            logger.warning(
+                "[Feishu] Failed to add group reply reaction "
+                f"(message_id={source_message_id[:32]}): {exc}"
+            )
 
     async def _dingtalk(
         self,

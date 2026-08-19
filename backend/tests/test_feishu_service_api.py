@@ -74,6 +74,37 @@ async def test_patch_message_raises_when_business_code_nonzero(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_add_message_reaction_uses_glance_emoji(monkeypatch):
+    client = _FakeAsyncClient()
+    calls: dict[str, object] = {}
+
+    async def post(url, **kwargs):
+        if "app_access_token/internal" in url:
+            return _FakeResponse(200, {"app_access_token": "token_x"})
+        calls["url"] = url
+        calls["kwargs"] = kwargs
+        return _FakeResponse(200, {"code": 0, "msg": "ok", "data": {}})
+
+    client.post = post
+    monkeypatch.setattr(feishu_service_module.httpx, "AsyncClient", lambda: client)
+
+    await feishu_service_module.feishu_service.add_message_reaction(
+        "app_id",
+        "app_secret",
+        "om_source",
+        "GLANCE",
+        stage="unit_test_reaction",
+    )
+
+    assert calls["url"] == (
+        "https://open.feishu.cn/open-apis/im/v1/messages/om_source/reactions"
+    )
+    assert calls["kwargs"]["json"] == {  # type: ignore[index]
+        "reaction_type": {"emoji_type": "GLANCE"}
+    }
+
+
+@pytest.mark.asyncio
 async def test_list_bot_chats_uses_app_identity_and_parses_groups(monkeypatch):
     client = _FakeAsyncClient(
         get_payload={

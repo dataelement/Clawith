@@ -11,6 +11,7 @@ import pytest
 
 from app.api import feishu
 from app.services import channel_session
+from app.services import agent_tools
 from app.services.agent_runtime.chat_intake import ChatRuntimeIntake
 from app.services.agent_runtime.contracts import RunHandle, RuntimeEventCursor
 
@@ -164,17 +165,63 @@ async def test_feishu_group_message_uses_runtime_intake(monkeypatch) -> None:
     assert session_call["created_by_user_id"] == user_id
     intake_call = calls["intake"]
     assert isinstance(intake_call, dict)
-    assert intake_call["content"] == "[发送者: Alice] Hello Feishu"
+    assert intake_call["content"] == (
+        "[飞书发送者: Alice | user_id: feishu-user-1 | open_id: ou_sender] "
+        "Hello Feishu"
+    )
     assert intake_call["display_content"] == "Hello Feishu"
+    assert intake_call["runtime_instruction"] == (
+        "You are passively listening in a Feishu group. A message directly addresses you if it "
+        "@mentions you, names you or your Agent name, asks you a question or gives you an "
+        "instruction, or explicitly asks you to reply. You must visibly answer every directly "
+        "addressed message even when it is outside your usual responsibilities. For messages "
+        "that do not directly address you, reply normally only when your responsibilities require "
+        "a visible response; otherwise your entire final response must be exactly NO_REPLY, with "
+        "no other text. Your final response is automatically delivered to the input Feishu group. "
+        "Never call send_channel_message to reply to the current conversation. Use that Tool only "
+        "when the user explicitly asks you to send a separate message to another person or group, "
+        "and then set cross_session_confirmed=true."
+    )
     assert intake_call["channel_delivery_target"] == {
         "receive_id": "oc_group_1",
         "receive_id_type": "chat_id",
+        "source_message_id": event_id,
     }
     assert intake_call["message_id"] == feishu.channel_message_id(
         agent_id,
         "feishu",
         event_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_send_channel_message_rejects_unconfirmed_cross_session_target() -> None:
+    result = await agent_tools.execute_tool(
+        "send_channel_message",
+        {
+            "channel": "feishu",
+            "target_recipient_id": str(uuid.uuid4()),
+            "message": "wrong group",
+        },
+        uuid.uuid4(),
+        uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+    )
+
+    assert result.startswith("❌ Cross-Session channel delivery rejected")
+
+    typed = await agent_tools.execute_builtin_tool_outcome(
+        "send_channel_message",
+        {
+            "channel": "feishu",
+            "target_recipient_id": str(uuid.uuid4()),
+            "message": "wrong group",
+        },
+        uuid.uuid4(),
+        uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+    )
+    assert typed.error_code == "cross_session_delivery_not_confirmed"
 
 
 @pytest.mark.asyncio
@@ -224,7 +271,7 @@ async def test_feishu_event_commits_runtime_before_provider_ack(monkeypatch) -> 
     assert event_id in feishu._processed_events
     accepted = calls["accept"]
     assert isinstance(accepted, dict)
-    assert accepted["external_event_id"] == event_id
+    assert accepted["external_event_id"] == "om_message_1"
 
 
 @pytest.mark.asyncio

@@ -74,6 +74,7 @@ from app.services.feishu_group_targets import (
     resolve_feishu_group_target,
 )
 from app.services import agent_directory
+from app.services.feishu_contact_search import search_feishu_contacts
 from app.services.workspace_collaboration import (
     delete_workspace_file,
     move_workspace_path,
@@ -3779,6 +3780,24 @@ async def _edit_file_outcome(
     )
 
 
+def _channel_cross_session_error(arguments: Mapping[str, object], session_id: str) -> str | None:
+    if not session_id:
+        return None
+    target_recipient_id = str(arguments.get("target_recipient_id") or "").strip()
+    target_member_id = str(arguments.get("target_member_id") or "").strip()
+    cross_session = bool(
+        target_member_id
+        or (target_recipient_id and target_recipient_id != session_id)
+    )
+    if cross_session and arguments.get("cross_session_confirmed") is not True:
+        return (
+            "Cross-Session channel delivery rejected. Normal replies are automatically "
+            "returned to the input Session. Set cross_session_confirmed=true only when the "
+            "user explicitly requested another person or group."
+        )
+    return None
+
+
 async def execute_builtin_tool_outcome(
     tool_name: str,
     arguments: dict,
@@ -3807,6 +3826,13 @@ async def execute_builtin_tool_outcome(
             path_error,
             "workspace_path_invalid",
         )
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return _typed_failure(
+                cross_session_error,
+                "cross_session_delivery_not_confirmed",
+            )
     if (
         tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
         and arguments.get("workspace_scope", "agent") != "agent"
@@ -4330,6 +4356,11 @@ async def execute_tool(
             "Feishu approval creation is blocked outside Durable Runtime "
             "conversation confirmation."
         )
+
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return f"❌ {cross_session_error}"
 
     path_error = _agent_relative_path_error(tool_name, arguments)
     if path_error is not None:
@@ -18461,7 +18492,7 @@ async def _feishu_user_search_outcome(
     agent_id: uuid.UUID,
     arguments: dict,
 ) -> ToolExecutionOutcome:
-    """Project tenant-scoped Directory facts without exposing Provider IDs."""
+    """Search synced contacts first, then the Agent app's live Feishu scope."""
     query = arguments.get("query")
     if not isinstance(query, str) or not query.strip():
         return _typed_failure(
@@ -18551,6 +18582,47 @@ async def _feishu_user_search_outcome(
             "The tenant directory returned invalid pagination facts.",
             "query_directory_failed",
             retryable=True,
+        )
+    if not members:
+        token, token_error = await _feishu_access_token_outcome(agent_id)
+        if token_error is not None or token is None:
+            return token_error or _typed_failure(
+                "Feishu did not return a tenant access token.",
+                "feishu_token_rejected",
+            )
+        try:
+            live_matches, live_has_more = await search_feishu_contacts(
+                token,
+                query.strip(),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            return _feishu_read_exception_outcome("user_search", exc)
+        live_members: list[dict[str, object]] = []
+        for match in live_matches:
+            member = {
+                "display_name": match.display_name,
+                "source": "feishu_live",
+            }
+            if match.title:
+                member["title"] = match.title
+            live_members.append(member)
+        summary_payload = {
+            "query": query.strip(),
+            "returned_count": len(live_members),
+            "has_more": live_has_more,
+            "members": live_members,
+        }
+        return _typed_success(
+            _bounded_feishu_json(summary_payload),
+            metadata={
+                "returned_count": len(live_members),
+                "has_more": live_has_more,
+                "limit": limit,
+                "offset": offset,
+                "source": "feishu_live",
+            },
         )
     summary_payload = {
         "query": query.strip(),
@@ -19417,7 +19489,31 @@ async def _feishu_open_id_for_visible_name(
         open_id = provider.get("open_id")
         if isinstance(open_id, str) and open_id and open_id not in exact_open_ids:
             exact_open_ids.append(open_id)
-    return exact_open_ids[0] if len(exact_open_ids) == 1 else None
+    if len(exact_open_ids) == 1:
+        return exact_open_ids[0]
+    if len(exact_open_ids) > 1:
+        return None
+
+    token, token_error = await _feishu_access_token_outcome(agent_id)
+    if token_error is not None or token is None:
+        return None
+    live_matches, _ = await search_feishu_contacts(
+        token,
+        normalized_name,
+        limit=2,
+        offset=0,
+        exact_name=True,
+    )
+    live_exact_open_ids = {
+        match.open_id
+        for match in live_matches
+        if match.display_name.casefold() == normalized_name.casefold()
+    }
+    return (
+        next(iter(live_exact_open_ids))
+        if len(live_exact_open_ids) == 1
+        else None
+    )
 
 
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:

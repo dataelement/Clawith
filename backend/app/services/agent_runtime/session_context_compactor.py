@@ -297,7 +297,7 @@ class LLMSessionContextCompactor:
                     "session_context_unavailable",
                     "Session Compact target no longer exists",
                 )
-            if session.session_type == "group":
+            if session.session_type == "group" and session.group_id is not None:
                 model = await resolve_multi_agent_compact_model(
                     db,
                     self._settings,
@@ -308,6 +308,11 @@ class LLMSessionContextCompactor:
                     usage_agent_id=None,
                 )
 
+            if session.session_type == "group" and session.source_channel != "feishu":
+                raise SessionContextCompactorError(
+                    "session_compact_model_unavailable",
+                    "External Group Session channel is unsupported for compaction",
+                )
             if session.agent_id is None or session.agent_id != request.source_agent_id:
                 raise SessionContextCompactorError(
                     "session_context_agent_mismatch",

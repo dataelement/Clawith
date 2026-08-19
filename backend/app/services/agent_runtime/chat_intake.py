@@ -232,6 +232,10 @@ def _direct_lane_key(tenant_id: uuid.UUID, session_id: uuid.UUID) -> str:
     return f"direct_chat_thread:{tenant_id}:{session_id}"
 
 
+def _external_group_lane_key(tenant_id: uuid.UUID, session_id: uuid.UUID) -> str:
+    return f"external_group_thread:{tenant_id}:{session_id}"
+
+
 async def _direct_lane_holder(
     db: AsyncSession,
     *,
@@ -673,6 +677,12 @@ async def enqueue_chat_runtime(
     if channel_delivery_route is not None:
         delivery_target["channel_delivery"] = channel_delivery_route
     is_direct_thread = session.session_type == "direct"
+    is_external_group_thread = (
+        session.session_type == "group"
+        and session.group_id is None
+        and normalized_channel != "web"
+    )
+    uses_session_thread = is_direct_thread or is_external_group_thread
     scheduling_position_created_at = (
         persisted_message.created_at
         if persisted_message is not None
@@ -692,16 +702,26 @@ async def enqueue_chat_runtime(
             goal=_chat_goal(content, display_content, file_name),
             run_kind="foreground",
             model_id=model.id,
-            runtime_thread_id=(str(session.id) if is_direct_thread else None),
+            runtime_thread_id=(str(session.id) if uses_session_thread else None),
             scheduling_lane_key=(
                 _direct_lane_key(tenant_id, session.id)
                 if is_direct_thread
-                else None
+                else (
+                    _external_group_lane_key(tenant_id, session.id)
+                    if is_external_group_thread
+                    else None
+                )
             ),
             scheduling_position_created_at=(
-                scheduling_position_created_at if is_direct_thread else None
+                scheduling_position_created_at
+                if session.session_type in {"direct", "group"}
+                else None
             ),
-            scheduling_position_id=(resolved_message_id if is_direct_thread else None),
+            scheduling_position_id=(
+                resolved_message_id
+                if session.session_type in {"direct", "group"}
+                else None
+            ),
             delivery_status="pending",
             delivery_target=delivery_target,
             idempotency_key=f"start:{source_execution_id}",
@@ -709,8 +729,19 @@ async def enqueue_chat_runtime(
                 "message_id": str(resolved_message_id),
                 "input_content": runtime_content,
                 "source_channel": normalized_channel,
+                "chat_session_type": session.session_type,
                 "user_id": str(user.id),
                 "application_tools_enabled": application_tools_enabled,
+                **(
+                    {
+                        "context_cutoff": {
+                            "message_id": str(resolved_message_id),
+                            "created_at": scheduling_position_created_at.isoformat(),
+                        }
+                    }
+                    if session.session_type == "group"
+                    else {}
+                ),
                 **(
                     {"runtime_instruction": normalized_runtime_instruction}
                     if normalized_runtime_instruction
