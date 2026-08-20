@@ -147,8 +147,8 @@ from app.services.agent_runtime.tool_registry import (
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.STORAGE_LOCAL_ROOT or _settings.AGENT_DATA_DIR)
-TOOL_MATERIALIZE_MAX_FILE_BYTES = 10 * 1024 * 1024
-TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+TOOL_MATERIALIZE_MAX_FILE_BYTES = 50 * 1024 * 1024
+TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 500 * 1024 * 1024
 FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 FEISHU_APPROVAL_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 FEISHU_APPROVAL_CODE_MAX_CHARS = 256
@@ -1775,8 +1775,24 @@ async def _materialize_storage_path_with_budget(
     if await storage.is_file(storage_key):
         version = await storage.get_version(storage_key)
         if version.size > max_file_bytes:
+            logger.warning(
+                "Tool workspace materialization skipped file: "
+                "path={} size_bytes={} limit_bytes={} reason={}",
+                rel_path,
+                version.size,
+                max_file_bytes,
+                "per_file_limit",
+            )
             return
         if budget["total"] + version.size > TOOL_MATERIALIZE_MAX_TOTAL_BYTES:
+            logger.warning(
+                "Tool workspace materialization skipped file: "
+                "path={} size_bytes={} limit_bytes={} reason={}",
+                rel_path,
+                version.size,
+                TOOL_MATERIALIZE_MAX_TOTAL_BYTES,
+                "total_limit",
+            )
             return
         target = (local_root / rel_path).resolve()
         if not target.is_relative_to(local_root.resolve()):
