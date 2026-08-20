@@ -77,6 +77,8 @@ Each agent has a `soul.md` (personality), `memory.md` (long-term memory), and a 
 - Network access to LLM API endpoints
 
 > **Note:** Clawith does not run any AI models locally — all LLM inference is handled by external API providers (OpenAI, Anthropic, etc.). The local deployment is a standard web application with Docker orchestration.
+>
+> **OrcaRouter** is available as a first-class provider: in the enterprise LLM settings, add a model with provider **OrcaRouter** (base URL `https://api.orcarouter.ai/v1`) and any `sk-orca-...` key. See [orcarouter.ai](https://www.orcarouter.ai). It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
 
 #### Recommended Configurations
 

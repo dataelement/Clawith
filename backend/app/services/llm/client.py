@@ -2376,6 +2376,13 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url="https://openrouter.ai/api/v1",
         default_max_tokens=4096,
     ),
+    "orcarouter": ProviderSpec(
+        provider="orcarouter",
+        display_name="OrcaRouter",
+        protocol="openai_compatible",
+        default_base_url="https://api.orcarouter.ai/v1",
+        default_max_tokens=16384,
+    ),
     "zhipu": ProviderSpec(
         provider="zhipu",
         display_name="Zhipu",
