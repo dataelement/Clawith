@@ -136,8 +136,8 @@ def convert_chat_messages_to_llm_format(messages) -> list[dict]:
                 continue  # Skip malformed tool_call records
         else:
             entry: dict = {"role": msg.role, "content": msg.content}
-            if hasattr(msg, "thinking") and msg.thinking:
-                entry["thinking"] = msg.thinking
+            if msg.role == "assistant" and hasattr(msg, "thinking") and msg.thinking:
+                entry["reasoning_content"] = msg.thinking
             result.append(entry)
 
     return result
