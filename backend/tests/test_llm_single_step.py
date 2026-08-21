@@ -1,5 +1,6 @@
 """One-call LLM provider boundary tests for the durable Runtime."""
 
+import asyncio
 from types import SimpleNamespace
 import uuid
 
@@ -35,6 +36,16 @@ class _Client:
         self.calls.append(kwargs)
         if isinstance(self.response, Exception):
             raise self.response
+        return self.response
+
+    async def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        on_chunk = kwargs.get("on_chunk")
+        if on_chunk is not None:
+            await on_chunk("Hello")
+            await on_chunk(" world")
         return self.response
 
     async def close(self) -> None:
@@ -92,6 +103,141 @@ def _patch_client(monkeypatch, client: _Client) -> None:
     monkeypatch.setattr(single_step, "create_llm_client", lambda **kwargs: client)
     monkeypatch.setattr(single_step, "get_model_api_key", lambda model: "secret")
     monkeypatch.setattr(single_step, "get_max_tokens", lambda *args: 1024)
+
+
+@pytest.mark.asyncio
+async def test_visible_delta_callback_uses_provider_stream_and_keeps_final_authority(
+    monkeypatch,
+) -> None:
+    client = _Client(LLMResponse(content="Hello world", finish_reason="stop"))
+    _patch_client(monkeypatch, client)
+    deltas: list[str] = []
+
+    async def collect(delta: str) -> None:
+        deltas.append(delta)
+
+    result = await single_step.complete_llm_once(
+        _model(),
+        [LLMMessage(role="user", content="Say hello")],
+        on_visible_delta=collect,
+    )
+
+    assert "".join(deltas) == "Hello world"
+    assert result.content == "Hello world"
+    assert "on_chunk" in client.calls[0]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_visible_delta_arrives_before_provider_completion(monkeypatch) -> None:
+    response = LLMResponse(content="A sufficiently long streamed answer", finish_reason="stop")
+    client = _Client(response)
+    delta_seen = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def blocked_stream(**kwargs):
+        await kwargs["on_chunk"]("A sufficiently long streamed answer")
+        await release_provider.wait()
+        return response
+
+    client.stream = blocked_stream
+    _patch_client(monkeypatch, client)
+
+    async def collect(_delta: str) -> None:
+        delta_seen.set()
+
+    completion = asyncio.create_task(
+        single_step.complete_llm_once(
+            _model(),
+            [LLMMessage(role="user", content="Stream")],
+            on_visible_delta=collect,
+        )
+    )
+    await asyncio.wait_for(delta_seen.wait(), timeout=1)
+
+    assert completion.done() is False
+    release_provider.set()
+    result = await completion
+    assert result.content == response.content
+
+
+@pytest.mark.asyncio
+async def test_protocol_looking_stream_is_held_until_final_normalization(monkeypatch) -> None:
+    response = LLMResponse(
+        content='<tool_call>{"name":"read_file","arguments":{"path":"README.md"}}</tool_call>',
+        finish_reason="stop",
+    )
+    client = _Client(response)
+    published: list[bool | None] = []
+
+    async def protocol_stream(**kwargs):
+        client.calls.append(kwargs)
+        published.append(await kwargs["on_chunk"]("<tool_call>"))
+        published.append(
+            await kwargs["on_chunk"](
+                '{"name":"read_file","arguments":{"path":"README.md"}}'
+            )
+        )
+        published.append(await kwargs["on_chunk"]("</tool_call>"))
+        return response
+
+    client.stream = protocol_stream
+    _patch_client(monkeypatch, client)
+    deltas: list[str] = []
+
+    async def collect(delta: str) -> None:
+        deltas.append(delta)
+
+    result = await single_step.complete_llm_once(
+        _model(),
+        [LLMMessage(role="user", content="Read it")],
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+        on_visible_delta=collect,
+    )
+
+    assert deltas == []
+    assert published == [False, False, False]
+    assert result.content == ""
+    assert result.tool_calls[0]["function"]["name"] == "read_file"
+
+
+@pytest.mark.asyncio
+async def test_mixed_textual_tool_protocol_never_streams_marker_or_arguments(monkeypatch) -> None:
+    response = LLMResponse(
+        content=(
+            'Let me check.\n<tool_call>{"name":"read_file",'
+            '"arguments":{"path":"private.md"}}</tool_call>'
+        ),
+        finish_reason="stop",
+    )
+    client = _Client(response)
+
+    async def mixed_stream(**kwargs):
+        await kwargs["on_chunk"]("Let me check.\n<tool_")
+        await kwargs["on_chunk"](
+            'call>{"name":"read_file","arguments":{"path":"private.md"}}</tool_call>'
+        )
+        return response
+
+    client.stream = mixed_stream
+    _patch_client(monkeypatch, client)
+    deltas: list[str] = []
+
+    async def collect(delta: str) -> None:
+        deltas.append(delta)
+
+    result = await single_step.complete_llm_once(
+        _model(),
+        [LLMMessage(role="user", content="Read it")],
+        tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+        on_visible_delta=collect,
+    )
+
+    streamed = "".join(deltas)
+    assert streamed == "Let me check.\n"
+    assert "tool_call" not in streamed
+    assert "private.md" not in streamed
+    assert result.retry_instruction is not None
 
 
 def test_native_gemini_preserves_dynamic_system_context_once() -> None:

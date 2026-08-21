@@ -1070,6 +1070,7 @@ class RuntimeToolStepService:
         lease_owner: str,
         reasoning_content: str = "",
         assistant_content: str = "",
+        assistant_content_streamed: bool = False,
     ) -> ToolExecutionReservation:
         async with self._session_factory() as db, db.begin():
             reservation = await reserve_tool_execution(
@@ -1110,7 +1111,7 @@ class RuntimeToolStepService:
                         "message_id": assistant_message_id,
                     },
                 )
-            if assistant_content.strip():
+            if assistant_content.strip() and not assistant_content_streamed:
                 await _insert_runtime_activity(
                     db,
                     tenant_id=tenant_id,
@@ -1990,6 +1991,11 @@ class RuntimeToolStepService:
                 if isinstance(assistant_message, Mapping)
                 else ""
             )
+            assistant_content_streamed = (
+                assistant_message.get("runtime_answer_streamed") is True
+                if isinstance(assistant_message, Mapping)
+                else False
+            )
             try:
                 step_context = parse_step_tool_context(
                     state["lifecycle"].get("step_tool_context"),
@@ -2269,6 +2275,7 @@ class RuntimeToolStepService:
                     lease_owner=lease_owner,
                     reasoning_content=reasoning_content,
                     assistant_content=assistant_content,
+                    assistant_content_streamed=assistant_content_streamed,
                 )
                 if reservation.reusable_result is not None:
                     if reservation.reusable_result.status == "pending":
