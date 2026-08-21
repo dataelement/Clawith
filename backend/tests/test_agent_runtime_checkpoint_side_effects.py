@@ -292,8 +292,9 @@ async def test_checkpoint_projects_replayable_tool_activity_with_redacted_argume
                 {
                     "id": "assistant-1",
                     "role": "assistant",
-                    "content": "",
+                    "content": "Inspecting the file",
                     "runtime_run_id": str(run.run_id),
+                    "runtime_answer_streamed": True,
                     "reasoning_content": "Inspect the file",
                     "tool_calls": [
                         {
@@ -346,6 +347,10 @@ async def test_checkpoint_projects_replayable_tool_activity_with_redacted_argume
         "tool_call",
         "tool_call",
     ]
+    assert all(
+        activity["activity_type"] != "assistant_progress"
+        for activity in activities
+    )
     assert activities[1]["status"] == "running"
     assert activities[1]["call_instance_id"] == "call-1"
     assert activities[1]["provider_call_id"] == "provider-call-1"

@@ -344,7 +344,11 @@ def _runtime_observation_events(
             )
         content = _text_field(message.get("content"))
         runtime_intent = message.get("runtime_intent")
-        if content is not None and runtime_intent not in {"finish", "wait"}:
+        if (
+            content is not None
+            and runtime_intent not in {"finish", "wait"}
+            and message.get("runtime_answer_streamed") is not True
+        ):
             events.append(
                 (
                     "status_changed",

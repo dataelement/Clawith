@@ -130,6 +130,91 @@ const requiredText = (value: unknown): string | null => {
 const optionalText = (value: unknown): string | null =>
     value == null ? null : requiredText(value);
 
+export interface SessionStreamChunkPacket {
+    run_id?: unknown;
+    attempt_id?: unknown;
+    sequence?: unknown;
+    content?: unknown;
+    reset?: unknown;
+}
+
+export interface SessionStreamChunkState {
+    content: string;
+    runId?: string;
+    attemptId?: string;
+    sequence?: number;
+}
+
+export const reduceSessionStreamChunk = (
+    current: SessionStreamChunkState | null,
+    packet: SessionStreamChunkPacket,
+): SessionStreamChunkState | null => {
+    const content = typeof packet.content === 'string' ? packet.content : '';
+    const runId = requiredText(packet.run_id);
+    const attemptId = requiredText(packet.attempt_id);
+    const sequence = packet.sequence;
+    const hasAttemptMetadata = runId !== null
+        && attemptId !== null
+        && typeof sequence === 'number'
+        && Number.isInteger(sequence)
+        && sequence > 0;
+
+    if (!hasAttemptMetadata) {
+        return {
+            ...current,
+            content: `${current?.content || ''}${content}`,
+        };
+    }
+
+    const sameAttempt = current?.runId === runId && current.attemptId === attemptId;
+    if (!sameAttempt) {
+        if (sequence !== 1 && packet.reset !== true) return current;
+        return { content, runId, attemptId, sequence };
+    }
+
+    const previousSequence = current.sequence;
+    if (previousSequence !== undefined) {
+        if (sequence <= previousSequence || sequence !== previousSequence + 1) return current;
+    }
+
+    return {
+        content: packet.reset === true || sequence === 1
+            ? content
+            : `${current.content}${content}`,
+        runId,
+        attemptId,
+        sequence,
+    };
+};
+
+export const shouldPreserveInterruptedStream = (
+    runtimeStatus: unknown,
+    deliveryError: unknown,
+): boolean => runtimeStatus === 'failed'
+    || runtimeStatus === 'cancelled'
+    || requiredText(deliveryError) !== null;
+
+export const mergeInterruptedStreamMessage = <T extends { role: string; content: string }>(
+    messages: T[],
+    interrupted: T | undefined,
+): T[] => {
+    if (!interrupted?.content) return messages;
+    if (messages.some(message => message === interrupted)) return messages;
+    let terminalAssistantIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index].role === 'assistant') {
+            terminalAssistantIndex = index;
+            break;
+        }
+    }
+    if (terminalAssistantIndex < 0) return [...messages, interrupted];
+    return [
+        ...messages.slice(0, terminalAssistantIndex),
+        interrupted,
+        ...messages.slice(terminalAssistantIndex),
+    ];
+};
+
 const TOOL_RESOLUTION_STATUSES = new Set<ToolResolutionStatus>([
     'checking',
     'saved',

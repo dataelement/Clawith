@@ -30,6 +30,10 @@ class LLMRequestShapeError(LLMError):
     """The final provider request violates a portable message-shape invariant."""
 
 
+class LLMVisibleStreamInterrupted(LLMError):
+    """A provider stream failed after user-visible output was published."""
+
+
 _LEADING_THINK_TAG = re.compile(r"^\s*<think>", re.IGNORECASE)
 _CLOSING_THINK_TAG = re.compile(r"</think>", re.IGNORECASE)
 _TEXTUAL_TOOL_CALL = re.compile(
@@ -502,7 +506,7 @@ class LLMStreamChunk:
 # Type Definitions
 # ============================================================================
 
-ChunkCallback = Callable[[str], Coroutine[Any, Any, None]]
+ChunkCallback = Callable[[str], Coroutine[Any, Any, bool | None]]
 ToolCallback = Callable[[dict], Coroutine[Any, Any, None]]
 ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 
@@ -926,6 +930,7 @@ class OpenAICompatibleClient(LLMClient):
 
         max_retries = 3
         client = await self._get_client()
+        visible_content_emitted = False
 
         for attempt in range(max_retries):
             try:
@@ -947,7 +952,10 @@ class OpenAICompatibleClient(LLMClient):
                         if chunk.content:
                             full_content += chunk.content
                             if on_chunk:
-                                await on_chunk(chunk.content)
+                                published = await on_chunk(chunk.content)
+                                visible_content_emitted = (
+                                    visible_content_emitted or published is not False
+                                )
 
                         if chunk.reasoning_content:
                             full_reasoning += chunk.reasoning_content
@@ -992,6 +1000,10 @@ class OpenAICompatibleClient(LLMClient):
                 break  # Success
 
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+                if visible_content_emitted:
+                    raise LLMVisibleStreamInterrupted(
+                        "Provider stream interrupted after visible output was published"
+                    ) from e
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 1
                     logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
@@ -1842,6 +1854,8 @@ class GeminiClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, **kwargs)
 
         full_text = ""
+        full_reasoning = ""
+        thought_signature: str | None = None
         tool_calls: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         final_usage: dict[str, int] | None = None
@@ -1891,9 +1905,17 @@ class GeminiClient(LLMClient):
                     for part in content_obj.get("parts", []) or []:
                         text = part.get("text")
                         if text:
-                            full_text += text
-                            if on_chunk:
-                                await on_chunk(text)
+                            if part.get("thought") is True:
+                                full_reasoning += text
+                                if on_thinking:
+                                    await on_thinking(text)
+                            else:
+                                full_text += text
+                                if on_chunk:
+                                    await on_chunk(text)
+                        signature = part.get("thoughtSignature")
+                        if isinstance(signature, str) and signature:
+                            thought_signature = signature
 
                         function_call = part.get("functionCall")
                         if function_call:
@@ -1923,6 +1945,8 @@ class GeminiClient(LLMClient):
         return LLMResponse(
             content=full_text,
             tool_calls=tool_calls,
+            reasoning_content=full_reasoning or None,
+            reasoning_signature=thought_signature,
             finish_reason=self._normalize_finish_reason(final_finish_reason, tool_calls),
             usage=final_usage,
             model=self.model,

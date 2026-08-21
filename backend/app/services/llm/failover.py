@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from .client import LLMError
+from .client import LLMError, LLMVisibleStreamInterrupted
 
 
 class FailoverErrorType(Enum):
@@ -41,6 +41,9 @@ def classify_error(error: Exception) -> FailoverErrorType:
     - Content policy violations
     """
     error_msg = str(error).lower()
+
+    if isinstance(error, LLMVisibleStreamInterrupted):
+        return FailoverErrorType.NON_RETRYABLE
 
     # Non-retryable: an explicit HTTP payment status is deterministic.
     if re.search(r"(?<!\d)402(?!\d)", error_msg):

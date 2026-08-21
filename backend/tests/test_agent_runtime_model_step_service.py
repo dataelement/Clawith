@@ -531,6 +531,8 @@ def _service(
     agent: Agent,
     builder: _ContextBuilder,
     completion,
+    *,
+    answer_stream_enabled: bool = False,
 ) -> RuntimeModelStepService:
     return RuntimeModelStepService(
         session_factory=_session_factory(model, agent),
@@ -540,6 +542,7 @@ def _service(
         prompt_builder=_prompt,
         model_retry_base_delay_seconds=0,
         model_retry_jitter_ratio=0,
+        answer_stream_enabled=answer_stream_enabled,
     )
 
 
@@ -620,6 +623,8 @@ def _failover_service(
     agent: Agent,
     builder: _ContextBuilder,
     completion,
+    *,
+    answer_stream_enabled: bool = False,
 ) -> RuntimeModelStepService:
     return RuntimeModelStepService(
         session_factory=_failover_session_factory(model, agent, fallback),
@@ -629,6 +634,7 @@ def _failover_service(
         prompt_builder=_prompt,
         model_retry_base_delay_seconds=0,
         model_retry_jitter_ratio=0,
+        answer_stream_enabled=answer_stream_enabled,
     )
 
 
@@ -3094,6 +3100,100 @@ async def test_unknown_primary_error_retries_on_same_model() -> None:
     assert result.assistant_message is not None
     assert result.assistant_message["runtime_model_id"] == str(model.id)
     assert "runtime_failover_from_model_id" not in result.assistant_message
+
+
+@pytest.mark.asyncio
+async def test_visible_stream_failure_never_retries_or_calls_fallback(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    fallback = _model(tenant_id)
+    fallback.model = "fallback-model"
+    agent = _agent(tenant_id)
+    agent.fallback_model_id = fallback.id
+    state = _state(tenant_id, model, agent)
+    calls = 0
+
+    class Writer:
+        def __init__(self, **_kwargs) -> None:
+            self.visible_started = False
+
+        async def write(self, _content: str) -> None:
+            self.visible_started = True
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(model_step_service, "AnswerStreamWriter", Writer)
+
+    async def complete(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        await kwargs["on_visible_delta"]("partial")
+        raise RuntimeError("connection reset")
+
+    service = _failover_service(
+        model,
+        fallback,
+        agent,
+        _ContextBuilder(_build()),
+        complete,
+        answer_stream_enabled=True,
+    )
+
+    result = await service.complete_once(state, _context(state))
+
+    assert result.intent == "error"
+    assert result.error["code"] == "model_call_failed"
+    assert calls == 1
+
+
+def test_crash_replay_creates_a_fresh_stream_attempt_incarnation() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    context = _context(state)
+    service = _service(
+        model,
+        agent,
+        _ContextBuilder(_build()),
+        AsyncMock(),
+        answer_stream_enabled=True,
+    )
+
+    first = service._answer_stream_writer(
+        state=state,
+        context=context,
+        agent=agent,
+    )
+    replay = service._answer_stream_writer(
+        state=state,
+        context=context,
+        agent=agent,
+    )
+
+    assert first is not None and replay is not None
+    assert first._attempt_id != replay._attempt_id
+
+
+def test_web_answer_stream_can_be_disabled_without_changing_run_state() -> None:
+    tenant_id = uuid.uuid4()
+    model = _model(tenant_id)
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, model, agent)
+    context = _context(state)
+    service = RuntimeModelStepService(
+        session_factory=_session_factory(model, agent),
+        context_builder=_ContextBuilder(_build()),  # type: ignore[arg-type]
+        completion=AsyncMock(),
+        answer_stream_enabled=False,
+    )
+
+    assert service._answer_stream_writer(
+        state=state,
+        context=context,
+        agent=agent,
+    ) is None
 
 
 @pytest.mark.asyncio

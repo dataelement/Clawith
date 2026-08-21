@@ -67,7 +67,10 @@ import {
     failClosedSessionActiveRun,
     mergeSessionToolMessage,
     mergeSessionToolMessages,
+    mergeInterruptedStreamMessage,
     mergeTerminalAssistantMessage,
+    reduceSessionStreamChunk,
+    shouldPreserveInterruptedStream,
     runtimeCompletionNeedsMessageRefresh,
     runtimeTerminalPacketNeedsMessageRefresh,
     sessionActiveRunFromResponse,
@@ -2462,6 +2465,7 @@ export default function AgentDetailPage() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+    const interruptedStreamMessagesRef = useRef<Record<string, ChatMsg>>({});
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
@@ -2502,7 +2506,10 @@ export default function AgentDetailPage() {
             }));
             const runtimeKey = buildSessionRuntimeKey(agentId, sessionId);
             setChatMessages(mergeSessionToolMessages(
-                parsed,
+                mergeInterruptedStreamMessage(
+                    parsed,
+                    interruptedStreamMessagesRef.current[runtimeKey],
+                ),
                 sessionToolMessagesRef.current[runtimeKey] || [],
             ));
             if (discardSessionToolCacheOnSuccess) {
@@ -2944,7 +2951,7 @@ export default function AgentDetailPage() {
         } catch (e: any) { toast.error(t('common.error.saveFailed', '保存失败'), { details: String(e?.message || e) }); }
         setExpirySaving(false);
     };
-    interface ChatMsg { id?: string; role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; runtimeError?: ReturnType<typeof normalizeRuntimeError>; }
+    interface ChatMsg { id?: string; role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; runtimeError?: ReturnType<typeof normalizeRuntimeError>; _streaming?: boolean; _streamRunId?: string; _streamAttemptId?: string; _streamSequence?: number; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
     const upsertToolCallMessage = (toolMsg: ChatMsg) => {
         setChatMessages((previous) => mergeSessionToolMessage(previous, toolMsg));
@@ -3301,6 +3308,7 @@ export default function AgentDetailPage() {
         wsMapRef.current = {};
         sessionActiveRunRef.current = {};
         sessionToolMessagesRef.current = {};
+        interruptedStreamMessagesRef.current = {};
         wsRef.current = null;
     }, [currentUser?.id, token]);
 
@@ -3385,7 +3393,10 @@ export default function AgentDetailPage() {
         };
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
-            if (typeof d.event_cursor === 'string' && d.event_cursor && d.run_id) {
+            const positionedAnswerChunk = d.type === 'chunk'
+                && typeof d.attempt_id === 'string'
+                && Number.isInteger(d.sequence);
+            if (!positionedAnswerChunk && typeof d.event_cursor === 'string' && d.event_cursor && d.run_id) {
                 runtimeEventCursorRef.current[`${key}:${String(d.run_id)}`] = d.event_cursor;
             }
             // A completed or already-running pair-scoped onboarding attempt
@@ -3616,11 +3627,40 @@ export default function AgentDetailPage() {
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), { ...last, content: last.content + d.content } as any];
-                    return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
+                    const current = last?.role === 'assistant' && last._streaming ? {
+                        content: last.content,
+                        runId: last._streamRunId,
+                        attemptId: last._streamAttemptId,
+                        sequence: last._streamSequence,
+                    } : null;
+                    const next = reduceSessionStreamChunk(current, d);
+                    if (next === null) return prev;
+                    if (current && next === current) return prev;
+                    if (typeof d.event_cursor === 'string' && d.event_cursor && d.run_id) {
+                        runtimeEventCursorRef.current[`${key}:${String(d.run_id)}`] = d.event_cursor;
+                    }
+                    const streamedAssistant: ChatMsg = {
+                        ...(current ? last : {}),
+                        role: 'assistant',
+                        content: next.content,
+                        _streaming: true,
+                        _streamRunId: next.runId,
+                        _streamAttemptId: next.attemptId,
+                        _streamSequence: next.sequence,
+                    };
+                    return current
+                        ? [...prev.slice(0, -1), streamedAssistant]
+                        : [...prev, streamedAssistant];
                 });
             } else if (d.type === 'done') {
                 const shouldRefreshCanonicalMessages = runtimeTerminalPacketNeedsMessageRefresh(d.runtime_status);
+                const preserveInterrupted = shouldPreserveInterruptedStream(
+                    d.runtime_status,
+                    d.delivery_error,
+                );
+                if (!preserveInterrupted) {
+                    delete interruptedStreamMessagesRef.current[key];
+                }
                 if (shouldRefreshCanonicalMessages) {
                     const existingRun = sessionActiveRunRef.current[key];
                     if (existingRun && d.run_id && existingRun.runId === String(d.run_id)) {
@@ -3655,7 +3695,22 @@ export default function AgentDetailPage() {
                         thinking,
                         timestamp: new Date().toISOString(),
                     });
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), terminalMessage];
+                    if (last && last.role === 'assistant' && last._streaming) {
+                        if (preserveInterrupted) {
+                            const interrupted = {
+                                ...last,
+                                _streaming: false,
+                                ...(runtimeError && { runtimeError }),
+                            };
+                            interruptedStreamMessagesRef.current[key] = interrupted;
+                            return [
+                                ...prev.slice(0, -1),
+                                interrupted,
+                                terminalMessage,
+                            ];
+                        }
+                        return [...prev.slice(0, -1), terminalMessage];
+                    }
                     // Runtime-state polling can observe the committed terminal
                     // message before its websocket `done` packet arrives. In
                     // that ordering, refreshSessionMessages already installed
@@ -3743,6 +3798,9 @@ export default function AgentDetailPage() {
             currentAgentIdRef.current === runtimeAgentId
             && activeSessionIdRef.current === runtimeSessionId
         );
+        // An interrupted partial belongs only to the Run that produced it. A
+        // later non-streaming Run must never inherit it during canonical refresh.
+        delete interruptedStreamMessagesRef.current[runtimeKey];
         setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
         if (payload.resumeRunId) {
             const current = sessionActiveRunRef.current[runtimeKey];

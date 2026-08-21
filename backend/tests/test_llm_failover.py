@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.services.llm.client import LLMVisibleStreamInterrupted
 from app.services.llm.failover import (
     FailoverErrorType,
     classify_error,
@@ -30,6 +31,17 @@ def test_unknown_provider_failure_keeps_retryable_semantics() -> None:
 
     assert classification is FailoverErrorType.UNKNOWN
     assert is_retryable_classification(classification) is True
+
+
+def test_visible_stream_interruption_is_never_retried_or_failed_over() -> None:
+    classification = classify_error(
+        LLMVisibleStreamInterrupted(
+            "Provider stream interrupted after visible output was published"
+        )
+    )
+
+    assert classification is FailoverErrorType.NON_RETRYABLE
+    assert is_retryable_classification(classification) is False
 
 
 @pytest.mark.parametrize(

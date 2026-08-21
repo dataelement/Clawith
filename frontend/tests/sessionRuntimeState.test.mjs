@@ -7,6 +7,9 @@ import {
   failClosedSessionActiveRun,
   mergeSessionToolMessage,
   mergeSessionToolMessages,
+  mergeInterruptedStreamMessage,
+  reduceSessionStreamChunk,
+  shouldPreserveInterruptedStream,
   runtimeCompletionNeedsMessageRefresh,
   runtimeTerminalPacketNeedsMessageRefresh,
   sessionActiveRunFromResponse,
@@ -41,6 +44,147 @@ test('active run controls are projected only onto their own selected session', (
   assert.equal(activeRunForSession(waitingRun, 'session-2'), null);
   assert.equal(activeRunForSession(waitingRun, null), null);
   assert.equal(activeRunForSession(waitingRun, 'session-1'), waitingRun);
+});
+
+test('answer stream starts and resets provisional content by attempt', () => {
+  const firstAttempt = reduceSessionStreamChunk(null, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 1,
+    content: 'first',
+    reset: true,
+  });
+  assert.deepEqual(firstAttempt, {
+    content: 'first',
+    runId: 'run-1',
+    attemptId: 'attempt-1',
+    sequence: 1,
+  });
+
+  assert.deepEqual(reduceSessionStreamChunk(firstAttempt, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-2',
+    sequence: 1,
+    content: 'replacement',
+    reset: false,
+  }), {
+    content: 'replacement',
+    runId: 'run-1',
+    attemptId: 'attempt-2',
+    sequence: 1,
+  });
+
+  assert.deepEqual(reduceSessionStreamChunk(firstAttempt, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 2,
+    content: 'explicit reset',
+    reset: true,
+  }), {
+    content: 'explicit reset',
+    runId: 'run-1',
+    attemptId: 'attempt-1',
+    sequence: 2,
+  });
+});
+
+test('answer stream appends only contiguous packets from the active attempt', () => {
+  const first = reduceSessionStreamChunk(null, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 1,
+    content: 'one',
+    reset: true,
+  });
+  const second = reduceSessionStreamChunk(first, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 2,
+    content: ' two',
+    reset: false,
+  });
+  assert.equal(second.content, 'one two');
+  assert.equal(second.sequence, 2);
+
+  const gap = reduceSessionStreamChunk(second, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 4,
+    content: ' four',
+    reset: false,
+  });
+  assert.equal(gap, second);
+
+  const replay = reduceSessionStreamChunk(gap, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 3,
+    content: ' three',
+    reset: false,
+  });
+  assert.equal(replay.content, 'one two three');
+  assert.equal(replay.sequence, 3);
+  assert.equal(reduceSessionStreamChunk(replay, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 2,
+    content: ' duplicate',
+    reset: false,
+  }), replay);
+});
+
+test('answer stream rejects a new attempt that starts after sequence one', () => {
+  assert.equal(reduceSessionStreamChunk(null, {
+    run_id: 'run-1',
+    attempt_id: 'attempt-1',
+    sequence: 2,
+    content: 'missing prefix',
+    reset: false,
+  }), null);
+});
+
+test('failed cancelled and delivery-failed terminals preserve provisional output', () => {
+  assert.equal(shouldPreserveInterruptedStream('failed', null), true);
+  assert.equal(shouldPreserveInterruptedStream('cancelled', null), true);
+  assert.equal(shouldPreserveInterruptedStream('completed', 'delivery_failed'), true);
+  assert.equal(shouldPreserveInterruptedStream('completed', null), false);
+  assert.equal(shouldPreserveInterruptedStream('waiting_user', null), false);
+});
+
+test('canonical refresh retains interrupted partial immediately before terminal answer', () => {
+  const partial = { role: 'assistant', content: 'useful partial', _streaming: false };
+  const terminal = { role: 'assistant', content: 'provider failed', runtimeError: { code: 'failed' } };
+  assert.deepEqual(
+    mergeInterruptedStreamMessage(
+      [{ role: 'user', content: 'work' }, terminal],
+      partial,
+    ),
+    [{ role: 'user', content: 'work' }, partial, terminal],
+  );
+});
+
+test('starting a later run clears the prior interrupted stream cache', () => {
+  assert.match(
+    agentDetailSource,
+    /const dispatchChatMessage[\s\S]*delete interruptedStreamMessagesRef\.current\[runtimeKey\]/,
+  );
+});
+
+test('legacy answer chunks remain append-compatible', () => {
+  const first = reduceSessionStreamChunk(null, { content: 'legacy' });
+  assert.deepEqual(first, { content: 'legacy' });
+  assert.deepEqual(reduceSessionStreamChunk(first, { content: ' stream' }), {
+    content: 'legacy stream',
+  });
+});
+
+test('agent detail chunk handler uses attempt-aware reducer while done stays canonical', () => {
+  assert.match(agentDetailSource, /reduceSessionStreamChunk/);
+  assert.match(agentDetailSource, /else if \(d\.type === 'chunk'\)[\s\S]*reduceSessionStreamChunk/);
+  assert.match(
+    agentDetailSource,
+    /else if \(d\.type === 'done'\)[\s\S]*prev\.slice\(0, -1\), terminalMessage/,
+  );
 });
 
 test('session Tool cache restores a running card after switching back', () => {

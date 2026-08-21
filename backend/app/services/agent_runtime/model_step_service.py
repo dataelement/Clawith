@@ -25,6 +25,7 @@ from app.models.group import GroupMember
 from app.models.llm import LLMModel
 from app.models.participant import Participant
 from app.services.agent_context import build_agent_context
+from app.services.agent_runtime.answer_stream import AnswerStreamWriter
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.context_builder import (
     ContextBuilder,
@@ -86,7 +87,7 @@ from app.services.builtin_tool_definitions import (
     builtin_policy,
     is_reserved_custom_tool_name,
 )
-from app.services.llm.client import LLMMessage
+from app.services.llm.client import LLMMessage, LLMVisibleStreamInterrupted
 from app.services.llm.failover import (
     classify_error,
     is_retryable_classification,
@@ -323,6 +324,7 @@ class CompletionPort(Protocol):
         tools: list[dict] | None = None,
         agent_id: uuid.UUID | None = None,
         supports_vision: bool = False,
+        on_visible_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMCompletionStep: ...
 
 
@@ -1007,6 +1009,8 @@ def _assistant_message(
         message["tool_calls"] = [dict(call) for call in tool_calls]
     if step.reasoning_content:
         message["reasoning_content"] = step.reasoning_content
+    if step.visible_streamed:
+        message["runtime_answer_streamed"] = True
     if runtime_intent:
         message["runtime_intent"] = runtime_intent
     return message
@@ -1345,6 +1349,7 @@ class RuntimeModelStepService:
         model_retry_max_delay_seconds: float = _DEFAULT_MODEL_RETRY_MAX_DELAY_SECONDS,
         model_retry_jitter_ratio: float = _DEFAULT_MODEL_RETRY_JITTER_RATIO,
         retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        answer_stream_enabled: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._context_builder = context_builder
@@ -1369,6 +1374,7 @@ class RuntimeModelStepService:
             max(0.0, model_retry_jitter_ratio),
         )
         self._retry_sleep = retry_sleep
+        self._answer_stream_enabled = answer_stream_enabled
 
     async def _load(
         self,
@@ -1821,6 +1827,7 @@ class RuntimeModelStepService:
         agent: Agent,
         messages: list[LLMMessage],
         tools: list[dict],
+        on_visible_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMCompletionStep:
         return await self._completion(
             model,
@@ -1828,7 +1835,57 @@ class RuntimeModelStepService:
             tools=_provider_tools(tools),
             agent_id=agent.id,
             supports_vision=bool(model.supports_vision),
+            on_visible_delta=on_visible_delta,
         )
+
+    def _streams_visible_web_answer(
+        self,
+        state: RuntimeGraphState,
+        context: RuntimeContext,
+    ) -> bool:
+        initial_input = state["snapshots"].initial_input
+        return (
+            self._answer_stream_enabled
+            and context.source_type == "chat"
+            and context.session_id is not None
+            and initial_input.get("source_channel") in {None, "web"}
+            and not _is_public_group_chat_run(state)
+        )
+
+    def _answer_stream_writer(
+        self,
+        *,
+        state: RuntimeGraphState,
+        context: RuntimeContext,
+        agent: Agent,
+    ) -> AnswerStreamWriter | None:
+        if not self._streams_visible_web_answer(state, context):
+            return None
+        run_id = uuid.UUID(context.run_id)
+        # This identifies one physical provider invocation, not the logical
+        # model step. A worker crash before checkpoint commitment must create a
+        # new reset boundary instead of replaying sequence numbers from stale
+        # provisional output.
+        attempt_id = uuid.uuid4()
+        return AnswerStreamWriter(
+            session_factory=self._session_factory,
+            tenant_id=uuid.UUID(context.tenant_id),
+            run_id=run_id,
+            agent_id=agent.id,
+            attempt_id=attempt_id,
+        )
+
+    @staticmethod
+    async def _close_answer_stream(writer: AnswerStreamWriter | None) -> None:
+        if writer is None:
+            return
+        try:
+            await writer.close()
+        except Exception as exc:
+            logger.warning(
+                "[RuntimeAnswerStream] provisional observation flush failed: {}",
+                type(exc).__name__,
+            )
 
     async def _call_prepared_with_retry(
         self,
@@ -1837,18 +1894,31 @@ class RuntimeModelStepService:
         agent: Agent,
         messages: list[LLMMessage],
         tools: list[dict],
+        state: RuntimeGraphState,
+        context: RuntimeContext,
     ) -> LLMCompletionStep:
         """Retry only transient provider failures before model failover."""
         total_attempts = self._model_retry_attempts + 1
         for attempt in range(1, total_attempts + 1):
+            writer = self._answer_stream_writer(
+                state=state,
+                context=context,
+                agent=agent,
+            )
             try:
-                return await self._call_prepared(
+                step = await self._call_prepared(
                     model=model,
                     agent=agent,
                     messages=messages,
                     tools=tools,
+                    on_visible_delta=(writer.write if writer is not None else None),
                 )
             except Exception as exc:
+                await self._close_answer_stream(writer)
+                if writer is not None and writer.visible_started:
+                    raise LLMVisibleStreamInterrupted(
+                        "Provider stream interrupted after visible output was published"
+                    ) from exc
                 classification = classify_error(exc)
                 is_retryable = is_retryable_classification(classification)
                 if (
@@ -1890,6 +1960,13 @@ class RuntimeModelStepService:
                     delay,
                 )
                 await self._retry_sleep(delay)
+            else:
+                await self._close_answer_stream(writer)
+                return (
+                    replace(step, visible_streamed=True)
+                    if writer is not None and writer.visible_started
+                    else step
+                )
 
         raise AssertionError("model retry loop exhausted without an exception")
 
@@ -1986,6 +2063,8 @@ class RuntimeModelStepService:
                     agent=agent,
                     messages=prepared,
                     tools=tools,
+                    state=state,
+                    context=context,
                 )
             except Exception as primary_error:
                 primary_classification = classify_error(primary_error)
@@ -2076,6 +2155,8 @@ class RuntimeModelStepService:
                         agent=agent,
                         messages=fallback_prepared,
                         tools=fallback_tools,
+                        state=state,
+                        context=context,
                     )
                 except Exception as fallback_error:
                     fallback_classification = classify_error(fallback_error)

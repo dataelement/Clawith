@@ -224,6 +224,7 @@ def build_runtime_worker_components(
     model_service = RuntimeModelStepService(
         session_factory=session_factory,
         context_builder=context_builder,
+        answer_stream_enabled=runtime_settings.AGENT_RUNTIME_WEB_STREAMING_ENABLED,
     )
     tool_result_store = ToolResultStore(session_factory=session_factory)
     tool_result_reconciler = ToolResultReconciler(
