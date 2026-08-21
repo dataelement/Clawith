@@ -938,6 +938,85 @@ _BUILTIN_TOOL_SOURCE = [
             ]
         },
     },
+    {
+        "name": "doubao_search",
+        "display_name": "豆包搜索（测试）",
+        "description": (
+            "该功能仍在测试阶段，服务可能不稳定；如遇失败，请稍后重试。"
+            "可返回标题、网址、来源、发布时间、正文摘要和图片。"
+        ),
+        "category": "search",
+        "icon": "🔎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词或自然语言问题"},
+                "max_results": {
+                    "type": "integer",
+                    "description": "返回结果数量（默认 10，最多 20）",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+                "max_snippet_length": {
+                    "type": "integer",
+                    "description": "每条结果的最大摘要长度（默认 600，最多 2000 字符）",
+                    "default": 600,
+                    "minimum": 50,
+                    "maximum": 2000,
+                },
+                "max_images": {
+                    "type": "integer",
+                    "description": "每条结果最多返回的图片数（默认 0，最多 3）",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 3,
+                },
+            },
+            "required": ["query"],
+        },
+        "config": {
+            "max_results": 10,
+            "max_snippet_length": 600,
+            "max_images": 0,
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "豆包搜索 API Key（测试功能）",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "从火山引擎豆包搜索控制台获取",
+                },
+                {
+                    "key": "max_results",
+                    "label": "默认结果数量",
+                    "type": "number",
+                    "default": 10,
+                    "min": 1,
+                    "max": 20,
+                },
+                {
+                    "key": "max_snippet_length",
+                    "label": "默认摘要长度",
+                    "type": "number",
+                    "default": 600,
+                    "min": 50,
+                    "max": 2000,
+                },
+                {
+                    "key": "max_images",
+                    "label": "默认图片数量",
+                    "type": "number",
+                    "default": 0,
+                    "min": 0,
+                    "max": 3,
+                },
+            ]
+        },
+    },
     # Plaza social tools (plaza_get_new_posts / plaza_create_post / plaza_add_comment)
     # were removed in the Plaza → experience library改造 (P0-1: no AI auto-posting).
     # Experience library — AI consumption side (hybrid pull, read-only).
@@ -3850,6 +3929,7 @@ _READ_TOOL_NAMES = frozenset(
         "tavily_search",
         "google_search",
         "bing_search",
+        "doubao_search",
         "jina_read",
         "read_webpage",
         "search_experience",

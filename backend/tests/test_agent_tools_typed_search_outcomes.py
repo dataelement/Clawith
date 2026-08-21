@@ -24,6 +24,7 @@ TYPED_SEARCH_TOOLS = {
     "tavily_search",
     "google_search",
     "bing_search",
+    "doubao_search",
 }
 
 
@@ -82,8 +83,30 @@ def test_search_provider_readiness_matches_real_credential_requirements() -> Non
     assert builtin_readiness("web_search") == "local"
     assert builtin_readiness("jina_search") == "local"
     assert builtin_readiness("jina_read") == "local"
-    for name in {"exa_search", "tavily_search", "google_search", "bing_search"}:
+    for name in {
+        "exa_search",
+        "tavily_search",
+        "google_search",
+        "bing_search",
+        "doubao_search",
+    }:
         assert builtin_readiness(name) == "configured_credentials"
+
+
+def test_doubao_search_optional_arguments_publish_backend_defaults() -> None:
+    definition = builtin_model_definition("doubao_search")
+    parameters = definition["function"]["parameters"]
+
+    assert parameters["required"] == ["query"]
+    assert parameters["properties"]["max_results"] == {
+        "type": "integer",
+        "description": "返回结果数量（默认 10，最多 20）",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 20,
+    }
+    assert parameters["properties"]["max_snippet_length"]["default"] == 600
+    assert parameters["properties"]["max_images"]["default"] == 0
 
 
 @pytest.mark.asyncio
@@ -236,6 +259,34 @@ async def test_search_tools_return_native_typed_validation_failures(
             },
             "",
         ),
+        (
+            "doubao_search",
+            {
+                "Result": {
+                    "Documents": [
+                        {
+                            "Title": "Doubao result",
+                            "Url": "https://example.test/doubao",
+                            "HostInfo": {"Hostname": "example.test"},
+                            "DocumentInfo": {
+                                "PublishTime": "2026-08-18T10:00:00+08:00",
+                                "ContentTokenCount": 42,
+                            },
+                            "Snippet": [
+                                {"Type": "text", "Text": "Doubao content"},
+                                {
+                                    "Type": "image",
+                                    "Image": {
+                                        "ImageUrl": "https://example.test/image.jpg"
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+            "",
+        ),
     ],
 )
 async def test_search_tools_use_structured_success_facts(
@@ -251,6 +302,7 @@ async def test_search_tools_use_structured_success_facts(
             "tavily_search": {"api_key": "tavily-key"},
             "google_search": {"api_key": "google-key:cx", "language": "en"},
             "bing_search": {"api_key": "bing-key", "language": "en-US"},
+            "doubao_search": {"api_key": "doubao-key"},
         }
         return configs.get(name, {})
 
@@ -266,7 +318,10 @@ async def test_search_tools_use_structured_success_facts(
     arguments = (
         {"url": "https://example.test/page"}
         if tool_name == "jina_read"
-        else {"query": "structured fact"}
+        else {
+            "query": "structured fact",
+            **({"max_images": 1} if tool_name == "doubao_search" else {}),
+        }
     )
 
     outcome = await agent_tools.execute_builtin_tool_outcome(
@@ -278,6 +333,10 @@ async def test_search_tools_use_structured_success_facts(
 
     assert outcome.status == "succeeded"
     assert outcome.error_code is None
+    if tool_name == "doubao_search":
+        assert "![Doubao result image 1](https://example.test/image.jpg)" in (
+            outcome.result_summary or ""
+        )
 
 
 @pytest.mark.asyncio
