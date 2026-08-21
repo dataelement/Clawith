@@ -119,7 +119,7 @@ def _install_runtime_catalog(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned_tools)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", local_tool_config)
@@ -179,7 +179,8 @@ async def test_agentbay_readiness_uses_only_local_key_and_os_configuration(
     assert _runtime_names(resolved) == AGENTBAY_TOOL_NAMES
     assert config_calls
     assert {tool_name for _, tool_name in config_calls} == {
-        "agentbay_browser_navigate"
+        "agentbay_browser_navigate",
+        "execute_code",
     }
 
 

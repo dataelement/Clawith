@@ -13,7 +13,46 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
+from app.services.sandbox.config import (
+    CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+)
+
 WRITE_FILE_MAX_CONTENT_CHARS = 6_000
+
+
+# Model-facing paths use one Agent-root-relative namespace.  The same literal
+# path must work across file tools and execute_code; absolute Sandbox mount
+# paths are an internal implementation detail.
+AGENT_RELATIVE_PATH_ARGUMENTS: Mapping[str, tuple[str, ...]] = {
+    "list_files": ("path",),
+    "read_file": ("path",),
+    "write_file": ("path",),
+    "delete_file": ("path",),
+    "move_file": ("source_path", "destination_path"),
+    "edit_file": ("path",),
+    "search_files": ("path",),
+    "find_files": ("path",),
+    "read_document": ("path",),
+    "convert_csv_to_xlsx": ("source_path", "target_path"),
+    "convert_html_to_pdf": ("source_path", "target_path"),
+    "convert_html_to_pptx": ("source_path", "target_path"),
+    "convert_markdown_to_docx": ("source_path", "target_path"),
+    "convert_markdown_to_pdf": ("source_path", "target_path"),
+    "send_channel_file": ("file_path",),
+    "send_file_to_agent": ("file_path",),
+    "upload_image": ("file_path",),
+    "generate_image_siliconflow": ("save_path",),
+    "generate_image_openai": ("save_path",),
+    "generate_image_google": ("save_path",),
+    "generate_image_custom": ("save_path",),
+    "publish_page": ("path",),
+}
+
+_AGENT_RELATIVE_PATH_DESCRIPTION = (
+    "Use an Agent-root-relative path such as 'workspace/reports/report.md'; "
+    "never start the path with '/'."
+)
 
 
 # Builtin tool definitions — these map to the hardcoded AGENT_TOOLS
@@ -118,7 +157,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "write_file",
         "display_name": "Write File",
-        "description": "Write or incrementally append UTF-8 text to a file in the workspace. Each call accepts at most 6000 content characters. For a longer generated file such as HTML, CSS, JavaScript, or markdown, call write_file once with mode=overwrite for the first chunk, then use one mode=append call per later model turn for each remaining chunk; never emit the whole file or multiple large chunks in one response. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, create documents in workspace/, create skills in skills/.",
+        "description": "Write or incrementally append UTF-8 text to a file in the workspace. Each call accepts at most 6000 content characters. For a longer generated file such as HTML, CSS, JavaScript, or markdown, call write_file once with mode=overwrite for the first chunk, then use one mode=append call per later model turn for each remaining chunk; never emit the whole file or multiple large chunks in one response. Before creating a new document under workspace/, first inspect the relevant directories with list_files, prefer an existing topical subfolder over the workspace root, and create a new subfolder when the content belongs to a new category. Avoid placing standalone document files directly in workspace/ root unless the user explicitly wants that. Can update memory/memory.md, create documents in workspace/, and update skills in skills/ when the active workflow requires repair.",
         "category": "file",
         "icon": "✏️",
         "is_default": True,
@@ -190,7 +229,7 @@ _BUILTIN_TOOL_SOURCE = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, skills/my-skill/SKILL.md"},
+                "path": {"type": "string", "description": "File path to edit, e.g.: memory/memory.md, workspace/reports/report.md, or skills/my-skill/SKILL.md"},
                 "old_string": {"type": "string", "description": "Exact text to find and replace. Must match exactly including whitespace and newlines."},
                 "new_string": {"type": "string", "description": "Replacement text"},
                 "replace_all": {"type": "boolean", "description": "Replace all occurrences if true (default: false)"},
@@ -241,7 +280,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "read_document",
         "display_name": "Read Document",
-        "description": "Read office document contents (PDF, Word, Excel, PPT) and extract text.",
+        "description": "Extract embedded text from PDF, Word, Excel, or PowerPoint files. This tool does not perform OCR. Output is bounded and a truncated result explicitly reports the processed scope; there is currently no page, sheet, or cursor continuation parameter.",
         "category": "file",
         "icon": "📑",
         "is_default": True,
@@ -368,9 +407,29 @@ _BUILTIN_TOOL_SOURCE = [
             "properties": {
                 "name": {"type": "string", "description": "Unique name for this trigger"},
                 "type": {"type": "string", "enum": ["cron", "once", "interval", "poll", "on_message", "webhook"], "description": "Trigger type"},
-                "config": {"type": "object", "description": "Type-specific config. cron: {\"expr\": \"0 9 * * *\"}. once: {\"at\": \"2026-03-10T09:00:00+08:00\"}. interval: {\"minutes\": 30}. poll: {\"url\": \"...\", \"json_path\": \"$.status\"}. on_message: {\"from_agent_name\": \"Morty\"} or {\"from_user_name\": \"张三\"}"},
+                "config": {
+                    "type": "object",
+                    "description": "Type-specific config. Supply only fields used by the selected trigger type.",
+                    "properties": {
+                        "expr": {"type": "string", "description": "cron: a valid cron expression."},
+                        "timezone": {"type": "string", "description": "cron: optional IANA timezone."},
+                        "at": {"type": "string", "description": "once: ISO-8601 date-time."},
+                        "minutes": {"type": "integer", "description": "interval: positive interval in minutes."},
+                        "url": {"type": "string", "description": "poll: public HTTP(S) URL."},
+                        "interval_min": {"type": "integer", "description": "poll: positive polling interval in minutes."},
+                        "method": {"type": "string", "enum": ["GET", "HEAD"], "description": "poll: HTTP method."},
+                        "headers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "poll: optional string headers."},
+                        "json_path": {"type": "string", "description": "poll: response JSON path."},
+                        "fire_on": {"type": "string", "enum": ["change", "match"], "description": "poll: fire on value change or exact match."},
+                        "match_value": {"type": ["string", "number", "boolean", "null"], "description": "poll: value used when fire_on=match."},
+                        "from_agent_name": {"type": "string", "description": "on_message: exact Agent name."},
+                        "from_user_name": {"type": "string", "description": "on_message: exact user name."},
+                    },
+                    "additionalProperties": False,
+                },
                 "reason": {"type": "string", "minLength": 1, "description": "Self-contained instruction describing exactly what to do when this trigger fires."},
                 "focus_ref": {"type": "string", "description": "Optional: which focus item this relates to. If omitted, one is created automatically."},
+                "delivery_target_id": {"type": "string", "description": "Optional stable Feishu group target ID from query_directory(member_type='group')."},
             },
             "required": ["name", "type", "config", "reason"],
         },
@@ -380,7 +439,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "update_trigger",
         "display_name": "Update Trigger",
-        "description": "Patch an existing trigger's user configuration or reason. Omitted config keys and internal routing/webhook keys are preserved.",
+        "description": "Patch an existing trigger. Provide at least one of config or reason. Omitted config keys and internal routing/webhook keys are preserved.",
         "category": "aware",
         "icon": "🔄",
         "is_default": True,
@@ -390,12 +449,9 @@ _BUILTIN_TOOL_SOURCE = [
                 "name": {"type": "string", "description": "Name of the trigger to update"},
                 "config": {"type": "object", "description": "User config fields to patch; this does not replace internal keys."},
                 "reason": {"type": "string", "description": "New reason text"},
+                "delivery_target_id": {"type": ["string", "null"], "description": "Set or clear the stable Feishu group delivery target."},
             },
             "required": ["name"],
-            "anyOf": [
-                {"required": ["config"]},
-                {"required": ["reason"]},
-            ],
         },
         "config": {},
         "config_schema": {},
@@ -454,7 +510,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "query_directory",
         "display_name": "Query Directory",
-        "description": "Query the people and digital employees this agent can see in its Directory. Use this before recommending or contacting a colleague.",
+        "description": "Query the people, digital employees, and reachable Feishu groups this agent can see in its Directory. Use member_type='group' before sending to a Feishu group.",
         "category": "communication",
         "icon": "📇",
         "is_default": True,
@@ -463,7 +519,7 @@ _BUILTIN_TOOL_SOURCE = [
             "properties": {
                 "query": {"type": "string", "description": "Optional search keyword for name, role, title, department, or skill."},
                 "target_member_id": {"type": "string", "description": "Optional exact human member ID returned by query_directory. Use this to verify one specific person."},
-                "member_type": {"type": "string", "enum": ["all", "agent", "human"], "description": "Filter by member type. Defaults to all."},
+                "member_type": {"type": "string", "enum": ["all", "agent", "human", "group"], "description": "Filter by member type. Use group for Feishu groups. Defaults to all."},
                 "include_uncontactable": {"type": "boolean", "description": "Whether to include members that are visible but currently unavailable. Defaults to false. This never returns invisible members."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum number of members to return. Defaults to 20."},
                 "offset": {"type": "integer", "minimum": 0, "description": "Number of matching members to skip. Defaults to 0."},
@@ -479,7 +535,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "send_platform_message",
         "display_name": "Platform Message",
-        "description": "Send a proactive message to a human colleague on the Clawith first-party platform (web or app). Use query_directory first, then pass target_member_id or platform_user_id.",
+        "description": "Send a proactive message to a human colleague on the Clawith first-party platform (web or app). Use query_directory first, then provide at least one of target_member_id or platform_user_id.",
         "category": "communication",
         "icon": "🌐",
         "is_default": True,
@@ -491,10 +547,6 @@ _BUILTIN_TOOL_SOURCE = [
                 "message": {"type": "string", "description": "Message content"},
             },
             "required": ["message"],
-            "anyOf": [
-                {"required": ["target_member_id"]},
-                {"required": ["platform_user_id"]},
-            ],
         },
         "config": {},
         "config_schema": {},
@@ -502,7 +554,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "send_channel_message",
         "display_name": "Channel Message",
-        "description": "Send a message to a human colleague via their configured external channel (Feishu, DingTalk, WeCom, Slack, Teams, WeChat). Use query_directory first, then pass target_member_id.",
+        "description": "Send a proactive message through an external channel. Normal replies are automatically delivered to the current input Session and must not use this Tool. Use it only when the user explicitly asks to message another person or group. For a person, use query_directory then target_member_id. For a Feishu group, use query_directory(member_type='group') then target_recipient_id. Do not guess IDs.",
         "category": "communication",
         "icon": "💬",
         "is_default": False,
@@ -510,14 +562,19 @@ _BUILTIN_TOOL_SOURCE = [
             "type": "object",
             "properties": {
                 "target_member_id": {"type": "string", "description": "Stable human member ID returned by query_directory. Preferred recipient identifier."},
+                "target_recipient_id": {"type": "string", "description": "Stable Feishu group target ID returned by query_directory(member_type='group')."},
                 "message": {"type": "string", "description": "Message content"},
                 "channel": {
                     "type": "string",
                     "description": "Optional: specific external channel to use.",
                     "enum": ["feishu", "dingtalk", "wecom", "slack", "teams", "microsoft_teams", "wechat"],
                 },
+                "cross_session_confirmed": {
+                    "type": "boolean",
+                    "description": "Set true only when the user explicitly requested sending to another person or group outside the current input Session.",
+                },
             },
-            "required": ["target_member_id", "message"],
+            "required": ["message"],
         },
         "config": {},
         "config_schema": {},
@@ -972,9 +1029,21 @@ _BUILTIN_TOOL_SOURCE = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "language": {
+                    "type": "string",
+                    "enum": ["python", "python3", "bash", "node"],
+                    "description": "Programming language. python3 is accepted as an alias for python.",
+                },
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "minimum": 1, "description": "Execution timeout in seconds. Defaults to 30 and is capped by this tool's current max_timeout configuration."},
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Execution timeout in seconds. Defaults to "
+                        f"{CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS} and is capped by "
+                        "this tool's current max_timeout configuration."
+                    ),
+                },
             },
             "required": ["language", "code"],
         },
@@ -983,11 +1052,23 @@ _BUILTIN_TOOL_SOURCE = [
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
-            "default_timeout": 30,
-            "max_timeout": 60,
+            "workspace_mode": "merge",
+            "publication_owner": "workspace_cas",
+            "default_timeout": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+            "max_timeout": CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
         },
         "config_schema": {
             "fields": [
+                {
+                    "key": "workspace_mode",
+                    "label": "Workspace Write Mode",
+                    "type": "select",
+                    "default": "merge",
+                    "options": [
+                        {"label": "Merge workspace changes", "value": "merge"},
+                        {"label": "Session output only", "value": "isolated_output"},
+                    ],
+                },
                 {
                     "key": "cpu_limit",
                     "label": "CPU Limit",
@@ -1013,7 +1094,7 @@ _BUILTIN_TOOL_SOURCE = [
                     "key": "default_timeout",
                     "label": "Default Timeout (seconds)",
                     "type": "number",
-                    "default": 30,
+                    "default": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
                     "min": 5,
                     "max": 3600,
                 },
@@ -1021,7 +1102,7 @@ _BUILTIN_TOOL_SOURCE = [
                     "key": "max_timeout",
                     "label": "Max Timeout (seconds)",
                     "type": "number",
-                    "default": 60,
+                    "default": CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
                     "min": 10,
                     "max": 3600,
                 },
@@ -1038,17 +1119,29 @@ _BUILTIN_TOOL_SOURCE = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
+                "language": {
+                    "type": "string",
+                    "enum": ["python", "python3", "bash", "node"],
+                    "description": "Programming language. python3 is accepted as an alias for python.",
+                },
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "description": "Max execution time in seconds (default 30, max 60)"},
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Max execution time in seconds "
+                        f"(default {CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS}, default "
+                        f"max {CODE_EXECUTION_MAX_TIMEOUT_SECONDS})"
+                    ),
+                },
             },
             "required": ["language", "code"],
         },
         "config": {
             "sandbox_type": "e2b",
             "api_key": "",
-            "default_timeout": 30,
-            "max_timeout": 60,
+            "default_timeout": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+            "max_timeout": CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
         },
         "config_schema": {
             "fields": [
@@ -1064,7 +1157,7 @@ _BUILTIN_TOOL_SOURCE = [
                     "key": "default_timeout",
                     "label": "Default Timeout (seconds)",
                     "type": "number",
-                    "default": 30,
+                    "default": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
                     "min": 5,
                     "max": 3600,
                 },
@@ -1072,7 +1165,7 @@ _BUILTIN_TOOL_SOURCE = [
                     "key": "max_timeout",
                     "label": "Max Timeout (seconds)",
                     "type": "number",
-                    "default": 60,
+                    "default": CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
                     "min": 10,
                     "max": 3600,
                 },
@@ -1083,7 +1176,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "upload_image",
         "display_name": "Upload Image",
-        "description": "Upload images from the workspace or a URL to ImageKit CDN and get a public URL. Useful for sharing images externally or embedding them in reports.",
+        "description": "Upload an image to ImageKit CDN from exactly one source: a workspace file_path or a public URL. Returns a public URL for sharing or embedding.",
         "category": "code",
         "icon": "🖼️",
         "is_default": True,
@@ -1099,10 +1192,6 @@ _BUILTIN_TOOL_SOURCE = [
                 "file_name": {"type": "string", "description": "Custom filename (optional)"},
                 "folder": {"type": "string", "description": "CDN folder path (default /clawith)"},
             },
-            "oneOf": [
-                {"required": ["file_path"]},
-                {"required": ["url"]},
-            ],
         },
         "config": {"private_key": "", "url_endpoint": ""},
         "config_schema": {
@@ -2099,7 +2188,7 @@ _BUILTIN_TOOL_SOURCE = [
     {
         "name": "feishu_user_search",
         "display_name": "Feishu User Search",
-        "description": "Search the visible tenant directory for contactable Feishu colleagues. Returns stable member IDs and display facts only; use target_member_id with channel tools.",
+        "description": "Search colleagues visible to the Agent's configured Feishu app. Synced contacts include stable member IDs; live Feishu matches expose display facts only.",
         "category": "feishu",
         "icon": "🔍",
         "is_default": False,
@@ -2497,9 +2586,87 @@ _BUILTIN_TOOL_SOURCE = [
         "config_schema": {},
     },
     {
+        "name": "feishu_approval_definition_get",
+        "display_name": "Feishu Approval Definition Get",
+        "description": (
+            "读取飞书审批定义的当前表单或流程节点结构，"
+            "用于构造后续审批实例请求。"
+        ),
+        "category": "feishu",
+        "icon": "🧩",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "approval_code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "审批定义的唯一代码 (approval_code)。",
+                },
+                "section": {
+                    "type": "string",
+                    "enum": ["summary", "form", "nodes"],
+                    "default": "summary",
+                    "description": "读取定义摘要、表单控件或流程节点。",
+                },
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "form 或 nodes 区段的零基偏移量。",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "form 或 nodes 区段本次最多返回的项目数。",
+                },
+            },
+            "required": ["approval_code"],
+            "additionalProperties": False,
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "feishu_approval_file_upload",
+        "display_name": "Feishu Approval File Upload",
+        "description": (
+            "将一个工作区文件上传到飞书审批系统，返回可写入 image 或 "
+            "attachment 表单控件的文件 code。"
+        ),
+        "category": "feishu",
+        "icon": "📎",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "工作区相对路径，例如 workspace/reimbursements/receipt.pdf。",
+                },
+                "file_type": {
+                    "type": "string",
+                    "enum": ["image", "attachment"],
+                    "description": "必须与审批定义中的目标控件类型一致。",
+                },
+            },
+            "required": ["file_path", "file_type"],
+            "additionalProperties": False,
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
         "name": "feishu_approval_create",
         "display_name": "Feishu Approval Create",
-        "description": "发起一个飞书审批流实例。该外部写入当前仅保留兼容合同，Durable Runtime 在确认门禁接入前不会向模型暴露。",
+        "description": (
+            "发起一个飞书审批流实例。先读取审批定义，"
+            "并按需上传表单中的图片或附件。"
+        ),
         "category": "feishu",
         "icon": "📝",
         "is_default": False,
@@ -2509,6 +2676,7 @@ _BUILTIN_TOOL_SOURCE = [
                 "approval_code": {
                     "type": "string",
                     "minLength": 1,
+                    "maxLength": 256,
                     "description": "审批定义的唯一代码 (approval_code)。",
                 },
                 "target_member_id": {
@@ -2519,7 +2687,26 @@ _BUILTIN_TOOL_SOURCE = [
                 "form_data": {
                     "type": "string",
                     "minLength": 2,
+                    "maxLength": 100000,
                     "description": "表单字段数组的 JSON 字符串。该字段属于敏感参数。",
+                },
+                "department_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": (
+                        "可选的审批发起人所属 department_id；"
+                        "多部门成员需要显式指定。"
+                    ),
+                },
+                "uuid": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": (
+                        "可选的租户内幂等键；"
+                        "同一个 uuid 只能成功创建一个审批实例。"
+                    ),
                 },
             },
             "required": ["approval_code", "target_member_id", "form_data"],
@@ -2838,6 +3025,12 @@ _AGENTBAY_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Absolute path inside the code sandbox, e.g. /home/wuying/main.py",
                 },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Operation deadline in seconds (maximum 60).",
+                    "default": 30,
+                },
             },
             "required": ["remote_path"],
         },
@@ -2894,6 +3087,7 @@ _AGENTBAY_TOOL_DEFINITIONS = [
             "properties": {
                 "instruction": {"type": "string", "description": "Natural language description of what data to extract, e.g. 'extract all product names and prices'"},
                 "selector": {"type": "string", "description": "Optional CSS selector to scope the extraction to a specific element"},
+                "timeout": {"type": "integer", "minimum": 1, "description": "Operation deadline in seconds (maximum 60).", "default": 30},
             },
             "required": ["instruction"],
         },
@@ -2912,6 +3106,7 @@ _AGENTBAY_TOOL_DEFINITIONS = [
             "properties": {
                 "instruction": {"type": "string", "description": "Natural language description of what to observe, e.g. 'find the login button' or 'list all navigation links'"},
                 "selector": {"type": "string", "description": "Optional CSS selector to scope observation"},
+                "timeout": {"type": "integer", "minimum": 1, "description": "Operation deadline in seconds (maximum 60).", "default": 30},
             },
             "required": ["instruction"],
         },
@@ -3334,7 +3529,7 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 "source_dir": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Directory in workspace containing the project, e.g. 'workspace/my-app'"
+                    "description": "Directory in workspace containing the project, e.g. 'workspace/my-app'. Required when deploy_method='upload'."
                 },
                 "deploy_method": {
                     "type": "string",
@@ -3364,25 +3559,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 }
             },
             "required": ["project_name"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {
-                            "deploy_method": {"const": "upload"}
-                        }
-                    },
-                    "then": {"required": ["source_dir"]}
-                },
-                {
-                    "if": {
-                        "properties": {
-                            "deploy_method": {"const": "github"}
-                        },
-                        "required": ["deploy_method"]
-                    },
-                    "then": {"required": ["github_repo"]}
-                }
-            ],
             "additionalProperties": False,
         },
         "config": {"vercel_token": ""},
@@ -3443,7 +3619,7 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
     {
         "name": "vercel_set_env",
         "display_name": "Set Environment Variable",
-        "description": "Set an environment variable for a Vercel project. Use for database URLs, API keys, and other secrets.",
+        "description": "Set an environment variable for a Vercel project. Provide exactly one value source: inline value or private value_ref.",
         "category": "deploy",
         "icon": "🔐",
         "is_default": False,
@@ -3474,10 +3650,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 }
             },
             "required": ["project_name", "key"],
-            "oneOf": [
-                {"required": ["value"]},
-                {"required": ["value_ref"]},
-            ],
             "additionalProperties": False,
         },
         "config": {},
@@ -3502,15 +3674,6 @@ _DEPLOY_BUILTIN_TOOL_DEFINITIONS = [
                 "project_name": {"type": "string", "description": "Required for 'bind' action"}
             },
             "required": ["action", "domain"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {"action": {"const": "bind"}},
-                        "required": ["action"]
-                    },
-                    "then": {"required": ["project_name"]}
-                }
-            ]
         },
         "config": {},
         "config_schema": {},
@@ -3700,6 +3863,7 @@ _READ_TOOL_NAMES = frozenset(
         "feishu_doc_read",
         "feishu_calendar_list",
         "feishu_user_search",
+        "feishu_approval_definition_get",
         "feishu_approval_query",
         "feishu_approval_get",
         "read_emails",
@@ -3788,8 +3952,8 @@ _FEISHU_TOOL_NAMES = frozenset(
 _EMAIL_TOOL_NAMES = frozenset({"send_email", "read_emails", "reply_email"})
 
 _SENSITIVE_PATHS: dict[str, tuple[str, ...]] = {
-    "execute_code": ("env", "environment"),
-    "execute_code_e2b": ("env", "environment"),
+    "execute_code": ("code", "env", "environment"),
+    "execute_code_e2b": ("code", "env", "environment"),
     "import_mcp_server": (
         "config.api_key",
         "config.token",
@@ -3802,15 +3966,15 @@ _SENSITIVE_PATHS: dict[str, tuple[str, ...]] = {
 }
 
 _TIMEOUT_SECONDS: dict[str, int] = {
-    "execute_code": 30,
-    "execute_code_e2b": 30,
+    "execute_code": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    "execute_code_e2b": CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
     "read_webpage": 60,
     "jina_read": 60,
     "upload_image": 60,
     "generate_image_siliconflow": 120,
     "generate_image_openai": 120,
     "generate_image_google": 120,
-    "generate_image_custom": 120,
+    "generate_image_custom": 600,
 }
 
 
@@ -3852,8 +4016,20 @@ def _readiness(definition: Mapping[str, Any]) -> str:
 
 def _canonical_definition(seed: Mapping[str, Any]) -> dict[str, Any]:
     effect, retry_policy, parallel_safe = _policy_for_name(str(seed["name"]))
+    canonical = deepcopy(dict(seed))
+    properties = (canonical.get("parameters_schema") or {}).get("properties")
+    if isinstance(properties, dict):
+        for field in AGENT_RELATIVE_PATH_ARGUMENTS.get(str(seed["name"]), ()):
+            property_schema = properties.get(field)
+            if not isinstance(property_schema, dict):
+                continue
+            current = str(property_schema.get("description") or "").strip()
+            if _AGENT_RELATIVE_PATH_DESCRIPTION not in current:
+                property_schema["description"] = (
+                    f"{current} {_AGENT_RELATIVE_PATH_DESCRIPTION}".strip()
+                )
     return {
-        **deepcopy(dict(seed)),
+        **canonical,
         "effect": effect,
         "retry_policy": retry_policy,
         "parallel_safe": parallel_safe,
@@ -4009,23 +4185,12 @@ def validate_builtin_tool_definitions() -> None:
             raise ValueError(
                 f"builtin tool {name!r} required fields must exist in properties"
             )
-        alternatives = schema.get("anyOf", [])
-        if not isinstance(alternatives, list):
-            raise ValueError(f"builtin tool {name!r} anyOf must be an array")
-        for alternative in alternatives:
-            alternative_required = (
-                alternative.get("required", [])
-                if isinstance(alternative, Mapping)
-                else None
+        unsupported_combinators = {"anyOf", "oneOf", "allOf"}.intersection(schema)
+        if unsupported_combinators:
+            raise ValueError(
+                f"builtin tool {name!r} uses provider-incompatible schema "
+                f"combinators: {sorted(unsupported_combinators)}"
             )
-            if (
-                not isinstance(alternative_required, list)
-                or any(not isinstance(item, str) for item in alternative_required)
-                or not set(alternative_required).issubset(properties)
-            ):
-                raise ValueError(
-                    f"builtin tool {name!r} anyOf required fields must exist in properties"
-                )
         for property_name, property_schema in properties.items():
             if not isinstance(property_schema, Mapping):
                 raise ValueError(

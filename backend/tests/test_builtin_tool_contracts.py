@@ -12,6 +12,7 @@ import pytest
 
 from app.services import agent_tools, tool_seeder
 from app.services.builtin_tool_definitions import (
+    AGENT_RELATIVE_PATH_ARGUMENTS,
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
     BUILTIN_TOOL_SEEDS,
@@ -23,6 +24,14 @@ from app.services.builtin_tool_definitions import (
     validate_builtin_tool_definitions,
 )
 from app.services.agent_runtime.tool_execution import ToolExecutionOutcome
+from app.services.agent_runtime.tool_contracts import ToolContractError
+from app.services.agent_runtime.tool_registry import (
+    STATIC_REGISTERED_TOOL_NAMES,
+    RegisteredTool,
+    registered_dynamic_mcp,
+    registered_tool,
+    resolve_registered_tool,
+)
 
 
 def _model_by_name() -> dict[str, dict]:
@@ -71,6 +80,68 @@ def test_seeder_and_model_contracts_are_derived_from_the_same_builtin_source() -
         assert model["parameters"] == seed["parameters_schema"]
 
 
+def test_code_executor_contract_accepts_python3_with_longer_defaults() -> None:
+    for name in ("execute_code", "execute_code_e2b"):
+        definition = next(
+            item for item in BUILTIN_TOOL_DEFINITIONS if item["name"] == name
+        )
+        language = definition["parameters_schema"]["properties"]["language"]
+
+        assert "python3" in language["enum"]
+        assert definition["timeout_seconds"] == 180
+        assert definition["config"]["default_timeout"] == 180
+        assert definition["config"]["max_timeout"] == 300
+
+
+def test_code_executor_legacy_defaults_upgrade_without_overwriting_custom_values() -> None:
+    seed = {"default_timeout": 180, "max_timeout": 300}
+
+    assert tool_seeder._upgrade_code_executor_defaults(
+        "execute_code",
+        {"default_timeout": 30, "max_timeout": 60, "allow_network": True},
+        seed,
+    ) == {
+        "default_timeout": 180,
+        "max_timeout": 300,
+        "allow_network": True,
+    }
+    assert tool_seeder._upgrade_code_executor_defaults(
+        "execute_code_e2b",
+        {"default_timeout": 120, "max_timeout": 600},
+        seed,
+    ) == {"default_timeout": 120, "max_timeout": 600}
+    assert tool_seeder._upgrade_code_executor_defaults(
+        "execute_code",
+        {"default_timeout": 30, "max_timeout": 600},
+        seed,
+    ) == {"default_timeout": 180, "max_timeout": 600}
+    assert tool_seeder._upgrade_code_executor_defaults(
+        "read_file",
+        {"default_timeout": 30, "max_timeout": 60},
+        seed,
+    ) == {"default_timeout": 30, "max_timeout": 60}
+
+    assert tool_seeder._upgrade_code_executor_tenant_value(
+        "execute_code",
+        {
+            "config": {"default_timeout": 30, "max_timeout": 60},
+            "source": "company",
+        },
+        seed,
+    ) == {
+        "config": {"default_timeout": 180, "max_timeout": 300},
+        "source": "company",
+    }
+    custom_tenant_value = {
+        "config": {"default_timeout": 120, "max_timeout": 600}
+    }
+    assert tool_seeder._upgrade_code_executor_tenant_value(
+        "execute_code",
+        custom_tenant_value,
+        seed,
+    ) == custom_tenant_value
+
+
 def test_builtin_model_definition_ignores_stale_database_contract() -> None:
     stale = {
         "type": "function",
@@ -86,6 +157,42 @@ def test_builtin_model_definition_ignores_stale_database_contract() -> None:
     assert canonical != stale
 
 
+def test_active_workset_descriptions_do_not_reference_invisible_tools() -> None:
+    projected = agent_tools._project_active_tool_descriptions(
+        [
+            builtin_model_definition("write_file"),
+            builtin_model_definition("read_file"),
+            builtin_model_definition("update_objective"),
+        ]
+    )
+    functions = {
+        tool["function"]["name"]: tool["function"] for tool in projected
+    }
+
+    assert "list_files" not in functions["write_file"]["description"]
+    assert "read_document" not in functions["read_file"]["description"]
+    assert "get_my_okr" not in functions["update_objective"]["description"]
+    assert "create_objective" not in functions["update_objective"]["description"]
+    objective_id = functions["update_objective"]["parameters"]["properties"][
+        "objective_id"
+    ]["description"]
+    assert "get_my_okr" not in objective_id
+    assert "get_okr" not in objective_id
+
+
+def test_active_workset_projection_preserves_available_tool_references() -> None:
+    canonical_write = builtin_model_definition("write_file")
+    projected = agent_tools._project_active_tool_descriptions(
+        [
+            canonical_write,
+            builtin_model_definition("list_files"),
+        ]
+    )
+
+    assert projected[0] is canonical_write
+    assert "list_files" in projected[0]["function"]["description"]
+
+
 def test_known_schema_contracts_match_handler_validation() -> None:
     write_file = builtin_model_definition("write_file")["function"]["parameters"]
     send_channel = builtin_model_definition("send_channel_message")["function"]["parameters"]
@@ -99,23 +206,50 @@ def test_known_schema_contracts_match_handler_validation() -> None:
     assert write_file["properties"]["mode"]["enum"] == ["overwrite", "append"]
     assert write_file["properties"]["mode"]["default"] == "overwrite"
     assert write_file["required"] == ["path", "content"]
-    assert send_channel["required"] == ["target_member_id", "message"]
+    assert "Agent-root-relative" in write_file["properties"]["path"]["description"]
+    assert "never start" in write_file["properties"]["path"]["description"]
+    assert "Agent-root-relative" in upload_image["properties"]["file_path"]["description"]
+    assert send_channel["required"] == ["message"]
+    assert "target_recipient_id" in send_channel["properties"]
     assert send_platform["required"] == ["message"]
-    assert send_platform["anyOf"] == [
-        {"required": ["target_member_id"]},
-        {"required": ["platform_user_id"]},
-    ]
-    assert upload_image["oneOf"] == [
-        {"required": ["file_path"]},
-        {"required": ["url"]},
-    ]
-    assert "anyOf" not in upload_image
-    assert update_trigger["anyOf"] == [
-        {"required": ["config"]},
-        {"required": ["reason"]},
-    ]
+    assert update_trigger["required"] == ["name"]
+    assert upload_image.get("required", []) == []
+    for definition in BUILTIN_TOOL_DEFINITIONS:
+        schema = definition["parameters_schema"]
+        assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
     assert "webhook" in set_trigger["properties"]["type"]["enum"]
     assert "reauthorize" in import_mcp["properties"]
+
+
+@pytest.mark.asyncio
+async def test_composite_schema_constraints_remain_enforced_by_handlers() -> None:
+    agent_id = uuid.uuid4()
+
+    update = await agent_tools._handle_update_trigger_outcome(
+        agent_id,
+        {"name": "daily-report"},
+    )
+    platform_message = await agent_tools._send_platform_message_outcome(
+        agent_id,
+        {"message": "hello"},
+    )
+
+    assert update.status == "failed"
+    assert update.error_code == "invalid_tool_arguments"
+    assert platform_message.status == "failed"
+    assert platform_message.error_code == "invalid_tool_arguments"
+
+
+def test_all_agent_path_arguments_publish_the_relative_path_contract() -> None:
+    for tool_name, fields in AGENT_RELATIVE_PATH_ARGUMENTS.items():
+        properties = builtin_model_definition(tool_name)["function"]["parameters"][
+            "properties"
+        ]
+        for field in fields:
+            assert field in properties, f"{tool_name}.{field} is not defined"
+            description = properties[field]["description"]
+            assert "Agent-root-relative" in description
+            assert "never start" in description
 
 
 @pytest.mark.parametrize(
@@ -190,6 +324,18 @@ def test_canonical_sensitive_paths_are_consumed_by_observability_sanitizer() -> 
     )
 
     assert sanitized == {"key": "PUBLIC_NAME", "value": "[REDACTED]"}
+    code = agent_tools._observability_arguments(
+        "execute_code",
+        {
+            "language": "python",
+            "code": (
+                'SECRET = "alpha beta gamma"\n'
+                'headers = {"Authorization": "Bearer sk-live-123"}\n'
+                'PRIVATE_KEY = """-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----"""'
+            ),
+        },
+    )
+    assert code == {"language": "python", "code": "[REDACTED]"}
     assert builtin_policy("read_document") == {
         "effect": "read",
         "retry_policy": "safe",
@@ -236,6 +382,66 @@ def test_runtime_resolver_hides_every_application_tool_without_typed_boundary() 
         "read_webpage",
     ]
     assert agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES <= BUILTIN_TOOL_NAMES
+
+
+def test_registered_tool_requires_a_complete_execution_contract() -> None:
+    definition = builtin_model_definition("read_file")
+    assert definition is not None
+
+    with pytest.raises(ToolContractError, match="authorization"):
+        RegisteredTool(
+            model_definition=definition,
+            binding_kind="builtin",
+            handler_key="read_file",
+            effect="read",
+            retry_policy="safe",
+            authorization_policy="",
+            recovery_policy="runtime_default",
+            deadline_policy="runtime_default",
+            cancel_capability="stop_waiting_only",
+            contract_version="registered:read_file:test",
+        )
+
+
+def test_registry_exposes_only_complete_static_entries_and_hides_schema_drift() -> None:
+    assert STATIC_REGISTERED_TOOL_NAMES == {
+        "read_file",
+        "agentbay_code_read_file",
+    }
+    assert registered_tool("read_file") is not None
+    assert registered_tool("not_migrated_yet") is None
+
+    stale = deepcopy(builtin_model_definition("read_file"))
+    stale["function"]["parameters"] = {"type": "object", "properties": {}}
+    assert resolve_registered_tool(stale) is None
+
+
+def test_dynamic_mcp_registry_uses_exact_name_and_conservative_policies() -> None:
+    definition = {
+        "type": "function",
+        "function": {
+            "name": "tenant_search",
+            "description": "Search one tenant provider.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+    assert resolve_registered_tool(definition) is None
+    registered = resolve_registered_tool(
+        definition,
+        dynamic_mcp_names={"tenant_search"},
+    )
+
+    assert registered is not None
+    assert registered == registered_dynamic_mcp(definition)
+    entry = registered.to_workset_entry()
+    assert entry.binding.kind == "mcp"
+    assert entry.effect == "external_write"
+    assert entry.retry_policy == "never"
 
 
 def test_local_content_batch_has_native_runtime_outcomes_before_becoming_visible() -> None:

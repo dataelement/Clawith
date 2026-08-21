@@ -86,6 +86,7 @@ def build_execution_runtime_trigger(trigger: AgentTrigger, execution: TriggerExe
         config=runtime_cfg,
         reason=trigger.reason,
         focus_ref=trigger.focus_ref,
+        delivery_target_id=getattr(trigger, "delivery_target_id", None),
         is_enabled=trigger.is_enabled,
         last_fired_at=trigger.last_fired_at,
         fire_count=trigger.fire_count,

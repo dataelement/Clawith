@@ -52,6 +52,8 @@ import {
     IconAlertTriangle,
 } from '@tabler/icons-react';
 import { useDropZone } from '../../hooks/useDropZone';
+import { useOlderHistoryGesture, usePrependScrollAnchor } from '../../hooks/useHistoryPaginationScroll';
+import { loadDirectHistoryTurn } from '../../services/directHistoryPagination';
 import ApprovalsTab from './tabs/ApprovalsTab';
 import { AGENT_DETAIL_TABS } from './agentDetailTabs';
 import MindTab from './tabs/MindTab';
@@ -61,15 +63,22 @@ import ToolsTab from './tabs/ToolsTab';
 import AgentDirectory from './AgentDirectory';
 import { useAgentDetailRoute } from './hooks/useAgentDetailRoute';
 import {
+    activeRunForSession,
     failClosedSessionActiveRun,
+    mergeSessionToolMessage,
+    mergeSessionToolMessages,
     mergeTerminalAssistantMessage,
     runtimeCompletionNeedsMessageRefresh,
+    runtimeTerminalPacketNeedsMessageRefresh,
     sessionActiveRunFromResponse,
     sessionRuntimeStateResponseIsValid,
     type SessionActiveRun,
     type ToolReconciliation,
+    toolReconciliationNeedsUserAction,
+    toolReconciliationsByCallId,
     waitingSessionActiveRunHint,
 } from './sessionRuntimeState';
+import { belongsInOtherSessions } from './sessionVisibility';
 import { onboardingKickoffKey, shouldKickoffOnboarding } from './onboardingKickoff';
 import { fetchAuth } from './utils/fetchAuth';
 import {
@@ -1031,7 +1040,7 @@ if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)
  */
 type AnalysisItem =
     | { type: 'thinking'; content: string }
-    | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string };
+    | { type: 'tool'; toolCallId?: string; name: string; args: any; status: 'running' | 'done'; result?: string };
 
 type AnalysisToolMeta = {
     title: string;
@@ -1175,8 +1184,40 @@ function describeAnalysis(items: AnalysisItem[], t: (k: string, opts?: any) => s
     return parts.join(', ');
 }
 
+function describeToolResolution(
+    reconciliation: ToolReconciliation,
+    t: (key: string, options?: any) => string,
+): string {
+    switch (reconciliation.resolutionStatus) {
+        case 'checking':
+            return t('agent.chat.workspaceChecking', '正在核验文件操作…');
+        case 'saved':
+            return reconciliation.savedCount
+                ? t('agent.chat.workspaceSavedCount', { count: reconciliation.savedCount, defaultValue: `Agent 的结果已保存（${reconciliation.savedCount} 个文件）` })
+                : t('agent.chat.workspaceSaved', 'Agent 的文件结果已保存');
+        case 'not_saved':
+            return t('agent.chat.workspaceNotSaved', '已保留源文件');
+        case 'partial': {
+            const saved = reconciliation.savedCount || 0;
+            const pending = reconciliation.pendingCount || 0;
+            return saved || pending
+                ? t('agent.chat.workspacePartialCount', { saved, pending, defaultValue: `已保存 ${saved} 个文件，仍有 ${pending} 个文件待核验` })
+                : t('agent.chat.workspacePartial', '部分文件已保存，仍有文件待核验');
+        }
+        case 'conflicted':
+            return reconciliation.conflictedCount
+                ? t('agent.chat.workspaceConflictCount', { count: reconciliation.conflictedCount, defaultValue: `${reconciliation.conflictedCount} 个文件内容有变化，等待处理` })
+                : t('agent.chat.workspaceConflictPending', '文件内容有变化，等待处理');
+        case 'unavailable':
+            return t('agent.chat.workspaceUnavailable', '暂时无法核验文件操作');
+        default:
+            return t('agent.chat.workspaceVerifying', '文件操作正在核验');
+    }
+}
+
 function AnalysisCard({
-    items, t, expanded, onToggle, isGroupRunning, chatActive, sessionId,
+    items, t, expanded, onToggle, isGroupRunning, chatActive, sessionId, totalToolCount,
+    reconciliationsByToolCallId,
 }: {
     items: AnalysisItem[];
     t: (k: string, opts?: any) => string;
@@ -1187,6 +1228,8 @@ function AnalysisCard({
     /** True while the chat is actively streaming/waiting (any turn in flight) */
     chatActive?: boolean;
     sessionId?: string | null;
+    totalToolCount?: number;
+    reconciliationsByToolCallId: Map<string, ToolReconciliation>;
 }) {
     // propose_experience_draft is a human-facing proposal, not a reasoning step —
     // render it as an always-visible card outside the collapsible trace.
@@ -1200,7 +1243,12 @@ function AnalysisCard({
     const stopped = hasRunningTool && chatActive === false;
     const isRunning = !stopped && (hasRunningTool || (!hasTools && isGroupRunning));
     const runningTool = [...toolItems].reverse().find(tc => tc.status === 'running') ?? null;
-    const headerTitle = isRunning && runningTool ? getToolMeta(runningTool).title : describeAnalysis(items, t);
+    const resolvedToolCount = Math.max(totalToolCount ?? 0, toolItems.length);
+    const headerTitle = isRunning && runningTool
+        ? getToolMeta(runningTool).title
+        : totalToolCount != null
+            ? t('agent.chat.toolCallsTotal', { count: resolvedToolCount })
+            : describeAnalysis(items, t);
 
     return (
         <div className={`analysis-trace${expanded ? ' analysis-trace--open' : ''}${isRunning ? ' analysis-trace--running' : ''}${stopped ? ' analysis-trace--stopped' : ''}`}>
@@ -1268,6 +1316,15 @@ function AnalysisCard({
                             const argsStr = tc.args && Object.keys(tc.args).length > 0
                                 ? JSON.stringify(tc.args, null, 2) : '';
                             const hasDetail = true;
+                            const reconciliation = tc.toolCallId
+                                ? reconciliationsByToolCallId.get(tc.toolCallId)
+                                : undefined;
+                            const needsUserAction = reconciliation
+                                ? toolReconciliationNeedsUserAction(reconciliation)
+                                : false;
+                            const statusText = reconciliation
+                                ? describeToolResolution(reconciliation, t)
+                                : null;
                             return (
                                 <div key={idx} className={`analysis-trace-row${running ? ' analysis-trace-row--running' : ''}`}>
                                     <div className="analysis-trace-node-wrap">
@@ -1331,6 +1388,12 @@ function AnalysisCard({
                                                 </span>
                                             )}
                                         </div>
+                                        {reconciliation?.resolutionStatus && !needsUserAction && (
+                                            <div className="analysis-tool-reconciliation__status">
+                                                <IconClock size={14} stroke={1.7} />
+                                                <span>{statusText}</span>
+                                            </div>
+                                        )}
                                         {hasDetail && (
                                             <details style={{ marginTop: '8px' }}>
                                                 <summary style={{
@@ -2384,8 +2447,14 @@ export default function AgentDetailPage() {
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
     const sessionActiveRunRef = useRef<Record<SessionRuntimeKey, SessionActiveRun | null>>({});
+    const sessionToolMessagesRef = useRef<Record<SessionRuntimeKey, ChatMsg[]>>({});
     const runtimeEventCursorRef = useRef<Record<SessionRuntimeKey, string>>({});
     const [activeRun, setActiveRun] = useState<SessionActiveRun | null>(null);
+    const selectedSessionActiveRun = activeRunForSession(activeRun, activeSession?.id);
+    const selectedReconciliationsByToolCallId = useMemo(
+        () => toolReconciliationsByCallId(selectedSessionActiveRun?.pendingToolReconciliations || []),
+        [selectedSessionActiveRun?.pendingToolReconciliations],
+    );
     const [reconcilingExecutionId, setReconcilingExecutionId] = useState<string | null>(null);
     const [messagesLoadedRuntimeKey, setMessagesLoadedRuntimeKey] = useState<string | null>(null);
     const [runtimeStateLoadedRuntimeKey, setRuntimeStateLoadedRuntimeKey] = useState<string | null>(null);
@@ -2396,7 +2465,11 @@ export default function AgentDetailPage() {
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
 
-    const refreshSessionMessages = async (agentId: string, sessionId: string) => {
+    const refreshSessionMessages = async (
+        agentId: string,
+        sessionId: string,
+        discardSessionToolCacheOnSuccess = false,
+    ) => {
         try {
             const tkn = localStorage.getItem('token');
             const response = await fetch(
@@ -2427,7 +2500,14 @@ export default function AgentDetailPage() {
                     runtimeError: normalizeRuntimeError({ error: message.runtime_error }),
                 }),
             }));
-            setChatMessages(parsed);
+            const runtimeKey = buildSessionRuntimeKey(agentId, sessionId);
+            setChatMessages(mergeSessionToolMessages(
+                parsed,
+                sessionToolMessagesRef.current[runtimeKey] || [],
+            ));
+            if (discardSessionToolCacheOnSuccess) {
+                delete sessionToolMessagesRef.current[runtimeKey];
+            }
             // Round-trip the backend's compound `<created_at>|<id>` cursor. A bare
             // created_at cannot page past a batch of messages that share one timestamp
             // (e.g. a burst of tool_call rows), so older messages would never load.
@@ -2457,6 +2537,7 @@ export default function AgentDetailPage() {
         delete wsMapRef.current[key];
         delete sessionUiStateRef.current[key];
         delete sessionActiveRunRef.current[key];
+        delete sessionToolMessagesRef.current[key];
     };
 
     const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
@@ -2513,7 +2594,7 @@ export default function AgentDetailPage() {
             ] || null;
             applySessionActiveRun(agentId, sessionId, next);
             if (runtimeCompletionNeedsMessageRefresh(previous, next)) {
-                void refreshSessionMessages(agentId, sessionId);
+                void refreshSessionMessages(agentId, sessionId, true);
             }
             if (
                 currentAgentIdRef.current === agentId
@@ -2537,10 +2618,6 @@ export default function AgentDetailPage() {
     /** Normalize IDs — API/JSON may use number vs string; loose equality was breaking "own session" detection. */
     const sessionUserIdStr = (s: any) => (s?.user_id == null ? '' : String(s.user_id));
     const viewerUserIdStr = () => (currentUser?.id == null ? '' : String(currentUser.id));
-    const isAgentChatSession = (s: any) =>
-        String(s?.source_channel || '').toLowerCase() === 'agent' ||
-        String(s?.participant_type || '').toLowerCase() === 'agent';
-
     /** Ensure session shape from POST/list so P2P "mine" is never mistaken for read-only or agent thread. */
     const normalizeChatSession = (sess: any) => {
         if (!sess || typeof sess !== 'object') return sess;
@@ -2589,18 +2666,10 @@ export default function AgentDetailPage() {
 
     const isViewingOtherUsersSessions = canViewAllAgentChatSessions && chatScope === 'all';
 
-    /** Sessions in scope=all that are not the current viewer's own P2P rows (for admin「其他用户」tab).
-     *  Agent-to-agent sessions (source_channel === 'agent') store the creator's user_id, so we must
-     *  exempt them from the user_id check — otherwise they'd always be hidden. */
+    /** Sessions in scope=all that belong on the admin-facing "Other sessions" surface. */
     const otherUsersSessions = useMemo(() => {
         const vu = viewerUserIdStr();
-        return allSessions.filter((s: any) => {
-            // Always show agent-to-agent sessions in the "Other users" tab
-            if (isAgentChatSession(s)) return true;
-            const su = sessionUserIdStr(s);
-            if (vu && su === vu) return false;
-            return true;
-        });
+        return allSessions.filter((s: any) => belongsInOtherSessions(s, vu));
     }, [allSessions, currentUser?.id]);
 
     const othersListForPicker = otherUsersSessions;
@@ -2710,7 +2779,7 @@ export default function AgentDetailPage() {
         userPinnedAwayFromBottomRef.current = false;
         pendingLiveInitialScrollRef.current = writable;
         pendingHistoryInitialScrollRef.current = !writable;
-        setChatMessages([]);
+        setChatMessages(sessionToolMessagesRef.current[runtimeKey] || []);
         setChatOldestTimestamp(null);
         setChatHistoryHasMore(true);
         setChatHistoryLoadingMore(false);
@@ -2761,7 +2830,10 @@ export default function AgentDetailPage() {
             const oldestTimestamp = msgs.length > 0 ? (msgs[0].cursor ?? msgs[0].created_at) : null;
 
             if (writable) {
-                setChatMessages(preParsed);
+                setChatMessages(mergeSessionToolMessages(
+                    preParsed,
+                    sessionToolMessagesRef.current[runtimeKey] || [],
+                ));
                 setChatOldestTimestamp(oldestTimestamp);
                 setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
                 setMessagesLoadedRuntimeKey(runtimeKey);
@@ -2874,60 +2946,8 @@ export default function AgentDetailPage() {
     };
     interface ChatMsg { id?: string; role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolCallId?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; toolThinking?: string; thinking?: string; imageUrl?: string; timestamp?: string; runtimeError?: ReturnType<typeof normalizeRuntimeError>; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
-    const getToolTargetKey = (args: any): string => {
-        if (!args) return '';
-        const parsed = typeof args === 'string'
-            ? (() => {
-                try { return JSON.parse(args); } catch { return null; }
-            })()
-            : args;
-        if (!parsed || typeof parsed !== 'object') return '';
-        const value = parsed.path
-            || parsed.file_path
-            || parsed.output_path
-            || parsed.target_path
-            || parsed.filename
-            || parsed.url
-            || parsed.query
-            || parsed.name
-            || '';
-        return typeof value === 'string' ? value.trim() : '';
-    };
     const upsertToolCallMessage = (toolMsg: ChatMsg) => {
-        setChatMessages(prev => {
-            const incomingTarget = getToolTargetKey(toolMsg.toolArgs);
-            if (toolMsg.toolCallId) {
-                const exactIdx = prev.findIndex(
-                    (msg) => msg.role === 'tool_call' && msg.toolCallId === toolMsg.toolCallId,
-                );
-                if (exactIdx >= 0) {
-                    const existing = prev[exactIdx];
-                    // A replay can start at the beginning of a Run after page reload.
-                    // Never downgrade the settled canonical history row back to running.
-                    if (existing.toolStatus === 'done' && toolMsg.toolStatus === 'running') return prev;
-                    return [
-                        ...prev.slice(0, exactIdx),
-                        { ...existing, ...toolMsg },
-                        ...prev.slice(exactIdx + 1),
-                    ];
-                }
-            }
-            const sameTool = (msg: ChatMsg) => (
-                msg.role === 'tool_call'
-                && msg.toolName === toolMsg.toolName
-                && msg.toolStatus === 'running'
-                && (
-                    (!!incomingTarget && getToolTargetKey(msg.toolArgs) === incomingTarget)
-                    || (!toolMsg.toolCallId && !incomingTarget)
-                )
-            );
-            const runningIdx = [...prev].reverse().findIndex(sameTool);
-            if (runningIdx >= 0) {
-                const idx = prev.length - 1 - runningIdx;
-                return [...prev.slice(0, idx), { ...prev[idx], ...toolMsg }, ...prev.slice(idx + 1)];
-            }
-            return [...prev, toolMsg];
-        });
+        setChatMessages((previous) => mergeSessionToolMessage(previous, toolMsg));
     };
     // Transient info banner (e.g. fallback model switch notification)
     const [chatInfoMsg, setChatInfoMsg] = useState<string | null>(null);
@@ -2968,8 +2988,8 @@ export default function AgentDetailPage() {
         || (lastChatMessage?.role === 'tool_call' && lastChatMessage.toolStatus === 'running'),
     );
     const showDirectRunThinking = isWaiting || Boolean(
-        activeRun
-        && ['queued', 'running'].includes(activeRun.status)
+        selectedSessionActiveRun
+        && ['queued', 'running'].includes(selectedSessionActiveRun.status)
         && !isStreaming
         && !hasVisibleLiveProgress
     );
@@ -2993,6 +3013,7 @@ export default function AgentDetailPage() {
 
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
+    const chatHistorySentinelRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3279,6 +3300,7 @@ export default function AgentDetailPage() {
         });
         wsMapRef.current = {};
         sessionActiveRunRef.current = {};
+        sessionToolMessagesRef.current = {};
         wsRef.current = null;
     }, [currentUser?.id, token]);
 
@@ -3382,6 +3404,22 @@ export default function AgentDetailPage() {
                 return;
             }
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            const streamedToolMessage: ChatMsg | null = d.type === 'tool_call' ? {
+                role: 'tool_call',
+                content: '',
+                toolName: d.name,
+                toolCallId: String(d.call_id || d.id || d.index || ''),
+                toolArgs: d.args,
+                toolStatus: d.status,
+                toolResult: d.result,
+                toolThinking: d.reasoning_content,
+            } : null;
+            if (streamedToolMessage) {
+                sessionToolMessagesRef.current[key] = mergeSessionToolMessage(
+                    sessionToolMessagesRef.current[key] || [],
+                    streamedToolMessage,
+                );
+            }
             if (['thinking', 'chunk', 'workspace_draft', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 const nextStreaming = ['thinking', 'chunk', 'workspace_draft', 'tool_call'].includes(d.type);
                 const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
@@ -3569,16 +3607,7 @@ export default function AgentDetailPage() {
                         collapseSidebarsForLivePanel();
                     }
                 }
-                upsertToolCallMessage({
-                    role: 'tool_call',
-                    content: '',
-                    toolName: d.name,
-                    toolCallId: String(d.call_id || d.id || d.index || ''),
-                    toolArgs: d.args,
-                    toolStatus: d.status,
-                    toolResult: d.result,
-                    toolThinking: d.reasoning_content,
-                });
+                if (streamedToolMessage) upsertToolCallMessage(streamedToolMessage);
                 if (d.status === 'done') {
                     const currentSessionId = activeSessionIdRef.current ? String(activeSessionIdRef.current) : '';
                     if (currentSessionId) clearUnreadForSession(currentSessionId);
@@ -3591,7 +3620,8 @@ export default function AgentDetailPage() {
                     return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'done') {
-                if (['completed', 'failed', 'cancelled'].includes(String(d.runtime_status))) {
+                const shouldRefreshCanonicalMessages = runtimeTerminalPacketNeedsMessageRefresh(d.runtime_status);
+                if (shouldRefreshCanonicalMessages) {
                     const existingRun = sessionActiveRunRef.current[key];
                     if (existingRun && d.run_id && existingRun.runId === String(d.run_id)) {
                         applySessionActiveRun(agentId, sessionId, {
@@ -3640,6 +3670,13 @@ export default function AgentDetailPage() {
                     fetchAllSessions();
                 }
                 queryClient.invalidateQueries({ queryKey: ['agents'] });
+                // The terminal packet carries only the final assistant message. Tool calls are
+                // projected into ChatMessage rows during delivery settlement, so always reload
+                // the canonical page after a terminal packet even though the local run was
+                // already marked terminal above.
+                if (shouldRefreshCanonicalMessages) {
+                    void refreshSessionMessages(agentId, sessionId, true);
+                }
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const runtimeError = normalizeRuntimeError(d);
                 if (runtimeErrorDisablesReconnect(runtimeError)) {
@@ -3701,24 +3738,31 @@ export default function AgentDetailPage() {
     };
 
     const dispatchChatMessage = (socket: WebSocket, runtimeKey: SessionRuntimeKey, payload: PendingChatMessage) => {
-        setIsWaiting(true);
-        setIsStreaming(false);
+        const [runtimeAgentId, runtimeSessionId] = runtimeKey.split(':');
+        const isActiveRuntime = (
+            currentAgentIdRef.current === runtimeAgentId
+            && activeSessionIdRef.current === runtimeSessionId
+        );
         setSessionUiState(runtimeKey, { isWaiting: true, isStreaming: false });
         if (payload.resumeRunId) {
             const current = sessionActiveRunRef.current[runtimeKey];
             if (current?.runId === payload.resumeRunId) {
                 const next = { ...current, canResume: false };
                 sessionActiveRunRef.current[runtimeKey] = next;
-                setActiveRun(next);
+                if (isActiveRuntime) setActiveRun(next);
             }
         }
-        setChatMessages(prev => [...prev, parseChatMsg({
-            role: 'user',
-            content: payload.userMsg,
-            fileName: payload.fileName,
-            imageUrl: payload.imageUrl,
-            timestamp: new Date().toISOString()
-        })]);
+        if (isActiveRuntime) {
+            setIsWaiting(true);
+            setIsStreaming(false);
+            setChatMessages(prev => [...prev, parseChatMsg({
+                role: 'user',
+                content: payload.userMsg,
+                fileName: payload.fileName,
+                imageUrl: payload.imageUrl,
+                timestamp: new Date().toISOString()
+            })]);
+        }
         socket.send(JSON.stringify({
             content: payload.contentForLLM,
             display_content: payload.userMsg,
@@ -3727,7 +3771,6 @@ export default function AgentDetailPage() {
             ...(payload.resumeRunId ? { run_id: payload.resumeRunId } : {}),
             ...(payload.resumeCorrelationId ? { correlation_id: payload.resumeCorrelationId } : {}),
         }));
-        const [runtimeAgentId, runtimeSessionId] = runtimeKey.split(':');
         window.setTimeout(() => {
             void fetchSessionRuntimeState(runtimeAgentId, runtimeSessionId);
         }, 250);
@@ -3739,16 +3782,21 @@ export default function AgentDetailPage() {
     const handleToolReconciliation = async (
         reconciliation: ToolReconciliation,
         outcome: 'applied' | 'not_applied',
+        allAccept = false,
     ) => {
-        if (!id || !activeSession?.id || !activeRun?.correlationId) return;
-        const correlationId = activeRun.correlationId;
+        if (!id || !activeSession?.id || !selectedSessionActiveRun?.correlationId) return;
+        const correlationId = selectedSessionActiveRun.correlationId;
         const applied = outcome === 'applied';
-        const confirmation = applied
-            ? t('agent.chat.reconcileAppliedConfirm', '确认该操作已经生效，并且不得重复执行？')
-            : t('agent.chat.reconcileNotAppliedConfirm', '确认该操作没有生效，可以让 Agent 重新决定是否重试？');
+        const confirmation = reconciliation.workspaceResolution
+            ? applied
+                ? t('agent.chat.useAgentResultConfirm', '使用 Agent 的结果覆盖工作区中的源文件？')
+                : t('agent.chat.keepSourceFileConfirm', '保留工作区中的源文件，放弃 Agent 的文件结果？')
+            : applied
+                ? t('agent.chat.reconcileAppliedConfirm', '确认该操作已经生效，并且不得重复执行？')
+                : t('agent.chat.reconcileNotAppliedConfirm', '确认该操作没有生效，可以让 Agent 重新决定是否重试？');
         if (!window.confirm(confirmation)) return;
 
-        const run = activeRun;
+        const run = selectedSessionActiveRun;
         const sessionId = String(activeSession.id);
         const runtimeKey = buildSessionRuntimeKey(id, sessionId);
         setReconcilingExecutionId(reconciliation.executionId);
@@ -3767,6 +3815,7 @@ export default function AgentDetailPage() {
                         note: applied
                             ? 'User confirmed in Direct Chat that the operation took effect.'
                             : 'User confirmed in Direct Chat that the operation did not take effect.',
+                        all_accept: allAccept,
                     }),
                 },
             );
@@ -3775,9 +3824,18 @@ export default function AgentDetailPage() {
                 throw new Error(body?.detail || `HTTP ${response.status}`);
             }
 
-            const userMsg = applied
-                ? t('agent.chat.reconcileAppliedMessage', '我确认这次工具操作已经生效，请继续，且不要重复执行该操作。')
-                : t('agent.chat.reconcileNotAppliedMessage', '我确认这次工具操作没有生效，请消费失败结果后继续，并重新决定是否需要新的工具调用。');
+            if (reconciliation.workspaceResolution) {
+                await fetchSessionRuntimeState(id, sessionId);
+                return;
+            }
+
+            const userMsg = reconciliation.workspaceResolution
+                ? applied
+                    ? t('agent.chat.useAgentResultMessage', '使用 Agent 的文件结果继续，不要重新执行原工具。')
+                    : t('agent.chat.keepSourceFileMessage', '保留工作区中的源文件继续，不要重新执行原工具。')
+                : applied
+                    ? t('agent.chat.reconcileAppliedMessage', '我确认这次工具操作已经生效，请继续，且不要重复执行该操作。')
+                    : t('agent.chat.reconcileNotAppliedMessage', '我确认这次工具操作没有生效，请消费失败结果后继续，并重新决定是否需要新的工具调用。');
             const pending: PendingChatMessage = {
                 runtimeKey,
                 contentForLLM: userMsg,
@@ -3825,14 +3883,14 @@ export default function AgentDetailPage() {
             || !activeSession?.id
             || activeTab !== 'chat'
             || !isWritableSession(activeSession)
-            || !activeRun
+            || !selectedSessionActiveRun
         ) return;
         const sessionId = String(activeSession.id);
         const timer = window.setInterval(() => {
             void fetchSessionRuntimeState(id, sessionId);
         }, 1500);
         return () => window.clearInterval(timer);
-    }, [id, activeTab, activeSession?.id, activeRun?.runId, activeRun?.status]);
+    }, [id, activeTab, activeSession?.id, selectedSessionActiveRun?.runId, selectedSessionActiveRun?.status]);
 
     const handleWorkspacePathDeleted = useCallback((path: string) => {
         let removedName = '';
@@ -3880,6 +3938,7 @@ export default function AgentDetailPage() {
                 if (ws.readyState !== WebSocket.CLOSED) ws.close();
             });
             wsMapRef.current = {};
+            sessionToolMessagesRef.current = {};
             wsRef.current = null;
         };
     }, []);
@@ -3898,6 +3957,16 @@ export default function AgentDetailPage() {
     const [chatScrollBtnBottom, setChatScrollBtnBottom] = useState(96);
     // Read-only history scroll-to-bottom
     const historyContainerRef = useRef<HTMLDivElement>(null);
+    const historyPrependAnchor = usePrependScrollAnchor({
+        containerRef: historyContainerRef,
+        itemCount: historyMsgs.length,
+        scopeKey: activeSession?.id,
+    });
+    const chatPrependAnchor = usePrependScrollAnchor({
+        containerRef: chatContainerRef,
+        itemCount: chatMessages.length,
+        scopeKey: activeSession?.id,
+    });
     const [showHistoryScrollBtn, setShowHistoryScrollBtn] = useState(false);
     const scheduleComposerFocus = useCallback(() => {
         let attempts = 0;
@@ -3928,6 +3997,7 @@ export default function AgentDetailPage() {
         setShowScrollBtn(true);
     }, [cancelLiveAutoFollow]);
     const scheduleLiveScrollToBottom = useCallback(() => {
+        if (chatPrependAnchor.isPrependingRef.current) return;
         if (userPinnedAwayFromBottomRef.current) return;
         cancelLiveAutoFollow();
         const jobId = liveScrollJobRef.current;
@@ -3946,7 +4016,7 @@ export default function AgentDetailPage() {
             window.setTimeout(scroll, 80),
             window.setTimeout(scroll, 220),
         ];
-    }, [cancelLiveAutoFollow]);
+    }, [cancelLiveAutoFollow, chatPrependAnchor.isPrependingRef]);
     useEffect(() => {
         return () => cancelLiveAutoFollow();
     }, [cancelLiveAutoFollow]);
@@ -3970,18 +4040,27 @@ export default function AgentDetailPage() {
         setHistoryLoadingMore(true);
         try {
             const tkn = localStorage.getItem('token');
-            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(historyOldestTimestamp)}`, {
-                headers: { Authorization: `Bearer ${tkn}` },
+            const page = await loadDirectHistoryTurn({
+                before: historyOldestTimestamp,
+                pageSize: HISTORY_PAGE_SIZE,
+                completeToolTurn: historyMsgs[0]?.role === 'tool_call',
+                fetchPage: async (before) => {
+                    const response = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(before)}`, {
+                        headers: { Authorization: `Bearer ${tkn}` },
+                    });
+                    if (!response.ok) throw new Error(`History request failed with ${response.status}`);
+                    return response.json();
+                },
             });
-            if (!res.ok) return;
-            const msgs = await res.json();
-            // Validate session is still active after async fetch
-            if (activeSession?.id !== sess.id) return;
-            if (msgs.length === 0) {
+            if (
+                currentAgentIdRef.current !== targetAgentId
+                || activeSessionIdRef.current !== String(sess.id)
+            ) return;
+            if (page.rows.length === 0) {
                 setHistoryHasMore(false);
                 return;
             }
-            const preParsed = msgs.map((m: any) => parseChatMsg({
+            const preParsed = page.rows.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolCallId: m.toolCallId, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult, toolThinking: m.toolThinking }),
                 ...(m.thinking && { thinking: m.thinking }),
@@ -3991,27 +4070,16 @@ export default function AgentDetailPage() {
                     runtimeError: normalizeRuntimeError({ error: m.runtime_error }),
                 }),
             }));
-            // Save current scroll position
-            const el = historyContainerRef.current;
-            const oldScrollHeight = el?.scrollHeight ?? 0;
+            historyPrependAnchor.captureAnchor();
             setHistoryMsgs(prev => [...preParsed, ...prev]);
-            // Update the oldest cursor (first message in the new batch, since messages are in chronological order).
-            // Round-trip the compound `<created_at>|<id>` cursor so equal-timestamp batches don't stall pagination.
-            setHistoryOldestTimestamp(msgs[0].cursor ?? msgs[0].created_at);
-            setHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
-            // Restore scroll position after new messages are prepended
-            requestAnimationFrame(() => {
-                if (el) {
-                    const newScrollHeight = el.scrollHeight;
-                    el.scrollTop = newScrollHeight - oldScrollHeight;
-                }
-            });
+            setHistoryOldestTimestamp(page.oldestCursor);
+            setHistoryHasMore(page.hasMore);
         } catch (err: any) {
             console.error('Failed to load more history messages:', err);
         } finally {
             setHistoryLoadingMore(false);
         }
-    }, [historyLoadingMore, historyHasMore, activeSession, id, historyOldestTimestamp]);
+    }, [historyLoadingMore, historyHasMore, activeSession, id, historyOldestTimestamp, historyMsgs, historyPrependAnchor.captureAnchor]);
 
     const loadMoreChatHistoryMessages = useCallback(async () => {
         if (chatHistoryLoadingMore || !chatHistoryHasMore || !activeSession || !id || !chatOldestTimestamp) return;
@@ -4020,18 +4088,27 @@ export default function AgentDetailPage() {
         setChatHistoryLoadingMore(true);
         try {
             const tkn = localStorage.getItem('token');
-            const res = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(chatOldestTimestamp)}`, {
-                headers: { Authorization: `Bearer ${tkn}` },
+            const page = await loadDirectHistoryTurn({
+                before: chatOldestTimestamp,
+                pageSize: HISTORY_PAGE_SIZE,
+                completeToolTurn: chatMessages[0]?.role === 'tool_call',
+                fetchPage: async (before) => {
+                    const response = await fetch(`/api/agents/${targetAgentId}/sessions/${sess.id}/messages?limit=${HISTORY_PAGE_SIZE}&before=${encodeURIComponent(before)}`, {
+                        headers: { Authorization: `Bearer ${tkn}` },
+                    });
+                    if (!response.ok) throw new Error(`History request failed with ${response.status}`);
+                    return response.json();
+                },
             });
-            if (!res.ok) return;
-            const msgs = await res.json();
-            // Validate session is still active after async fetch
-            if (activeSession?.id !== sess.id) return;
-            if (msgs.length === 0) {
+            if (
+                currentAgentIdRef.current !== targetAgentId
+                || activeSessionIdRef.current !== String(sess.id)
+            ) return;
+            if (page.rows.length === 0) {
                 setChatHistoryHasMore(false);
                 return;
             }
-            const preParsed = msgs.map((m: any) => parseChatMsg({
+            const preParsed = page.rows.map((m: any) => parseChatMsg({
                 role: m.role, content: m.content || '',
                 ...(m.toolName && { toolName: m.toolName, toolCallId: m.toolCallId, toolArgs: m.toolArgs, toolStatus: m.toolStatus, toolResult: m.toolResult, toolThinking: m.toolThinking }),
                 ...(m.thinking && { thinking: m.thinking }),
@@ -4041,37 +4118,35 @@ export default function AgentDetailPage() {
                     runtimeError: normalizeRuntimeError({ error: m.runtime_error }),
                 }),
             }));
-            // Save current scroll position
-            const el = chatContainerRef.current;
-            const oldScrollHeight = el?.scrollHeight ?? 0;
+            cancelLiveAutoFollow();
+            chatPrependAnchor.captureAnchor();
             setChatMessages(prev => [...preParsed, ...prev]);
-            // Update the oldest cursor (first message in the new batch, since messages are in chronological order).
-            // Round-trip the compound `<created_at>|<id>` cursor so equal-timestamp batches don't stall pagination.
-            setChatOldestTimestamp(msgs[0].cursor ?? msgs[0].created_at);
-            setChatHistoryHasMore(msgs.length >= HISTORY_PAGE_SIZE);
-            // Restore scroll position after new messages are prepended
-            requestAnimationFrame(() => {
-                if (el) {
-                    const newScrollHeight = el.scrollHeight;
-                    el.scrollTop = newScrollHeight - oldScrollHeight;
-                }
-            });
+            setChatOldestTimestamp(page.oldestCursor);
+            setChatHistoryHasMore(page.hasMore);
         } catch (err: any) {
             console.error('Failed to load more chat history messages:', err);
         } finally {
             setChatHistoryLoadingMore(false);
         }
-    }, [chatHistoryLoadingMore, chatHistoryHasMore, activeSession, id, chatOldestTimestamp]);
+    }, [chatHistoryLoadingMore, chatHistoryHasMore, activeSession, id, chatOldestTimestamp, chatMessages, cancelLiveAutoFollow, chatPrependAnchor.captureAnchor]);
+
+    const historyLoadGesture = useOlderHistoryGesture({
+        containerRef: historyContainerRef,
+        canLoad: historyHasMore && !historyLoadingMore,
+        onLoadMore: loadMoreHistoryMessages,
+    });
+    const chatHistoryLoadGesture = useOlderHistoryGesture({
+        containerRef: chatContainerRef,
+        canLoad: chatHistoryHasMore && !chatHistoryLoadingMore,
+        onLoadMore: loadMoreChatHistoryMessages,
+    });
 
     const handleHistoryScroll = () => {
         const el = historyContainerRef.current;
         if (!el) return;
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
         setShowHistoryScrollBtn(distFromBottom > 200);
-        // Load more when scrolling near the top
-        if (el.scrollTop < 100 && historyHasMore && !historyLoadingMore) {
-            loadMoreHistoryMessages();
-        }
+        historyLoadGesture.onScroll();
     };
     const scrollHistoryToBottom = () => {
         scheduleHistoryScrollToBottom();
@@ -4238,12 +4313,10 @@ export default function AgentDetailPage() {
             cancelLiveAutoFollow();
         }
         setShowScrollBtn(distFromBottom > 200);
-        // Load more when scrolling near the top
-        if (el.scrollTop < 100 && chatHistoryHasMore && !chatHistoryLoadingMore) {
-            loadMoreChatHistoryMessages();
-        }
+        chatHistoryLoadGesture.onScroll();
     };
     const handleChatWheelCapture = (event: React.WheelEvent<HTMLDivElement>) => {
+        chatHistoryLoadGesture.onWheelCapture(event);
         const el = chatContainerRef.current;
         if (!el) return;
         if (event.deltaY < 0 && el.scrollTop > 0) {
@@ -4251,9 +4324,11 @@ export default function AgentDetailPage() {
         }
     };
     const handleChatTouchStartCapture = (event: React.TouchEvent<HTMLDivElement>) => {
+        chatHistoryLoadGesture.onTouchStartCapture(event);
         chatTouchStartYRef.current = event.touches[0]?.clientY ?? null;
     };
     const handleChatTouchMoveCapture = (event: React.TouchEvent<HTMLDivElement>) => {
+        chatHistoryLoadGesture.onTouchMoveCapture(event);
         const startY = chatTouchStartYRef.current;
         const currentY = event.touches[0]?.clientY;
         const el = chatContainerRef.current;
@@ -4357,8 +4432,7 @@ export default function AgentDetailPage() {
             attachedFiles.forEach(file => {
                 filesDisplay += `[Attachment: ${file.name}] `;
                 const wsPath = file.path || '';
-                const codePath = wsPath.replace(/^workspace\//, '');
-                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document/send_email tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
+                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document/send_email tools)\nIn execute_code, use the same Agent-root-relative path: "${wsPath}". The sandbox working directory is "/".\n` : '';
 
                 if (file.imageUrl && supportsVision) {
                     filesPrompt += `[image_data:${file.imageUrl}]\n`;
@@ -4722,7 +4796,7 @@ export default function AgentDetailPage() {
             messagesLoaded: messagesLoadedRuntimeKey === runtimeKey,
             runtimeStateLoaded: runtimeStateLoadedRuntimeKey === runtimeKey,
             messageCount: chatMessages.length,
-            hasActiveRun: activeRun !== null,
+            hasActiveRun: selectedSessionActiveRun !== null,
         })) return;
         const pairKey = onboardingKickoffKey(id, String(currentUser.id));
         if (onboardingKickoffRef.current.has(pairKey)) return;
@@ -4736,7 +4810,7 @@ export default function AgentDetailPage() {
             kind: 'onboarding_trigger',
             model_id: effectiveChatModelId,
         }));
-    }, [wsConnected, id, currentUser?.id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length, messagesLoadedRuntimeKey, runtimeStateLoadedRuntimeKey, activeRun]);
+    }, [wsConnected, id, currentUser?.id, activeSession?.id, agent?.onboarded_for_me, llmModelsLoading, effectiveModelReady, effectiveChatModelId, chatMessages.length, messagesLoadedRuntimeKey, runtimeStateLoadedRuntimeKey, selectedSessionActiveRun]);
 
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
@@ -6431,7 +6505,6 @@ export default function AgentDetailPage() {
                                 gap: 0,
                                 flex: 1,
                                 minHeight: 0,
-                                height: 'calc(100vh - 100px)',
                                 margin: '0 8px 8px',
                                 border: '1px solid rgba(0, 0, 0, 0.06)',
                                 borderRadius: '12px',
@@ -6704,7 +6777,19 @@ export default function AgentDetailPage() {
                                                     <>Read-only · {activeSession.username || 'User'}</>
                                                 )}
                                             </div>
-                                            <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                            <div
+                                                ref={historyContainerRef}
+                                                onScroll={handleHistoryScroll}
+                                                onWheelCapture={historyLoadGesture.onWheelCapture}
+                                                onPointerDownCapture={historyLoadGesture.onPointerDownCapture}
+                                                onTouchStartCapture={historyLoadGesture.onTouchStartCapture}
+                                                onTouchMoveCapture={historyLoadGesture.onTouchMoveCapture}
+                                                onTouchEndCapture={historyLoadGesture.onTouchEndCapture}
+                                                onKeyDownCapture={historyLoadGesture.onKeyDownCapture}
+                                                className="agent-chat-message-scroll"
+                                                style={{ padding: '48px 16px 12px' }}
+                                                tabIndex={0}
+                                            >
                                                 {historyLoadingMore && (
                                                     <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
                                                         Loading more messages...
@@ -6821,9 +6906,14 @@ export default function AgentDetailPage() {
                                                 ref={chatContainerRef}
                                                 onScroll={handleChatScroll}
                                                 onWheelCapture={handleChatWheelCapture}
+                                                onPointerDownCapture={chatHistoryLoadGesture.onPointerDownCapture}
                                                 onTouchStartCapture={handleChatTouchStartCapture}
                                                 onTouchMoveCapture={handleChatTouchMoveCapture}
-                                                style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}
+                                                onTouchEndCapture={chatHistoryLoadGesture.onTouchEndCapture}
+                                                onKeyDownCapture={chatHistoryLoadGesture.onKeyDownCapture}
+                                                className="agent-chat-message-scroll"
+                                                style={{ padding: '12px 16px' }}
+                                                tabIndex={0}
                                             >
                                                 {chatHistoryLoadingMore && (
                                                     <div style={{ textAlign: 'center', padding: '12px 0', color: 'var(--text-tertiary)', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
@@ -6924,6 +7014,7 @@ export default function AgentDetailPage() {
                                                                 }
                                                                 currentGroup.push({
                                                                     type: 'tool',
+                                                                    toolCallId: msg.toolCallId,
                                                                     name: msg.toolName || 'tool',
                                                                     args: msg.toolArgs || {},
                                                                     status: msg.toolStatus === 'running' ? 'running' : 'done',
@@ -6966,6 +7057,8 @@ export default function AgentDetailPage() {
                                                     }
                                                     flushGroup(); // flush any trailing group
 
+                                                    const analysisGroupCount = grouped.filter(entry => entry.type === 'analysis_group').length;
+
 
                                                     return grouped.map((entry, entryIdx) => {
                                                         const previousEntry = grouped[entryIdx - 1];
@@ -6996,6 +7089,12 @@ export default function AgentDetailPage() {
                                                                         isGroupRunning={groupIsRunning}
                                                                         chatActive={isWaiting || isStreaming}
                                                                         sessionId={activeSessionIdRef.current}
+                                                                        totalToolCount={
+                                                                            analysisGroupCount === 1 && !(isWaiting || isStreaming)
+                                                                                ? activeSession?.tool_call_count
+                                                                                : undefined
+                                                                        }
+                                                                        reconciliationsByToolCallId={selectedReconciliationsByToolCallId}
                                                                     />
                                                                 </div>
                                                             );
@@ -7089,17 +7188,26 @@ export default function AgentDetailPage() {
                                             ) : null}
                                             <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                                 <div className="chat-composer">
-                                                    {activeRun?.pendingToolReconciliations.map((reconciliation) => (
-                                                        <div className="chat-tool-reconciliation" key={reconciliation.executionId}>
-                                                            <div className="chat-tool-reconciliation__title">
-                                                                <IconAlertTriangle size={16} />
-                                                                {t('agent.chat.reconcileTitle', '工具执行结果需要确认')}
-                                                            </div>
-                                                            <div className="chat-tool-reconciliation__detail">
-                                                                <code>{reconciliation.toolName}</code>
-                                                                <span>{reconciliation.resultSummary || reconciliation.errorCode || t('agent.chat.reconcileUnknown', '该操作可能已生效，也可能未生效。')}</span>
-                                                            </div>
-                                                            {reconciliation.canReconcile ? (
+                                                    {selectedSessionActiveRun?.pendingToolReconciliations
+                                                        .filter(toolReconciliationNeedsUserAction)
+                                                        .map((reconciliation) => (
+                                                            <div className="chat-tool-reconciliation" key={reconciliation.executionId}>
+                                                                <div className="chat-tool-reconciliation__title">
+                                                                    <IconAlertTriangle size={16} />
+                                                                    {reconciliation.workspaceResolution
+                                                                        ? t('agent.chat.workspaceConflictTitle', '文件内容有变化')
+                                                                        : t('agent.chat.reconcileTitle', '工具执行结果需要确认')}
+                                                                </div>
+                                                                <div className="chat-tool-reconciliation__detail">
+                                                                    {reconciliation.workspaceResolution ? (
+                                                                        <span>{t('agent.chat.workspaceConflictBody', 'Agent 处理后的文件与工作区中的源文件不同。请选择要保留哪一个。')}</span>
+                                                                    ) : (
+                                                                        <>
+                                                                            <code>{reconciliation.toolName}</code>
+                                                                            <span>{reconciliation.resultSummary || reconciliation.errorCode || t('agent.chat.reconcileUnknown', '该操作可能已生效，也可能未生效。')}</span>
+                                                                        </>
+                                                                    )}
+                                                                </div>
                                                                 <div className="chat-tool-reconciliation__actions">
                                                                     <button
                                                                         type="button"
@@ -7107,7 +7215,9 @@ export default function AgentDetailPage() {
                                                                         disabled={reconcilingExecutionId !== null}
                                                                         onClick={() => void handleToolReconciliation(reconciliation, 'not_applied')}
                                                                     >
-                                                                        {t('agent.chat.reconcileNotApplied', '确认未生效，可继续')}
+                                                                        {reconciliation.workspaceResolution
+                                                                            ? t('agent.chat.keepSourceFile', '保留源文件')
+                                                                            : t('agent.chat.reconcileNotApplied', '确认未生效，可继续')}
                                                                     </button>
                                                                     <button
                                                                         type="button"
@@ -7115,16 +7225,27 @@ export default function AgentDetailPage() {
                                                                         disabled={reconcilingExecutionId !== null}
                                                                         onClick={() => void handleToolReconciliation(reconciliation, 'applied')}
                                                                     >
-                                                                        {t('agent.chat.reconcileApplied', '确认已生效，继续')}
+                                                                        {reconciliation.workspaceResolution
+                                                                            ? t('agent.chat.useAgentResult', '使用 Agent 的结果')
+                                                                            : t('agent.chat.reconcileApplied', '确认已生效，继续')}
                                                                     </button>
+                                                                    {reconciliation.workspaceResolution && (
+                                                                        <button
+                                                                            type="button"
+                                                                            className="btn btn-primary"
+                                                                            disabled={reconcilingExecutionId !== null}
+                                                                            onClick={() => void handleToolReconciliation(
+                                                                                reconciliation,
+                                                                                'applied',
+                                                                                true,
+                                                                            )}
+                                                                        >
+                                                                            {t('agent.chat.useAgentResultForRun', '本次任务全部使用 Agent 的结果')}
+                                                                        </button>
+                                                                    )}
                                                                 </div>
-                                                            ) : (
-                                                                <div className="chat-tool-reconciliation__unsupported">
-                                                                    {t('agent.chat.reconcileUnsupported', '此工具暂不支持在前端安全结算，请联系管理员。')}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    ))}
+                                                            </div>
+                                                        ))}
                                                     {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                         <div className="chat-composer-attachments">
                                                             {chatUploadDrafts.map((draft) => (
@@ -7193,7 +7314,7 @@ export default function AgentDetailPage() {
                                                         <textarea
                                                             ref={chatInputRef}
                                                             className="chat-input"
-                                                            disabled={showNoModelState || !!activeRun?.pendingToolReconciliations.length}
+                                                            disabled={showNoModelState || !!selectedSessionActiveRun?.pendingToolReconciliations.length}
                                                             value={chatInput}
                                                             onChange={e => {
                                                                 setChatInput(e.target.value);
@@ -7208,7 +7329,7 @@ export default function AgentDetailPage() {
                                                                     e.key === 'Enter'
                                                                     && !e.shiftKey
                                                                     && !e.nativeEvent.isComposing
-                                                                    && !(activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                                    && !(selectedSessionActiveRun?.status === 'waiting_user' && !selectedSessionActiveRun.canResume)
                                                                 ) {
                                                                     e.preventDefault();
                                                                     sendChatMsg();
@@ -7225,7 +7346,7 @@ export default function AgentDetailPage() {
                                                             type="button"
                                                             className="chat-composer-btn"
                                                             onClick={() => fileInputRef.current?.click()}
-                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10 || !!activeRun?.pendingToolReconciliations.length}
+                                                            disabled={showNoModelState || !wsConnected || chatUploadDrafts.length > 0 || attachedFiles.length >= 10 || !!selectedSessionActiveRun?.pendingToolReconciliations.length}
                                                             title={t('agent.workspace.uploadFile')}
                                                         >
                                                             <IconPaperclip size={16} stroke={1.75} />
@@ -7237,16 +7358,16 @@ export default function AgentDetailPage() {
                                                             disabled={showNoModelState || !wsConnected}
                                                         />
                                                         <div style={{ flex: 1 }} />
-                                                        {activeRun?.canCancel && (
+                                                        {selectedSessionActiveRun?.canCancel && (
                                                             <button
                                                                 type="button"
                                                                 className="btn btn-stop-generation"
                                                                 onClick={() => {
-                                                                    if (!id || !activeSession?.id || !activeRun?.runId) return;
+                                                                    if (!id || !activeSession?.id || !selectedSessionActiveRun?.runId) return;
                                                                     const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
                                                                     const activeSocket = wsMapRef.current[activeRuntimeKey];
                                                                     if (activeSocket?.readyState === WebSocket.OPEN) {
-                                                                        activeSocket.send(JSON.stringify({ type: 'abort', run_id: activeRun.runId }));
+                                                                        activeSocket.send(JSON.stringify({ type: 'abort', run_id: selectedSessionActiveRun.runId }));
                                                                     }
                                                                 }}
                                                                 title={t('chat.stop', 'Stop')}
@@ -7262,7 +7383,7 @@ export default function AgentDetailPage() {
                                                                 showNoModelState
                                                                 || !wsConnected
                                                                 || (!chatInput.trim() && attachedFiles.length === 0)
-                                                                || (activeRun?.status === 'waiting_user' && !activeRun.canResume)
+                                                                || (selectedSessionActiveRun?.status === 'waiting_user' && !selectedSessionActiveRun.canResume)
                                                             }
                                                             title={t('chat.send')}
                                                         >

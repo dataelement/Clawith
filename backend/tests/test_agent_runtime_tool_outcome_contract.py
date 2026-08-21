@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from collections import deque
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import uuid
+from collections import deque
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.services import agent_tools
 from app.models.agent_tool_execution import AgentToolExecution
+from app.services import agent_tools
+from app.models.llm import LLMModel
 from app.services.agent_runtime.state import (
     RunInputSnapshots,
     RuntimeContext,
@@ -20,6 +21,7 @@ from app.services.agent_runtime.state import (
 )
 from app.services.agent_runtime.tool_execution import (
     ToolExecutionOutcome,
+    execution_outcome,
     normalize_tool_outcome,
     sanitize_tool_arguments,
 )
@@ -28,8 +30,14 @@ from app.services.agent_runtime.tool_result_store import (
     ToolResultStore,
     ToolResultStoreError,
 )
-from app.services.agent_runtime.verification import ToolLedgerRuntimeVerifier
+from app.services.agent_runtime.verification import (
+    CompletionGateRuntimeVerifier,
+    TaskCompletionGate,
+    ToolLedgerRuntimeVerifier,
+)
+from app.services.llm.single_step import LLMCompletionStep
 from app.services.storage_runtime.base import StorageBackend
+from app.services.token_tracker import TokenUsage
 
 
 class _MemoryStorage(StorageBackend):
@@ -244,6 +252,7 @@ def test_arguments_are_recursively_redacted_without_changing_the_raw_fingerprint
                 "&response-content-type=text/plain"
             ),
             "message": "postgresql://user:password@example.test/db",
+            "code": 'SECRET = "credential-value"\nprint("done")',
             "bad\x00key": "normalized",
             "items": [{"cookie": "sid=secret"}],
         }
@@ -255,6 +264,8 @@ def test_arguments_are_recursively_redacted_without_changing_the_raw_fingerprint
     assert "view=full" in sanitized["url"]
     assert "secret-signature" not in sanitized["signed"]
     assert "user:password" not in sanitized["message"]
+    assert "credential-value" not in sanitized["code"]
+    assert "SECRET = [REDACTED]" in sanitized["code"]
     assert sanitized["bad�key"] == "normalized"
     assert all("\x00" not in key for key in sanitized)
     assert sanitized["items"] == [{"cookie": "[REDACTED]"}]
@@ -291,6 +302,86 @@ def test_outcome_normalizer_replaces_controls_redacts_credentials_and_caps_utf8_
     assert normalized.metadata["content_hash"]
 
 
+def test_failure_feedback_fields_are_sanitized_bounded_and_replayable() -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="failed",
+            result_summary="Argument validation failed.",
+            result_ref=None,
+            error_code="tool_arguments_invalid",
+            model_action="repair_arguments",
+            side_effect_state="none",
+            safe_remediation=(
+                "Correct $.path; Authorization: Bearer must-not-survive\x00"
+                + "界" * 300
+            ),
+        ),
+        effect="read",
+        retry_policy="safe",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.model_action == "repair_arguments"
+    assert normalized.side_effect_state == "none"
+    assert normalized.safe_remediation is not None
+    assert "must-not-survive" not in normalized.safe_remediation
+    assert "\x00" not in normalized.safe_remediation
+    assert len(normalized.safe_remediation.encode("utf-8")) <= 512
+    assert normalized.metadata["model_action"] == "repair_arguments"
+    assert normalized.metadata["side_effect_state"] == "none"
+    assert normalized.metadata["safe_remediation"] == normalized.safe_remediation
+
+    execution = _execution(
+        tenant_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        status="failed",
+    )
+    execution.result_summary = normalized.result_summary
+    execution.result_ref = normalized.result_ref
+    execution.result_metadata = normalized.metadata
+    replayed = execution_outcome(execution)
+
+    assert replayed.model_action == normalized.model_action
+    assert replayed.side_effect_state == normalized.side_effect_state
+    assert replayed.safe_remediation == normalized.safe_remediation
+
+
+@pytest.mark.parametrize(
+    ("error_code", "event_key"),
+    (
+        ("tool_deadline_outcome_unknown", "deadline_exceeded"),
+        ("tool_cancelled_outcome_unknown", "cancel_requested"),
+    ),
+)
+def test_possible_write_after_deadline_or_cancel_is_unknown_and_not_replayable(
+    error_code: str,
+    event_key: str,
+) -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="unknown",
+            result_summary="External write may have happened; reconcile first.",
+            result_ref=None,
+            error_code=error_code,
+            retryable=False,
+            model_action="reconcile",
+            side_effect_state="unknown",
+            metadata={event_key: True},
+        ),
+        effect="external_write",
+        retry_policy="never",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.status == "unknown"
+    assert normalized.retryable is False
+    assert normalized.model_action == "reconcile"
+    assert normalized.side_effect_state == "unknown"
+    assert normalized.metadata[event_key] is True
+
+
 def test_outcome_normalizer_preserves_bounded_email_provider_receipt() -> None:
     normalized, archived_body = normalize_tool_outcome(
         ToolExecutionOutcome(
@@ -316,6 +407,42 @@ def test_outcome_normalizer_preserves_bounded_email_provider_receipt() -> None:
     ]
     assert normalized.metadata["refused_recipients"] == []
     assert "provider_response" not in normalized.metadata
+
+
+def test_outcome_normalizer_preserves_sanitized_feishu_provider_receipt() -> None:
+    normalized, archived_body = normalize_tool_outcome(
+        ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                "Feishu rejected approval_create: HTTP 400; code 1390001."
+            ),
+            result_ref=None,
+            error_code="feishu_approval_create_rejected",
+            metadata={
+                "provider_http_status": 400,
+                "provider_code": 1390001,
+                "provider_msg": "param is invalid",
+                "provider_response_body": {
+                    "code": 1390001,
+                    "msg": "param is invalid",
+                    "authorization": "must-not-persist",
+                },
+            },
+        ),
+        effect="external_write",
+        retry_policy="never",
+        inline_max_bytes=1024,
+    )
+
+    assert archived_body is None
+    assert normalized.metadata["provider_http_status"] == 400
+    assert normalized.metadata["provider_code"] == 1390001
+    assert normalized.metadata["provider_msg"] == "param is invalid"
+    assert normalized.metadata["provider_response_body"] == {
+        "code": 1390001,
+        "msg": "param is invalid",
+        "authorization": "[REDACTED]",
+    }
 
 
 def test_outcome_normalizer_preserves_bounded_okr_transaction_receipt() -> None:
@@ -837,6 +964,319 @@ async def test_verifier_uses_invocation_context_without_checkpoint_registry() ->
 
     assert passed.outcome == "pass"
     assert passed.details["code"] == "deterministic_checks_passed"
+
+
+@pytest.mark.asyncio
+async def test_completion_gate_invalid_output_fails_open() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    model = LLMModel(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="judge-model",
+        api_key_encrypted="unused",
+        label="Judge",
+        enabled=True,
+    )
+
+    async def invalid_completion(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content="not json",
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    gate = TaskCompletionGate(
+        session_factory=_factory(_ScalarResult(model)),
+        completion=invalid_completion,
+    )
+    context = RuntimeContext(
+        tenant_id=str(tenant_id),
+        run_id=str(run_id),
+        command_id="command-gate",
+        executor=object(),  # type: ignore[arg-type]
+        goal="Produce the requested report",
+        model_id=str(model_id),
+        agent_id=str(agent_id),
+    )
+
+    result = await gate.verify(_state(tenant_id, run_id), context, "report result")
+
+    assert result.outcome == "pass"
+    assert result.details == {
+        "code": "completion_gate_error",
+        "gate_error_code": "invalid_completion_gate_output",
+    }
+
+
+@pytest.mark.asyncio
+async def test_completion_gate_explicit_repair_is_actionable() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    model = LLMModel(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="judge-model",
+        api_key_encrypted="unused",
+        label="Judge",
+        enabled=True,
+    )
+
+    async def repair_completion(*args, **kwargs):
+        del args, kwargs
+        return LLMCompletionStep(
+            content=json.dumps(
+                {
+                    "verdict": "repair",
+                    "missing_requirements": ["The report file was not read back"],
+                    "next_actions": ["Read the report and verify its contents"],
+                    "evidence": ["write_file succeeded"],
+                }
+            ),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    gate = TaskCompletionGate(
+        session_factory=_factory(_ScalarResult(model)),
+        completion=repair_completion,
+    )
+    context = RuntimeContext(
+        tenant_id=str(tenant_id),
+        run_id=str(run_id),
+        command_id="command-gate",
+        executor=object(),  # type: ignore[arg-type]
+        goal="Produce and verify the requested report",
+        model_id=str(model_id),
+        agent_id=str(agent_id),
+    )
+
+    result = await gate.verify(_state(tenant_id, run_id), context, "report done")
+
+    assert result.outcome == "repair"
+    assert result.details["code"] == "task_completion_repair_required"
+    assert "Read the report" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_completion_gate_treats_workspace_preservation_as_task_amendment() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    model = LLMModel(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="judge-model",
+        api_key_encrypted="unused",
+        label="Judge",
+        enabled=True,
+    )
+    captured: dict[str, object] = {}
+
+    async def passing_completion(_model, messages, **_kwargs):
+        captured["system"] = messages[0].content
+        captured["payload"] = json.loads(messages[1].content)
+        return LLMCompletionStep(
+            content=json.dumps(
+                {
+                    "verdict": "pass",
+                    "missing_requirements": [],
+                    "next_actions": [],
+                    "evidence": ["human Workspace decision"],
+                }
+            ),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    gate = TaskCompletionGate(
+        session_factory=_factory(_ScalarResult(model)),
+        completion=passing_completion,
+    )
+    context = RuntimeContext(
+        tenant_id=str(tenant_id),
+        run_id=str(run_id),
+        command_id="command-gate",
+        executor=object(),  # type: ignore[arg-type]
+        goal="Write AGENT candidate bytes",
+        model_id=str(model_id),
+        agent_id=str(agent_id),
+    )
+    state = _state(tenant_id, run_id)
+    state["messages"] = [
+        {
+            "id": "resume-workspace",
+            "role": "user",
+            "content": "保留工作区中的源文件，不要覆盖。",
+            "runtime_input": "resume",
+            "runtime_confirmation_text": "keep_workspace",
+            "runtime_reconciliation_action": "keep_workspace",
+        }
+    ]
+
+    result = await gate.verify(state, context, "已保留源文件并继续。")
+
+    assert result.outcome == "pass"
+    assert "latest human decision wins" in str(captured["system"])
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    amendments = payload["available_evidence"]["authoritative_task_amendments"]
+    assert amendments == [
+        {
+            "content": "保留工作区中的源文件，不要覆盖。",
+            "runtime_confirmation_text": "keep_workspace",
+            "runtime_reconciliation_action": "keep_workspace",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate", "decision", "expected_outcome"),
+    (
+        (
+            "我还缺少会议日期。请问安排在哪一天？",
+            {
+                "verdict": "pass",
+                "missing_requirements": [],
+                "next_actions": [],
+                "evidence": ["one concrete public clarification"],
+            },
+            "pass",
+        ),
+        (
+            "日程已经创建，请告诉我会议日期。",
+            {
+                "verdict": "repair",
+                "missing_requirements": ["No event receipt proves creation"],
+                "next_actions": ["Do not claim the deferred write completed"],
+                "evidence": [],
+            },
+            "repair",
+        ),
+    ),
+)
+async def test_completion_gate_public_group_clarification_contract_is_bounded(
+    candidate,
+    decision,
+    expected_outcome,
+) -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    model = LLMModel(
+        id=model_id,
+        tenant_id=tenant_id,
+        provider="openai",
+        model="judge-model",
+        api_key_encrypted="unused",
+        label="Judge",
+        enabled=True,
+    )
+    captured: dict[str, object] = {}
+
+    async def completion(_model, messages, **_kwargs):
+        captured["system"] = messages[0].content
+        captured["payload"] = json.loads(messages[1].content)
+        return LLMCompletionStep(
+            content=json.dumps(decision),
+            tool_calls=(),
+            reasoning_content=None,
+            retry_instruction=None,
+            usage=TokenUsage(),
+        )
+
+    gate = TaskCompletionGate(
+        session_factory=_factory(_ScalarResult(model)),
+        completion=completion,
+    )
+    context = RuntimeContext(
+        tenant_id=str(tenant_id),
+        run_id=str(run_id),
+        command_id="command-group-gate",
+        executor=object(),  # type: ignore[arg-type]
+        goal="Create a calendar event after receiving the missing date",
+        model_id=str(model_id),
+        agent_id=str(agent_id),
+    )
+    state = _state(tenant_id, run_id)
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 0},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={
+            "chat_session_type": "group",
+            "source_channel": "feishu",
+        },
+    )
+
+    result = await gate.verify(state, context, candidate)
+
+    assert result.outcome == expected_outcome
+    assert "asks one concrete" in str(captured["system"])
+    assert "does not permit bypassing confirmation" in str(captured["system"])
+    assert "side effects or treating an unsettled Tool outcome" in str(
+        captured["system"]
+    )
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["candidate_final_answer"] == candidate
+    assert payload["available_evidence"]["initial_input"]["chat_session_type"] == (
+        "group"
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_gate_never_bypasses_unsettled_public_group_tool() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    started = _execution(tenant_id=tenant_id, run_id=run_id, status="started")
+    deterministic = ToolLedgerRuntimeVerifier(
+        session_factory=_factory(_ManyResult([started])),
+    )
+
+    class _NeverCalledCompletionGate:
+        async def verify(self, *_args, **_kwargs):
+            raise AssertionError("semantic completion gate must not run")
+
+    verifier = CompletionGateRuntimeVerifier(
+        deterministic=deterministic,
+        completion_gate=_NeverCalledCompletionGate(),  # type: ignore[arg-type]
+    )
+    state = _state(tenant_id, run_id)
+    state["snapshots"] = RunInputSnapshots(
+        session_context={"version": 0},
+        session_context_version=0,
+        recent_session_messages=(),
+        related_run_summaries=(),
+        initial_input={"chat_session_type": "group", "source_channel": "feishu"},
+    )
+
+    result = await verifier.verify(
+        state,
+        _context(tenant_id, run_id),
+        "请确认是否继续。",
+    )
+
+    assert result.outcome == "fail"
+    assert result.details["code"] == "unsettled_tool_execution"
 
 
 async def _true_reference(

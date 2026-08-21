@@ -1,13 +1,15 @@
 """Receipt-backed Runtime tool-step tests."""
 
-from contextlib import asynccontextmanager
-from collections import deque
+import asyncio
 import uuid
+from collections import deque
+from contextlib import asynccontextmanager
 
 import pytest
 
 from app.models.agent import Agent
 from app.models.agent_tool_execution import AgentToolExecution
+from app.services.builtin_tool_definitions import builtin_model_definition
 from app.services.agent_runtime import tool_step_service
 from app.services.agent_runtime.a2a_runtime import A2ARuntimeToolResult
 from app.services.agent_runtime.node_executor import CancelSignal
@@ -16,6 +18,13 @@ from app.services.agent_runtime.state import (
     RunRegistrySnapshot,
     RuntimeContext,
     RuntimeGraphState,
+)
+from app.services.agent_runtime.tool_contracts import (
+    AcceptedToolCall,
+    StepToolContext,
+    ToolExecutionBinding,
+    ToolWorksetEntry,
+    workset_version,
 )
 from app.services.agent_runtime.tool_execution import (
     RetryableToolNodeError,
@@ -220,6 +229,163 @@ async def _tools(agent_id: uuid.UUID) -> list[dict]:
     ]
 
 
+def _with_step_tool_context(
+    state: RuntimeGraphState,
+    call: dict,
+    *,
+    context_tool_name: str | None = None,
+    parameters_schema: dict | None = None,
+) -> None:
+    call_id = str(call["id"])
+    tool_name = context_tool_name or str(call["function"]["name"])
+    policy = tool_step_service._policy(tool_name)
+    entry = ToolWorksetEntry(
+        tool_name=tool_name,
+        contract_version=f"runtime:{tool_name}:v1",
+        parameters_schema=parameters_schema
+        or {"type": "object", "properties": {}},
+        binding=ToolExecutionBinding(kind="builtin", handler_key=tool_name),
+        effect=policy.side_effect_classification,  # type: ignore[arg-type]
+        retry_policy=policy.retry_policy,  # type: ignore[arg-type]
+    )
+    context = StepToolContext(
+        assistant_message_id="assistant-message-1",
+        model_step=1,
+        workset_version=workset_version((entry,)),
+        accepted_calls=(
+            AcceptedToolCall(
+                call_instance_id=call_id,
+                provider_call_id=call_id,
+                entry=entry,
+            ),
+        ),
+    )
+    state["lifecycle"]["step_tool_context"] = context.to_json()
+
+
+@pytest.mark.asyncio
+async def test_schema_failure_returns_one_repair_result_before_receipt(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = {
+        "id": "invalid-arguments-1",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"path":42,"credential":"must-not-echo"}',
+        },
+    }
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(
+        state,
+        call,
+        parameters_schema={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    )
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"invalid call crossed the Receipt gate: {args}, {kwargs}")
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", forbidden)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert len(result.messages) == 1
+    message = result.messages[0]
+    assert message["tool_call_id"] == "invalid-arguments-1"
+    assert message["execution_status"] == "failed"
+    assert message["error_code"] == "tool_arguments_invalid"
+    assert message["model_action"] == "repair_arguments"
+    assert message["side_effect_state"] == "none"
+    assert "$.path must have type string" in str(message["content"])
+    assert "$.credential is not an accepted argument" in str(message["content"])
+    assert "must-not-echo" not in str(message)
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_invoke_hidden_vercel_poll_arguments(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = {
+        "id": "model-vercel-poll",
+        "type": "function",
+        "function": {
+            "name": "vercel_deploy",
+            "arguments": (
+                '{"operation":"poll","deployment_id":"deployment-1"}'
+            ),
+        },
+    }
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(
+        state,
+        call,
+        parameters_schema=builtin_model_definition("vercel_deploy")["function"][
+            "parameters"
+        ],
+    )
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"hidden poll crossed the Model gate: {args}, {kwargs}")
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", forbidden)
+    result = await tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.messages[0]["execution_status"] == "failed"
+    assert result.messages[0]["error_code"] == "tool_arguments_invalid"
+    assert "$.project_name is required" in str(result.messages[0]["content"])
+    assert "$.operation is not an accepted argument" in str(
+        result.messages[0]["content"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "model_action", "side_effect_state"),
+    (
+        ("pending", "wait", "possible"),
+        ("unknown", "reconcile", "unknown"),
+    ),
+)
+def test_control_outcomes_keep_distinct_model_visible_status(
+    status: str,
+    model_action: str,
+    side_effect_state: str,
+) -> None:
+    message = tool_step_service._result_message(
+        run_id=uuid.uuid4(),
+        call_id="call-1",
+        tool_name="write_file",
+        outcome=ToolExecutionOutcome(
+            status=status,  # type: ignore[arg-type]
+            result_summary="control state",
+            result_ref=None,
+        ),
+    )
+
+    assert message["execution_status"] == status
+    assert message["model_action"] == model_action
+    assert message["side_effect_state"] == side_effect_state
+
+
 def _execution(
     tenant_id: uuid.UUID,
     run_id: uuid.UUID,
@@ -304,6 +470,29 @@ def _at_call(call_id: str, participant_ids: list[str]) -> dict:
     }
 
 
+def _approval_create_call(
+    call_id: str = "call-approval-create",
+    *,
+    amount: str = "128.50",
+) -> dict:
+    target_member_id = "11111111-1111-1111-1111-111111111111"
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "feishu_approval_create",
+            "arguments": (
+                "{"
+                '"approval_code":"expense-approval",'
+                f'"target_member_id":"{target_member_id}",'
+                '"form_data":"[{\\"id\\":\\"amount\\",'
+                f'\\"type\\":\\"amount\\",\\"value\\":\\"{amount}\\"}}]"'
+                "}"
+            ),
+        },
+    }
+
+
 async def _unexpected_executor(*args, **kwargs):
     raise AssertionError(f"at must not reach the application tool executor: {args}, {kwargs}")
 
@@ -382,7 +571,464 @@ async def test_invalid_group_at_arguments_return_failed_tool_result_for_repair()
     assert result.error is None
     assert result.pending_group_at_changed is False
     assert result.messages[0]["execution_status"] == "failed"
-    assert result.messages[0]["error_code"] == "group_at_arguments_invalid"
+    assert result.messages[0]["error_code"] == "tool_arguments_invalid"
+    assert "UUID" in result.messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_create_waits_for_chat_confirmation_before_receipt(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+
+    async def tools(agent_id):
+        assert agent_id == agent.id
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        raise AssertionError(
+            f"Unconfirmed approval created a tool receipt: {db}, {kwargs}"
+        )
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Unconfirmed approval reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.messages == ()
+    assert result.pending_tool_calls == (call,)
+    assert result.waiting_request is not None
+    assert result.waiting_request["waiting_type"] == "user"
+    assert result.waiting_request["reason"] == (
+        "feishu_approval_create_confirmation"
+    )
+    assert result.waiting_request["tool_call_id"] == "call-approval-create"
+    assert result.waiting_request["correlation_id"]
+    assert "审批定义标识" in str(result.waiting_request["question"])
+    assert "表单字段 1 项" in str(result.waiting_request["question"])
+    assert "128.50" not in str(result.waiting_request["question"])
+    assert result.waiting_request["confirmation_phrase"] in str(
+        result.waiting_request["question"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_create_executes_exact_call_after_chat_confirmation(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+    reservation_calls: list[dict] = []
+    execution_calls: list[dict] = []
+
+    async def tools(agent_id):
+        assert agent_id == agent.id
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db
+        reservation_calls.append(kwargs)
+        return _reservation(execution)
+
+    async def mark_succeeded(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        execution.result_ref = kwargs["result_ref"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def executor(
+        name,
+        arguments,
+        agent_id,
+        user_id,
+        session_id="",
+        on_output=None,
+        *,
+        runtime_authorization=None,
+        runtime_run_id=None,
+        runtime_tool_call_id=None,
+        runtime_execution_id=None,
+        runtime_lease_owner=None,
+        runtime_tenant_id=None,
+    ):
+        execution_calls.append(
+            {
+                "name": name,
+                "arguments": arguments,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "on_output": on_output,
+                "runtime_authorization": runtime_authorization,
+                "runtime_run_id": runtime_run_id,
+                "runtime_tool_call_id": runtime_tool_call_id,
+                "runtime_execution_id": runtime_execution_id,
+                "runtime_lease_owner": runtime_lease_owner,
+                "runtime_tenant_id": runtime_tenant_id,
+            }
+        )
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary='{"instance_code":"approval-1"}',
+            result_ref="approval-1",
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_succeeded",
+        mark_succeeded,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=executor,
+    )
+
+    waiting = await service.execute_pending(state, context, (call,))
+    assert waiting.waiting_request is not None
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting.waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting.waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (call,))
+
+    assert resumed.error is None
+    assert resumed.waiting_request is None
+    assert resumed.pending_tool_calls == ()
+    assert resumed.messages[0]["execution_status"] == "succeeded"
+    assert len(reservation_calls) == 1
+    assert len(execution_calls) == 1
+    assert execution_calls[0]["name"] == "feishu_approval_create"
+    assert isinstance(
+        execution_calls[0]["runtime_authorization"],
+        tool_step_service.FeishuApprovalCreateAuthorization,
+    )
+    assert execution_calls[0]["runtime_run_id"] == context.run_id
+    assert execution_calls[0]["runtime_tool_call_id"] == (
+        "call-approval-create"
+    )
+    assert execution_calls[0]["runtime_execution_id"] == str(execution.id)
+    assert execution_calls[0]["runtime_lease_owner"]
+    assert execution_calls[0]["runtime_tenant_id"] == context.tenant_id
+    assert execution_calls[0]["arguments"] == {
+        "approval_code": "expense-approval",
+        "target_member_id": "11111111-1111-1111-1111-111111111111",
+        "form_data": (
+            '[{"id":"amount","type":"amount","value":"128.50"}]'
+        ),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected_error"),
+    [
+        ("取消", "tool_confirmation_rejected"),
+        ("确认发起", "tool_confirmation_not_granted"),
+        ("确认发起 BAD999", "tool_confirmation_not_granted"),
+        ("金额改成 100 元", "tool_confirmation_not_granted"),
+        ("__synonym__", "tool_confirmation_not_granted"),
+        ("__lower_nonce__", "tool_confirmation_not_granted"),
+        ("__punctuation__", "tool_confirmation_not_granted"),
+        ("__altered_spacing__", "tool_confirmation_not_granted"),
+    ],
+)
+async def test_feishu_approval_create_never_dispatches_without_affirmative_reply(
+    monkeypatch,
+    reply: str,
+    expected_error: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+
+    async def tools(_agent_id):
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def mark_failed(db, **kwargs):
+        del db
+        execution.status = "failed"
+        execution.result_summary = kwargs["result_summary"]
+        execution.error_code = kwargs["error_code"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Non-affirmative reply reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_failed",
+        mark_failed,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+    if reply == "__lower_nonce__":
+        monkeypatch.setattr(
+            tool_step_service,
+            "_feishu_approval_confirmation_correlation",
+            lambda **_kwargs: (
+                "ABCDEF00-0000-0000-0000-000000000000",
+                "test-arguments-hash",
+            ),
+        )
+
+    waiting = await service.execute_pending(state, context, (call,))
+    assert waiting.waiting_request is not None
+    confirmation_phrase = str(waiting.waiting_request["confirmation_phrase"])
+    if reply == "__synonym__":
+        reply = confirmation_phrase.replace("确认发起", "同意")
+    elif reply == "__lower_nonce__":
+        reply = confirmation_phrase.lower()
+    elif reply == "__punctuation__":
+        reply = f"{confirmation_phrase}。"
+    elif reply == "__altered_spacing__":
+        reply = confirmation_phrase.replace(" ", "  ")
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": reply,
+            "runtime_confirmation_text": reply,
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (call,))
+
+    assert resumed.error is None
+    assert resumed.waiting_request is None
+    assert resumed.pending_tool_calls == ()
+    assert resumed.messages[0]["execution_status"] == "failed"
+    assert resumed.messages[0]["error_code"] == expected_error
+
+
+def test_feishu_approval_confirmation_rejects_different_actor() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,))
+    initial_context = _context(state)
+    call_id, tool_name, arguments = tool_step_service._call_fields(call)
+
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=initial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+    assert outcome is None
+    assert waiting_request is not None
+    assert confirmation_granted is False
+    state["lifecycle"]["resumed_waiting_request"] = dict(waiting_request)
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    different_actor_context = _context(state)
+    assert different_actor_context.actor_user_id != initial_context.actor_user_id
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=different_actor_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+
+    assert waiting_request is None
+    assert confirmation_granted is False
+    assert outcome is not None
+    assert outcome.error_code == "tool_confirmation_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_feishu_approval_confirmation_rejects_changed_pending_arguments(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    original = _approval_create_call()
+    state = _state(tenant_id, agent, (original,))
+    context = _context(state)
+    changed = _approval_create_call(amount="999.00")
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-approval-create",
+        "feishu_approval_create",
+    )
+
+    async def tools(_agent_id):
+        return [
+            {
+                "type": "function",
+                "function": {"name": "feishu_approval_create"},
+            }
+        ]
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def mark_failed(db, **kwargs):
+        del db
+        execution.status = "failed"
+        execution.result_summary = kwargs["result_summary"]
+        execution.error_code = kwargs["error_code"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def forbidden_executor(*args, **kwargs):
+        raise AssertionError(
+            f"Changed approval arguments reached Feishu: {args}, {kwargs}"
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_failed",
+        mark_failed,
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools,
+        tool_executor=forbidden_executor,
+    )
+
+    waiting = await service.execute_pending(state, context, (original,))
+    assert waiting.waiting_request is not None
+    state["lifecycle"]["resumed_waiting_request"] = dict(
+        waiting.waiting_request
+    )
+    state["lifecycle"]["deferred_resume_messages"] = [
+        {
+            "id": "confirmation-message",
+            "role": "user",
+            "content": waiting.waiting_request["confirmation_phrase"],
+            "runtime_confirmation_text": waiting.waiting_request[
+                "confirmation_phrase"
+            ],
+            "runtime_input": "resume",
+        }
+    ]
+
+    resumed = await service.execute_pending(state, context, (changed,))
+
+    assert resumed.messages[0]["execution_status"] == "failed"
+    assert resumed.messages[0]["error_code"] == "tool_confirmation_mismatch"
+
+
+def test_feishu_approval_confirmation_is_unavailable_outside_chat() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _approval_create_call()
+    state = _state(tenant_id, agent, (call,), source_type="task")
+    call_id, tool_name, arguments = tool_step_service._call_fields(call)
+
+    outcome, waiting_request, confirmation_granted = (
+        tool_step_service._feishu_approval_confirmation_gate(
+            state=state,
+            context=_context(state),
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+    )
+
+    assert waiting_request is None
+    assert confirmation_granted is False
+    assert outcome is not None
+    assert outcome.status == "failed"
+    assert outcome.error_code == "tool_confirmation_unavailable"
 
 
 @pytest.mark.asyncio
@@ -428,8 +1074,8 @@ async def test_success_is_reserved_before_execution_and_settled_afterwards(
         order.append(("reserve", kwargs))
         return _reservation(execution)
 
-    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None):
-        del arguments, agent_id, user_id, session_id, on_output
+    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None, **kwargs):
+        del arguments, agent_id, user_id, session_id, on_output, kwargs
         order.append(("execute", name))
         return ToolExecutionOutcome(
             status="succeeded",
@@ -470,10 +1116,471 @@ async def test_success_is_reserved_before_execution_and_settled_afterwards(
             "role": "tool",
             "tool_call_id": "call-1",
             "name": "read_file",
-            "content": "file contents",
-            "execution_status": "succeeded",
-            "result_ref": None,
-        },
+                "content": "file contents",
+                "execution_status": "succeeded",
+                "result_ref": None,
+                    "model_action": "continue",
+                    "side_effect_state": "confirmed",
+                    "execution_id": str(execution.id),
+                    "call_instance_id": "call-1",
+                },
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_executes_frozen_binding_without_tool_provider(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-frozen", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call)
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-frozen",
+        "read_file",
+    )
+
+    async def forbidden_provider(_agent_id: uuid.UUID) -> list[dict]:
+        raise AssertionError("new checkpoint Tool Step rebuilt the Workset")
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def execute(*args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="frozen result",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db, kwargs
+        execution.status = "succeeded"
+        execution.result_summary = "frozen result"
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden_provider,
+        tool_executor=execute,
+    )
+
+    result = await service.execute_pending(state, context, (call,))
+
+    assert result.error is None
+    assert result.messages[0]["execution_status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_mcp_checkpoint_dispatches_the_frozen_execution_binding(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-frozen-mcp", "mcp.demo.lookup")
+    state = _state(tenant_id, agent, (call,))
+    entry = ToolWorksetEntry(
+        tool_name="mcp.demo.lookup",
+        contract_version="registered:mcp.demo.lookup:v1",
+        parameters_schema={"type": "object", "properties": {}},
+        binding=ToolExecutionBinding(
+            kind="mcp",
+            handler_key="mcp.demo.lookup",
+            target={
+                "tool_id": str(uuid.uuid4()),
+                "route_digest": "digest",
+            },
+            credential_ref=str(uuid.uuid4()),
+        ),
+        effect="external_write",
+        retry_policy="never",
+    )
+    state["lifecycle"]["step_tool_context"] = StepToolContext(
+        assistant_message_id="assistant-message-1",
+        model_step=1,
+        workset_version=workset_version((entry,)),
+        accepted_calls=(
+            AcceptedToolCall(
+                call_instance_id="call-frozen-mcp",
+                provider_call_id="provider-frozen-mcp",
+                entry=entry,
+            ),
+        ),
+    ).to_json()
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "call-frozen-mcp",
+        "mcp.demo.lookup",
+    )
+    dispatched: list[tuple[tuple, dict]] = []
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(execution)
+
+    async def execute(*args, **kwargs):
+        dispatched.append((args, kwargs))
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="frozen result",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db, kwargs
+        execution.status = "succeeded"
+        execution.result_summary = "frozen result"
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    result = await _service(agent, _CancelSource(None), execute).execute_pending(
+        state,
+        context,
+        (call,),
+    )
+
+    assert result.error is None
+    assert dispatched[0][0][0] == "mcp.demo.lookup"
+    assert dispatched[0][1]["execution_binding"] == entry.binding.to_json()
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_context_mismatch_fails_before_provider_or_receipt() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-corrupt", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call, context_tool_name="write_file")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"corrupt context crossed execution boundary: {args}, {kwargs}")
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.error is not None
+    assert result.error["code"] == "tool_context_corrupt"
+
+
+@pytest.mark.asyncio
+async def test_new_checkpoint_keeps_current_durable_cancel_gate_without_provider() -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("call-cancelled", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    _with_step_tool_context(state, call)
+    signal = CancelSignal(command_id="cancel-1", reason="user stopped")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError(f"cancelled Call crossed execution boundary: {args}, {kwargs}")
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(signal),
+        tool_provider=forbidden,
+        tool_executor=forbidden,
+    )
+
+    result = await service.execute_pending(state, _context(state), (call,))
+
+    assert result.cancel_signal is signal
+    assert result.messages == ()
+
+
+@pytest.mark.asyncio
+async def test_legacy_pending_batch_resolves_workset_once_then_reuses_context(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    first_call = _call("legacy-call-1", "read_file")
+    second_call = _call("legacy-call-2", "write_file")
+    state = _state(tenant_id, agent, (first_call, second_call))
+    context = _context(state)
+    executions = {
+        call_id: _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            call_id,
+            tool_name,
+        )
+        for call_id, tool_name in (
+            ("legacy-call-1", "read_file"),
+            ("legacy-call-2", "write_file"),
+        )
+    }
+    provider_calls = 0
+
+    async def tools_once(agent_id: uuid.UUID) -> list[dict]:
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy pending batch rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db
+        return _reservation(executions[kwargs["tool_call_id"]])
+
+    async def execute(name, *args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=f"{name} done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution = executions[kwargs["execution_id"]] if isinstance(kwargs["execution_id"], str) else next(
+            item for item in executions.values() if item.id == kwargs["execution_id"]
+        )
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=execute,
+    )
+
+    first_result = await service.execute_pending(state, context, (first_call,))
+    assert first_result.step_tool_context is not None
+    assert first_result.step_tool_context["legacy_resolved"] is True
+    state["lifecycle"]["step_tool_context"] = first_result.step_tool_context
+    state["lifecycle"]["pending_tool_calls"] = [second_call]
+
+    second_result = await service.execute_pending(state, context, (second_call,))
+
+    assert second_result.error is None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_unknown_wait_keeps_resolved_context_on_resume(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("legacy-unknown", "write_file")
+    state = _state(tenant_id, agent, (call,))
+    context = _context(state)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "legacy-unknown",
+        "write_file",
+    )
+    provider_calls = 0
+
+    async def tools_once(agent_id):
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy wait rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(
+            execution,
+            blocked=True,
+            requires_confirmation=True,
+            error_code="tool_outcome_unknown",
+        )
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=_unexpected_executor,
+    )
+
+    first = await service.execute_pending(state, context, (call,))
+    assert first.step_tool_context is not None
+    state["lifecycle"]["step_tool_context"] = first.step_tool_context
+    second = await service.execute_pending(state, context, (call,))
+
+    assert first.waiting_request is not None
+    assert second.waiting_request is not None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_a2a_wait_keeps_context_for_tail_call(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    delegate = _a2a_call("legacy-delegate", mode="task_delegate")
+    tail = _call("legacy-tail", "read_file")
+    state = _state(tenant_id, agent, (delegate, tail))
+    context = _context(state)
+    executions = {
+        "legacy-delegate": _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "legacy-delegate",
+            "send_message_to_agent",
+        ),
+        "legacy-tail": _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "legacy-tail",
+            "read_file",
+        ),
+    }
+    provider_calls = 0
+
+    async def tools_once(agent_id):
+        nonlocal provider_calls
+        del agent_id
+        provider_calls += 1
+        if provider_calls > 1:
+            raise AssertionError("legacy A2A wait rebuilt its Workset")
+        return await _tools(agent.id)
+
+    async def reserve(db, **kwargs):
+        del db
+        return _reservation(executions[kwargs["tool_call_id"]])
+
+    async def execute(name, *args, **kwargs):
+        del args, kwargs
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary=f"{name} done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution = next(
+            item for item in executions.values() if item.id == kwargs["execution_id"]
+        )
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    a2a = _A2AService(
+        A2ARuntimeToolResult(
+            outcome=ToolExecutionOutcome(
+                status="succeeded",
+                result_summary="accepted",
+                result_ref="agent-run:target",
+            ),
+            target_run_id=uuid.uuid4(),
+            waiting_request={
+                "waiting_type": "agent",
+                "correlation_id": "a2a:legacy",
+                "reason": "waiting_for_task_delegate",
+            },
+        )
+    )
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(None, None),
+        tool_provider=tools_once,
+        tool_executor=execute,
+        a2a_service=a2a,
+    )
+
+    first = await service.execute_pending(state, context, (delegate, tail))
+    assert first.step_tool_context is not None
+    state["lifecycle"]["step_tool_context"] = first.step_tool_context
+    state["lifecycle"]["pending_tool_calls"] = [tail]
+    second = await service.execute_pending(state, context, (tail,))
+
+    assert first.waiting_request is not None
+    assert second.error is None
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_records_compatibility_usage_and_explicit_delete_gate(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    call = _call("legacy-observed", "read_file")
+    state = _state(tenant_id, agent, (call,))
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(state["registry"].run_id),
+        "legacy-observed",
+        "read_file",
+    )
+    warnings: list[tuple[object, ...]] = []
+
+    async def reserve(db, **_kwargs):
+        del db
+        return _reservation(execution)
+
+    async def execute(*_args, **_kwargs):
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="done",
+            result_ref=None,
+        )
+
+    async def mark(db, **kwargs):
+        del db
+        execution.status = "succeeded"
+        execution.result_summary = kwargs["result_summary"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(tool_step_service, "mark_tool_execution_succeeded", mark)
+    monkeypatch.setattr(
+        tool_step_service.logger,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+
+    result = await _service(
+        agent,
+        _CancelSource(None),
+        execute,
+    ).execute_pending(state, _context(state), (call,))
+
+    assert result.error is None
+    assert result.step_tool_context is not None
+    assert result.step_tool_context["legacy_resolved"] is True
+    assert len(warnings) == 1
+    assert "legacy_tool_context_resolved" in str(warnings[0][0])
+    assert tool_step_service.legacy_tool_context_deletion_ready(
+        observed_legacy_batches=0,
+        full_supported_release_elapsed=True,
+        rollback_window_closed=True,
+    )
+    assert not tool_step_service.legacy_tool_context_deletion_ready(
+        observed_legacy_batches=1,
+        full_supported_release_elapsed=True,
+        rollback_window_closed=True,
     )
 
 
@@ -583,6 +1690,153 @@ async def test_async_pending_interrupts_with_a_deterministic_poll_call(
     assert result.messages[0]["execution_status"] == "pending"
     assert result.messages[1]["role"] == "assistant"
     assert result.messages[1]["tool_calls"] == [poll_call]
+
+
+@pytest.mark.asyncio
+async def test_vercel_async_poll_reuses_the_origin_frozen_tool_context(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    launch_call = _call("call-async-resume", "vercel_deploy")
+    launch_call["function"]["arguments"] = '{"project_name":"app"}'
+    state = _state(tenant_id, agent, (launch_call,))
+    _with_step_tool_context(
+        state,
+        launch_call,
+        parameters_schema=builtin_model_definition("vercel_deploy")["function"][
+            "parameters"
+        ],
+    )
+    context = _context(state)
+    executions = deque(
+        [
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "call-async-resume",
+                "vercel_deploy",
+            ),
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "poll-call",
+                "vercel_deploy",
+            ),
+            _execution(
+                tenant_id,
+                uuid.UUID(context.run_id),
+                "poll-call-2",
+                "vercel_deploy",
+            ),
+        ]
+    )
+    def async_outcome(status: str) -> ToolExecutionOutcome:
+        pending = status == "pending"
+        operation = {
+            "version": 1,
+            "operation_key": "vercel:deployment:deployment-1",
+            "operation_id": "deployment-1",
+            "state": "running" if pending else "success",
+        }
+        if pending:
+            operation["poll"] = {
+                "tool": "vercel_deploy",
+                "arguments": {
+                    "operation": "poll",
+                    "deployment_id": "deployment-1",
+                },
+                "interval_ms": 0,
+            }
+        return ToolExecutionOutcome(
+            status=status,  # type: ignore[arg-type]
+            result_summary="still running" if pending else "done",
+            result_ref=None,
+            metadata={
+                "runtime_async_pending": pending,
+                "async_operation": operation,
+            },
+        )
+
+    outcomes = deque(
+        [async_outcome("pending"), async_outcome("pending"), async_outcome("succeeded")]
+    )
+    dispatched_arguments: list[dict] = []
+
+    async def reserve(db, **kwargs):
+        del db, kwargs
+        return _reservation(executions.popleft())
+
+    async def execute(tool_name, arguments, *args, **kwargs):
+        del tool_name, args, kwargs
+        dispatched_arguments.append(arguments)
+        return outcomes.popleft()
+
+    async def mark_pending(db, **kwargs):
+        del db
+        execution = _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "call-async-resume",
+            "vercel_deploy",
+        )
+        execution.id = uuid.UUID(str(kwargs["execution_id"]))
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    async def settle_async(db, **kwargs):
+        del db
+        execution = _execution(
+            tenant_id,
+            uuid.UUID(context.run_id),
+            "poll-call",
+            "vercel_deploy",
+        )
+        execution.status = kwargs["status"]
+        execution.result_metadata = kwargs["metadata"]
+        return execution
+
+    monkeypatch.setattr(tool_step_service, "reserve_tool_execution", reserve)
+    monkeypatch.setattr(
+        tool_step_service,
+        "mark_tool_execution_async_pending",
+        mark_pending,
+    )
+    monkeypatch.setattr(
+        tool_step_service,
+        "settle_async_operation_executions",
+        settle_async,
+    )
+    service = _service(agent, _CancelSource(None, None, None), execute)
+
+    launch = await service.execute_pending(state, context, (launch_call,))
+    poll_call = launch.pending_tool_calls[0]
+    state["lifecycle"]["run_messages"] = [
+        *state["lifecycle"]["run_messages"],
+        *launch.messages,
+    ]
+    state["lifecycle"]["pending_tool_calls"] = [poll_call]
+
+    first_poll = await service.execute_pending(state, context, (poll_call,))
+    next_poll_call = first_poll.pending_tool_calls[0]
+    state["lifecycle"]["run_messages"] = [
+        *state["lifecycle"]["run_messages"],
+        *first_poll.messages,
+    ]
+    state["lifecycle"]["pending_tool_calls"] = [next_poll_call]
+
+    poll = await service.execute_pending(state, context, (next_poll_call,))
+
+    assert poll.error is None
+    assert poll.messages[-1]["execution_status"] == "succeeded"
+    assert dispatched_arguments == [
+        {"project_name": "app"},
+        {"operation": "poll", "deployment_id": "deployment-1"},
+        {"operation": "poll", "deployment_id": "deployment-1"},
+    ]
+    assert state["lifecycle"]["step_tool_context"]["assistant_message_id"] == (
+        "assistant-message-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -1560,7 +2814,9 @@ async def test_l3_private_workspace_delete_requires_approval_before_execution(
         user_id,
         session_id="",
         on_output=None,
+        **kwargs,
     ):
+        del kwargs
         execution_calls.append(
             {
                 "name": name,
@@ -2611,7 +3867,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
         "call-read-exhausted",
         "read_file",
     )
-    execution.attempt_count = 3
+    execution.attempt_count = 10
 
     async def reserve(db, **kwargs):
         del db
@@ -2651,7 +3907,7 @@ async def test_retryable_read_exhaustion_returns_one_non_retryable_result(
     assert "Do not repeat the identical tool call unchanged" in result.messages[0][
         "content"
     ]
-    assert execution.result_metadata["runtime_attempt_count"] == 3
+    assert execution.result_metadata["runtime_attempt_count"] == 10
     assert execution.result_metadata["runtime_retry_exhausted"] is True
     assert execution.result_metadata["last_error_code"] == "temporary_read_failure"
 
@@ -2802,6 +4058,264 @@ async def test_started_receipt_waits_for_reconciliation_and_keeps_pending_call(
     assert result.waiting_request is not None
     assert result.waiting_request["waiting_type"] == "external"
     assert result.pending_tool_calls == (call,)
+
+
+def _accepted_for_control_test(
+    *,
+    tool_name: str,
+    effect: str,
+    retry_policy: str,
+    deadline_policy: str = "runtime_default",
+    parameters_schema: dict | None = None,
+) -> AcceptedToolCall:
+    return AcceptedToolCall(
+        call_instance_id="controlled-call",
+        provider_call_id="provider-call",
+        entry=ToolWorksetEntry(
+            tool_name=tool_name,
+            contract_version=f"runtime:{tool_name}:v1",
+            parameters_schema=(
+                parameters_schema
+                if parameters_schema is not None
+                else {"type": "object", "properties": {}}
+            ),
+            binding=ToolExecutionBinding(kind="builtin", handler_key=tool_name),
+            effect=effect,  # type: ignore[arg-type]
+            retry_policy=retry_policy,  # type: ignore[arg-type]
+            deadline_policy=deadline_policy,
+        ),
+    )
+
+
+def test_local_code_deadline_uses_frozen_schema_default_when_argument_is_omitted(
+) -> None:
+    current_config = {"default_timeout": 300}
+    schema = {
+        "type": "object",
+        "properties": {
+            "timeout": {
+                "type": "integer",
+                "default": current_config["default_timeout"],
+            }
+        },
+    }
+    accepted = _accepted_for_control_test(
+        tool_name="execute_code",
+        effect="external_write",
+        retry_policy="never",
+        deadline_policy="local_code",
+        parameters_schema=schema,
+    )
+
+    current_config["default_timeout"] = 600
+    schema["properties"]["timeout"]["default"] = 600
+
+    frozen_default = (
+        tool_step_service.RuntimeToolStepService._requested_tool_deadline_seconds(
+        accepted,
+        {},
+        )
+    )
+    assert frozen_default == 300
+    assert (
+        tool_step_service.resolve_tool_deadline_seconds(
+            "local_code",
+            frozen_default,
+        )
+        == 510
+    )
+
+    explicit_timeout = (
+        tool_step_service.RuntimeToolStepService._requested_tool_deadline_seconds(
+            accepted,
+            {"timeout": 240},
+        )
+    )
+    assert explicit_timeout == 240
+    assert (
+        tool_step_service.resolve_tool_deadline_seconds(
+            "local_code",
+            explicit_timeout,
+        )
+        == 450
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_short_code_timeout_is_frozen_for_outer_and_handler(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, agent, ())
+    context = _context(state)
+    accepted = _accepted_for_control_test(
+        tool_name="execute_code",
+        effect="external_write",
+        retry_policy="never",
+        deadline_policy="local_code",
+        parameters_schema={
+            "type": "object",
+            "properties": {"timeout": {"type": "integer", "minimum": 1}},
+        },
+    )
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        accepted.call_instance_id,
+        "execute_code",
+    )
+    observed: dict[str, object] = {}
+
+    async def execute(*_args, **kwargs):
+        observed.update(kwargs)
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="done",
+            result_ref=None,
+        )
+
+    service = _service(agent, _CancelSource(None), execute)
+
+    async def fence(**_kwargs):
+        return None
+
+    monkeypatch.setattr(service, "_assert_execution_fence", fence)
+
+    outcome, signal = await service._execute_application_with_controls(
+        state=state,
+        context=context,
+        tenant_id=tenant_id,
+        agent=agent,
+        accepted=accepted,
+        arguments={"timeout": 30},
+        reservation=_reservation(execution),
+        lease_owner=execution.lease_owner,
+    )
+
+    assert signal is None
+    assert outcome.status == "succeeded"
+    assert observed["runtime_code_timeout_seconds"] == 180
+    assert tool_step_service.resolve_tool_deadline_seconds("local_code", 180) == 390
+
+
+@pytest.mark.asyncio
+async def test_inflight_cancel_stops_waiting_and_marks_possible_write_unknown(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, agent, ())
+    context = _context(state)
+    signal = CancelSignal(command_id="cancel-live", reason="user_abort")
+    operation_cancelled = asyncio.Event()
+
+    async def execute(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            operation_cancelled.set()
+
+    service = _service(agent, _CancelSource(signal), execute)
+
+    async def fence(**_kwargs):
+        return None
+
+    monkeypatch.setattr(service, "_assert_execution_fence", fence)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "controlled-call",
+        "write_file",
+    )
+
+    outcome, observed_signal = await service._execute_application_with_controls(
+        state=state,
+        context=context,
+        tenant_id=tenant_id,
+        agent=agent,
+        accepted=_accepted_for_control_test(
+            tool_name="write_file",
+            effect="external_write",
+            retry_policy="never",
+        ),
+        arguments={},
+        reservation=_reservation(execution),
+        lease_owner=execution.lease_owner,
+    )
+
+    assert observed_signal == signal
+    assert operation_cancelled.is_set()
+    assert outcome.status == "unknown"
+    assert outcome.error_code == "tool_cancelled_outcome_unknown"
+    assert outcome.retryable is False
+    assert outcome.model_action == "reconcile"
+    assert outcome.side_effect_state == "unknown"
+    assert outcome.metadata["cancel_propagation"] == "stop_waiting_only"
+
+
+@pytest.mark.asyncio
+async def test_long_application_handler_renews_lease_and_fences_before_return(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    agent = _agent(tenant_id)
+    state = _state(tenant_id, agent, ())
+    context = _context(state)
+    events: list[str] = []
+
+    async def execute(*_args, **_kwargs):
+        await asyncio.sleep(0.12)
+        events.append("handler_done")
+        return ToolExecutionOutcome(
+            status="succeeded",
+            result_summary="done",
+            result_ref=None,
+        )
+
+    service = tool_step_service.RuntimeToolStepService(
+        session_factory=_session_factory(agent),
+        cancel_source=_CancelSource(),
+        tool_provider=_tools,
+        tool_executor=execute,
+        lease_ttl_seconds=0.15,  # type: ignore[arg-type]
+    )
+
+    async def renew(**_kwargs):
+        events.append("renew")
+
+    async def fence(**_kwargs):
+        events.append("fence")
+
+    monkeypatch.setattr(service, "_renew_execution_lease", renew)
+    monkeypatch.setattr(service, "_assert_execution_fence", fence)
+    execution = _execution(
+        tenant_id,
+        uuid.UUID(context.run_id),
+        "controlled-call",
+        "read_file",
+    )
+
+    outcome, signal = await service._execute_application_with_controls(
+        state=state,
+        context=context,
+        tenant_id=tenant_id,
+        agent=agent,
+        accepted=_accepted_for_control_test(
+            tool_name="read_file",
+            effect="read",
+            retry_policy="safe",
+        ),
+        arguments={},
+        reservation=_reservation(execution),
+        lease_owner=execution.lease_owner,
+    )
+
+    assert signal is None
+    assert outcome.status == "succeeded"
+    assert events[0] == "fence"
+    assert "renew" in events
+    assert events[-1] == "fence"
 
 
 @pytest.mark.asyncio
@@ -3243,8 +4757,8 @@ async def test_public_heartbeat_comment_limit_counts_successful_receipts(
         assert kwargs["tool_name"] == "plaza_add_comment"
         return successful_counts.popleft()
 
-    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None):
-        del arguments, agent_id, user_id, session_id, on_output
+    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None, **kwargs):
+        del arguments, agent_id, user_id, session_id, on_output, kwargs
         executed.append(name)
         return ToolExecutionOutcome(
             status="succeeded",
@@ -3603,8 +5117,8 @@ async def test_group_cross_space_policy_does_not_change_other_tool_paths(
         del db, kwargs
         return _reservation(execution)
 
-    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None):
-        del arguments, agent_id, user_id, session_id, on_output
+    async def execute(name, arguments, agent_id, user_id, session_id="", on_output=None, **kwargs):
+        del arguments, agent_id, user_id, session_id, on_output, kwargs
         dispatched.append(name)
         return ToolExecutionOutcome(
             status="succeeded",

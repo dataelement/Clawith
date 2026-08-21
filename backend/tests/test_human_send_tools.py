@@ -16,6 +16,13 @@ def _tool_schema(tool_name):
     )
 
 
+def test_send_channel_message_schema_supports_feishu_group_target():
+    schema = _tool_schema("send_channel_message")
+
+    assert "target_recipient_id" in schema["properties"]
+    assert schema["required"] == ["message"]
+
+
 def _make_agent(**overrides):
     values = {
         "id": uuid.uuid4(),
@@ -129,6 +136,47 @@ async def test_send_channel_message_uses_target_member_id_and_dispatches_channel
 
     assert result == "sent"
     mock_send.assert_awaited_once_with(source.id, member.name, "hi", member)
+
+
+@pytest.mark.asyncio
+async def test_send_channel_message_uses_directory_feishu_group_target():
+    agent_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+    target = SimpleNamespace(chat_id="oc_group", display_name="项目群")
+    config = SimpleNamespace(app_id="app", app_secret="secret")
+    db = RecordingDB([DummyResult(scalar_value=config)])
+
+    with (
+        patch("app.services.agent_tools.async_session") as session_ctx,
+        patch(
+            "app.services.agent_tools.resolve_feishu_group_target",
+            new=AsyncMock(return_value=target),
+        ) as resolve,
+        patch(
+            "app.services.feishu_service.feishu_service.send_message",
+            new=AsyncMock(return_value={"code": 0, "data": {"message_id": "om_1"}}),
+        ) as send,
+    ):
+        session_ctx.return_value.__aenter__ = AsyncMock(return_value=db)
+        session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+        outcome = await agent_tools._send_channel_message_outcome(
+            agent_id,
+            {
+                "target_recipient_id": str(target_id),
+                "channel": "feishu",
+                "message": "hello group",
+            },
+        )
+
+    assert outcome.status == "succeeded"
+    resolve.assert_awaited_once_with(
+        db,
+        agent_id=agent_id,
+        target_recipient_id=str(target_id),
+    )
+    send.assert_awaited_once()
+    assert send.await_args.kwargs["receive_id"] == "oc_group"
+    assert send.await_args.kwargs["receive_id_type"] == "chat_id"
 
 
 @pytest.mark.asyncio
@@ -341,7 +389,8 @@ def test_human_send_tool_schemas_are_id_first():
     assert "target_member_id" in channel_schema["properties"]
     assert "provider_user_id" not in channel_schema["properties"]
     assert "member_name" not in channel_schema["properties"]
-    assert channel_schema["required"] == ["target_member_id", "message"]
+    assert channel_schema["required"] == ["message"]
+    assert "target_recipient_id" in channel_schema["properties"]
     assert "teams" in channel_schema["properties"]["channel"]["enum"]
 
     assert "target_member_id" in file_schema["properties"]
@@ -374,7 +423,8 @@ def test_seeded_human_send_tool_schemas_are_id_first():
     assert "target_member_id" in channel_schema["properties"]
     assert "provider_user_id" not in channel_schema["properties"]
     assert "member_name" not in channel_schema["properties"]
-    assert channel_schema["required"] == ["target_member_id", "message"]
+    assert channel_schema["required"] == ["message"]
+    assert "target_recipient_id" in channel_schema["properties"]
     assert channel_tool["is_default"] is False
     assert "teams" in channel_schema["properties"]["channel"]["enum"]
 

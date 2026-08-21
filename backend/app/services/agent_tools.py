@@ -14,7 +14,7 @@ The agent reads/writes these files directly. No per-concept tools needed.
 import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import fnmatch
 import hashlib
 import json
@@ -22,15 +22,18 @@ import math
 import multiprocessing as mp
 import os
 import queue
+import re
 import tempfile
 import uuid
 import unicodedata
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Any, cast
-import re
+from typing import Any, Literal, Optional, cast
+from urllib.parse import quote
 
+from croniter import croniter
+import httpx
 from loguru import logger
 from sqlalchemy import select, or_
 
@@ -39,7 +42,10 @@ from app.core.permissions import (
     evaluate_roster_human_visibility,
 )
 from app.database import async_session
+from app.dao.chat_session_dao import chat_session_dao
 from app.models.agent import Agent as AgentModel
+from app.models.agent_run import AgentRun
+from app.models.agent_tool_execution import AgentToolExecution
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
@@ -63,6 +69,14 @@ from app.services.focus_service import (
     list_focus_items,
     upsert_focus_item,
 )
+from app.services.feishu_group_targets import (
+    FeishuGroupTargetError,
+    resolve_feishu_group_target,
+)
+from app.services.feishu_contact_search import (
+    resolve_feishu_contacts_by_exact_names,
+    search_feishu_contacts,
+)
 from app.services import agent_directory
 from app.services.workspace_collaboration import (
     delete_workspace_file,
@@ -71,13 +85,35 @@ from app.services.workspace_collaboration import (
     write_workspace_file,
 )
 from app.services.storage import get_storage_backend, normalize_storage_key
-from app.services.storage_runtime.base import WriteCondition, content_hash_bytes
+from app.services.storage_runtime.base import StorageVersion, WriteCondition, content_hash_bytes
 from app.services.workspace_locking import workspace_locks
+from app.services.workspace_reconciliation import (
+    CandidateChange,
+    ReconciliationScope,
+    WorkspaceReconciliationService,
+    expand_move,
+)
+from app.services.sandbox.execution_lease import SandboxExecutionLeaseStore
+from app.services.sandbox.local.run_workspace import (
+    RunWorkspaceIdentity,
+    use_run_workspace,
+)
+from app.services.sandbox.run_scope import sandbox_run_scope_id
+from app.services.sandbox.config import (
+    CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+)
+from app.services.sandbox.workspace_policy import (
+    SandboxExecutionScope,
+    build_workspace_policy,
+    parse_canonical_uuid,
+)
 from app.config import get_settings
 from app.services.llm.finish import (
     FINISH_TOOL_NAME,
 )
 from app.services.builtin_tool_definitions import (
+    AGENT_RELATIVE_PATH_ARGUMENTS,
     BUILTIN_TOOL_DEFINITIONS,
     BUILTIN_TOOL_NAMES,
     WRITE_FILE_MAX_CONTENT_CHARS,
@@ -88,18 +124,49 @@ from app.services.builtin_tool_definitions import (
     is_reserved_custom_tool_name,
 )
 from app.services.agent_runtime.tool_execution import (
+    SAFE_READ_MAX_ATTEMPTS,
     ToolExecutionOutcome,
     sanitize_tool_arguments,
+)
+from app.services.agent_runtime.tool_contracts import (
+    ToolContractError,
+    ToolExecutionBinding,
+    resolve_tool_deadline_seconds,
+)
+from app.services.agent_runtime.feishu_approval_authorization import (
+    FeishuApprovalCreateAuthorization,
+    feishu_approval_create_arguments_hash,
+    verify_feishu_approval_create_authorization,
+)
+from app.services.agent_runtime.tool_registry import (
+    RUNTIME_TOOL_BINDING_KEY,
+    STATIC_REGISTERED_TOOL_NAMES,
+    resolve_registered_tool,
 )
 
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.STORAGE_LOCAL_ROOT or _settings.AGENT_DATA_DIR)
-TOOL_MATERIALIZE_MAX_FILE_BYTES = 10 * 1024 * 1024
-TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 100 * 1024 * 1024
-TEMP_WORKSPACE_DEFAULT_PATHS = ["workspace", "memory", "skills", "focus.md", "soul.md", "HEARTBEAT.md"]
+TOOL_MATERIALIZE_MAX_FILE_BYTES = 50 * 1024 * 1024
+TOOL_MATERIALIZE_MAX_TOTAL_BYTES = 500 * 1024 * 1024
+FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
+FEISHU_APPROVAL_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+FEISHU_APPROVAL_CODE_MAX_CHARS = 256
+FEISHU_APPROVAL_FORM_MAX_CHARS = 100_000
+FEISHU_APPROVAL_FORM_MAX_CONTROLS = 200
+_FEISHU_APPROVAL_IMAGE_MEDIA_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+TEMP_WORKSPACE_DEFAULT_PATHS = ["skills", "memory", "workspace", "focus.md", "soul.md", "HEARTBEAT.md"]
 MAX_EXEC_STDOUT_CAPTURE_BYTES = 1_000_000
 MAX_EXEC_STDERR_CAPTURE_BYTES = 500_000
+EMAIL_IMAP_DEADLINE_SECONDS = 30.0
+PUBLIC_DNS_DEADLINE_SECONDS = 10.0
 _READ_FILE_BINARY_EXTENSIONS = frozenset(
     {
         ".7z",
@@ -160,6 +227,26 @@ def _read_file_binary_error(path: str) -> str | None:
         f"read_file supports text files only; binary file type '{suffix}' "
         "must be opened with read_document instead."
     )
+
+
+def _agent_relative_path_error(tool_name: str, arguments: Mapping[str, object]) -> str | None:
+    """Reject model-facing absolute paths before they reach Storage adapters."""
+    for path_field in AGENT_RELATIVE_PATH_ARGUMENTS.get(tool_name, ()):
+        value = arguments.get(path_field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        normalized = value.strip().replace("\\", "/")
+        is_absolute = normalized.startswith("/") or bool(
+            re.match(r"^[A-Za-z]:/", normalized)
+        )
+        is_uri = bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", normalized))
+        if is_absolute or is_uri:
+            return (
+                f"{tool_name} {path_field} must be Agent-root-relative, for example "
+                "'workspace/output/report.md'; paths must not start with '/' "
+                "or use a URI scheme."
+            )
+    return None
 
 
 def _observability_arguments(tool_name: str, arguments: dict) -> dict:
@@ -553,6 +640,9 @@ RUNTIME_TYPED_APPLICATION_TOOL_NAMES = frozenset(
         "feishu_drive_share",
         "feishu_drive_delete",
         "feishu_user_search",
+        "feishu_approval_definition_get",
+        "feishu_approval_file_upload",
+        "feishu_approval_create",
         "feishu_approval_query",
         "feishu_approval_get",
         "read_emails",
@@ -705,6 +795,92 @@ def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[d
                     )
         patched.append(tool)
     return patched
+
+
+def _project_active_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Remove instructions that point at tools absent from this exact Workset."""
+    active_names = {
+        str(tool.get("function", {}).get("name") or "") for tool in tools
+    }
+    projected: list[dict] = []
+    for original in tools:
+        tool = original
+        function = original.get("function", {})
+        name = str(function.get("name") or "")
+        description = str(function.get("description") or "")
+
+        replacements: list[tuple[str, str]] = []
+        if name == "write_file" and "list_files" not in active_names:
+            replacements.append(
+                (
+                    "Before creating a new document under workspace/, first inspect "
+                    "the relevant directories with list_files, prefer an existing "
+                    "topical subfolder over the workspace root, and create a new "
+                    "subfolder when the content belongs to a new category.",
+                    "Before creating a new document under workspace/, use the current "
+                    "context to prefer an existing topical subfolder over the workspace "
+                    "root, and create a new subfolder when the content belongs to a new "
+                    "category.",
+                )
+            )
+        if name == "read_file" and "read_document" not in active_names:
+            replacements.append(
+                (
+                    "use read_document for supported office documents.",
+                    "the office-document extractor is unavailable in this Workset.",
+                )
+            )
+        if name == "update_objective":
+            if "get_my_okr" not in active_names:
+                replacements.append(
+                    (
+                        "Regular agents can only update their own Objectives — call "
+                        "get_my_okr first to get your objective_id.",
+                        "Regular agents can only update their own Objectives; provide an "
+                        "objective_id from the current context or user.",
+                    )
+                )
+            if "create_objective" not in active_names:
+                replacements.append(
+                    (
+                        "If the request is to revise an existing OKR's goal text rather "
+                        "than create a new one, prefer this tool over create_objective.",
+                        "Use this tool only to revise an existing Objective.",
+                    )
+                )
+
+        projected_description = description
+        for old, new in replacements:
+            projected_description = projected_description.replace(old, new)
+
+        objective_id_description = None
+        if name == "update_objective" and not {
+            "get_my_okr",
+            "get_okr",
+        } <= active_names:
+            objective_id_description = (
+                "UUID of the Objective to update. Provide an ID from the current "
+                "context or user."
+            )
+
+        if (
+            projected_description != description
+            or objective_id_description is not None
+        ):
+            tool = deepcopy(original)
+            tool["function"]["description"] = projected_description
+            if objective_id_description is not None:
+                properties = (
+                    tool["function"]
+                    .get("parameters", {})
+                    .get("properties", {})
+                )
+                if "objective_id" in properties:
+                    properties["objective_id"][
+                        "description"
+                    ] = objective_id_description
+        projected.append(tool)
+    return projected
 
 
 async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
@@ -928,6 +1104,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     )
                 # Inject OS-aware paths into computer-related tool descriptions
                 result = _patch_computer_tool_descriptions(result, computer_os_type)
+                result = _project_active_tool_descriptions(result)
                 # Final diagnostic: log the complete tool list and assignment stats
                 final_names = sorted(t["function"]["name"] for t in result)
                 logger.info(
@@ -950,6 +1127,7 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     # can leak disabled tools (for example search tools) into the LLM. Keep only
     # the minimal always-available core/channel tools.
     fallback = _patch_computer_tool_descriptions(_always_tools, computer_os_type)
+    fallback = _project_active_tool_descriptions(fallback)
     return fallback
 
 
@@ -964,19 +1142,23 @@ def _runtime_typed_tools(
     dynamic MCP row may enter only through the separately resolved exact-name
     workset and may not replace Runtime control, Group, or builtin contracts.
     """
-    return [
-        tool
-        for tool in tools
-        if (
-            (name := str(tool.get("function", {}).get("name") or ""))
-            in RUNTIME_TYPED_APPLICATION_TOOL_NAMES
-            or (
-                name in dynamic_mcp_names
-                and name not in BUILTIN_TOOL_NAMES
-                and not is_reserved_custom_tool_name(name)
-            )
+    resolved: list[dict] = []
+    for tool in tools:
+        name = str(tool.get("function", {}).get("name") or "")
+        registered = resolve_registered_tool(
+            tool,
+            dynamic_mcp_names=dynamic_mcp_names,
         )
-    ]
+        if name in STATIC_REGISTERED_TOOL_NAMES:
+            if registered is not None:
+                resolved.append(tool)
+            continue
+        if (
+            registered is not None
+            or name in RUNTIME_TYPED_APPLICATION_TOOL_NAMES
+        ):
+            resolved.append(tool)
+    return resolved
 
 
 async def _agent_is_designated_okr_agent(agent_id: uuid.UUID) -> bool:
@@ -999,10 +1181,31 @@ async def _agent_is_designated_okr_agent(agent_id: uuid.UUID) -> bool:
         return False
 
 
-async def _get_runtime_dynamic_mcp_tool_names(
+def _mcp_route_digest(
+    *,
+    server_url: str,
+    server_name: str,
+    raw_name: str,
+    async_completion: object,
+) -> str:
+    encoded = json.dumps(
+        {
+            "server_url": server_url,
+            "server_name": server_name,
+            "raw_name": raw_name,
+            "async_completion": async_completion,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _get_runtime_dynamic_mcp_bindings(
     agent_id: uuid.UUID,
-) -> set[str]:
-    """Resolve locally ready dynamic MCP names without provider I/O."""
+) -> dict[str, dict]:
+    """Resolve ready MCP tools and freeze their secret-free route identity."""
     from urllib.parse import urlparse
 
     from app.models.tool import AgentTool, Tool
@@ -1010,7 +1213,7 @@ async def _get_runtime_dynamic_mcp_tool_names(
     try:
         async with async_session() as db:
             result = await db.execute(
-                select(Tool)
+                select(Tool, AgentTool)
                 .join(AgentTool, AgentTool.tool_id == Tool.id)
                 .where(
                     AgentTool.agent_id == agent_id,
@@ -1019,24 +1222,25 @@ async def _get_runtime_dynamic_mcp_tool_names(
                     Tool.type == "mcp",
                 )
             )
-            tools = result.scalars().all()
+            rows = result.all()
     except Exception as exc:
         logger.warning(
-            "[Tools] Dynamic MCP readiness lookup failed: {}",
+            "[Tools] Dynamic MCP binding lookup failed: {}",
             type(exc).__name__,
         )
-        return set()
+        return {}
 
-    ready: set[str] = set()
-    for tool in tools:
-        name = str(tool.name or "")
+    bindings: dict[str, dict] = {}
+    for tool, assignment in rows:
+        name = str(tool.name or "").strip()
         server_url = str(tool.mcp_server_url or "").strip()
+        raw_name = str(tool.mcp_tool_name or "").strip()
         parsed = urlparse(server_url)
         if (
             not name
             or name in BUILTIN_TOOL_NAMES
             or is_reserved_custom_tool_name(name)
-            or not str(tool.mcp_tool_name or "").strip()
+            or not raw_name
             or parsed.scheme not in {"http", "https"}
             or not parsed.netloc
         ):
@@ -1045,14 +1249,134 @@ async def _get_runtime_dynamic_mcp_tool_names(
                 name or "<unnamed>",
             )
             continue
-        ready.add(name)
-    return ready
+        binding = ToolExecutionBinding(
+            kind="mcp",
+            handler_key=name,
+            target={
+                "tool_id": str(tool.id),
+                "route_digest": _mcp_route_digest(
+                    server_url=server_url,
+                    server_name=str(tool.mcp_server_name or ""),
+                    raw_name=raw_name,
+                    async_completion=(tool.config or {}).get("async_completion"),
+                ),
+            },
+            credential_ref=str(assignment.id),
+        )
+        bindings[name] = binding.to_json()
+    return bindings
+
+
+_ISOLATED_OUTPUT_TOOL_PROMPT = (
+    " Workspace write policy: isolated session output. Materialized directories "
+    "inside the sandbox are readable and writable for the current Agent loop, "
+    "but only files under the Agent-relative path "
+    "workspace/output/<current-session-id>/ are published "
+    "back to the host Workspace. Other sandbox writes are temporary. The working "
+    "directory is / and every model-visible path is relative to that Agent root. "
+    "Use the same paths as file tools, including the leading workspace/, skills/, "
+    "or memory/ segment. Read the exact relative persistent output directory from "
+    "CLAWITH_SESSION_OUTPUT_DIR; do not omit or duplicate any path segment, and "
+    "do not return Sandbox absolute paths."
+)
+
+
+def _with_isolated_output_prompt(tool: dict) -> dict:
+    """Add the configured local write boundary to the model-facing tool schema."""
+    patched = deepcopy(tool)
+    function = patched.get("function")
+    if not isinstance(function, dict):
+        return patched
+    description = str(function.get("description") or "").rstrip()
+    if _ISOLATED_OUTPUT_TOOL_PROMPT.strip() not in description:
+        function["description"] = f"{description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict) and isinstance(properties.get("code"), dict):
+            code_schema = properties["code"]
+            code_description = str(
+                code_schema.get("description") or "Code to execute"
+            ).rstrip()
+            code_schema["description"] = (
+                f"{code_description}{_ISOLATED_OUTPUT_TOOL_PROMPT}"
+            )
+    return patched
+
+
+def _with_code_timeout_schema(
+    tool: dict,
+    *,
+    default_timeout: int,
+    max_timeout: int,
+) -> dict:
+    """Expose the effective sandbox timeout bounds to the model."""
+    patched = deepcopy(tool)
+    function = patched.get("function")
+    if not isinstance(function, dict):
+        return patched
+    parameters = function.get("parameters")
+    if not isinstance(parameters, dict):
+        return patched
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return patched
+    timeout_schema = properties.get("timeout")
+    if not isinstance(timeout_schema, dict):
+        return patched
+    effective_max = max(1, int(max_timeout))
+    effective_default = min(max(1, int(default_timeout)), effective_max)
+    timeout_schema["default"] = effective_default
+    timeout_schema["minimum"] = effective_default
+    timeout_schema["maximum"] = effective_max
+    timeout_schema["description"] = (
+        "Code execution timeout in seconds. The current sandbox default is "
+        f"{effective_default}s and the maximum is {effective_max}s; values below "
+        "the default are raised to the default."
+    )
+    return patched
 
 
 async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Resolve the current Durable Runtime workset with typed-outcome gating."""
     tools = await get_agent_tools_for_llm(agent_id)
-    dynamic_mcp_names = await _get_runtime_dynamic_mcp_tool_names(agent_id)
+    try:
+        execute_code_config = await _get_tool_config(agent_id, "execute_code") or {}
+        from app.config import get_sandbox_config
+        from app.services.sandbox.config import SandboxConfig
+
+        fallback_config = get_sandbox_config()
+        sandbox_config = (
+            SandboxConfig.from_dict(execute_code_config, fallback_config)
+            if execute_code_config
+            else fallback_config
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Tools] Code Executor workspace policy lookup failed: {}",
+            type(exc).__name__,
+        )
+        sandbox_config = None
+    if sandbox_config is not None:
+        tools = [
+            _with_code_timeout_schema(
+                tool,
+                default_timeout=sandbox_config.default_timeout,
+                max_timeout=sandbox_config.max_timeout,
+            )
+            if tool.get("function", {}).get("name") == "execute_code"
+            else tool
+            for tool in tools
+        ]
+    if sandbox_config is not None and sandbox_config.workspace_mode == "isolated_output":
+        tools = [
+            _with_isolated_output_prompt(tool)
+            if tool.get("function", {}).get("name") == "execute_code"
+            else tool
+            for tool in tools
+        ]
+    dynamic_mcp_bindings = await _get_runtime_dynamic_mcp_bindings(agent_id)
+    dynamic_mcp_names = set(dynamic_mcp_bindings)
     resolved = _runtime_typed_tools(
         tools,
         dynamic_mcp_names=dynamic_mcp_names,
@@ -1061,6 +1385,9 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     is_designated_okr_agent: bool | None = None
     for tool in resolved:
         name = str(tool.get("function", {}).get("name") or "")
+        if name in dynamic_mcp_bindings:
+            tool = deepcopy(tool)
+            tool[RUNTIME_TOOL_BINDING_KEY] = dynamic_mcp_bindings[name]
         if name in _OKR_AGENT_ONLY_TOOL_NAMES:
             if is_designated_okr_agent is None:
                 is_designated_okr_agent = (
@@ -1111,7 +1438,32 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                 and isinstance(e2b_config.get("api_key"), str)
                 and bool(e2b_config["api_key"].strip())
             ):
-                ready.append(tool)
+                try:
+                    default_timeout = int(
+                        e2b_config.get(
+                            "default_timeout",
+                            CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+                        )
+                    )
+                    max_timeout = int(
+                        e2b_config.get(
+                            "max_timeout",
+                            CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    logger.info(
+                        "[Tools] Durable Runtime hid execute_code_e2b because "
+                        "its timeout configuration is invalid"
+                    )
+                    continue
+                ready.append(
+                    _with_code_timeout_schema(
+                        tool,
+                        default_timeout=default_timeout,
+                        max_timeout=max_timeout,
+                    )
+                )
             else:
                 logger.info(
                     "[Tools] Durable Runtime hid execute_code_e2b because "
@@ -1284,7 +1636,7 @@ async def get_runtime_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
             for tool in tools
         }
         - RUNTIME_TYPED_APPLICATION_TOOL_NAMES
-        - dynamic_mcp_names
+        - set(dynamic_mcp_names)
         - {""}
     )
     if hidden:
@@ -1330,14 +1682,24 @@ class TempWorkspaceManifestEntry:
     size: int
 
 
+class SkillSnapshotIncompleteError(RuntimeError):
+    """The Run sandbox cannot safely execute a partially materialized Skill tree."""
+
+
 @dataclass
 class TempWorkspace:
     temp_dir: tempfile.TemporaryDirectory
     root: Path
     agent_id: uuid.UUID
     tenant_id: str | None
-    selected_paths: list[str]
+    materialized_paths: list[str]
+    publish_paths: list[str]
     manifest: dict[str, TempWorkspaceManifestEntry]
+
+    @property
+    def selected_paths(self) -> list[str]:
+        """Backward-compatible alias for callers that use one path set."""
+        return self.materialized_paths
 
     def cleanup(self) -> None:
         self.temp_dir.cleanup()
@@ -1368,6 +1730,8 @@ async def _prepare_temp_workspace(
     agent_id: uuid.UUID,
     tenant_id: str | None = None,
     paths: list[str] | None = None,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
+    publish_paths: list[str] | None = None,
 ) -> TempWorkspace:
     tmp = tempfile.TemporaryDirectory(prefix=f"clawith-agent-{str(agent_id)[:8]}-")
     temp_ws = Path(tmp.name)
@@ -1375,20 +1739,40 @@ async def _prepare_temp_workspace(
         (temp_ws / folder).mkdir(parents=True, exist_ok=True)
 
     storage = get_storage_backend()
-    budget = {"total": 0}
+    budget = {"total": 0, "skipped": []}
     selected = TEMP_WORKSPACE_DEFAULT_PATHS if paths is None else [path for path in paths if path]
     manifest: dict[str, TempWorkspaceManifestEntry] = {}
     for rel_path in selected:
         storage_key, normalized, is_enterprise = _tool_storage_key(agent_id, rel_path, tenant_id)
         if is_enterprise:
             continue
-        await _materialize_storage_path_with_budget(storage, storage_key, normalized, temp_ws, budget, manifest)
+        await _materialize_storage_path_with_budget(
+            storage,
+            storage_key,
+            normalized,
+            temp_ws,
+            budget,
+            manifest,
+            max_file_bytes=max_file_bytes,
+        )
+    skipped_skills = [
+        path
+        for path in budget["skipped"]
+        if path == "skills" or path.startswith("skills/")
+    ]
+    if skipped_skills:
+        tmp.cleanup()
+        preview = ", ".join(skipped_skills[:5])
+        raise SkillSnapshotIncompleteError(
+            f"Skill snapshot is incomplete because materialization limits skipped: {preview}"
+        )
     return TempWorkspace(
         temp_dir=tmp,
         root=temp_ws,
         agent_id=agent_id,
         tenant_id=tenant_id,
-        selected_paths=list(selected),
+        materialized_paths=list(selected),
+        publish_paths=list(selected if publish_paths is None else publish_paths),
         manifest=manifest,
     )
 
@@ -1400,12 +1784,32 @@ async def _materialize_storage_path_with_budget(
     local_root: Path,
     budget: dict,
     manifest: dict[str, TempWorkspaceManifestEntry],
+    *,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> None:
     if await storage.is_file(storage_key):
         version = await storage.get_version(storage_key)
-        if version.size > TOOL_MATERIALIZE_MAX_FILE_BYTES:
+        if version.size > max_file_bytes:
+            logger.warning(
+                "Tool workspace materialization skipped file: "
+                "path={} size_bytes={} limit_bytes={} reason={}",
+                rel_path,
+                version.size,
+                max_file_bytes,
+                "per_file_limit",
+            )
+            budget.setdefault("skipped", []).append(rel_path)
             return
         if budget["total"] + version.size > TOOL_MATERIALIZE_MAX_TOTAL_BYTES:
+            logger.warning(
+                "Tool workspace materialization skipped file: "
+                "path={} size_bytes={} limit_bytes={} reason={}",
+                rel_path,
+                version.size,
+                TOOL_MATERIALIZE_MAX_TOTAL_BYTES,
+                "total_limit",
+            )
+            budget.setdefault("skipped", []).append(rel_path)
             return
         target = (local_root / rel_path).resolve()
         if not target.is_relative_to(local_root.resolve()):
@@ -1427,7 +1831,15 @@ async def _materialize_storage_path_with_budget(
         (local_root / rel_path).mkdir(parents=True, exist_ok=True)
         for entry in await storage.list_dir(storage_key):
             child_rel = f"{rel_path.rstrip('/')}/{entry.name}" if rel_path else entry.name
-            await _materialize_storage_path_with_budget(storage, entry.key, child_rel, local_root, budget, manifest)
+            await _materialize_storage_path_with_budget(
+                storage,
+                entry.key,
+                child_rel,
+                local_root,
+                budget,
+                manifest,
+                max_file_bytes=max_file_bytes,
+            )
 
 
 async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
@@ -1462,19 +1874,27 @@ async def _sync_tasks_to_file(agent_id: uuid.UUID, ws: Path):
         logger.error(f"[AgentTools] Failed to sync tasks: {e}")
 
 
-async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str = "fail") -> dict[str, list[str]]:
-    """Flush local changes back to storage using manifest-based conflict checks."""
+async def flush_temp_workspace(
+    temp_workspace: TempWorkspace,
+    conflict_mode: Literal["fail", "overwrite"] = "fail",
+) -> dict[str, list[str]]:
+    """Flush local changes, optionally replacing Session-isolated output."""
     storage = get_storage_backend()
-    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.selected_paths]
+    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.publish_paths]
     manifest = temp_workspace.manifest
     local_files = _collect_temp_workspace_files(temp_workspace.root, selected_paths)
+    run_id = sandbox_run_scope_id.get().strip() or None
 
     updated: list[str] = []
     conflicted: list[str] = []
     deleted: list[str] = []
     skipped: list[str] = []
 
-    async with workspace_locks(temp_workspace.agent_id, selected_paths):
+    async with workspace_locks(
+        temp_workspace.agent_id,
+        selected_paths,
+        tenant_id=temp_workspace.tenant_id,
+    ):
         for rel_path, local_path in local_files.items():
             if local_path.name.startswith("_exec_tmp") or "__pycache__" in local_path.parts:
                 continue
@@ -1490,20 +1910,89 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
                 else WriteCondition(require_absent=True)
             )
             storage_key = entry.storage_key if entry else normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
+            if conflict_mode == "overwrite":
+                await storage.write_bytes(storage_key, data)
+                version = await storage.get_version(storage_key)
+                manifest[rel_path] = TempWorkspaceManifestEntry(
+                    rel_path=rel_path,
+                    storage_key=storage_key,
+                    base_version_token=version.token,
+                    base_hash=current_hash,
+                    size=len(data),
+                )
+                updated.append(rel_path)
+                continue
             result = await storage.write_bytes_if_match(
                 storage_key,
                 data,
                 condition=condition,
             )
             if not result.ok:
+                converged_version = await _stable_identical_storage_version(
+                    storage,
+                    storage_key,
+                    data,
+                    observed_version=result.current_version,
+                )
+                if converged_version is not None:
+                    manifest[rel_path] = TempWorkspaceManifestEntry(
+                        rel_path=rel_path,
+                        storage_key=storage_key,
+                        base_version_token=converged_version.token,
+                        base_hash=current_hash,
+                        size=len(data),
+                    )
+                    skipped.append(rel_path)
+                    logger.info(
+                        "[WorkspaceFlushConverged] run_id={} agent_id={} path={} "
+                        "current_version={}",
+                        run_id,
+                        temp_workspace.agent_id,
+                        rel_path,
+                        converged_version.token,
+                    )
+                    continue
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=write "
+                    "path={} condition={} expected_version={} current_exists={} "
+                    "current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    "version_match" if entry else "require_absent",
+                    entry.base_version_token if entry else None,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            version = result.current_version or await storage.get_version(storage_key)
+            manifest[rel_path] = TempWorkspaceManifestEntry(
+                rel_path=rel_path,
+                storage_key=storage_key,
+                base_version_token=version.token,
+                base_hash=current_hash,
+                size=len(data),
+            )
             updated.append(rel_path)
 
-        for rel_path, entry in manifest.items():
+        for rel_path, entry in list(manifest.items()):
+            if not any(
+                rel_path == selected or rel_path.startswith(selected.rstrip("/") + "/")
+                for selected in selected_paths
+            ):
+                continue
             if rel_path in local_files:
+                continue
+            if conflict_mode == "overwrite":
+                await storage.delete(entry.storage_key)
+                manifest.pop(rel_path, None)
+                deleted.append(rel_path)
                 continue
             result = await storage.delete_if_match(
                 entry.storage_key,
@@ -1511,12 +2000,197 @@ async def flush_temp_workspace(temp_workspace: TempWorkspace, conflict_mode: str
             )
             if not result.ok:
                 conflicted.append(rel_path)
+                logger.warning(
+                    "[WorkspaceFlushConflict] run_id={} agent_id={} operation=delete "
+                    "path={} condition=version_match expected_version={} "
+                    "current_exists={} current_version={} updated={} deleted={} skipped={}",
+                    run_id,
+                    temp_workspace.agent_id,
+                    rel_path,
+                    entry.base_version_token,
+                    result.current_version.exists if result.current_version else None,
+                    result.current_version.token if result.current_version else None,
+                    updated,
+                    deleted,
+                    skipped,
+                )
                 if conflict_mode == "fail":
                     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
                 continue
+            manifest.pop(rel_path, None)
             deleted.append(rel_path)
 
     return {"updated": updated, "deleted": deleted, "conflicted": conflicted, "skipped": skipped}
+
+
+async def _stable_identical_storage_version(
+    storage,
+    storage_key: str,
+    expected_data: bytes,
+    *,
+    observed_version: StorageVersion | None,
+) -> StorageVersion | None:
+    """Return the stable version when a lost CAS already stored identical bytes."""
+    try:
+        before = observed_version or await storage.get_version(storage_key)
+        if not before.exists or before.is_dir or before.size != len(expected_data):
+            return None
+        current_data = await storage.read_bytes(storage_key)
+        after = await storage.get_version(storage_key)
+    except Exception as exc:
+        logger.warning(
+            "[WorkspaceFlushConvergenceCheckFailed] path={} error_type={}",
+            storage_key,
+            type(exc).__name__,
+        )
+        return None
+
+    if (
+        not after.exists
+        or after.is_dir
+        or before.token != after.token
+        or current_data != expected_data
+    ):
+        return None
+    return after
+
+
+async def _workspace_candidate_changes(
+    temp_workspace: TempWorkspace,
+) -> list[CandidateChange]:
+    """Freeze the publishable Sandbox delta before the temporary copy is released."""
+    storage = get_storage_backend()
+    selected_paths = [normalize_workspace_path(path) for path in temp_workspace.publish_paths]
+    local_files = _collect_temp_workspace_files(temp_workspace.root, selected_paths)
+    changes: list[CandidateChange] = []
+
+    for rel_path, local_path in local_files.items():
+        if local_path.name.startswith("_exec_tmp") or "__pycache__" in local_path.parts:
+            continue
+        data = local_path.read_bytes()
+        candidate_hash = content_hash_bytes(data)
+        entry = temp_workspace.manifest.get(rel_path)
+        if entry is not None:
+            if entry.base_hash == candidate_hash:
+                continue
+            changes.append(
+                CandidateChange.replace(
+                    rel_path,
+                    data,
+                    base_version=entry.base_version_token,
+                    base_hash=entry.base_hash,
+                )
+            )
+            continue
+
+        storage_key = normalize_storage_key(f"{temp_workspace.agent_id}/{rel_path}")
+        current = await storage.get_version(storage_key)
+        if current.exists:
+            # The path existed but was not materialized (usually a size-budget
+            # omission).  Never misclassify it as durable absence.
+            changes.append(
+                CandidateChange(
+                    path=rel_path,
+                    operation="replace",
+                    base_state="unloaded",
+                    data=data,
+                )
+            )
+        else:
+            changes.append(CandidateChange.create(rel_path, data))
+
+    for rel_path, entry in temp_workspace.manifest.items():
+        if not any(
+            rel_path == selected or rel_path.startswith(selected.rstrip("/") + "/")
+            for selected in selected_paths
+        ):
+            continue
+        if rel_path not in local_files:
+            changes.append(
+                CandidateChange.delete(
+                    rel_path,
+                    base_version=entry.base_version_token,
+                    base_hash=entry.base_hash,
+                )
+            )
+    return changes
+
+
+def _workspace_reconciliation_scope(
+    *,
+    tenant_id: str | None,
+    agent_id: uuid.UUID,
+    run_id: str | None,
+    execution_id: str | None,
+) -> ReconciliationScope | None:
+    if not tenant_id or not run_id or not execution_id:
+        return None
+    return ReconciliationScope(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        run_id=run_id,
+        execution_id=execution_id,
+    )
+
+
+def _workspace_verification_metadata(
+    candidate_ref: str,
+    verification,
+) -> dict[str, object]:
+    return {
+        "workspace_candidate_ref": candidate_ref,
+        "workspace_resolution_status": verification.status,
+        "workspace_saved_count": verification.counts["applied"],
+        "workspace_pending_count": verification.counts["not_saved"],
+        "workspace_conflicted_count": verification.counts["conflict"],
+        "workspace_unverified_count": verification.counts["unverified"],
+    }
+
+
+async def _recover_workspace_candidate(
+    service: WorkspaceReconciliationService,
+    scope: ReconciliationScope,
+    candidate_ref: str,
+) -> tuple[bool, dict[str, object]]:
+    """Apply only unchanged-base items; never overwrite a third version."""
+    verification = await service.verify_current(scope, candidate_ref)
+    auto_accept = False
+    if verification.status == "needs_resolution":
+        async with async_session() as db:
+            run = await db.scalar(
+                select(AgentRun).where(
+                    AgentRun.tenant_id == uuid.UUID(scope.tenant_id),
+                    AgentRun.id == uuid.UUID(scope.run_id),
+                )
+            )
+            target = run.delivery_target if run is not None else None
+            auto_accept = (
+                isinstance(target, dict)
+                and target.get("workspace_conflict_policy") == "use_agent_result"
+            )
+    if verification.status in {"not_saved", "mixed"} and not (
+        verification.counts["conflict"] or verification.counts["unverified"]
+    ):
+        application = await service.apply_candidate(
+            scope,
+            candidate_ref,
+            authorized=True,
+            require_base_match=True,
+        )
+        if application.status in {"applied", "already_applied"}:
+            verification = await service.verify_current(scope, candidate_ref)
+    elif auto_accept:
+        application = await service.apply_candidate(
+            scope,
+            candidate_ref,
+            authorized=True,
+        )
+        if application.status in {"applied", "already_applied"}:
+            verification = await service.verify_current(scope, candidate_ref)
+    return (
+        verification.status == "applied",
+        _workspace_verification_metadata(candidate_ref, verification),
+    )
 
 
 def _collect_temp_workspace_files(root: Path, selected_paths: list[str]) -> dict[str, Path]:
@@ -1528,15 +2202,20 @@ def _collect_temp_workspace_files(root: Path, selected_paths: list[str]) -> dict
         target = (root_resolved / selected).resolve()
         if not target.is_relative_to(root_resolved):
             continue
+        if (root_resolved / selected).is_symlink():
+            continue
         if target.is_file():
             files[normalize_workspace_path(selected)] = target
             continue
         if not target.exists() or not target.is_dir():
             continue
         for path in target.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 continue
-            rel = path.resolve().relative_to(root_resolved).as_posix()
+            resolved = path.resolve()
+            if not resolved.is_relative_to(target):
+                continue
+            rel = resolved.relative_to(root_resolved).as_posix()
             files[normalize_workspace_path(rel)] = path
     return files
 
@@ -1597,9 +2276,15 @@ async def _run_with_temp_workspace(
     *,
     paths: list[str] | None = None,
     sync_back: bool = False,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> str:
     """Materialize a temporary workspace for tools that require local files."""
-    temp_workspace = await _prepare_temp_workspace(agent_id, tenant_id=tenant_id, paths=paths)
+    temp_workspace = await _prepare_temp_workspace(
+        agent_id,
+        tenant_id=tenant_id,
+        paths=paths,
+        max_file_bytes=max_file_bytes,
+    )
     try:
         result = await runner(temp_workspace.root)
         if sync_back:
@@ -1624,6 +2309,7 @@ async def _run_with_temp_workspace_outcome(
     paths: list[str] | None = None,
     sync_back: bool = False,
     sync_back_on_non_success: bool = False,
+    max_file_bytes: int = TOOL_MATERIALIZE_MAX_FILE_BYTES,
 ) -> ToolExecutionOutcome:
     """Run a typed local-content tool and preserve explicit sync facts."""
     try:
@@ -1631,6 +2317,7 @@ async def _run_with_temp_workspace_outcome(
             agent_id,
             tenant_id=tenant_id,
             paths=paths,
+            max_file_bytes=max_file_bytes,
         )
     except Exception as exc:
         return _typed_failure(
@@ -1676,6 +2363,353 @@ async def _run_with_temp_workspace_outcome(
         )
     finally:
         temp_workspace.cleanup()
+
+
+async def _resolve_sandbox_execution_scope(
+    *,
+    tenant_id: str | None,
+    agent_id: uuid.UUID,
+    session_id: str,
+) -> SandboxExecutionScope:
+    if not tenant_id:
+        raise ValueError("Session sandbox execution requires a tenant")
+    tenant_uuid = parse_canonical_uuid(tenant_id, label="tenant_id")
+    session_uuid = parse_canonical_uuid(session_id, label="session_id")
+    chat_session = await chat_session_dao.get_active_for_sandbox_agent(
+        tenant_id=tenant_uuid,
+        agent_id=agent_id,
+        session_id=session_uuid,
+    )
+    if chat_session is None:
+        raise ValueError("Session does not belong to the tenant and Agent")
+    return SandboxExecutionScope(tenant_uuid, agent_id, session_uuid)
+
+
+async def _execute_code_with_workspace_outcome(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: str | None,
+    session_id: str,
+    arguments: dict,
+    tool_name: str,
+    on_output=None,
+    runtime_run_id: str | None = None,
+    runtime_execution_id: str | None = None,
+    runtime_code_timeout_seconds: float | None = None,
+) -> ToolExecutionOutcome:
+    """Resolve policy once and guard materialize/execute/publish for local Session code."""
+    if tool_name == "execute_code_e2b":
+        return await _run_with_temp_workspace_outcome(
+            agent_id,
+            tenant_id,
+            lambda temp_ws: _execute_code_outcome(
+                agent_id,
+                temp_ws,
+                arguments,
+                tool_name=tool_name,
+                on_output=on_output,
+                runtime_code_timeout_seconds=runtime_code_timeout_seconds,
+            ),
+            sync_back=True,
+            sync_back_on_non_success=True,
+        )
+
+    from app.config import get_sandbox_config
+    from app.services.sandbox.config import SandboxConfig
+
+    tool_config = await _get_tool_config(agent_id, tool_name)
+    fallback_config = get_sandbox_config()
+    sandbox_config = (
+        SandboxConfig.from_dict(tool_config, fallback_config)
+        if tool_config and tool_name == "execute_code"
+        else None
+    )
+    if sandbox_config is None:
+        sandbox_config = fallback_config
+
+    try:
+        session_uuid = parse_canonical_uuid(session_id, label="session_id") if session_id else None
+        policy = build_workspace_policy(
+            mode=sandbox_config.workspace_mode,
+            session_id=session_uuid,
+            default_paths=TEMP_WORKSPACE_DEFAULT_PATHS,
+        )
+    except ValueError as exc:
+        return _typed_failure(str(exc), "sandbox_session_required")
+
+    scope: SandboxExecutionScope | None = None
+    if session_id:
+        try:
+            scope = await _resolve_sandbox_execution_scope(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+        except ValueError as exc:
+            return _typed_failure(str(exc), "sandbox_execution_scope_invalid")
+
+    lease = None
+    if scope is not None:
+        try:
+            lease = await SandboxExecutionLeaseStore().acquire(scope, ttl_seconds=60)
+        except Exception:
+            return _typed_failure(
+                "Sandbox coordination is unavailable.",
+                "sandbox_coordination_unavailable",
+                retryable=True,
+            )
+        if lease is None:
+            return _typed_failure(
+                "Another code execution is active for this Session.",
+                "sandbox_session_busy",
+                retryable=True,
+            )
+        await lease.start_heartbeat()
+
+    execution_started = False
+    gateway_flush_result: dict[str, list[str]] | None = None
+    run_id = sandbox_run_scope_id.get().strip() or None
+    reconciliation_service = WorkspaceReconciliationService(get_storage_backend())
+    reconciliation_scope: ReconciliationScope | None = None
+    candidate_ref: str | None = None
+    if scope is not None and runtime_execution_id and (runtime_run_id or run_id):
+        reconciliation_scope = ReconciliationScope(
+            tenant_id=str(scope.tenant_id),
+            agent_id=agent_id,
+            run_id=str(runtime_run_id or run_id),
+            execution_id=str(runtime_execution_id),
+        )
+    workspace_identity = RunWorkspaceIdentity(
+        agent_id=str(agent_id),
+        tenant_id=str(scope.tenant_id) if scope else tenant_id,
+        session_id=str(scope.session_id) if scope else None,
+        workspace_mode=policy.mode,
+        materialized_paths=policy.materialized_paths,
+        publish_paths=policy.publish_paths,
+    )
+    async def prepare_workspace() -> TempWorkspace:
+        workspace = await _prepare_temp_workspace(
+            agent_id,
+            tenant_id=tenant_id,
+            paths=list(policy.materialized_paths),
+            publish_paths=list(policy.publish_paths),
+        )
+        if policy.session_output_path:
+            (workspace.root / policy.session_output_path).mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    try:
+        async with use_run_workspace(
+            run_id=run_id,
+            identity=workspace_identity,
+            factory=prepare_workspace,
+        ) as run_workspace:
+            temp_workspace = cast(TempWorkspace, run_workspace)
+            execution_started = True
+
+            async def ensure_candidate() -> str | None:
+                nonlocal candidate_ref
+                if candidate_ref is not None or reconciliation_scope is None:
+                    return candidate_ref
+                changes = await _workspace_candidate_changes(temp_workspace)
+                if not changes:
+                    return None
+                manifest = await reconciliation_service.persist_candidate(
+                    reconciliation_scope,
+                    changes,
+                )
+                candidate_ref = manifest.candidate_ref
+                return candidate_ref
+
+            async def reconciliation_metadata() -> dict[str, object]:
+                if reconciliation_scope is None or candidate_ref is None:
+                    return {}
+                verification = await reconciliation_service.verify_current(
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                return {
+                    "workspace_candidate_ref": candidate_ref,
+                    "workspace_resolution_status": verification.status,
+                    "workspace_saved_count": verification.counts["applied"],
+                    "workspace_pending_count": verification.counts["not_saved"],
+                    "workspace_conflicted_count": verification.counts["conflict"],
+                    "workspace_unverified_count": verification.counts["unverified"],
+                }
+
+            async def recover_publication(
+                original_outcome: ToolExecutionOutcome,
+                flush_result: dict[str, list[str]],
+            ) -> ToolExecutionOutcome | None:
+                """Resolve known publication facts without replaying code."""
+                if reconciliation_scope is None or candidate_ref is None:
+                    return None
+                if original_outcome.status == "unknown":
+                    # A gateway-owned backend currently collapses code and
+                    # publication status into one unknown result. Verifying
+                    # files alone cannot prove the process exit status.
+                    return None
+                verification = await reconciliation_service.verify_current(
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                if verification.status in {"not_saved", "mixed"}:
+                    application = await reconciliation_service.apply_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                        authorized=True,
+                    )
+                    if application.status not in {"applied", "already_applied"}:
+                        return None
+                    verification = await reconciliation_service.verify_current(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                if verification.status != "applied":
+                    return None
+                await reconciliation_service.discard_candidate(
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                return replace(
+                    original_outcome,
+                    metadata={
+                        **original_outcome.metadata,
+                        "workspace_publication": flush_result,
+                        "workspace_resolution_status": "applied",
+                        "workspace_saved_count": verification.counts["applied"],
+                    },
+                )
+            async def before_gateway_publish() -> bool:
+                if lease is None:
+                    return True
+                try:
+                    return await lease.ensure_publication_window(120)
+                except Exception:
+                    return False
+
+            async def gateway_publish() -> None:
+                nonlocal gateway_flush_result
+                await ensure_candidate()
+                gateway_flush_result = await asyncio.wait_for(
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
+                    timeout=60,
+                )
+                if gateway_flush_result["conflicted"]:
+                    raise RuntimeError("Gateway workspace publication conflicted")
+
+            outcome = await _execute_code_outcome(
+                agent_id,
+                temp_workspace.root,
+                arguments,
+                tool_name=tool_name,
+                on_output=on_output,
+                sandbox_config=sandbox_config,
+                session_id=str(scope.session_id) if scope else None,
+                publish_paths=list(policy.publish_paths),
+                before_gateway_publish=before_gateway_publish,
+                gateway_publish=gateway_publish,
+                runtime_code_timeout_seconds=runtime_code_timeout_seconds,
+            )
+            if lease is not None and lease.ownership_lost:
+                return _typed_unknown(
+                    "Code may have run after the Session execution lease was lost.",
+                    "sandbox_execution_lease_lost",
+                )
+            if sandbox_config.publication_owner == "gateway":
+                flush_result = gateway_flush_result or {
+                    "updated": [],
+                    "deleted": [],
+                    "conflicted": [],
+                    "skipped": [],
+                }
+                changed_refs = tuple(
+                    _workspace_artifact_ref(agent_id, path)
+                    for path in flush_result["updated"]
+                )
+                candidate_metadata = await reconciliation_metadata()
+                if outcome.status == "unknown":
+                    recovered = await recover_publication(outcome, flush_result)
+                    if recovered is not None:
+                        return recovered
+                if outcome.status == "succeeded" and reconciliation_scope is not None and candidate_ref is not None:
+                    await reconciliation_service.discard_candidate(reconciliation_scope, candidate_ref)
+                    candidate_metadata = {}
+                return replace(
+                    outcome,
+                    artifact_refs=tuple(dict.fromkeys((*outcome.artifact_refs, *changed_refs))),
+                    metadata={**outcome.metadata, "workspace_publication": flush_result, **candidate_metadata},
+                )
+            if lease is not None and not await lease.ensure_publication_window(120):
+                return _typed_unknown(
+                    "Code ran but publication ownership could not be verified.",
+                    "sandbox_execution_lease_lost",
+                )
+            try:
+                await ensure_candidate()
+                flush_result = await asyncio.wait_for(
+                    flush_temp_workspace(
+                        temp_workspace,
+                        conflict_mode=policy.publication_conflict_mode,
+                    ),
+                    timeout=60,
+                )
+            except Exception as exc:
+                candidate_metadata = await reconciliation_metadata()
+                recovered = await recover_publication(
+                    outcome,
+                    {"updated": [], "deleted": [], "conflicted": [], "skipped": []},
+                )
+                if recovered is not None:
+                    return recovered
+                return _typed_unknown(
+                    f"Local execution completed but workspace sync is unknown: {type(exc).__name__}.",
+                    "workspace_sync_outcome_unknown",
+                    metadata=candidate_metadata,
+                )
+            candidate_metadata = await reconciliation_metadata()
+            metadata = {**outcome.metadata, "workspace_publication": flush_result, **candidate_metadata}
+            if flush_result["conflicted"]:
+                recovered = await recover_publication(outcome, flush_result)
+                if recovered is not None:
+                    return recovered
+                return _typed_unknown(
+                    "Local execution completed but workspace sync conflicted.",
+                    "workspace_sync_conflict",
+                    metadata=metadata,
+                )
+            changed_refs = tuple(
+                _workspace_artifact_ref(agent_id, path)
+                for path in flush_result["updated"]
+            )
+            if reconciliation_scope is not None and candidate_ref is not None:
+                await reconciliation_service.discard_candidate(reconciliation_scope, candidate_ref)
+            return replace(
+                outcome,
+                artifact_refs=tuple(dict.fromkeys((*outcome.artifact_refs, *changed_refs))),
+                metadata=metadata,
+            )
+    except SkillSnapshotIncompleteError as exc:
+        return _typed_failure(str(exc), "skill_snapshot_incomplete")
+    except Exception as exc:
+        if execution_started:
+            return _typed_unknown(
+                f"Sandbox execution outcome is unknown after {type(exc).__name__}.",
+                "sandbox_execution_outcome_unknown",
+            )
+        return _typed_failure(
+            f"Sandbox execution could not start: {type(exc).__name__}.",
+            "sandbox_execution_failed",
+        )
+    finally:
+        if lease is not None:
+            try:
+                await asyncio.shield(lease.release())
+            except Exception:
+                logger.exception("[SandboxLease] Failed to release Session execution lease")
 
 
 async def _execute_workspace_mutation(
@@ -2094,10 +3128,60 @@ async def _read_file_outcome(
             f"\n\n... [{len(lines) - end} more lines not shown, "
             f"lines {end + 1}-{len(lines)}]"
         )
+    metadata: dict[str, object] = {}
+    skill_match = re.fullmatch(
+        r"skills/([^/]+)/(?:SKILL|skill)\.md",
+        normalized,
+    )
+    if skill_match is not None and offset == 0 and end == len(lines):
+        skill_root_key = storage_key.rsplit("/", 1)[0]
+        package_digest, file_count = await _storage_tree_digest(
+            storage,
+            skill_root_key,
+        )
+        metadata["skill_activation"] = {
+            "name": skill_match.group(1),
+            "main_path": normalized,
+            "package_digest": package_digest,
+            "file_count": file_count,
+        }
     return _typed_success(
         f"📄 {path} (lines {offset + 1 if lines else 0}-{end} of {len(lines)})\n"
-        f"{selected}"
+        f"{selected}",
+        metadata=metadata,
     )
+
+
+async def _storage_tree_digest(storage, root_key: str) -> tuple[str, int]:
+    """Hash one Storage directory by relative path and exact file bytes."""
+    records: list[tuple[str, bytes]] = []
+
+    async def visit(key: str) -> None:
+        if await storage.is_file(key):
+            records.append((key.removeprefix(root_key).lstrip("/"), await storage.read_bytes(key)))
+            return
+        if await storage.is_dir(key):
+            for entry in await storage.list_dir(key):
+                await visit(entry.key)
+
+    await visit(root_key)
+    hasher = hashlib.sha256()
+    for relative_path, data in sorted(records):
+        if _skill_runtime_data_path(relative_path):
+            continue
+        hasher.update(relative_path.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(hashlib.sha256(data).digest())
+        hasher.update(b"\0")
+    immutable_count = sum(
+        1 for relative_path, _data in records if not _skill_runtime_data_path(relative_path)
+    )
+    return hasher.hexdigest(), immutable_count
+
+
+def _skill_runtime_data_path(relative_path: str) -> bool:
+    first = relative_path.replace("\\", "/").lstrip("/").split("/", 1)[0]
+    return first in {"data", "reports", "workspace", ".cache", ".progress"}
 
 
 async def _write_file_outcome(
@@ -2106,6 +3190,9 @@ async def _write_file_outcome(
     *,
     base_dir: Path,
     session_id: str | None,
+    tenant_id: str | None = None,
+    runtime_run_id: str | None = None,
+    runtime_execution_id: str | None = None,
 ) -> ToolExecutionOutcome:
     """Write one workspace file using the structured collaboration result."""
     path = arguments.get("path")
@@ -2142,6 +3229,41 @@ async def _write_file_outcome(
             "enterprise_info is read-only for Agents.",
             "workspace_path_read_only",
         )
+    storage = get_storage_backend()
+    storage_key, normalized_path, _ = _tool_storage_key(agent_id, path, tenant_id)
+    base_version = await storage.get_version(storage_key)
+    base_bytes = await storage.read_bytes(storage_key) if base_version.exists else None
+    candidate_bytes = (
+        (base_bytes or b"") + content.encode("utf-8")
+        if mode == "append"
+        else content.encode("utf-8")
+    )
+    reconciliation_scope = _workspace_reconciliation_scope(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        run_id=runtime_run_id,
+        execution_id=runtime_execution_id,
+    )
+    reconciliation_service = WorkspaceReconciliationService(storage)
+    candidate_ref: str | None = None
+    if reconciliation_scope is not None:
+        change = (
+            CandidateChange.replace(
+                normalized_path,
+                candidate_bytes,
+                base_version=base_version.token,
+                base_hash=content_hash_bytes(base_bytes or b""),
+            )
+            if base_version.exists
+            else CandidateChange.create(normalized_path, candidate_bytes)
+        )
+        candidate_ref = (
+            await reconciliation_service.persist_candidate(
+                reconciliation_scope,
+                [change],
+            )
+        ).candidate_ref
+
     write_started = False
     try:
         async with async_session() as db:
@@ -2157,9 +3279,18 @@ async def _write_file_outcome(
                 operation="write",
                 session_id=session_id,
                 enforce_human_lock=True,
+                expected_version_token=(
+                    base_version.token if base_version.exists else None
+                ),
+                require_absent=not base_version.exists,
                 append=mode == "append",
             )
             if not write_result.ok:
+                if reconciliation_scope is not None and candidate_ref is not None:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
                 return _typed_failure(
                     write_result.message,
                     "workspace_write_rejected",
@@ -2167,6 +3298,23 @@ async def _write_file_outcome(
             await db.commit()
     except Exception as exc:
         if write_started:
+            if reconciliation_scope is not None and candidate_ref is not None:
+                recovered, metadata = await _recover_workspace_candidate(
+                    reconciliation_service,
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                if recovered:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    return _typed_success("Workspace file saved and verified.")
+                return _typed_unknown(
+                    "Workspace write outcome requires file reconciliation.",
+                    "workspace_write_outcome_unknown",
+                    metadata=metadata,
+                )
             return _typed_unknown(
                 "Workspace write outcome is unknown; reconcile before retrying.",
                 "workspace_write_outcome_unknown",
@@ -2174,6 +3322,11 @@ async def _write_file_outcome(
         return _typed_failure(
             f"Workspace write failed: {type(exc).__name__}",
             "workspace_write_failed",
+        )
+    if reconciliation_scope is not None and candidate_ref is not None:
+        await reconciliation_service.discard_candidate(
+            reconciliation_scope,
+            candidate_ref,
         )
     return _typed_success(f"{write_result.message}.")
 
@@ -2304,12 +3457,99 @@ async def _find_files_outcome(
     return _typed_success(summary)
 
 
+async def _move_candidate_changes(
+    agent_id: uuid.UUID,
+    source_path: str,
+    destination_path: str,
+) -> list[CandidateChange]:
+    async def collect_tree_versions(storage, root_key: str) -> list[tuple[str, str]]:
+        collected: list[tuple[str, str]] = []
+        for entry in await storage.list_dir(root_key):
+            if await storage.is_dir(entry.key):
+                collected.extend(await collect_tree_versions(storage, entry.key))
+            else:
+                version = await storage.get_version(entry.key)
+                collected.append((entry.key, version.token))
+        return collected
+
+    storage = get_storage_backend()
+    source_normalized = normalize_workspace_path(source_path)
+    destination_normalized = normalize_workspace_path(destination_path)
+    source_key = normalize_storage_key(f"{agent_id}/{source_normalized}")
+    destination_key = normalize_storage_key(f"{agent_id}/{destination_normalized}")
+    source_is_dir = await storage.is_dir(source_key)
+    if destination_path.replace("\\", "/").strip().endswith("/") or await storage.is_dir(destination_key):
+        destination_normalized = normalize_workspace_path(
+            f"{destination_normalized}/{Path(source_normalized).name}"
+        )
+        destination_key = normalize_storage_key(f"{agent_id}/{destination_normalized}")
+
+    if not source_is_dir:
+        source_version = await storage.get_version(source_key)
+        data = await storage.read_bytes(source_key)
+        destination_version = await storage.get_version(destination_key)
+        destination_hash = (
+            content_hash_bytes(await storage.read_bytes(destination_key))
+            if destination_version.exists
+            else None
+        )
+        return list(
+            expand_move(
+                source_path=source_normalized,
+                destination_path=destination_normalized,
+                data=data,
+                source_base_version=source_version.token,
+                source_base_hash=content_hash_bytes(data),
+                destination_base_state=(
+                    "present" if destination_version.exists else "absent"
+                ),
+                destination_base_version=(
+                    destination_version.token if destination_version.exists else None
+                ),
+                destination_base_hash=destination_hash,
+            )
+        )
+
+    changes: list[CandidateChange] = []
+    source_entries = await collect_tree_versions(storage, source_key)
+    for entry_key, source_version in source_entries:
+        relative = entry_key.removeprefix(source_key.rstrip("/") + "/")
+        source_rel = normalize_workspace_path(f"{source_normalized}/{relative}")
+        destination_rel = normalize_workspace_path(
+            f"{destination_normalized}/{relative}"
+        )
+        data = await storage.read_bytes(entry_key)
+        target_key = normalize_storage_key(f"{agent_id}/{destination_rel}")
+        target_version = await storage.get_version(target_key)
+        target_hash = (
+            content_hash_bytes(await storage.read_bytes(target_key))
+            if target_version.exists
+            else None
+        )
+        changes.extend(
+            expand_move(
+                source_path=source_rel,
+                destination_path=destination_rel,
+                data=data,
+                source_base_version=source_version,
+                source_base_hash=content_hash_bytes(data),
+                destination_base_state=("present" if target_version.exists else "absent"),
+                destination_base_version=(target_version.token if target_version.exists else None),
+                destination_base_hash=target_hash,
+            )
+        )
+    return changes
+
+
 async def _move_file_outcome(
     agent_id: uuid.UUID,
     arguments: dict,
     *,
     base_dir: Path,
     session_id: str | None,
+    tenant_id: str | None = None,
+    runtime_run_id: str | None = None,
+    runtime_execution_id: str | None = None,
 ) -> ToolExecutionOutcome:
     source_path = arguments.get("source_path")
     destination_path = arguments.get("destination_path")
@@ -2328,6 +3568,49 @@ async def _move_file_outcome(
             "enterprise_info is read-only for Agents.",
             "workspace_path_read_only",
         )
+    reconciliation_scope = _workspace_reconciliation_scope(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        run_id=runtime_run_id,
+        execution_id=runtime_execution_id,
+    )
+    reconciliation_service = WorkspaceReconciliationService(get_storage_backend())
+    candidate_ref: str | None = None
+    expected_source_versions: dict[str, str] | None = None
+    expected_destination_versions: dict[str, str | None] | None = None
+    expected_source_version_token: str | None = None
+    expected_destination_version_token: str | None = None
+    if reconciliation_scope is not None:
+        changes = await _move_candidate_changes(
+            agent_id,
+            source_path,
+            destination_path,
+        )
+        if changes:
+            expected_source_versions = {
+                normalize_storage_key(f"{agent_id}/{change.path}"): change.base_version
+                for change in changes
+                if change.operation == "delete" and change.base_version is not None
+            }
+            expected_destination_versions = {
+                normalize_storage_key(f"{agent_id}/{change.path}"): (
+                    change.base_version if change.base_state == "present" else None
+                )
+                for change in changes
+                if change.operation != "delete"
+            }
+            source_changes = [change for change in changes if change.operation == "delete"]
+            destination_changes = [change for change in changes if change.operation != "delete"]
+            if len(source_changes) == 1 and len(destination_changes) == 1:
+                expected_source_version_token = source_changes[0].base_version
+                expected_destination_version_token = destination_changes[0].base_version
+            candidate_ref = (
+                await reconciliation_service.persist_candidate(
+                    reconciliation_scope,
+                    changes,
+                )
+            ).candidate_ref
+
     mutation_started = False
     try:
         async with async_session() as db:
@@ -2343,12 +3626,52 @@ async def _move_file_outcome(
                 session_id=session_id,
                 enforce_human_lock=True,
                 overwrite=bool(arguments.get("overwrite", False)),
+                expected_source_version_token=expected_source_version_token,
+                expected_destination_version_token=expected_destination_version_token,
+                expected_source_versions=expected_source_versions,
+                expected_destination_versions=expected_destination_versions,
             )
             if not result.ok:
+                if reconciliation_scope is not None and candidate_ref is not None:
+                    verification = await reconciliation_service.verify_current(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    if verification.status == "not_saved":
+                        await reconciliation_service.discard_candidate(
+                            reconciliation_scope,
+                            candidate_ref,
+                        )
+                    else:
+                        return _typed_unknown(
+                            "Workspace move requires file reconciliation.",
+                            "workspace_move_outcome_unknown",
+                            metadata=_workspace_verification_metadata(
+                                candidate_ref,
+                                verification,
+                            ),
+                        )
                 return _typed_failure(result.message, "workspace_move_rejected")
             await db.commit()
     except Exception as exc:
         if mutation_started:
+            if reconciliation_scope is not None and candidate_ref is not None:
+                recovered, metadata = await _recover_workspace_candidate(
+                    reconciliation_service,
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                if recovered:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    return _typed_success("Workspace move completed and verified.")
+                return _typed_unknown(
+                    "Workspace move requires file reconciliation.",
+                    "workspace_move_outcome_unknown",
+                    metadata=metadata,
+                )
             return _typed_unknown(
                 "Workspace move outcome is unknown; reconcile before retrying.",
                 "workspace_move_outcome_unknown",
@@ -2357,6 +3680,21 @@ async def _move_file_outcome(
             f"Workspace move failed: {type(exc).__name__}.",
             "workspace_move_failed",
         )
+    if reconciliation_scope is not None and candidate_ref is not None:
+        verification = await reconciliation_service.verify_current(
+            reconciliation_scope,
+            candidate_ref,
+        )
+        if verification.status != "applied":
+            return _typed_unknown(
+                "Workspace move requires file reconciliation.",
+                "workspace_move_outcome_unknown",
+                metadata=_workspace_verification_metadata(
+                    candidate_ref,
+                    verification,
+                ),
+            )
+        await reconciliation_service.discard_candidate(reconciliation_scope, candidate_ref)
     return _typed_success(result.message)
 
 
@@ -2366,6 +3704,9 @@ async def _delete_file_outcome(
     *,
     base_dir: Path,
     session_id: str | None,
+    tenant_id: str | None = None,
+    runtime_run_id: str | None = None,
+    runtime_execution_id: str | None = None,
 ) -> ToolExecutionOutcome:
     path = arguments.get("path")
     if not isinstance(path, str) or not path:
@@ -2383,6 +3724,59 @@ async def _delete_file_outcome(
             "enterprise_info is read-only for Agents.",
             "workspace_path_read_only",
         )
+    storage = get_storage_backend()
+    storage_key, normalized_path, _ = _tool_storage_key(agent_id, path, tenant_id)
+    reconciliation_scope = _workspace_reconciliation_scope(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        run_id=runtime_run_id,
+        execution_id=runtime_execution_id,
+    )
+    reconciliation_service = WorkspaceReconciliationService(storage)
+    candidate_ref: str | None = None
+    expected_version_token: str | None = None
+    expected_version_tokens: dict[str, str] | None = None
+    if reconciliation_scope is not None:
+        changes: list[CandidateChange] = []
+        if await storage.is_dir(storage_key):
+            expected_version_tokens = {}
+            async def collect_delete_changes(root_key: str, root_path: str) -> None:
+                for entry in await storage.list_dir(root_key):
+                    relative = entry.key.removeprefix(root_key.rstrip("/") + "/")
+                    item_path = normalize_workspace_path(f"{root_path}/{relative}")
+                    if await storage.is_dir(entry.key):
+                        await collect_delete_changes(entry.key, item_path)
+                    else:
+                        version = await storage.get_version(entry.key)
+                        expected_version_tokens[entry.key] = version.token
+                        data = await storage.read_bytes(entry.key)
+                        changes.append(
+                            CandidateChange.delete(
+                                item_path,
+                                base_version=version.token,
+                                base_hash=content_hash_bytes(data),
+                            )
+                        )
+            await collect_delete_changes(storage_key, normalized_path)
+        else:
+            version = await storage.get_version(storage_key)
+            expected_version_token = version.token
+            data = await storage.read_bytes(storage_key)
+            changes.append(
+                CandidateChange.delete(
+                    normalized_path,
+                    base_version=version.token,
+                    base_hash=content_hash_bytes(data),
+                )
+            )
+        if changes:
+            candidate_ref = (
+                await reconciliation_service.persist_candidate(
+                    reconciliation_scope,
+                    changes,
+                )
+            ).candidate_ref
+
     mutation_started = False
     try:
         async with async_session() as db:
@@ -2396,12 +3790,50 @@ async def _delete_file_outcome(
                 actor_id=agent_id,
                 session_id=session_id,
                 enforce_human_lock=True,
+                expected_version_token=expected_version_token,
+                expected_version_tokens=expected_version_tokens,
             )
             if not result.ok:
+                if reconciliation_scope is not None and candidate_ref is not None:
+                    verification = await reconciliation_service.verify_current(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    if verification.status == "not_saved":
+                        await reconciliation_service.discard_candidate(
+                            reconciliation_scope,
+                            candidate_ref,
+                        )
+                    else:
+                        return _typed_unknown(
+                            "Workspace deletion requires file reconciliation.",
+                            "workspace_delete_outcome_unknown",
+                            metadata=_workspace_verification_metadata(
+                                candidate_ref,
+                                verification,
+                            ),
+                        )
                 return _typed_failure(result.message, "workspace_delete_rejected")
             await db.commit()
     except Exception as exc:
         if mutation_started:
+            if reconciliation_scope is not None and candidate_ref is not None:
+                recovered, metadata = await _recover_workspace_candidate(
+                    reconciliation_service,
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                if recovered:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    return _typed_success("Workspace deletion completed and verified.")
+                return _typed_unknown(
+                    "Workspace deletion requires file reconciliation.",
+                    "workspace_delete_outcome_unknown",
+                    metadata=metadata,
+                )
             return _typed_unknown(
                 "Workspace delete outcome is unknown; reconcile before retrying.",
                 "workspace_delete_outcome_unknown",
@@ -2409,6 +3841,11 @@ async def _delete_file_outcome(
         return _typed_failure(
             f"Workspace delete failed: {type(exc).__name__}.",
             "workspace_delete_failed",
+        )
+    if reconciliation_scope is not None and candidate_ref is not None:
+        await reconciliation_service.discard_candidate(
+            reconciliation_scope,
+            candidate_ref,
         )
     return _typed_success(result.message)
 
@@ -2419,6 +3856,9 @@ async def _edit_file_outcome(
     *,
     base_dir: Path,
     session_id: str | None,
+    tenant_id: str | None = None,
+    runtime_run_id: str | None = None,
+    runtime_execution_id: str | None = None,
 ) -> ToolExecutionOutcome:
     path = arguments.get("path")
     old_string = arguments.get("old_string")
@@ -2440,12 +3880,13 @@ async def _edit_file_outcome(
         )
     try:
         storage = get_storage_backend()
-        storage_key, normalized_path, _ = _tool_storage_key(agent_id, path, None)
+        storage_key, normalized_path, _ = _tool_storage_key(agent_id, path, tenant_id)
         if not await storage.is_file(storage_key):
             return _typed_failure(
                 f"File not found: {path}",
                 "workspace_file_not_found",
             )
+        version = await storage.get_version(storage_key)
         content = await storage.read_text(storage_key, encoding="utf-8", errors="replace")
     except Exception as exc:
         return _typed_failure(
@@ -2470,6 +3911,28 @@ async def _edit_file_outcome(
         if replace_all
         else content.replace(old_string, new_string, 1)
     )
+    reconciliation_scope = _workspace_reconciliation_scope(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        run_id=runtime_run_id,
+        execution_id=runtime_execution_id,
+    )
+    reconciliation_service = WorkspaceReconciliationService(storage)
+    candidate_ref: str | None = None
+    if reconciliation_scope is not None:
+        candidate_ref = (
+            await reconciliation_service.persist_candidate(
+                reconciliation_scope,
+                [
+                    CandidateChange.replace(
+                        normalized_path,
+                        new_content.encode("utf-8"),
+                        base_version=version.token,
+                        base_hash=content_hash_bytes(content.encode("utf-8")),
+                    )
+                ],
+            )
+        ).candidate_ref
     mutation_started = False
     try:
         async with async_session() as db:
@@ -2485,12 +3948,35 @@ async def _edit_file_outcome(
                 operation="edit",
                 session_id=session_id,
                 enforce_human_lock=True,
+                expected_version_token=version.token,
             )
             if not result.ok:
+                if reconciliation_scope is not None and candidate_ref is not None:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
                 return _typed_failure(result.message, "workspace_edit_rejected")
             await db.commit()
     except Exception as exc:
         if mutation_started:
+            if reconciliation_scope is not None and candidate_ref is not None:
+                recovered, metadata = await _recover_workspace_candidate(
+                    reconciliation_service,
+                    reconciliation_scope,
+                    candidate_ref,
+                )
+                if recovered:
+                    await reconciliation_service.discard_candidate(
+                        reconciliation_scope,
+                        candidate_ref,
+                    )
+                    return _typed_success("Workspace edit completed and verified.")
+                return _typed_unknown(
+                    "Workspace edit requires file reconciliation.",
+                    "workspace_edit_outcome_unknown",
+                    metadata=metadata,
+                )
             return _typed_unknown(
                 "Workspace edit outcome is unknown; reconcile before retrying.",
                 "workspace_edit_outcome_unknown",
@@ -2499,10 +3985,33 @@ async def _edit_file_outcome(
             f"Workspace edit failed: {type(exc).__name__}.",
             "workspace_edit_failed",
         )
+    if reconciliation_scope is not None and candidate_ref is not None:
+        await reconciliation_service.discard_candidate(
+            reconciliation_scope,
+            candidate_ref,
+        )
     replaced = count if replace_all else 1
     return _typed_success(
         f"Replaced {replaced} occurrence(s) in {result.path}."
     )
+
+
+def _channel_cross_session_error(arguments: Mapping[str, object], session_id: str) -> str | None:
+    if not session_id:
+        return None
+    target_recipient_id = str(arguments.get("target_recipient_id") or "").strip()
+    target_member_id = str(arguments.get("target_member_id") or "").strip()
+    cross_session = bool(
+        target_member_id
+        or (target_recipient_id and target_recipient_id != session_id)
+    )
+    if cross_session and arguments.get("cross_session_confirmed") is not True:
+        return (
+            "Cross-Session channel delivery rejected. Normal replies are automatically "
+            "returned to the input Session. Set cross_session_confirmed=true only when the "
+            "user explicitly requested another person or group."
+        )
+    return None
 
 
 async def execute_builtin_tool_outcome(
@@ -2512,6 +4021,15 @@ async def execute_builtin_tool_outcome(
     user_id: uuid.UUID,
     session_id: str = "",
     on_output=None,
+    *,
+    runtime_authorization: FeishuApprovalCreateAuthorization | None = None,
+    runtime_run_id: str | None = None,
+    runtime_tool_call_id: str | None = None,
+    runtime_execution_id: str | None = None,
+    runtime_lease_owner: str | None = None,
+    runtime_tenant_id: str | None = None,
+    runtime_code_timeout_seconds: float | None = None,
+    execution_binding: Mapping[str, object] | None = None,
 ) -> ToolExecutionOutcome | str:
     """Execute only explicitly migrated builtin branches as typed outcomes.
 
@@ -2519,6 +4037,19 @@ async def execute_builtin_tool_outcome(
     Durable Runtime rejects those as ``untyped_tool_outcome``; this function
     never infers success from display text or from a non-raising handler.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return _typed_failure(
+            path_error,
+            "workspace_path_invalid",
+        )
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return _typed_failure(
+                cross_session_error,
+                "cross_session_delivery_not_confirmed",
+            )
     if (
         tool_name in _WORKSPACE_SCOPED_FILE_TOOL_NAMES
         and arguments.get("workspace_scope", "agent") != "agent"
@@ -2527,13 +4058,17 @@ async def execute_builtin_tool_outcome(
             "workspace_scope=group is only available in a validated Group Run.",
             "workspace_scope_unavailable",
         )
-    tenant_id: str | None = None
+    tenant_id: str | None = runtime_tenant_id
     if tool_name in {
         "list_files",
         "read_file",
         "search_files",
         "find_files",
         "read_document",
+        "write_file",
+        "edit_file",
+        "move_file",
+        "delete_file",
         "execute_code",
         "execute_code_e2b",
         "convert_csv_to_xlsx",
@@ -2544,7 +4079,8 @@ async def execute_builtin_tool_outcome(
         "upload_image",
         *_IMAGE_GENERATION_TOOL_NAMES,
     }:
-        tenant_id = await _get_agent_tenant_id(agent_id)
+        if tenant_id is None:
+            tenant_id = await _get_agent_tenant_id(agent_id)
     if tool_name == "list_files":
         return await _list_files_outcome(
             agent_id,
@@ -2587,6 +4123,9 @@ async def execute_builtin_tool_outcome(
             arguments,
             base_dir=_agent_workspace_root(agent_id),
             session_id=session_id or None,
+            tenant_id=tenant_id,
+            runtime_run_id=runtime_run_id,
+            runtime_execution_id=runtime_execution_id,
         )
     if tool_name == "move_file":
         return await _move_file_outcome(
@@ -2594,6 +4133,9 @@ async def execute_builtin_tool_outcome(
             arguments,
             base_dir=_agent_workspace_root(agent_id),
             session_id=session_id or None,
+            tenant_id=tenant_id,
+            runtime_run_id=runtime_run_id,
+            runtime_execution_id=runtime_execution_id,
         )
     if tool_name == "delete_file":
         return await _delete_file_outcome(
@@ -2601,6 +4143,9 @@ async def execute_builtin_tool_outcome(
             arguments,
             base_dir=_agent_workspace_root(agent_id),
             session_id=session_id or None,
+            tenant_id=tenant_id,
+            runtime_run_id=runtime_run_id,
+            runtime_execution_id=runtime_execution_id,
         )
     if tool_name == "edit_file":
         return await _edit_file_outcome(
@@ -2608,6 +4153,9 @@ async def execute_builtin_tool_outcome(
             arguments,
             base_dir=_agent_workspace_root(agent_id),
             session_id=session_id or None,
+            tenant_id=tenant_id,
+            runtime_run_id=runtime_run_id,
+            runtime_execution_id=runtime_execution_id,
         )
     if tool_name in {
         "convert_csv_to_xlsx",
@@ -2632,18 +4180,16 @@ async def execute_builtin_tool_outcome(
             sync_back=True,
         )
     if tool_name in {"execute_code", "execute_code_e2b"}:
-        return await _run_with_temp_workspace_outcome(
-            agent_id,
-            tenant_id,
-            lambda temp_ws: _execute_code_outcome(
-                agent_id,
-                temp_ws,
-                arguments,
-                tool_name=tool_name,
-                on_output=on_output,
-            ),
-            sync_back=True,
-            sync_back_on_non_success=True,
+        return await _execute_code_with_workspace_outcome(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            arguments=arguments,
+            tool_name=tool_name,
+            on_output=on_output,
+            runtime_run_id=runtime_run_id,
+            runtime_execution_id=runtime_execution_id,
+            runtime_code_timeout_seconds=runtime_code_timeout_seconds,
         )
     if tool_name == "read_webpage":
         return await _read_webpage_outcome(arguments)
@@ -2834,6 +4380,42 @@ async def execute_builtin_tool_outcome(
         return await _feishu_drive_delete_outcome(agent_id, arguments)
     if tool_name == "feishu_user_search":
         return await _feishu_user_search_outcome(agent_id, arguments)
+    if tool_name == "feishu_approval_definition_get":
+        return await _feishu_approval_definition_get_outcome(
+            agent_id,
+            arguments,
+        )
+    if tool_name == "feishu_approval_file_upload":
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return _typed_failure(
+                "feishu_approval_file_upload requires file_path.",
+                "invalid_tool_arguments",
+            )
+        tenant_id = await _get_agent_tenant_id(agent_id)
+        return await _run_with_temp_workspace_outcome(
+            agent_id,
+            tenant_id,
+            lambda temp_ws: _feishu_approval_file_upload_outcome(
+                agent_id,
+                temp_ws,
+                arguments,
+            ),
+            paths=[file_path],
+            max_file_bytes=FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES,
+        )
+    if tool_name == "feishu_approval_create":
+        return await _feishu_approval_create_outcome(
+            agent_id,
+            arguments,
+            actor_user_id=user_id,
+            authorization=runtime_authorization,
+            runtime_run_id=runtime_run_id,
+            runtime_tool_call_id=runtime_tool_call_id,
+            runtime_execution_id=runtime_execution_id,
+            runtime_lease_owner=runtime_lease_owner,
+            runtime_tenant_id=runtime_tenant_id,
+        )
     if tool_name == "feishu_approval_query":
         return await _feishu_approval_query_outcome(agent_id, arguments)
     if tool_name == "feishu_approval_get":
@@ -2861,7 +4443,13 @@ async def execute_builtin_tool_outcome(
         and tool_name not in BUILTIN_TOOL_NAMES
         and not is_reserved_custom_tool_name(tool_name)
     ):
-        mcp_target = await _resolve_mcp_execution_target(tool_name, agent_id)
+        if execution_binding is not None:
+            mcp_target = await _resolve_frozen_mcp_execution_target(
+                execution_binding,
+                agent_id,
+            )
+        else:
+            mcp_target = await _resolve_mcp_execution_target(tool_name, agent_id)
         if mcp_target is not None:
             return await _execute_resolved_mcp_target_outcome(
                 mcp_target,
@@ -2882,12 +4470,16 @@ async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
     agent_id: uuid.UUID,
+    session_id: str = "",
 ) -> str:
     """Execute a tool directly, bypassing autonomy checks.
 
     Used by the approval post-processing hook after an action
     has been approved and needs to actually run.
     """
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
     ws = _agent_workspace_root(agent_id)
     try:
@@ -2905,12 +4497,14 @@ async def _execute_tool_direct(
                 tool_name,
                 _observability_arguments(tool_name, arguments),
             )
-            return await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name),
-                sync_back=True,
+            outcome = await _execute_code_with_workspace_outcome(
+                agent_id=agent_id,
+                tenant_id=_agent_tenant_id,
+                session_id=session_id,
+                arguments=arguments,
+                tool_name=tool_name,
             )
+            return _legacy_tool_outcome_text(outcome, fallback="Code execution returned no summary.")
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -2975,6 +4569,20 @@ async def execute_tool(
     if tool_name == FINISH_TOOL_NAME:
         content = arguments.get("content", "")
         return content if isinstance(content, str) else str(content)
+    if tool_name == "feishu_approval_create":
+        return (
+            "Feishu approval creation is blocked outside Durable Runtime "
+            "conversation confirmation."
+        )
+
+    if tool_name == "send_channel_message":
+        cross_session_error = _channel_cross_session_error(arguments, session_id)
+        if cross_session_error is not None:
+            return f"❌ {cross_session_error}"
+
+    path_error = _agent_relative_path_error(tool_name, arguments)
+    if path_error is not None:
+        return f"❌ {path_error}"
 
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
@@ -3237,12 +4845,15 @@ async def execute_tool(
                 tool_name,
                 _observability_arguments(tool_name, arguments),
             )
-            result = await _run_with_temp_workspace(
-                agent_id,
-                _agent_tenant_id,
-                lambda temp_ws: _execute_code(agent_id, temp_ws, arguments, tool_name=tool_name, on_output=on_output),
-                sync_back=True,
+            outcome = await _execute_code_with_workspace_outcome(
+                agent_id=agent_id,
+                tenant_id=_agent_tenant_id,
+                session_id=session_id,
+                arguments=arguments,
+                tool_name=tool_name,
+                on_output=on_output,
             )
+            result = _legacy_tool_outcome_text(outcome, fallback="Code execution returned no summary.")
         elif tool_name == "upload_image":
             file_path = (arguments.get("file_path") or "").strip()
             result = await _run_with_temp_workspace(
@@ -3324,8 +4935,21 @@ async def execute_tool(
             result = await _feishu_calendar_update(agent_id, arguments)
         elif tool_name == "feishu_calendar_delete":
             result = await _feishu_calendar_delete(agent_id, arguments)
-        elif tool_name == "feishu_approval_create":
-            result = await _feishu_approval_create(agent_id, arguments)
+        elif tool_name == "feishu_approval_definition_get":
+            result = await _feishu_approval_definition_get(agent_id, arguments)
+        elif tool_name == "feishu_approval_file_upload":
+            file_path = arguments.get("file_path")
+            result = await _run_with_temp_workspace(
+                agent_id,
+                _agent_tenant_id,
+                lambda temp_ws: _feishu_approval_file_upload(
+                    agent_id,
+                    temp_ws,
+                    arguments,
+                ),
+                paths=[file_path] if isinstance(file_path, str) and file_path else None,
+                max_file_bytes=FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES,
+            )
         elif tool_name == "feishu_approval_query":
             result = await _feishu_approval_query(agent_id, arguments)
         elif tool_name == "feishu_approval_get":
@@ -3879,9 +5503,16 @@ async def _validate_public_http_url(url: str) -> tuple[str | None, str | None]:
             addresses = [hostname]
         else:
             loop = asyncio.get_running_loop()
-            infos = await loop.run_in_executor(
-                None,
-                lambda: socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM),
+            infos = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: socket.getaddrinfo(
+                        hostname,
+                        parsed.port or (443 if parsed.scheme == "https" else 80),
+                        type=socket.SOCK_STREAM,
+                    ),
+                ),
+                timeout=PUBLIC_DNS_DEADLINE_SECONDS,
             )
             addresses = [info[4][0] for info in infos]
     except Exception as exc:
@@ -5821,6 +7452,83 @@ def _mcp_call_response_outcome(
     return _typed_success(summary, metadata=metadata)
 
 
+async def _resolve_frozen_mcp_execution_target(
+    raw_binding: Mapping[str, object],
+    agent_id: uuid.UUID,
+) -> dict:
+    """Resolve credentials for one frozen route and reject live route drift."""
+    from app.models.tool import AgentTool, Tool
+
+    try:
+        binding = ToolExecutionBinding.from_json(raw_binding)
+        if binding.kind != "mcp" or binding.credential_ref is None:
+            raise ToolContractError("MCP execution binding is incomplete")
+        tool_id = uuid.UUID(str(binding.target.get("tool_id") or ""))
+        assignment_id = uuid.UUID(binding.credential_ref)
+    except (ToolContractError, ValueError, TypeError):
+        return {
+            "full_name": str(raw_binding.get("handler_key") or "mcp"),
+            "unavailable_error_code": "mcp_binding_invalid",
+        }
+
+    async with async_session() as db:
+        tool_result = await db.execute(
+            select(Tool).where(Tool.id == tool_id, Tool.type == "mcp")
+        )
+        tool = tool_result.scalar_one_or_none()
+        assignment_result = await db.execute(
+            select(AgentTool).where(
+                AgentTool.id == assignment_id,
+                AgentTool.agent_id == agent_id,
+                AgentTool.tool_id == tool_id,
+            )
+        )
+        assignment = assignment_result.scalar_one_or_none()
+
+    if tool is None or assignment is None or not tool.enabled or not assignment.enabled:
+        return {
+            "full_name": binding.handler_key,
+            "unavailable_error_code": "mcp_tool_not_available",
+        }
+
+    server_url = str(tool.mcp_server_url or "").strip()
+    server_name = str(tool.mcp_server_name or "")
+    raw_name = str(tool.mcp_tool_name or "").strip()
+    current_route_digest = _mcp_route_digest(
+        server_url=server_url,
+        server_name=server_name,
+        raw_name=raw_name,
+        async_completion=(tool.config or {}).get("async_completion"),
+    )
+    if (
+        str(tool.name or "") != binding.handler_key
+        or binding.target.get("route_digest") != current_route_digest
+    ):
+        return {
+            "full_name": binding.handler_key,
+            "unavailable_error_code": "mcp_binding_changed",
+        }
+
+    merged_config = {
+        **(tool.config or {}),
+        **(assignment.config or {}),
+    }
+    merged_config = _decrypt_sensitive_fields(
+        merged_config,
+        tool.config_schema,
+    )
+    return {
+        "full_name": binding.handler_key,
+        "raw_name": raw_name,
+        "server_url": server_url,
+        "server_name": server_name,
+        "config": merged_config,
+        "async_completion": deepcopy(
+            (tool.config or {}).get("async_completion")
+        ),
+    }
+
+
 async def _resolve_mcp_execution_target(
     tool_name: str,
     agent_id,
@@ -5933,8 +7641,21 @@ async def _execute_resolved_mcp_target_outcome(
 ) -> ToolExecutionOutcome:
     unavailable_error = target.get("unavailable_error_code")
     if unavailable_error:
-        return _typed_failure(
+        summary = {
+            "mcp_binding_changed": (
+                "MCP tool configuration changed after this call was selected. "
+                "Refresh the available tools before retrying."
+            ),
+            "mcp_binding_invalid": (
+                "The saved MCP execution route is invalid. Refresh the "
+                "available tools before retrying."
+            ),
+        }.get(
+            str(unavailable_error),
             "MCP tool is not enabled, assigned, or locally configured.",
+        )
+        return _typed_failure(
+            summary,
             str(unavailable_error),
         )
 
@@ -6678,6 +8399,42 @@ class DocumentReadResult:
     content: str
     error_code: str | None = None
     retryable: bool = False
+    truncated: bool = False
+    processed_scope: dict[str, Any] = field(default_factory=dict)
+    truncation_reasons: tuple[str, ...] = ()
+
+
+def _complete_document_read(
+    content: str,
+    *,
+    max_chars: int,
+    processed_scope: dict[str, Any] | None = None,
+    truncation_reasons: list[str] | None = None,
+) -> DocumentReadResult:
+    """Return content with an explicit, machine-readable incompleteness fact."""
+    scope = dict(processed_scope or {})
+    reasons = list(dict.fromkeys(truncation_reasons or []))
+    if len(content) > max_chars:
+        scope["characters_total"] = len(content)
+        scope["characters_returned"] = max_chars
+        reasons.append(
+            f"returned the first {max_chars} of {len(content)} extracted characters"
+        )
+        content = content[:max_chars]
+    reasons = list(dict.fromkeys(reasons))
+    if reasons:
+        content += (
+            "\n\n[Document output incomplete: "
+            + "; ".join(reasons)
+            + ". No continuation parameter is available.]"
+        )
+    return DocumentReadResult(
+        True,
+        content,
+        truncated=bool(reasons),
+        processed_scope=scope,
+        truncation_reasons=tuple(reasons),
+    )
 
 
 def _safe_document_cell_text(value: Any) -> str:
@@ -6732,17 +8489,30 @@ def _read_document_sync(
         )
 
     ext = file_path.suffix.lower()
+    processed_scope: dict[str, Any] = {}
+    truncation_reasons: list[str] = []
     try:
         if ext == ".pdf":
             import pdfplumber
             text_parts = []
             with pdfplumber.open(str(file_path)) as pdf:
+                total_pages = len(pdf.pages)
+                processed_pages = 0
                 for i, page in enumerate(pdf.pages[:50]):  # Limit to 50 pages
+                    processed_pages = i + 1
                     page_text = page.extract_text() or ""
                     if page_text:
                         text_parts.append(f"--- Page {i+1} ---\n{page_text}")
                     if sum(len(part) for part in text_parts) >= max_chars:
                         break
+            processed_scope.update(
+                pages_processed=processed_pages,
+                pages_total=total_pages,
+            )
+            if processed_pages < total_pages:
+                truncation_reasons.append(
+                    f"processed the first {processed_pages} of {total_pages} pages"
+                )
             content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
 
         elif ext == ".docx":
@@ -6802,14 +8572,29 @@ def _read_document_sync(
             wb = load_workbook(str(file_path), read_only=True, data_only=True)
             sheets = []
             cell_count = 0
+            processed_sheets = 0
+            total_sheets = len(wb.sheetnames)
             for ws_name in wb.sheetnames[:10]:  # Limit to 10 sheets
+                processed_sheets += 1
                 sheet = wb[ws_name]
                 rows = []
+                if sheet.max_row > 200:
+                    truncation_reasons.append(
+                        f"sheet {ws_name} processed the first 200 of {sheet.max_row} rows"
+                    )
+                if sheet.max_column > _READ_DOCUMENT_MAX_COLUMNS:
+                    truncation_reasons.append(
+                        f"sheet {ws_name} processed the first {_READ_DOCUMENT_MAX_COLUMNS} "
+                        f"of {sheet.max_column} columns"
+                    )
                 for row in sheet.iter_rows(max_row=200, max_col=_READ_DOCUMENT_MAX_COLUMNS, values_only=True):
                     visible = row
                     cell_count += len(visible)
                     if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS:
                         rows.append("[cell limit reached; remaining cells omitted]")
+                        truncation_reasons.append(
+                            f"stopped after the {_READ_DOCUMENT_MAX_XLSX_CELLS}-cell safety limit"
+                        )
                         break
                     row_str = "\t".join(_safe_document_cell_text(c) for c in visible)
                     if row_str.strip():
@@ -6819,21 +8604,41 @@ def _read_document_sync(
                 if cell_count > _READ_DOCUMENT_MAX_XLSX_CELLS or sum(len(part) for part in sheets) >= max_chars:
                     break
             wb.close()
+            processed_scope.update(
+                sheets_processed=processed_sheets,
+                sheets_total=total_sheets,
+                cells_processed=min(cell_count, _READ_DOCUMENT_MAX_XLSX_CELLS),
+            )
+            if processed_sheets < total_sheets:
+                truncation_reasons.append(
+                    f"processed the first {processed_sheets} of {total_sheets} sheets"
+                )
             content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
 
         elif ext == ".pptx":
             from pptx import Presentation
             prs = Presentation(str(file_path))
             slides = []
+            total_slides = len(prs.slides)
+            processed_slides = 0
             for i, slide in enumerate(prs.slides):
                 if i >= 50:
                     break
+                processed_slides = i + 1
                 texts = []
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
                         texts.append(shape.text)
                 if texts:
                     slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
+            processed_scope.update(
+                slides_processed=processed_slides,
+                slides_total=total_slides,
+            )
+            if processed_slides < total_slides:
+                truncation_reasons.append(
+                    f"processed the first {processed_slides} of {total_slides} slides"
+                )
             content = "\n\n".join(slides) if slides else "(PPT is empty)"
 
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
@@ -6846,9 +8651,12 @@ def _read_document_sync(
                 "document_format_unsupported",
             )
 
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return DocumentReadResult(True, content)
+        return _complete_document_read(
+            content,
+            max_chars=max_chars,
+            processed_scope=processed_scope,
+            truncation_reasons=truncation_reasons,
+        )
 
     except ImportError as e:
         return DocumentReadResult(
@@ -6919,16 +8727,30 @@ def _read_pdf_fast_sync(
 
         text_parts = []
         with fitz.open(str(file_path)) as doc:
+            total_pages = len(doc)
+            processed_pages = 0
             for i, page in enumerate(doc[:50]):
+                processed_pages = i + 1
                 page_text = page.get_text("text") or ""
                 if page_text:
                     text_parts.append(f"--- Page {i+1} ---\n{page_text}")
                 if sum(len(part) for part in text_parts) >= max_chars:
                     break
         content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return DocumentReadResult(True, content)
+        reasons = []
+        if processed_pages < total_pages:
+            reasons.append(
+                f"processed the first {processed_pages} of {total_pages} pages"
+            )
+        return _complete_document_read(
+            content,
+            max_chars=max_chars,
+            processed_scope={
+                "pages_processed": processed_pages,
+                "pages_total": total_pages,
+            },
+            truncation_reasons=reasons,
+        )
     except ImportError as exc:
         return DocumentReadResult(
             False,
@@ -7199,9 +9021,19 @@ async def _read_document_outcome(
     finally:
         temp_workspace.cleanup()
     if result.ok:
+        metadata: dict[str, Any] = {}
+        if result.truncated:
+            metadata = {
+                "content_truncated": True,
+                "document_processed_scope": result.processed_scope,
+                "document_truncation_reasons": list(
+                    result.truncation_reasons
+                ),
+            }
         return _typed_success(
             result.content,
             evidence_refs=(_workspace_artifact_ref(agent_id, path),),
+            metadata=metadata,
         )
     return _typed_failure(
         result.content,
@@ -8175,6 +10007,7 @@ async def _query_directory_payload(agent_id: uuid.UUID, args: dict) -> dict:
     target_member_id_raw = (args.get("target_member_id") or "").strip()
     member_type = (args.get("member_type") or "all").strip().lower()
     include_uncontactable = bool(args.get("include_uncontactable", False))
+    provider_type = agent_directory.normalize_provider_type(args.get("provider_type"))
 
     try:
         limit = int(args.get("limit", 20))
@@ -8191,10 +10024,10 @@ async def _query_directory_payload(agent_id: uuid.UUID, args: dict) -> dict:
             "error": {"code": "invalid_offset", "message": "offset must be greater than or equal to 0"},
         }
 
-    if member_type not in {"all", "agent", "human"}:
+    if member_type not in {"all", "agent", "human", "group"}:
         return {
             "ok": False,
-            "error": {"code": "invalid_member_type", "message": "member_type must be all, agent, or human"},
+            "error": {"code": "invalid_member_type", "message": "member_type must be all, agent, human, or group"},
         }
     if limit < 1 or limit > 50:
         return {
@@ -8215,7 +10048,7 @@ async def _query_directory_payload(agent_id: uuid.UUID, args: dict) -> dict:
                 "ok": False,
                 "error": {"code": "invalid_target_member_id", "message": "target_member_id must be a valid UUID"},
             }
-        if member_type == "agent":
+        if member_type in {"agent", "group"}:
             return {
                 "ok": False,
                 "error": {
@@ -8233,6 +10066,7 @@ async def _query_directory_payload(agent_id: uuid.UUID, args: dict) -> dict:
                 target_member_id=target_member_id,
                 member_type=member_type,
                 include_uncontactable=include_uncontactable,
+                provider_type=provider_type,
                 limit=limit,
                 offset=offset,
                 max_limit=50,
@@ -8439,6 +10273,7 @@ async def _send_feishu_message_to_member(
 async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
     """Send message via a resolved human target's configured external channel."""
     target_member_id = (args.get("target_member_id") or "").strip()
+    target_recipient_id = (args.get("target_recipient_id") or "").strip()
     provider_user_id = (args.get("provider_user_id") or "").strip()
     member_name = (args.get("member_name") or "").strip()
     message_text = (args.get("message") or "").strip()
@@ -8446,6 +10281,16 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
 
     if not message_text:
         return "❌ Please provide message content"
+    if target_recipient_id:
+        if target_member_id:
+            return "❌ Provide exactly one of target_member_id or target_recipient_id."
+        outcome = await _send_channel_message_outcome(agent_id, args)
+        if isinstance(outcome, ToolExecutionOutcome):
+            return _legacy_tool_outcome_text(
+                outcome,
+                fallback="Channel message did not return a summary.",
+            )
+        return str(outcome)
     if (provider_user_id or member_name) and not target_member_id:
         return (
             "❌ provider_user_id and member_name are no longer supported for send_channel_message. "
@@ -8521,13 +10366,19 @@ async def _send_channel_message_outcome(
     string so Durable Runtime rejects the result as untyped.
     """
     target_member_id = (args.get("target_member_id") or "").strip()
+    target_recipient_id = (args.get("target_recipient_id") or "").strip()
     provider_user_id = (args.get("provider_user_id") or "").strip()
     member_name = (args.get("member_name") or "").strip()
     message_text = (args.get("message") or "").strip()
     target_channel = _normalize_roster_provider_type(args.get("channel"))
-    if not message_text or not target_member_id:
+    if not message_text or (not target_member_id and not target_recipient_id):
         return _typed_failure(
-            "send_channel_message requires target_member_id and message.",
+            "send_channel_message requires message and one Directory target.",
+            "invalid_tool_arguments",
+        )
+    if target_member_id and target_recipient_id:
+        return _typed_failure(
+            "send_channel_message accepts exactly one of target_member_id or target_recipient_id.",
             "invalid_tool_arguments",
         )
     if provider_user_id or member_name:
@@ -8535,6 +10386,55 @@ async def _send_channel_message_outcome(
             "send_channel_message accepts stable target_member_id, not provider_user_id/member_name.",
             "invalid_tool_arguments",
         )
+    if target_recipient_id:
+        if target_channel not in {None, "feishu"}:
+            return _typed_failure(
+                "target_recipient_id currently supports Feishu groups only.",
+                "channel_recipient_invalid",
+            )
+        from app.services.feishu_service import FeishuAPIError, feishu_service
+
+        try:
+            async with async_session() as db:
+                target = await resolve_feishu_group_target(
+                    db,
+                    agent_id=agent_id,
+                    target_recipient_id=target_recipient_id,
+                )
+                config_result = await db.execute(
+                    select(ChannelConfig).where(
+                        ChannelConfig.agent_id == agent_id,
+                        ChannelConfig.channel_type == "feishu",
+                    )
+                )
+                config = config_result.scalar_one_or_none()
+            if config is None:
+                return _typed_failure("This Agent has no Feishu channel configured.", "feishu_channel_not_configured")
+            response = await feishu_service.send_message(
+                config.app_id,
+                config.app_secret,
+                receive_id=target.chat_id,
+                msg_type="text",
+                content=json.dumps({"text": message_text}, ensure_ascii=False),
+                receive_id_type="chat_id",
+                stage="send_channel_message",
+            )
+        except FeishuGroupTargetError as exc:
+            return _typed_failure(exc.message, exc.code)
+        except FeishuAPIError as exc:
+            if exc.code is not None or (exc.http_status is not None and exc.http_status < 500):
+                return _typed_failure(f"Feishu rejected the message: {exc.user_message}", "feishu_message_rejected")
+            return _typed_unknown("Feishu group message outcome is unknown; reconcile before retrying.", "feishu_message_outcome_unknown")
+        except Exception:
+            return _typed_unknown("Feishu group message outcome is unknown; reconcile before retrying.", "feishu_message_outcome_unknown")
+        if not isinstance(response, Mapping):
+            return _typed_unknown("Feishu returned an unreadable response; reconcile before retrying.", "feishu_response_invalid")
+        if response.get("code") != 0:
+            return _typed_failure(
+                f"Feishu rejected the message: {response.get('msg') or 'unknown error'} (code {response.get('code')}).",
+                "feishu_message_rejected",
+            )
+        return _typed_success(f"Successfully sent message to Feishu group {target.display_name}.")
     try:
         async with async_session() as db:
             target, error = await _resolve_roster_human_target(
@@ -9919,6 +11819,12 @@ async def _execute_code_outcome(
     *,
     tool_name: str = "execute_code",
     on_output=None,
+    sandbox_config=None,
+    session_id: str | None = None,
+    publish_paths: list[str] | None = None,
+    before_gateway_publish=None,
+    gateway_publish=None,
+    runtime_code_timeout_seconds: float | None = None,
 ) -> ToolExecutionOutcome:
     """Execute code using the configured sandbox backend.
 
@@ -9931,8 +11837,10 @@ async def _execute_code_outcome(
                    correct per-agent tool config entry in the database.
     """
     language = arguments.get("language", "python")
+    if language == "python3":
+        language = "python"
     code = arguments.get("code", "")
-    requested_timeout = arguments.get("timeout", 30)
+    requested_timeout = arguments.get("timeout")
 
     if not isinstance(code, str) or not code.strip():
         return _typed_failure("No code provided.", "invalid_tool_arguments")
@@ -9942,18 +11850,19 @@ async def _execute_code_outcome(
             f"Unsupported language: {language}. Use python, bash, or node.",
             "invalid_tool_arguments",
         )
-    try:
-        requested_timeout = int(requested_timeout)
-    except (TypeError, ValueError):
-        return _typed_failure(
-            "execute_code timeout must be an integer.",
-            "invalid_tool_arguments",
-        )
-    if requested_timeout <= 0:
-        return _typed_failure(
-            "execute_code timeout must be positive.",
-            "invalid_tool_arguments",
-        )
+    if requested_timeout is not None:
+        try:
+            requested_timeout = int(requested_timeout)
+        except (TypeError, ValueError):
+            return _typed_failure(
+                "execute_code timeout must be an integer.",
+                "invalid_tool_arguments",
+            )
+        if requested_timeout <= 0:
+            return _typed_failure(
+                "execute_code timeout must be positive.",
+                "invalid_tool_arguments",
+            )
 
     # Working directory is the agent's root directory (must be absolute).
     # This allows code to access skills/, workspace/, memory/ etc. directly.
@@ -9995,8 +11904,18 @@ async def _execute_code_outcome(
                     "sandbox_configuration_missing",
                 )
             try:
-                default_timeout = int(tool_config.get("default_timeout", 30))
-                max_timeout = int(tool_config.get("max_timeout", 60))
+                default_timeout = int(
+                    tool_config.get(
+                        "default_timeout",
+                        CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+                    )
+                )
+                max_timeout = int(
+                    tool_config.get(
+                        "max_timeout",
+                        CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+                    )
+                )
             except (TypeError, ValueError):
                 return _typed_failure(
                     "E2B timeout configuration must be numeric.",
@@ -10008,7 +11927,7 @@ async def _execute_code_outcome(
                 default_timeout=default_timeout,
                 max_timeout=max_timeout,
             )
-        else:
+        elif sandbox_config is None:
             # The default execute_code tool retains the established platform
             # fallback behavior; it is a distinct explicit tool contract.
             fallback_config = get_sandbox_config()
@@ -10024,10 +11943,36 @@ async def _execute_code_outcome(
                     tool_name,
                 )
 
-        # Clamp timeout by configured max_timeout (default 60s, up to 3600s)
-        timeout = min(requested_timeout, sandbox_config.max_timeout)
+        # Use the configured default when the call omits timeout, then enforce
+        # the independently configurable upper bound.
+        if runtime_code_timeout_seconds is not None:
+            if (
+                isinstance(runtime_code_timeout_seconds, bool)
+                or not isinstance(runtime_code_timeout_seconds, (int, float))
+                or not 1 <= runtime_code_timeout_seconds <= 3600
+            ):
+                return _typed_failure(
+                    "Runtime code timeout is outside the supported range.",
+                    "sandbox_runtime_timeout_invalid",
+                )
+            timeout = runtime_code_timeout_seconds
+        else:
+            effective_timeout = (
+                sandbox_config.default_timeout
+                if requested_timeout is None
+                else requested_timeout
+            )
+            timeout = min(
+                max(effective_timeout, sandbox_config.default_timeout),
+                sandbox_config.max_timeout,
+            )
 
         backend = get_sandbox_backend(sandbox_config)
+        if sandbox_config.workspace_mode == "isolated_output" and getattr(backend, "name", None) != "subprocess":
+            return _typed_failure(
+                "The configured sandbox backend cannot enforce isolated Session output.",
+                "sandbox_workspace_mode_unsupported",
+            )
         if is_e2b_tool:
             if getattr(backend, "name", None) != "e2b":
                 return _typed_failure(
@@ -10052,6 +11997,13 @@ async def _execute_code_outcome(
             work_dir=str(work_dir),
             on_output=on_output,
             agent_id=agent_id,
+            session_id=session_id,
+            run_id=sandbox_run_scope_id.get().strip() or None,
+            workspace_mode=sandbox_config.workspace_mode,
+            publication_owner=sandbox_config.publication_owner,
+            publish_paths=publish_paths,
+            before_gateway_publish=before_gateway_publish,
+            gateway_publish=gateway_publish,
         )
 
         try:
@@ -10062,11 +12014,26 @@ async def _execute_code_outcome(
                 if result.success and result.exit_code == 0
                 else f"Code execution failed with exit code {result.exit_code}."
             )
+        output_metadata: dict[str, str] = {}
+        if sandbox_config.workspace_mode == "isolated_output" and publish_paths:
+            output_path = normalize_workspace_path(publish_paths[0])
+            output_metadata["workspace_path"] = output_path
+            summary = (
+                f"{summary}\n\nPersistent output directory: {output_path} "
+                "(Agent-relative; use this exact path with file tools)."
+            )
+        if result.error and result.error.startswith("sandbox_publication_unknown:"):
+            return _typed_unknown(
+                "Code ran but Sandbox publication could not be proven.",
+                "workspace_sync_outcome_unknown",
+                metadata=output_metadata,
+            )
         if result.success and result.exit_code == 0:
-            return _typed_success(summary)
+            return _typed_success(summary, metadata=output_metadata)
         return _typed_failure(
             summary,
             "sandbox_execution_failed",
+            metadata=output_metadata,
         )
 
     except ValueError as e:
@@ -10092,6 +12059,7 @@ async def _execute_code_outcome(
             ws,
             arguments,
             allow_network=fallback_config.allow_network,
+            default_timeout=fallback_config.default_timeout,
             max_timeout=fallback_config.max_timeout,
             on_output=on_output,
         )
@@ -10137,16 +12105,22 @@ async def _execute_code_legacy_outcome(
     ws: Path,
     arguments: dict,
     allow_network: bool = False,
-    max_timeout: int = 60,
+    default_timeout: int = CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    max_timeout: int = CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
     on_output=None,
 ) -> ToolExecutionOutcome:
     """Legacy subprocess-based code execution (fallback)."""
     import asyncio
 
     language = arguments.get("language", "python")
+    if language == "python3":
+        language = "python"
     code = arguments.get("code", "")
     try:
-        timeout = min(int(arguments.get("timeout", 30)), max_timeout)
+        timeout = min(
+            max(int(arguments.get("timeout", default_timeout)), default_timeout),
+            max_timeout,
+        )
     except (TypeError, ValueError):
         return _typed_failure(
             "execute_code timeout must be an integer.",
@@ -10274,6 +12248,11 @@ async def _execute_code_legacy_outcome(
 
         return _typed_success("\n\n".join(result_parts))
 
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     except Exception as e:
         if proc is not None:
             try:
@@ -10302,13 +12281,15 @@ async def _execute_code_legacy(
     ws: Path,
     arguments: dict,
     allow_network: bool = False,
-    max_timeout: int = 60,
+    default_timeout: int = CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    max_timeout: int = CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
     on_output=None,
 ) -> str:
     outcome = await _execute_code_legacy_outcome(
         ws,
         arguments,
         allow_network=allow_network,
+        default_timeout=default_timeout,
         max_timeout=max_timeout,
         on_output=on_output,
     )
@@ -10478,6 +12459,11 @@ async def _handle_set_trigger_outcome(
     config = dict(raw_config)
     reason = raw_reason.strip()
     focus_ref = raw_focus_ref.strip()  # agenda_ref is backward compatibility only
+    delivery_target_id_raw = arguments.get("delivery_target_id")
+    try:
+        delivery_target_id = uuid.UUID(delivery_target_id_raw) if delivery_target_id_raw else None
+    except (TypeError, ValueError):
+        return _typed_failure("delivery_target_id must be a valid UUID.", "invalid_tool_arguments")
 
     if not name:
         return _typed_failure(
@@ -10496,45 +12482,166 @@ async def _handle_set_trigger_outcome(
         )
 
     # Validate type-specific config
+    allowed_config_keys = {
+        "cron": {"expr", "timezone"},
+        "once": {"at"},
+        "interval": {"minutes"},
+        "poll": {
+            "url",
+            "interval_min",
+            "method",
+            "headers",
+            "json_path",
+            "fire_on",
+            "match_value",
+        },
+        "on_message": {"from_agent_name", "from_user_name"},
+        "webhook": set(),
+    }[ttype]
+    unexpected_config_keys = sorted(set(config) - allowed_config_keys)
+    if unexpected_config_keys:
+        return _typed_failure(
+            f"{ttype} trigger config contains unsupported fields: "
+            + ", ".join(unexpected_config_keys),
+            "invalid_tool_arguments",
+        )
     if ttype == "cron":
         expr = config.get("expr", "")
-        if not expr:
+        timezone_name = config.get("timezone")
+        if not isinstance(expr, str) or not expr.strip():
             return _typed_failure(
-                "cron trigger requires config.expr.",
+                "cron trigger requires string config.expr.",
+                "invalid_tool_arguments",
+            )
+        if timezone_name is not None and (
+            not isinstance(timezone_name, str) or not timezone_name.strip()
+        ):
+            return _typed_failure(
+                "cron trigger config.timezone must be a non-empty string.",
                 "invalid_tool_arguments",
             )
         try:
-            from croniter import croniter
-            croniter(expr)
+            croniter(expr.strip())
+            if timezone_name:
+                from zoneinfo import ZoneInfo
+
+                ZoneInfo(timezone_name.strip())
         except Exception:
-            return _typed_failure(
-                f"Invalid cron expression: '{expr}'.",
-                "invalid_tool_arguments",
-            )
+            return _typed_failure("Invalid cron config.", "invalid_tool_arguments")
+        config["expr"] = expr.strip()
+        if timezone_name:
+            config["timezone"] = timezone_name.strip()
     elif ttype == "once":
-        if not config.get("at"):
+        at_value = config.get("at")
+        if not isinstance(at_value, str) or not at_value.strip():
             return _typed_failure(
-                "once trigger requires config.at.",
+                "once trigger requires ISO-8601 string config.at.",
                 "invalid_tool_arguments",
             )
-    elif ttype == "interval":
-        if not config.get("minutes"):
+        try:
+            parsed_at = datetime.fromisoformat(at_value.strip())
+        except ValueError:
             return _typed_failure(
-                "interval trigger requires config.minutes.",
+                "once trigger config.at must be a valid ISO-8601 date-time.",
+                "invalid_tool_arguments",
+            )
+        config["at"] = parsed_at.isoformat()
+    elif ttype == "interval":
+        minutes = config.get("minutes")
+        if (
+            not isinstance(minutes, int)
+            or isinstance(minutes, bool)
+            or not 1 <= minutes <= 525_600
+        ):
+            return _typed_failure(
+                "interval trigger config.minutes must be an integer from 1 through 525600.",
                 "invalid_tool_arguments",
             )
     elif ttype == "poll":
-        if not config.get("url"):
+        from urllib.parse import urlparse
+
+        url = config.get("url")
+        if (
+            not isinstance(url, str)
+            or urlparse(url.strip()).scheme not in {"http", "https"}
+            or not urlparse(url.strip()).netloc
+        ):
             return _typed_failure(
-                "poll trigger requires config.url.",
+                "poll trigger requires an absolute HTTP(S) config.url.",
                 "invalid_tool_arguments",
             )
+        interval_min = config.get("interval_min", 5)
+        if (
+            not isinstance(interval_min, int)
+            or isinstance(interval_min, bool)
+            or interval_min <= 0
+        ):
+            return _typed_failure(
+                "poll trigger config.interval_min must be a positive integer.",
+                "invalid_tool_arguments",
+            )
+        method = config.get("method", "GET")
+        if method not in {"GET", "HEAD"}:
+            return _typed_failure(
+                "poll trigger config.method must be GET or HEAD.",
+                "invalid_tool_arguments",
+            )
+        headers = config.get("headers", {})
+        if not isinstance(headers, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in headers.items()
+        ):
+            return _typed_failure(
+                "poll trigger config.headers must contain only string values.",
+                "invalid_tool_arguments",
+            )
+        fire_on = config.get("fire_on", "change")
+        if fire_on not in {"change", "match"}:
+            return _typed_failure(
+                "poll trigger config.fire_on must be change or match.",
+                "invalid_tool_arguments",
+            )
+        if fire_on == "match" and "match_value" not in config:
+            return _typed_failure(
+                "poll trigger config.match_value is required when fire_on is match.",
+                "invalid_tool_arguments",
+            )
+        json_path = config.get("json_path")
+        if json_path is not None and not isinstance(json_path, str):
+            return _typed_failure(
+                "poll trigger config.json_path must be a string.",
+                "invalid_tool_arguments",
+            )
+        config["url"] = url.strip()
+        config["method"] = method
+        config["interval_min"] = interval_min
+        config["fire_on"] = fire_on
     elif ttype == "on_message":
-        if not config.get("from_agent_name") and not config.get("from_user_name"):
+        agent_name = config.get("from_agent_name")
+        user_name = config.get("from_user_name")
+        if agent_name is not None and (
+            not isinstance(agent_name, str) or not agent_name.strip()
+        ):
+            return _typed_failure(
+                "on_message config.from_agent_name must be a non-empty string.",
+                "invalid_tool_arguments",
+            )
+        if user_name is not None and (
+            not isinstance(user_name, str) or not user_name.strip()
+        ):
+            return _typed_failure(
+                "on_message config.from_user_name must be a non-empty string.",
+                "invalid_tool_arguments",
+            )
+        if not agent_name and not user_name:
             return _typed_failure(
                 "on_message trigger requires from_agent_name or from_user_name.",
                 "invalid_tool_arguments",
             )
+        if agent_name:
+            config["from_agent_name"] = agent_name.strip()
+        if user_name:
+            config["from_user_name"] = user_name.strip()
         # Snapshot the latest message timestamp so we only detect NEW messages after this point
         # This prevents false positives from already-processed messages
         try:
@@ -10606,6 +12713,15 @@ async def _handle_set_trigger_outcome(
             _a_result = await db.execute(select(_AgentModel).where(_AgentModel.id == agent_id))
             _agent_obj = _a_result.scalar_one_or_none()
             agent_max_triggers = (_agent_obj.max_triggers if _agent_obj else None) or MAX_TRIGGERS_PER_AGENT
+            if delivery_target_id is not None:
+                try:
+                    await resolve_feishu_group_target(
+                        db,
+                        agent_id=agent_id,
+                        target_recipient_id=delivery_target_id,
+                    )
+                except FeishuGroupTargetError as exc:
+                    return _typed_failure(exc.message, exc.code)
 
             # Check max triggers
             from sqlalchemy import func as sa_func
@@ -10655,6 +12771,7 @@ async def _handle_set_trigger_outcome(
                     existing.reason = reason
                     existing.focus_ref = focus_ref
                     existing.is_enabled = True
+                    existing.delivery_target_id = delivery_target_id
                     # Keep fire_count and last_fired_at — they are cumulative stats,
                     # but reset fire_count if it reached max_fires to allow it to run again.
                     if existing.max_fires and existing.fire_count >= existing.max_fires:
@@ -10680,6 +12797,7 @@ async def _handle_set_trigger_outcome(
                 config=config,
                 reason=reason,
                 focus_ref=focus_ref,
+                delivery_target_id=delivery_target_id,
             )
             # Fix 4: Safety cap for on_message triggers —
             # prevent infinite loops if agent creates broad watchers.
@@ -10759,8 +12877,10 @@ async def _handle_update_trigger_outcome(
 
     new_config = arguments.get("config")
     new_reason = arguments.get("reason")
+    delivery_target_provided = "delivery_target_id" in arguments
+    delivery_target_raw = arguments.get("delivery_target_id")
 
-    if new_config is None and new_reason is None:
+    if new_config is None and new_reason is None and not delivery_target_provided:
         return _typed_failure(
             "Provide at least one of config or reason to update.",
             "invalid_tool_arguments",
@@ -10783,6 +12903,20 @@ async def _handle_update_trigger_outcome(
                 )
 
             changes = []
+            if delivery_target_provided:
+                if delivery_target_raw in (None, ""):
+                    trigger.delivery_target_id = None
+                else:
+                    try:
+                        target_id = uuid.UUID(str(delivery_target_raw))
+                    except ValueError:
+                        return _typed_failure("delivery_target_id must be a valid UUID.", "invalid_tool_arguments")
+                    try:
+                        await resolve_feishu_group_target(db, agent_id=agent_id, target_recipient_id=target_id)
+                    except FeishuGroupTargetError as exc:
+                        return _typed_failure(exc.message, exc.code)
+                    trigger.delivery_target_id = target_id
+                changes.append("delivery_target_id")
             if new_config is not None:
                 if not isinstance(new_config, dict):
                     return _typed_failure(
@@ -10800,7 +12934,22 @@ async def _handle_update_trigger_outcome(
                     for key, value in new_config.items()
                     if key != "token" and not key.startswith("_")
                 }
-                trigger.config = {**old_config, **user_patch, **protected}
+                updated_config = {**old_config, **user_patch, **protected}
+                if trigger.type == "cron":
+                    expr = updated_config.get("expr")
+                    if not isinstance(expr, str) or not expr.strip():
+                        return _typed_failure(
+                            "cron trigger requires config.expr.",
+                            "invalid_tool_arguments",
+                        )
+                    try:
+                        croniter(expr)
+                    except Exception:
+                        return _typed_failure(
+                            f"Invalid cron expression: '{expr}'.",
+                            "invalid_tool_arguments",
+                        )
+                trigger.config = updated_config
                 changes.append(f"config fields patched: {sorted(user_patch)}")
             if new_reason is not None:
                 if not isinstance(new_reason, str) or not new_reason.strip():
@@ -15409,16 +17558,30 @@ async def _feishu_calendar_create_outcome(
             "feishu_calendar_create attendee_names must be an array of strings.",
             "invalid_tool_arguments",
         )
+    token, calendar_id, error = await _feishu_calendar_context_outcome(agent_id)
+    if error is not None or token is None or calendar_id is None:
+        return error or _typed_failure(
+            "Feishu Bot primary calendar is unavailable.",
+            "feishu_calendar_unavailable",
+        )
     attendee_open_ids: list[str] = []
     unresolved_names: list[str] = []
-    for attendee_name in attendee_names[:20]:
-        name = attendee_name.strip()
-        if not name:
-            continue
-        try:
-            open_id = await _feishu_open_id_for_visible_name(agent_id, name)
-        except Exception as exc:
-            return _feishu_read_exception_outcome("attendee_lookup", exc)
+    normalized_attendee_names = [
+        attendee_name.strip()
+        for attendee_name in attendee_names[:20]
+        if attendee_name.strip()
+    ]
+    try:
+        resolved_attendees = await _feishu_open_ids_for_visible_names(
+            agent_id,
+            normalized_attendee_names,
+            live_token=token,
+            raise_live_errors=True,
+        )
+    except Exception as exc:
+        return _feishu_read_exception_outcome("attendee_lookup", exc)
+    for name in normalized_attendee_names:
+        open_id = resolved_attendees.get(name)
         if open_id is None:
             unresolved_names.append(name)
             continue
@@ -15434,12 +17597,6 @@ async def _feishu_calendar_create_outcome(
     if sender_open_id and sender_open_id not in attendee_open_ids:
         attendee_open_ids.append(sender_open_id)
 
-    token, calendar_id, error = await _feishu_calendar_context_outcome(agent_id)
-    if error is not None or token is None or calendar_id is None:
-        return error or _typed_failure(
-            "Feishu Bot primary calendar is unavailable.",
-            "feishu_calendar_unavailable",
-        )
     body: dict[str, object] = {
         "summary": required["summary"],
         "start_time": {
@@ -15816,12 +17973,54 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.feishu_service import feishu_service
     token = await feishu_service.get_tenant_access_token(app_id, app_secret)
 
-    # Resolve organizer open_id from email — soft failure
-    organizer_open_id: str | None = None
-    if user_email:
-        organizer_open_id = await _feishu_resolve_open_id(token, user_email)
-        if not organizer_open_id:
-            logger.warning(f"[Feishu Calendar] Could not resolve open_id for '{user_email}', continuing without organizer invite")
+    # Resolve every attendee before the external event write. Once Feishu
+    # returns an event ID, later invitation failures must not hide that receipt.
+    attendee_open_ids: list[str] = []
+    attendee_display: list[str] = []
+    for oid in (arguments.get("attendee_open_ids") or []):
+        if oid and oid not in attendee_open_ids:
+            attendee_open_ids.append(oid)
+            attendee_display.append(oid)
+
+    attendee_names = [
+        str(name).strip()
+        for name in (arguments.get("attendee_names") or [])[:20]
+        if str(name).strip()
+    ]
+    resolved_names = await _feishu_open_ids_for_visible_names(
+        agent_id,
+        attendee_names,
+        live_token=token,
+    )
+    for attendee_name in attendee_names:
+        oid = resolved_names.get(attendee_name)
+        if oid and oid not in attendee_open_ids:
+            attendee_open_ids.append(oid)
+            attendee_display.append(attendee_name)
+        elif not oid:
+            logger.warning(
+                "[Calendar] Could not resolve attendee '{}'",
+                attendee_name,
+            )
+
+    attendee_emails: list[str] = list(arguments.get("attendee_emails") or [])
+    if user_email and user_email not in attendee_emails:
+        attendee_emails.append(user_email)
+    for email in attendee_emails[:20]:
+        oid = await _feishu_resolve_open_id(token, email)
+        if oid and oid not in attendee_open_ids:
+            attendee_open_ids.append(oid)
+            attendee_display.append(email)
+        elif not oid:
+            logger.warning(
+                "[Feishu Calendar] Could not resolve open_id for '{}'; "
+                "continuing without that invite",
+                email,
+            )
+
+    sender_oid = channel_feishu_sender_open_id.get(None)
+    if sender_oid and sender_oid not in attendee_open_ids:
+        attendee_open_ids.append(sender_oid)
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
     if not agent_cal_id:
@@ -15851,63 +18050,38 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     event_id = data.get("data", {}).get("event", {}).get("event_id", "")
 
-    # Collect all attendee open_ids to invite
-    attendee_open_ids: list[str] = []
-    attendee_display: list[str] = []  # for summary message
-
-    # 1. Direct open_ids provided by caller
-    for oid in (arguments.get("attendee_open_ids") or []):
-        if oid and oid not in attendee_open_ids:
-            attendee_open_ids.append(oid)
-            attendee_display.append(oid)
-
-    # 2. Names → look up via feishu_user_search
-    for aname in (arguments.get("attendee_names") or []):
-        aname = aname.strip()
-        if not aname:
-            continue
-        _oid = await _feishu_open_id_for_visible_name(agent_id, aname)
-        if _oid:
-            if _oid not in attendee_open_ids:
-                attendee_open_ids.append(_oid)
-                attendee_display.append(aname)
-        else:
-            logger.warning(
-                f"[Calendar] Could not resolve attendee '{aname}'"
-            )
-
-    # 3. From explicit attendee_emails
-    attendee_emails: list[str] = list(arguments.get("attendee_emails") or [])
-    if user_email and user_email not in attendee_emails:
-        attendee_emails.append(user_email)
-    for email in attendee_emails[:20]:
-        oid = await _feishu_resolve_open_id(token, email)
-        if oid and oid not in attendee_open_ids:
-            attendee_open_ids.append(oid)
-            attendee_display.append(email)
-
-    # 4. Auto-invite the Feishu message sender (from context var)
-    sender_oid = channel_feishu_sender_open_id.get(None)
-    if sender_oid and sender_oid not in attendee_open_ids:
-        attendee_open_ids.append(sender_oid)
-
+    invitation_warnings: list[str] = []
     if attendee_open_ids and event_id:
         async with httpx.AsyncClient(timeout=20) as client:
             for oid in attendee_open_ids:
-                await client.post(
-                    f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}/attendees",
-                    json={"attendees": [{"type": "user", "user_id": oid}]},
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"user_id_type": "open_id"},
-                )
+                try:
+                    invite_response = await client.post(
+                        f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}/attendees",
+                        json={"attendees": [{"type": "user", "user_id": oid}]},
+                        headers={"Authorization": f"Bearer {token}"},
+                        params={"user_id_type": "open_id"},
+                    )
+                    invite_data = invite_response.json()
+                    if invite_data.get("code") != 0:
+                        invitation_warnings.append(str(oid))
+                except Exception:
+                    logger.exception(
+                        "[Feishu Calendar] Attendee invite failed after event creation"
+                    )
+                    invitation_warnings.append(str(oid))
 
     att_str = f"\n**参与人**: {', '.join(attendee_display)}" if attendee_display else ""
     invite_note = "\n（已向您发送日历邀请，请在飞书日历中确认）" if attendee_open_ids else ""
+    warning_note = (
+        "\n⚠️ 日程已创建，但部分参与人邀请失败，请使用上述 Event ID 核对。"
+        if invitation_warnings
+        else ""
+    )
     return (
         f"✅ 日历事件已创建！\n"
         f"**标题**: {summary}\n"
         f"**时间**: {start_time} → {end_time}{att_str}\n"
-        f"**Event ID**: `{event_id}`{invite_note}"
+        f"**Event ID**: `{event_id}`{invite_note}{warning_note}"
     )
 
 
@@ -16001,6 +18175,98 @@ _FEISHU_APPROVAL_SECTION_KEYS = {
     "timeline": "timeline",
     "comments": "comment_list",
 }
+_FEISHU_PROVIDER_RESPONSE_MAX_BYTES = 8192
+
+
+def _feishu_provider_receipt(
+    response: object,
+) -> tuple[int | None, object | None, bool, dict[str, object]]:
+    """Capture one bounded Provider response before classifying it."""
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        status_code = None
+    try:
+        payload = response.json()  # type: ignore[attr-defined]
+        payload_is_json = True
+    except Exception:
+        payload = None
+        payload_is_json = False
+
+    if payload_is_json:
+        try:
+            serialized = json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            payload_is_json = False
+        else:
+            if len(serialized.encode("utf-8")) <= _FEISHU_PROVIDER_RESPONSE_MAX_BYTES:
+                response_body: object = json.loads(serialized)
+            else:
+                preview = serialized.encode("utf-8")[
+                    : _FEISHU_PROVIDER_RESPONSE_MAX_BYTES - 128
+                ].decode("utf-8", errors="ignore")
+                response_body = {"truncated": True, "preview": preview}
+    if not payload_is_json:
+        raw_text = getattr(response, "text", "")
+        if not isinstance(raw_text, str):
+            raw_text = str(raw_text)
+        encoded = raw_text.encode("utf-8")
+        response_body = (
+            raw_text
+            if len(encoded) <= _FEISHU_PROVIDER_RESPONSE_MAX_BYTES
+            else encoded[: _FEISHU_PROVIDER_RESPONSE_MAX_BYTES].decode(
+                "utf-8",
+                errors="ignore",
+            )
+        )
+
+    metadata: dict[str, object] = {
+        "provider_response_body": response_body,
+    }
+    if status_code is not None:
+        metadata["provider_http_status"] = status_code
+    if isinstance(payload, Mapping):
+        code = payload.get("code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            metadata["provider_code"] = code
+        msg = payload.get("msg")
+        if isinstance(msg, str):
+            metadata["provider_msg"] = msg
+    return status_code, payload, payload_is_json, metadata
+
+
+def _feishu_provider_error_summary(
+    operation: str,
+    prefix: str,
+    metadata: Mapping[str, object],
+) -> str:
+    """Expose the bounded Feishu receipt so the model can repair the request."""
+    facts: list[str] = []
+    status_code = metadata.get("provider_http_status")
+    if isinstance(status_code, int):
+        facts.append(f"HTTP {status_code}")
+    code = metadata.get("provider_code")
+    if isinstance(code, int):
+        facts.append(f"code {code}")
+    msg = metadata.get("provider_msg")
+    if isinstance(msg, str) and msg:
+        facts.append(f"msg {msg}")
+    body = metadata.get("provider_response_body")
+    try:
+        body_text = json.dumps(
+            body,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        body_text = str(body)
+    facts.append(f"response {body_text}")
+    return f"Feishu {prefix} {operation}: " + "; ".join(facts) + "."
 
 
 def _feishu_approval_read_response(
@@ -16008,62 +18274,107 @@ def _feishu_approval_read_response(
     operation: str,
 ) -> tuple[Mapping | None, ToolExecutionOutcome | None]:
     """Validate one approval read response without losing HTTP status facts."""
-    status_code = getattr(response, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
+    status_code, payload, payload_is_json, receipt = _feishu_provider_receipt(
+        response
+    )
+    if status_code is None:
         return None, _typed_failure(
-            f"Feishu {operation} returned no readable HTTP status.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned no readable HTTP status for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if status_code == 429 or status_code >= 500:
         return None, _typed_failure(
-            f"Feishu {operation} is temporarily unavailable.",
+            _feishu_provider_error_summary(
+                operation,
+                "temporarily rejected",
+                receipt,
+            ),
             f"feishu_{operation}_http_retryable",
             retryable=True,
+            metadata=receipt,
         )
     if 400 <= status_code < 500:
         return None, _typed_failure(
-            f"Feishu rejected {operation}.",
+            _feishu_provider_error_summary(
+                operation,
+                "rejected",
+                receipt,
+            ),
             f"feishu_{operation}_http_rejected",
+            metadata=receipt,
         )
     if not 200 <= status_code < 300:
         return None, _typed_failure(
-            f"Feishu {operation} returned an unexpected HTTP status.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an unexpected status for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
-    try:
-        payload = response.json()
-    except Exception:
+    if not payload_is_json:
         return None, _typed_failure(
-            f"Feishu {operation} returned unreadable JSON.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned unreadable JSON for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if not isinstance(payload, Mapping):
         return None, _typed_failure(
-            f"Feishu {operation} returned an invalid response.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an invalid response for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     code = payload.get("code")
     if isinstance(code, bool) or not isinstance(code, int):
         return None, _typed_failure(
-            f"Feishu {operation} returned no valid business code.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned no valid business code for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     if code != 0:
         return None, _typed_failure(
-            f"Feishu rejected {operation}.",
+            _feishu_provider_error_summary(
+                operation,
+                "rejected",
+                receipt,
+            ),
             f"feishu_{operation}_rejected",
+            metadata=receipt,
         )
     data = payload.get("data")
     if not isinstance(data, Mapping):
         return None, _typed_failure(
-            f"Feishu {operation} returned an invalid data object.",
+            _feishu_provider_error_summary(
+                operation,
+                "returned an invalid data object for",
+                receipt,
+            ),
             f"feishu_{operation}_response_invalid",
             retryable=True,
+            metadata=receipt,
         )
     return data, None
 
@@ -16087,11 +18398,365 @@ def _bounded_feishu_json(payload: Mapping, *, max_bytes: int = 8192) -> str:
     return '{"truncated":true}'
 
 
+async def _feishu_approval_definition_get_outcome(
+    agent_id: uuid.UUID,
+    arguments: dict,
+) -> ToolExecutionOutcome:
+    """Read one bounded section of the current approval definition."""
+    approval_code = arguments.get("approval_code")
+    section = arguments.get("section", "summary")
+    offset = arguments.get("offset", 0)
+    limit = arguments.get("limit", 20)
+    if not isinstance(approval_code, str) or not approval_code.strip():
+        return _typed_failure(
+            "feishu_approval_definition_get requires approval_code.",
+            "invalid_tool_arguments",
+        )
+    if not isinstance(section, str) or section not in {
+        "summary",
+        "form",
+        "nodes",
+    }:
+        return _typed_failure(
+            "feishu_approval_definition_get section is invalid.",
+            "invalid_tool_arguments",
+        )
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= 50
+    ):
+        return _typed_failure(
+            "feishu_approval_definition_get requires offset >= 0 and limit 1..50.",
+            "invalid_tool_arguments",
+        )
+
+    token, token_error = await _feishu_access_token_outcome(agent_id)
+    if token_error is not None or token is None:
+        return token_error or _typed_failure(
+            "Feishu credentials are unavailable.",
+            "feishu_channel_not_configured",
+        )
+    stable_code = approval_code.strip()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                "https://open.feishu.cn/open-apis/approval/v4/approvals/"
+                + quote(stable_code, safe=""),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as exc:
+        return _feishu_read_exception_outcome("approval_definition_get", exc)
+
+    data, response_error = _feishu_approval_read_response(
+        response,
+        "approval_definition_get",
+    )
+    if response_error is not None or data is None:
+        return response_error or _typed_failure(
+            "Feishu approval_definition_get returned no data.",
+            "feishu_approval_definition_get_response_invalid",
+            retryable=True,
+        )
+
+    raw_form = data.get("form", [])
+    if isinstance(raw_form, str):
+        try:
+            raw_form = json.loads(raw_form)
+        except (TypeError, ValueError):
+            return _typed_failure(
+                "Feishu approval_definition_get returned an invalid form.",
+                "feishu_approval_definition_get_response_invalid",
+                retryable=True,
+            )
+    raw_nodes = data.get("node_list", [])
+    if not isinstance(raw_form, list) or not isinstance(raw_nodes, list):
+        return _typed_failure(
+            "Feishu approval_definition_get returned invalid form or node structure.",
+            "feishu_approval_definition_get_response_invalid",
+            retryable=True,
+        )
+
+    if section == "summary":
+        summary: dict[str, object] = {
+            "approval_code": stable_code,
+            "form_control_count": len(raw_form),
+            "node_count": len(raw_nodes),
+        }
+        for key in ("approval_name", "status"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                summary[key] = value
+        return _typed_success(
+            _bounded_feishu_json(summary),
+            result_ref=stable_code,
+            metadata={"section": "summary"},
+        )
+
+    items = raw_form if section == "form" else raw_nodes
+    selected = items[offset : offset + limit]
+    next_offset = offset + len(selected)
+    has_more = next_offset < len(items)
+    return _typed_success(
+        _bounded_feishu_json(
+            {
+                "approval_code": stable_code,
+                "section": section,
+                "offset": offset,
+                "returned_count": len(selected),
+                "items": selected,
+            }
+        ),
+        result_ref=stable_code,
+        metadata={
+            "section": section,
+            "offset": offset,
+            "returned_count": len(selected),
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
+        },
+    )
+
+
+def _feishu_approval_file_path(
+    workspace_root: Path,
+    file_path: object,
+) -> tuple[Path | None, ToolExecutionOutcome | None]:
+    """Resolve one regular workspace file without following an escape path."""
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None, _typed_failure(
+            "feishu_approval_file_upload requires file_path.",
+            "invalid_tool_arguments",
+        )
+    relative_text = file_path.strip()
+    relative_path = Path(relative_text)
+    if (
+        len(relative_text.encode("utf-8")) > 1024
+        or relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or "\\" in relative_text
+    ):
+        return None, _typed_failure(
+            "Approval file_path must be a contained workspace-relative path.",
+            "feishu_approval_file_path_rejected",
+        )
+    root = workspace_root.resolve()
+    unresolved = root / relative_path
+    try:
+        resolved = unresolved.resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError):
+        return None, _typed_failure(
+            "The approval upload source does not exist inside the workspace.",
+            "feishu_approval_file_not_found",
+        )
+    if unresolved.is_symlink() or not resolved.is_file():
+        return None, _typed_failure(
+            "The approval upload source must be a regular workspace file.",
+            "feishu_approval_file_rejected",
+        )
+    if not resolved.suffix:
+        return None, _typed_failure(
+            "The approval upload source name must include a file extension.",
+            "feishu_approval_file_type_rejected",
+        )
+    return resolved, None
+
+
+async def _feishu_approval_file_upload_outcome(
+    agent_id: uuid.UUID,
+    workspace_root: Path,
+    arguments: dict,
+) -> ToolExecutionOutcome:
+    """Upload one validated workspace file and settle its Provider receipt."""
+    file_type = arguments.get("file_type")
+    if file_type not in {"image", "attachment"}:
+        return _typed_failure(
+            "feishu_approval_file_upload file_type must be image or attachment.",
+            "invalid_tool_arguments",
+        )
+    file_path, path_error = _feishu_approval_file_path(
+        workspace_root,
+        arguments.get("file_path"),
+    )
+    if path_error is not None or file_path is None:
+        return path_error or _typed_failure(
+            "The approval upload source is unavailable.",
+            "feishu_approval_file_not_found",
+        )
+    suffix = file_path.suffix.lower()
+    if file_type == "image" and suffix not in _FEISHU_APPROVAL_IMAGE_MEDIA_TYPES:
+        return _typed_failure(
+            "Approval image uploads require a BMP, GIF, JPEG, PNG, or WebP file.",
+            "feishu_approval_file_type_rejected",
+        )
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return _typed_failure(
+            "The approval upload source could not be inspected.",
+            "feishu_approval_file_rejected",
+        )
+    max_bytes = (
+        FEISHU_APPROVAL_IMAGE_MAX_BYTES
+        if file_type == "image"
+        else FEISHU_APPROVAL_ATTACHMENT_MAX_BYTES
+    )
+    if size <= 0 or size > max_bytes:
+        return _typed_failure(
+            f"Approval {file_type} must be non-empty and no larger than {max_bytes // (1024 * 1024)} MiB.",
+            "feishu_approval_file_size_rejected",
+        )
+    try:
+        content = file_path.read_bytes()
+    except OSError:
+        return _typed_failure(
+            "The approval upload source could not be read.",
+            "feishu_approval_file_rejected",
+        )
+    if len(content) != size:
+        return _typed_failure(
+            "The approval upload source changed while it was being read.",
+            "feishu_approval_file_rejected",
+        )
+
+    token, token_error = await _feishu_access_token_outcome(agent_id)
+    if token_error is not None or token is None:
+        return token_error or _typed_failure(
+            "Feishu credentials are unavailable.",
+            "feishu_channel_not_configured",
+        )
+    media_type = _FEISHU_APPROVAL_IMAGE_MEDIA_TYPES.get(
+        suffix,
+        "application/octet-stream",
+    )
+    receipt_metadata = {
+        "file_name": file_path.name,
+        "file_type": file_type,
+        "size_bytes": size,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://www.feishu.cn/approval/openapi/v2/file/upload",
+                headers={"Authorization": f"Bearer {token}"},
+                data={"name": file_path.name, "type": file_type},
+                files={"content": (file_path.name, content, media_type)},
+            )
+    except Exception as exc:
+        return _feishu_write_exception_outcome(
+            "approval_file_upload",
+            exc,
+            metadata=receipt_metadata,
+        )
+
+    status_code, payload, payload_is_json, provider_receipt = (
+        _feishu_provider_receipt(response)
+    )
+    failure_metadata = {**receipt_metadata, **provider_receipt}
+    if status_code is None:
+        return _typed_unknown(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned no HTTP receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=failure_metadata,
+        )
+    if status_code == 429 or status_code >= 500:
+        return _typed_unknown(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an uncertain result for",
+                provider_receipt,
+            )
+            + " It may have taken effect; reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=failure_metadata,
+        )
+    if not 200 <= status_code < 300:
+        return _typed_failure(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "rejected",
+                provider_receipt,
+            ),
+            "feishu_approval_file_upload_rejected",
+            metadata=failure_metadata,
+        )
+    if not payload_is_json:
+        return _typed_unknown(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an unreadable receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=failure_metadata,
+        )
+    if not isinstance(payload, Mapping):
+        return _typed_unknown(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned an invalid receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=failure_metadata,
+        )
+    code = payload.get("code")
+    if isinstance(code, bool) or not isinstance(code, int):
+        return _typed_unknown(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "returned no business receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
+            "feishu_approval_file_upload_outcome_unknown",
+            metadata=failure_metadata,
+        )
+    if code != 0:
+        return _typed_failure(
+            _feishu_provider_error_summary(
+                "approval_file_upload",
+                "rejected",
+                provider_receipt,
+            ),
+            "feishu_approval_file_upload_rejected",
+            metadata=failure_metadata,
+        )
+    data = payload.get("data")
+    file_code = (
+        str(data.get("code") or "").strip()
+        if isinstance(data, Mapping)
+        else ""
+    )
+    if not file_code:
+        return _typed_unknown(
+            "Feishu accepted approval_file_upload but returned no file code; reconcile before retrying.",
+            "feishu_approval_file_upload_receipt_missing",
+            metadata=receipt_metadata,
+        )
+    return _typed_success(
+        _bounded_feishu_json({**receipt_metadata, "file_code": file_code}),
+        result_ref=file_code,
+        metadata=receipt_metadata,
+    )
+
+
 async def _feishu_user_search_outcome(
     agent_id: uuid.UUID,
     arguments: dict,
 ) -> ToolExecutionOutcome:
-    """Project tenant-scoped Directory facts without exposing Provider IDs."""
+    """Search synced contacts first, then the Agent app's live Feishu scope."""
     query = arguments.get("query")
     if not isinstance(query, str) or not query.strip():
         return _typed_failure(
@@ -16113,16 +18778,15 @@ async def _feishu_user_search_outcome(
             "invalid_tool_arguments",
         )
 
-    payload = await _query_directory_payload(
-        agent_id,
-        {
-            "query": query.strip(),
-            "member_type": "human",
-            "include_uncontactable": False,
-            "limit": limit,
-            "offset": offset,
-        },
-    )
+    directory_arguments = {
+        "query": query.strip(),
+        "member_type": "human",
+        "provider_type": "feishu",
+        "include_uncontactable": False,
+        "limit": limit,
+        "offset": offset,
+    }
+    payload = await _query_directory_payload(agent_id, directory_arguments)
     if payload.get("ok") is not True:
         error = (
             payload.get("error")
@@ -16181,6 +18845,61 @@ async def _feishu_user_search_outcome(
             "The tenant directory returned invalid pagination facts.",
             "query_directory_failed",
             retryable=True,
+        )
+    use_live_search = not members and not has_more and offset == 0
+    if not members and not has_more and offset > 0:
+        first_page = await _query_directory_payload(
+            agent_id,
+            {**directory_arguments, "limit": 1, "offset": 0},
+        )
+        first_members = first_page.get("members")
+        first_has_more = first_page.get("has_more")
+        use_live_search = (
+            first_page.get("ok") is True
+            and isinstance(first_members, list)
+            and not first_members
+            and first_has_more is False
+        )
+    if use_live_search:
+        token, token_error = await _feishu_access_token_outcome(agent_id)
+        if token_error is not None or token is None:
+            return token_error or _typed_failure(
+                "Feishu did not return a tenant access token.",
+                "feishu_token_rejected",
+            )
+        try:
+            live_matches, live_has_more = await search_feishu_contacts(
+                token,
+                query.strip(),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            return _feishu_read_exception_outcome("user_search", exc)
+        live_members: list[dict[str, object]] = []
+        for match in live_matches:
+            member = {
+                "display_name": match.display_name,
+                "source": "feishu_live",
+            }
+            if match.title:
+                member["title"] = match.title
+            live_members.append(member)
+        summary_payload = {
+            "query": query.strip(),
+            "returned_count": len(live_members),
+            "has_more": live_has_more,
+            "members": live_members,
+        }
+        return _typed_success(
+            _bounded_feishu_json(summary_payload),
+            metadata={
+                "returned_count": len(live_members),
+                "has_more": live_has_more,
+                "limit": limit,
+                "offset": offset,
+                "source": "feishu_live",
+            },
         )
     summary_payload = {
         "query": query.strip(),
@@ -16465,48 +19184,290 @@ async def _feishu_approval_get_outcome(
     )
 
 
-async def _feishu_approval_create_outcome(
-    agent_id: uuid.UUID,
+def validate_feishu_approval_create_arguments(
     arguments: dict,
-) -> ToolExecutionOutcome:
-    """Hidden external-write adapter retained behind the future confirmation gate."""
-    import httpx
-
+) -> tuple[dict[str, object] | None, ToolExecutionOutcome | None]:
+    """Validate approval-create arguments without credentials or Provider I/O."""
+    allowed_keys = {
+        "approval_code",
+        "target_member_id",
+        "form_data",
+        "department_id",
+        "uuid",
+    }
+    if any(key not in allowed_keys for key in arguments):
+        return None, _typed_failure(
+            "feishu_approval_create received unsupported arguments.",
+            "invalid_tool_arguments",
+        )
     approval_code = arguments.get("approval_code")
     target_member_id = arguments.get("target_member_id")
     form_data = arguments.get("form_data")
     if not (
         isinstance(approval_code, str)
         and approval_code.strip()
+        and len(approval_code.strip()) <= FEISHU_APPROVAL_CODE_MAX_CHARS
         and isinstance(target_member_id, str)
         and target_member_id.strip()
         and isinstance(form_data, str)
         and form_data.strip()
+        and len(form_data) <= FEISHU_APPROVAL_FORM_MAX_CHARS
     ):
-        return _typed_failure(
+        return None, _typed_failure(
             "feishu_approval_create requires approval_code, target_member_id, and form_data.",
+            "invalid_tool_arguments",
+        )
+    try:
+        normalized_target_member_id = str(uuid.UUID(target_member_id.strip()))
+    except (TypeError, ValueError):
+        return None, _typed_failure(
+            "feishu_approval_create target_member_id must be a UUID.",
             "invalid_tool_arguments",
         )
     try:
         parsed_form = json.loads(form_data)
     except (TypeError, ValueError):
-        return _typed_failure(
+        return None, _typed_failure(
             "feishu_approval_create form_data must be a JSON array.",
             "invalid_tool_arguments",
         )
-    if not isinstance(parsed_form, list):
-        return _typed_failure(
-            "feishu_approval_create form_data must be a JSON array.",
+    if (
+        not isinstance(parsed_form, list)
+        or len(parsed_form) > FEISHU_APPROVAL_FORM_MAX_CONTROLS
+    ):
+        return None, _typed_failure(
+            "feishu_approval_create form_data must be a bounded JSON array.",
             "invalid_tool_arguments",
         )
+    for control in parsed_form:
+        if not isinstance(control, Mapping) or any(
+            key not in control for key in ("id", "type", "value")
+        ):
+            return None, _typed_failure(
+                "feishu_approval_create form_data controls require id, type, and value.",
+                "invalid_tool_arguments",
+            )
+        if not all(
+            isinstance(control.get(key), str) and control.get(key)
+            for key in ("id", "type")
+        ):
+            return None, _typed_failure(
+                "feishu_approval_create form_data control id and type must be non-empty strings.",
+                "invalid_tool_arguments",
+            )
+        if control.get("type") in {"attachmentV2", "image", "imageV2"}:
+            value = control.get("value")
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(
+                    isinstance(file_code, str) and file_code.strip()
+                    for file_code in value
+                )
+            ):
+                return None, _typed_failure(
+                    "feishu_approval_create attachment and image controls "
+                    "require a non-empty array of string file codes.",
+                    "invalid_tool_arguments",
+                )
+
+    optional_strings: dict[str, str] = {}
+    for key in ("department_id", "uuid"):
+        value = arguments.get(key)
+        if value is None:
+            continue
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > (64 if key == "uuid" else 128)
+        ):
+            return None, _typed_failure(
+                f"feishu_approval_create {key} must be a non-empty string when provided.",
+                "invalid_tool_arguments",
+            )
+        optional_strings[key] = value.strip()
+    return {
+        "approval_code": approval_code.strip(),
+        "target_member_id": normalized_target_member_id,
+        "form_data": form_data,
+        "parsed_form": parsed_form,
+        "optional_strings": optional_strings,
+    }, None
+
+
+async def _consume_feishu_approval_create_authorization(
+    authorization: FeishuApprovalCreateAuthorization | None,
+    *,
+    agent_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    arguments: Mapping[str, object],
+    runtime_run_id: str | None,
+    runtime_tool_call_id: str | None,
+    runtime_execution_id: str | None,
+    runtime_lease_owner: str | None,
+    runtime_tenant_id: str | None,
+) -> ToolExecutionOutcome | None:
+    """Atomically consume confirmation against the live Tool Ledger row."""
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (
+            runtime_run_id,
+            runtime_tool_call_id,
+            runtime_execution_id,
+            runtime_lease_owner,
+            runtime_tenant_id,
+        )
+    ):
+        return _typed_failure(
+            "Feishu approval creation requires a live Runtime tool receipt.",
+            "tool_confirmation_required",
+        )
+    assert isinstance(runtime_run_id, str)
+    assert isinstance(runtime_tool_call_id, str)
+    assert isinstance(runtime_execution_id, str)
+    assert isinstance(runtime_lease_owner, str)
+    assert isinstance(runtime_tenant_id, str)
+    try:
+        run_id = uuid.UUID(runtime_run_id)
+        execution_id = uuid.UUID(runtime_execution_id)
+        tenant_id = uuid.UUID(runtime_tenant_id)
+        arguments_hash = feishu_approval_create_arguments_hash(arguments)
+    except (TypeError, ValueError):
+        return _typed_failure(
+            "Feishu approval creation received an invalid Runtime receipt.",
+            "tool_confirmation_required",
+        )
+    if not verify_feishu_approval_create_authorization(
+        authorization,
+        run_id=str(run_id),
+        tool_call_id=runtime_tool_call_id,
+        execution_id=str(execution_id),
+        lease_owner=runtime_lease_owner,
+        tenant_id=str(tenant_id),
+        agent_id=str(agent_id),
+        actor_user_id=str(actor_user_id),
+        arguments=arguments,
+    ):
+        return _typed_failure(
+            "Feishu approval creation requires a valid Runtime confirmation proof.",
+            "tool_confirmation_required",
+        )
+    try:
+        async with async_session() as db:
+            async with db.begin():
+                result = await db.execute(
+                    select(AgentToolExecution)
+                    .join(
+                        AgentRun,
+                        (
+                            (AgentRun.id == AgentToolExecution.run_id)
+                            & (
+                                AgentRun.tenant_id
+                                == AgentToolExecution.tenant_id
+                            )
+                        ),
+                    )
+                    .where(
+                        AgentToolExecution.id == execution_id,
+                        AgentToolExecution.tenant_id == tenant_id,
+                        AgentToolExecution.run_id == run_id,
+                        AgentToolExecution.tool_call_id
+                        == runtime_tool_call_id,
+                        AgentToolExecution.tool_name
+                        == "feishu_approval_create",
+                        AgentRun.agent_id == agent_id,
+                        AgentRun.tenant_id == tenant_id,
+                        AgentRun.origin_user_id == actor_user_id,
+                        AgentRun.source_type == "chat",
+                    )
+                    .with_for_update()
+                )
+                execution = result.scalar_one_or_none()
+                metadata = (
+                    dict(execution.result_metadata or {})
+                    if execution is not None
+                    else {}
+                )
+                if (
+                    execution is None
+                    or execution.status != "started"
+                    or execution.lease_owner != runtime_lease_owner
+                    or execution.arguments_hash != arguments_hash
+                    or execution.effect != "external_write"
+                    or execution.retry_policy != "never"
+                    or metadata.get(
+                        "feishu_approval_confirmation_consumed"
+                    )
+                    is True
+                ):
+                    return _typed_failure(
+                        "Feishu approval confirmation is stale or already consumed.",
+                        "tool_confirmation_required",
+                    )
+                metadata["feishu_approval_confirmation_consumed"] = True
+                metadata["feishu_approval_confirmation_proof"] = (
+                    hashlib.sha256(
+                        authorization.signature.encode("utf-8")
+                    ).hexdigest()
+                    if authorization is not None
+                    else None
+                )
+                execution.result_metadata = metadata
+    except Exception:
+        return _typed_failure(
+            "Feishu approval confirmation receipt could not be consumed.",
+            "tool_confirmation_required",
+        )
+    return None
+
+
+async def _feishu_approval_create_outcome(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    actor_user_id: uuid.UUID,
+    authorization: FeishuApprovalCreateAuthorization | None,
+    runtime_run_id: str | None,
+    runtime_tool_call_id: str | None,
+    runtime_execution_id: str | None,
+    runtime_lease_owner: str | None,
+    runtime_tenant_id: str | None,
+) -> ToolExecutionOutcome:
+    """Create one approval instance after the Runtime confirmation gate."""
+    authorization_error = await _consume_feishu_approval_create_authorization(
+        authorization,
+        agent_id=agent_id,
+        actor_user_id=actor_user_id,
+        arguments=arguments,
+        runtime_run_id=runtime_run_id,
+        runtime_tool_call_id=runtime_tool_call_id,
+        runtime_execution_id=runtime_execution_id,
+        runtime_lease_owner=runtime_lease_owner,
+        runtime_tenant_id=runtime_tenant_id,
+    )
+    if authorization_error is not None:
+        return authorization_error
+    validated, validation_error = validate_feishu_approval_create_arguments(
+        arguments
+    )
+    if validation_error is not None or validated is None:
+        return validation_error or _typed_failure(
+            "feishu_approval_create arguments are invalid.",
+            "invalid_tool_arguments",
+        )
+    approval_code = cast(str, validated["approval_code"])
+    target_member_id = cast(str, validated["target_member_id"])
+    form_data = cast(str, validated["form_data"])
+    optional_strings = cast(dict[str, str], validated["optional_strings"])
 
     try:
         async with async_session() as db:
             target, target_error = await _resolve_roster_human_target(
                 db,
                 agent_id,
-                target_member_id=target_member_id.strip(),
+                target_member_id=target_member_id,
                 provider_type="feishu",
+                require_platform_user=True,
                 require_provider_identity=True,
             )
     except Exception as exc:
@@ -16524,6 +19485,11 @@ async def _feishu_approval_create_outcome(
             "The approval applicant is not a Feishu member.",
             "feishu_approval_target_provider_mismatch",
         )
+    if getattr(target.member, "user_id", None) != actor_user_id:
+        return _typed_failure(
+            "The approval applicant must be the authenticated confirming user.",
+            "feishu_approval_applicant_mismatch",
+        )
     provider_user_id = str(
         getattr(target.member, "external_id", "") or ""
     ).strip()
@@ -16539,16 +19505,18 @@ async def _feishu_approval_create_outcome(
             "Feishu credentials are unavailable.",
             "feishu_channel_not_configured",
         )
+    request_body: dict[str, object] = {
+        "approval_code": approval_code,
+        "user_id": provider_user_id,
+        "form": form_data,
+        **optional_strings,
+    }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 "https://open.feishu.cn/open-apis/approval/v4/instances",
                 headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "approval_code": approval_code.strip(),
-                    "user_id": provider_user_id,
-                    "form": form_data,
-                },
+                json=request_body,
             )
     except Exception as exc:
         return _feishu_write_exception_outcome(
@@ -16556,44 +19524,92 @@ async def _feishu_approval_create_outcome(
             exc,
         )
 
-    status_code = getattr(response, "status_code", None)
-    if not isinstance(status_code, int) or isinstance(status_code, bool):
+    status_code, payload, payload_is_json, provider_receipt = (
+        _feishu_provider_receipt(response)
+    )
+    if status_code is None:
         return _typed_unknown(
-            "Feishu approval_create returned no readable HTTP receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned no readable HTTP receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if status_code == 429 or status_code >= 500:
         return _typed_unknown(
-            "Feishu approval_create may have taken effect; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an uncertain result for",
+                provider_receipt,
+            )
+            + " It may have taken effect; reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if 400 <= status_code < 500:
         return _typed_failure(
-            "Feishu rejected approval_create.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_create_rejected",
+            metadata=provider_receipt,
         )
-    try:
-        payload = response.json()
-    except Exception:
+    if not payload_is_json:
         return _typed_unknown(
-            "Feishu approval_create returned an unreadable receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an unreadable receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     if not isinstance(payload, Mapping):
         return _typed_unknown(
-            "Feishu approval_create returned an invalid receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned an invalid receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
         )
     code = payload.get("code")
     if isinstance(code, bool) or not isinstance(code, int):
         return _typed_unknown(
-            "Feishu approval_create returned no business receipt; reconcile before retrying.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "returned no business receipt for",
+                provider_receipt,
+            )
+            + " Reconcile before retrying.",
             "feishu_approval_create_outcome_unknown",
+            metadata=provider_receipt,
+        )
+    reconciliation_ref = optional_strings.get("uuid")
+    if code == 60012:
+        return _typed_unknown(
+            "Feishu reported an approval_create uuid conflict; reconcile the existing instance before retrying.",
+            "feishu_approval_create_uuid_conflict",
+            result_ref=reconciliation_ref,
+            metadata=provider_receipt,
         )
     if code != 0:
         return _typed_failure(
-            "Feishu rejected approval_create.",
+            _feishu_provider_error_summary(
+                "approval_create",
+                "rejected",
+                provider_receipt,
+            ),
             "feishu_approval_create_rejected",
+            metadata=provider_receipt,
         )
     data = payload.get("data")
     instance_code = (
@@ -16605,19 +19621,55 @@ async def _feishu_approval_create_outcome(
         return _typed_unknown(
             "Feishu accepted approval_create but returned no instance receipt; reconcile before retrying.",
             "feishu_approval_create_receipt_missing",
+            result_ref=reconciliation_ref,
         )
+    instance_link = (
+        str(data.get("instance_link") or "").strip()
+        if isinstance(data, Mapping)
+        else ""
+    )
     return _typed_success(
         f"Feishu approval instance {instance_code} was created.",
         result_ref=instance_code,
+        metadata={"instance_link": instance_link} if instance_link else {},
     )
 
 
 async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Legacy display adapter; Durable Runtime keeps this write hidden."""
-    outcome = await _feishu_approval_create_outcome(agent_id, arguments)
+    """Fail closed: approval creation requires a Runtime-issued proof."""
+    del agent_id, arguments
+    return (
+        "Feishu approval creation is blocked outside Durable Runtime "
+        "conversation confirmation."
+    )
+
+
+async def _feishu_approval_definition_get(
+    agent_id: uuid.UUID,
+    arguments: dict,
+) -> str:
+    """Legacy display adapter for a bounded approval definition read."""
+    outcome = await _feishu_approval_definition_get_outcome(agent_id, arguments)
     return _legacy_tool_outcome_text(
         outcome,
-        fallback="Feishu approval creation returned no summary.",
+        fallback="Feishu approval definition read returned no summary.",
+    )
+
+
+async def _feishu_approval_file_upload(
+    agent_id: uuid.UUID,
+    workspace_root: Path,
+    arguments: dict,
+) -> str:
+    """Legacy display adapter for a typed approval file upload."""
+    outcome = await _feishu_approval_file_upload_outcome(
+        agent_id,
+        workspace_root,
+        arguments,
+    )
+    return _legacy_tool_outcome_text(
+        outcome,
+        fallback="Feishu approval file upload returned no summary.",
     )
 
 
@@ -16670,51 +19722,97 @@ async def _feishu_open_id_for_visible_name(
     normalized_name = name.strip()
     if not normalized_name:
         return None
+    return (await _feishu_open_ids_for_visible_names(agent_id, [normalized_name])).get(
+        normalized_name
+    )
+
+
+async def _feishu_open_ids_for_visible_names(
+    agent_id: uuid.UUID,
+    names: list[str],
+    *,
+    live_token: str | None = None,
+    raise_live_errors: bool = False,
+) -> dict[str, str | None]:
+    """Resolve up to 20 visible Feishu names with one live directory scan."""
+    requested_names = list(dict.fromkeys(name.strip() for name in names if name.strip()))[:20]
+    if not requested_names:
+        return {}
     # Calendar F1 tests and old extension points replace the legacy adapter.
     # Preserve that narrow injection seam without making raw IDs part of the
     # production user-search result again.
     if _feishu_user_search is not _NATIVE_FEISHU_USER_SEARCH_ADAPTER:
-        legacy_result = await _feishu_user_search(
-            agent_id,
-            {"name": normalized_name, "query": normalized_name},
-        )
-        match = re.search(
-            r"open_id:\s*`(ou_[A-Za-z0-9]+)`",
-            str(legacy_result),
-        )
-        return match.group(1) if match is not None else None
+        resolved: dict[str, str | None] = {}
+        for name in requested_names:
+            legacy_result = await _feishu_user_search(
+                agent_id,
+                {"name": name, "query": name},
+            )
+            match = re.search(
+                r"open_id:\s*`(ou_[A-Za-z0-9]+)`",
+                str(legacy_result),
+            )
+            resolved[name] = match.group(1) if match is not None else None
+        return resolved
 
-    payload = await _query_directory_payload(
-        agent_id,
-        {
-            "query": normalized_name,
-            "member_type": "human",
-            "include_uncontactable": False,
-            "limit": 20,
-            "offset": 0,
-        },
-    )
-    raw_members = payload.get("members") if payload.get("ok") is True else None
-    if not isinstance(raw_members, list):
-        return None
-    exact_open_ids: list[str] = []
-    for member in raw_members:
-        provider = member.get("provider") if isinstance(member, Mapping) else None
-        if (
-            not isinstance(member, Mapping)
-            or member.get("member_type") != "human"
-            or member.get("can_contact") is not True
-            or str(member.get("display_name") or "").casefold()
-            != normalized_name.casefold()
-            or not isinstance(provider, Mapping)
-            or _normalize_roster_provider_type(provider.get("provider_type"))
-            != "feishu"
-        ):
-            continue
-        open_id = provider.get("open_id")
-        if isinstance(open_id, str) and open_id and open_id not in exact_open_ids:
-            exact_open_ids.append(open_id)
-    return exact_open_ids[0] if len(exact_open_ids) == 1 else None
+    resolved = {}
+    live_names: list[str] = []
+    for name in requested_names:
+        payload = await _query_directory_payload(
+            agent_id,
+            {
+                "query": name,
+                "member_type": "human",
+                "provider_type": "feishu",
+                "include_uncontactable": False,
+                "limit": 20,
+                "offset": 0,
+            },
+        )
+        raw_members = payload.get("members") if payload.get("ok") is True else None
+        exact_open_ids: set[str] = set()
+        if isinstance(raw_members, list):
+            for member in raw_members:
+                provider = member.get("provider") if isinstance(member, Mapping) else None
+                if (
+                    not isinstance(member, Mapping)
+                    or member.get("member_type") != "human"
+                    or member.get("can_contact") is not True
+                    or str(member.get("display_name") or "").casefold()
+                    != name.casefold()
+                    or not isinstance(provider, Mapping)
+                ):
+                    continue
+                open_id = provider.get("open_id")
+                if isinstance(open_id, str) and open_id:
+                    exact_open_ids.add(open_id)
+        if len(exact_open_ids) == 1:
+            resolved[name] = next(iter(exact_open_ids))
+        elif len(exact_open_ids) > 1:
+            resolved[name] = None
+        else:
+            live_names.append(name)
+
+    if live_names:
+        token = live_token
+        token_error = None
+        if token is None:
+            token, token_error = await _feishu_access_token_outcome(agent_id)
+        if token_error is None and token is not None:
+            try:
+                resolved.update(
+                    await resolve_feishu_contacts_by_exact_names(token, live_names)
+                )
+            except Exception as exc:
+                if raise_live_errors:
+                    raise
+                logger.warning(
+                    "[Feishu Contact] Live attendee lookup failed: {}",
+                    type(exc).__name__,
+                )
+    for name in requested_names:
+        resolved.setdefault(name, None)
+    return resolved
 
 
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:
@@ -16955,7 +20053,16 @@ async def _read_emails_outcome(
                 return messages
 
     try:
-        messages = await asyncio.to_thread(read_mailbox)
+        messages = await asyncio.wait_for(
+            asyncio.to_thread(read_mailbox),
+            timeout=EMAIL_IMAP_DEADLINE_SECONDS,
+        )
+    except TimeoutError:
+        return _typed_failure(
+            "IMAP read exceeded its operation deadline.",
+            "email_imap_deadline_exceeded",
+            retryable=True,
+        )
     except _EmailIMAPRejected as exc:
         return _typed_failure(
             f"IMAP rejected the {exc.stage} operation.",
@@ -18155,14 +21262,37 @@ async def _agentbay_read_outcome(
         elif tool_name == "agentbay_browser_extract":
             instruction = cast(str, arguments.get("instruction"))
             selector = cast(str, arguments.get("selector", ""))
-            result = await client.browser_extract(instruction, selector)
+            result = await client.browser_extract(
+                instruction,
+                selector,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name == "agentbay_browser_observe":
             instruction = cast(str, arguments.get("instruction"))
             selector = cast(str, arguments.get("selector", ""))
-            result = await client.browser_observe(instruction, selector)
+            result = await client.browser_observe(
+                instruction,
+                selector,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name == "agentbay_code_read_file":
             remote_path = cast(str, arguments.get("remote_path"))
-            result = await client.code_read_file(remote_path)
+            result = await client.code_read_file(
+                remote_path,
+                timeout=int(
+                    resolve_tool_deadline_seconds(
+                        "agentbay_read", arguments.get("timeout")
+                    )
+                ),
+            )
         elif tool_name in {
             "agentbay_computer_screenshot",
             "agentbay_computer_precision_screenshot",
@@ -18391,7 +21521,15 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
 
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
-    timeout = arguments.get("timeout", 30)
+    try:
+        timeout = int(
+            resolve_tool_deadline_seconds(
+                "agentbay_code",
+                arguments.get("timeout"),
+            )
+        )
+    except ValueError:
+        return "❌ timeout 必须是正数"
 
     if not code.strip():
         return "❌ 请提供要执行的代码"
@@ -18471,9 +21609,14 @@ async def _agentbay_code_read_file(agent_id: Optional[uuid.UUID], ws: Path, argu
     try:
         _session_id, _run_id = _agentbay_scope_ids(arguments)
         client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id, run_id=_run_id)
-        result = await asyncio.to_thread(
-            client._session.file_system.read_file,
+        result = await client.code_read_file(
             remote_path,
+            timeout=int(
+                resolve_tool_deadline_seconds(
+                    "agentbay_read",
+                    arguments.get("timeout"),
+                )
+            ),
         )
         if result.success:
             content = getattr(result, "content", "") or ""
@@ -23233,6 +26376,156 @@ def _vercel_receipt_metadata_fits_preflight(
     return len(encoded) <= 16 * 1024
 
 
+_VERCEL_DEPLOYMENT_PENDING_STATES = frozenset(
+    {"INITIALIZING", "QUEUED", "BUILDING", "PENDING"}
+)
+
+
+def _vercel_async_deployment_metadata(
+    metadata: Mapping[str, object],
+    *,
+    deployment_id: str,
+    deployment_state: str,
+    pending: bool,
+    poll_failure_count: int = 0,
+) -> dict:
+    return {
+        **dict(metadata),
+        "deployment_id": deployment_id,
+        "deployment_state": deployment_state,
+        "async_poll_failure_count": poll_failure_count,
+        "runtime_async_pending": pending,
+        "async_operation": {
+            "version": 1,
+            "operation_key": f"vercel:deployment:{deployment_id}",
+            "operation_id": deployment_id,
+            "state": deployment_state,
+            "poll": {
+                "tool": "vercel_deploy",
+                "arguments": {
+                    "operation": "poll",
+                    "deployment_id": deployment_id,
+                    "poll_failure_count": poll_failure_count,
+                },
+                "interval_ms": 2000,
+            },
+        },
+    }
+
+
+def _vercel_deployment_state_outcome(
+    *,
+    deployment_id: str,
+    deployment_url: str | None,
+    deployment_state: str,
+    metadata: Mapping[str, object],
+    poll_failure_count: int = 0,
+) -> ToolExecutionOutcome:
+    from urllib.parse import quote
+
+    normalized_state = deployment_state.strip().upper()
+    pending = normalized_state in _VERCEL_DEPLOYMENT_PENDING_STATES
+    result_metadata = (
+        _vercel_async_deployment_metadata(
+            metadata,
+            deployment_id=deployment_id,
+            deployment_state=normalized_state,
+            pending=pending,
+            poll_failure_count=poll_failure_count,
+        )
+        if pending or metadata.get("operation") == "deployment_status"
+        else dict(metadata)
+    )
+    evidence_refs = (
+        f"vercel-deployment://{quote(deployment_id, safe='')}",
+    )
+    artifact_refs = (deployment_url,) if deployment_url is not None else ()
+    if pending and poll_failure_count >= SAFE_READ_MAX_ATTEMPTS:
+        return _typed_unknown(
+            "Vercel deployment status could not be confirmed after "
+            f"{poll_failure_count} consecutive poll failures.",
+            "vercel_deployment_poll_retry_exhausted",
+            result_ref=deployment_id,
+            metadata={
+                **result_metadata,
+                "runtime_async_pending": False,
+                "runtime_retry_exhausted": True,
+            },
+        )
+    if pending:
+        return _typed_pending(
+            f"Vercel deployment {deployment_id} is still {normalized_state}.",
+            metadata=result_metadata,
+        )
+    if normalized_state == "READY":
+        if deployment_url is None:
+            return _typed_unknown(
+                "Vercel deployment reached READY without a stable HTTPS URL receipt.",
+                "vercel_deployment_status_invalid",
+                result_ref=deployment_id,
+                metadata=result_metadata,
+            )
+        return _typed_success(
+            f"Vercel deployment {deployment_id} is READY at {deployment_url}.",
+            result_ref=deployment_id,
+            artifact_refs=artifact_refs,
+            evidence_refs=evidence_refs,
+            metadata=result_metadata,
+        )
+    if normalized_state in {"ERROR", "CANCELED"}:
+        return ToolExecutionOutcome(
+            status="failed",
+            result_summary=(
+                f"Vercel deployment reached terminal state {normalized_state}."
+            ),
+            result_ref=deployment_id,
+            artifact_refs=artifact_refs,
+            evidence_refs=evidence_refs,
+            error_code=f"vercel_deployment_{normalized_state.lower()}",
+            metadata=result_metadata,
+        )
+    return _typed_unknown(
+        f"Vercel deployment returned unknown state {normalized_state!r}.",
+        "vercel_deployment_status_unknown",
+        result_ref=deployment_id,
+        metadata=result_metadata,
+    )
+
+
+async def _get_vercel_deployment_state(
+    client,
+    *,
+    headers: Mapping[str, str],
+    deployment_id: str,
+) -> tuple[str, str | None] | None:
+    from urllib.parse import quote
+
+    try:
+        response = await client.get(
+            "https://api.vercel.com/v13/deployments/"
+            f"{quote(deployment_id, safe='')}",
+            headers=dict(headers),
+        )
+    except Exception:
+        return None
+    if not 200 <= response.status_code < 300:
+        return None
+    data = _deploy_response_object(response)
+    if data is None or data.get("id") != deployment_id:
+        return ("UNKNOWN", None)
+    state_value = data.get("readyState")
+    if (
+        not isinstance(state_value, str)
+        or not state_value.strip()
+        or len(state_value.strip().encode("utf-8")) > 100
+    ):
+        return ("UNKNOWN", None)
+    return (
+        state_value.strip().upper(),
+        _vercel_deployment_https_url(data.get("url")),
+    )
+
+
 async def _vercel_deploy_outcome(
     agent_id: uuid.UUID,
     workspace_root: Path,
@@ -23241,6 +26534,94 @@ async def _vercel_deploy_outcome(
     """Settle the existing Vercel deployment lifecycle from stage receipts."""
     import httpx
     from urllib.parse import quote
+
+    operation_value = arguments.get("operation", "launch")
+    operation = (
+        operation_value.strip().lower()
+        if isinstance(operation_value, str)
+        else ""
+    )
+    if operation == "poll":
+        deployment_id_value = arguments.get("deployment_id")
+        deployment_id = (
+            deployment_id_value.strip()
+            if isinstance(deployment_id_value, str)
+            else ""
+        )
+        poll_failure_count_value = arguments.get("poll_failure_count", 0)
+        poll_failure_count = (
+            poll_failure_count_value
+            if isinstance(poll_failure_count_value, int)
+            and not isinstance(poll_failure_count_value, bool)
+            and 0 <= poll_failure_count_value < SAFE_READ_MAX_ATTEMPTS
+            else None
+        )
+        if (
+            not deployment_id
+            or len(deployment_id.encode("utf-8")) > 512
+            or poll_failure_count is None
+        ):
+            return _typed_failure(
+                "vercel_deploy internal poll requires deployment_id and a valid "
+                "poll_failure_count.",
+                "invalid_tool_arguments",
+            )
+        try:
+            token = await _get_vercel_token(agent_id, "vercel_deploy")
+        except Exception:
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="UNKNOWN",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+            )
+        if not isinstance(token, str) or not token.strip():
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="UNKNOWN",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+            )
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            observation = await _get_vercel_deployment_state(
+                client,
+                headers=headers,
+                deployment_id=deployment_id,
+            )
+        if observation is None:
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=None,
+                deployment_state="PENDING",
+                metadata={
+                    "provider": "vercel",
+                    "operation": "deployment_status",
+                },
+                poll_failure_count=poll_failure_count + 1,
+            )
+        deployment_state, deployment_url = observation
+        return _vercel_deployment_state_outcome(
+            deployment_id=deployment_id,
+            deployment_url=deployment_url,
+            deployment_state=deployment_state,
+            metadata={
+                "provider": "vercel",
+                "operation": "deployment_status",
+            },
+            poll_failure_count=0,
+        )
+    if operation != "launch":
+        return _typed_failure(
+            "vercel_deploy operation must be launch.",
+            "invalid_tool_arguments",
+        )
 
     project_value = arguments.get("project_name")
     method_value = arguments.get("deploy_method", "upload")
@@ -23673,79 +27054,30 @@ async def _vercel_deploy_outcome(
             write_stage = None
 
             if deployment_state not in {"READY", "ERROR", "CANCELED"}:
-                try:
-                    poll_response = await client.get(
-                        "https://api.vercel.com/v13/deployments/"
-                        f"{quote(deployment_id, safe='')}",
-                        headers=headers,
-                    )
-                except Exception:
-                    poll_response = None
-                poll_data = (
-                    _deploy_response_object(poll_response)
-                    if poll_response is not None
-                    and 200 <= poll_response.status_code < 300
-                    else None
+                observation = await _get_vercel_deployment_state(
+                    client,
+                    headers=headers,
+                    deployment_id=deployment_id,
                 )
-                if (
-                    poll_data is not None
-                    and poll_data.get("id") == deployment_id
-                    and isinstance(poll_data.get("readyState"), str)
-                    and str(poll_data.get("readyState")).strip()
-                    and len(
-                        str(poll_data.get("readyState")).strip().encode("utf-8")
-                    )
-                    <= 100
-                ):
-                    deployment_state = str(
-                        poll_data["readyState"]
-                    ).strip().upper()
-                    polled_url = poll_data.get("url")
-                    normalized_polled_url = _vercel_deployment_https_url(
-                        polled_url
-                    )
-                    if normalized_polled_url is not None:
-                        deployment_url = normalized_polled_url
+                if observation is not None:
+                    deployment_state, polled_url = observation
+                    if polled_url is not None:
+                        deployment_url = polled_url
 
             metadata = receipt_metadata(operation="deployment_accepted")
-            evidence_refs = (
-                f"vercel-deployment://{quote(deployment_id, safe='')}",
-            )
-            if deployment_state in {"ERROR", "CANCELED"}:
-                return ToolExecutionOutcome(
-                    status="failed",
-                    result_summary=f"Vercel deployment reached terminal state {deployment_state}.",
-                    result_ref=deployment_id,
-                    artifact_refs=(deployment_url,),
-                    evidence_refs=evidence_refs,
-                    error_code=f"vercel_deployment_{deployment_state.lower()}",
-                    metadata=metadata,
-                )
-            if deployment_state == "READY":
-                return _typed_success(
-                    f"Vercel deployment {deployment_id} is READY at {deployment_url}.",
-                    result_ref=deployment_id,
-                    artifact_refs=(deployment_url,),
-                    evidence_refs=evidence_refs,
-                    metadata=metadata,
-                )
-            return _typed_success(
-                f"Vercel accepted deployment {deployment_id} at {deployment_url}; current state is {deployment_state}.",
-                result_ref=deployment_id,
-                artifact_refs=(deployment_url,),
-                evidence_refs=evidence_refs,
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=deployment_url,
+                deployment_state=deployment_state,
                 metadata=metadata,
             )
     except Exception as exc:
         if deployment_id and deployment_url:
             deployment_state = deployment_state or "PENDING"
-            return _typed_success(
-                f"Vercel accepted deployment {deployment_id}; status polling is pending.",
-                result_ref=deployment_id,
-                artifact_refs=(deployment_url,),
-                evidence_refs=(
-                    f"vercel-deployment://{quote(deployment_id, safe='')}",
-                ),
+            return _vercel_deployment_state_outcome(
+                deployment_id=deployment_id,
+                deployment_url=deployment_url,
+                deployment_state=deployment_state,
                 metadata=receipt_metadata(operation="deployment_accepted"),
             )
         if write_stage:

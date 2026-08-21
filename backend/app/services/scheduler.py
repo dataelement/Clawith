@@ -82,6 +82,7 @@ async def _tick():
                     schedule_id=sched.id,
                     occurrence_id=schedule_occurrence_id(sched.id, occurrence_at),
                     instruction=sched.instruction,
+                    delivery_target_id=getattr(sched, "delivery_target_id", None),
                 )
                 if handle is None:
                     logger.error(

@@ -37,7 +37,7 @@ from app.services.llm.multimodal_content import parse_multimodal_content
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_RESUME_TYPES = {
-    "waiting_user": frozenset({"user_input"}),
+    "waiting_user": frozenset({"user_input", "tool_reconciliation"}),
     "waiting_agent": frozenset({"agent_result"}),
     "waiting_external": frozenset({"external_event", "timer"}),
 }

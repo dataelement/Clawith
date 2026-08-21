@@ -2,6 +2,7 @@
 
 import uuid
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from app.dao import query_dao
 from app.api.auth import get_current_user
 from app.models.trigger import AgentTrigger
+from app.services.feishu_group_targets import FeishuGroupTargetError, resolve_feishu_group_target
 
 router = APIRouter(prefix="/api/agents", tags=["triggers"])
 
@@ -28,6 +30,7 @@ class TriggerResponse(BaseModel):
     last_fired_at: str | None = None
     created_at: str | None = None
     expires_at: str | None = None
+    delivery_target_id: str | None = None
 
 
 class TriggerUpdate(BaseModel):
@@ -37,6 +40,7 @@ class TriggerUpdate(BaseModel):
     max_fires: int | None = None
     cooldown_seconds: int | None = None
     expires_at: str | None = None
+    delivery_target_id: uuid.UUID | None = None
 
 
 @router.get("/{agent_id}/triggers", response_model=list[TriggerResponse])
@@ -66,6 +70,7 @@ async def list_agent_triggers(agent_id: uuid.UUID, user=Depends(get_current_user
             last_fired_at=t.last_fired_at.isoformat() if t.last_fired_at else None,
             created_at=t.created_at.isoformat() if t.created_at else None,
             expires_at=t.expires_at.isoformat() if t.expires_at else None,
+            delivery_target_id=str(t.delivery_target_id) if t.delivery_target_id else None,
         )
         for t in triggers
     ]
@@ -91,7 +96,32 @@ async def update_trigger(
             raise HTTPException(404, "Trigger not found")
 
         if body.config is not None:
+            if trigger.type == "cron":
+                expr = body.config.get("expr")
+                if not isinstance(expr, str) or not expr.strip():
+                    raise HTTPException(
+                        400,
+                        "cron trigger requires config.expr",
+                    )
+                try:
+                    croniter(expr)
+                except Exception as exc:
+                    raise HTTPException(
+                        400,
+                        f"Invalid cron expression: '{expr}'.",
+                    ) from exc
             trigger.config = body.config
+        if "delivery_target_id" in body.model_fields_set:
+            if body.delivery_target_id is not None:
+                try:
+                    await resolve_feishu_group_target(
+                        db,
+                        agent_id=agent_id,
+                        target_recipient_id=body.delivery_target_id,
+                    )
+                except FeishuGroupTargetError as exc:
+                    raise HTTPException(400, {"code": exc.code, "message": exc.message}) from exc
+            trigger.delivery_target_id = body.delivery_target_id
         if body.reason is not None:
             trigger.reason = body.reason
         if body.is_enabled is not None:

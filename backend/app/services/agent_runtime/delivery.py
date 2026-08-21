@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging_config import get_trace_id
+from app.dao.chat_message_dao import chat_message_dao
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
@@ -916,16 +917,44 @@ async def deliver_runtime_message(
             mentions=[],
             created_at=now(),
         )
-        db.add(message)
+        chat_message_dao.add_scoped(db, message, tenant_id=run.tenant_id)
         session.last_message_at = now()
-    channel_delivery = stage_channel_delivery(
-        db,
-        run=run,
-        session=session,
-        message_id=message.id,
-        idempotency_key=request.idempotency_key,
-        clock=now,
+    route = (run.delivery_target or {}).get("channel_delivery")
+    route_target = route.get("target") if isinstance(route, dict) else None
+    suppress_feishu_group_reply = (
+        request.kind == "terminal"
+        and request.lifecycle_status == "completed"
+        and session.session_type == "group"
+        and session.group_id is None
+        and session.source_channel == "feishu"
+        and isinstance(route, dict)
+        and route.get("channel") == "feishu"
+        and isinstance(route_target, dict)
+        and route_target.get("receive_id_type") == "chat_id"
+        and message.content.strip().casefold() == "no_reply"
     )
+    channel_delivery = None
+    if not suppress_feishu_group_reply:
+        reaction_target_overrides = (
+            {"reaction_emoji_type": "GLANCE"}
+            if (
+                request.kind == "terminal"
+                and request.lifecycle_status == "completed"
+                and session.session_type == "group"
+                and session.group_id is None
+                and session.source_channel == "feishu"
+            )
+            else None
+        )
+        channel_delivery = stage_channel_delivery(
+            db,
+            run=run,
+            session=session,
+            message_id=message.id,
+            idempotency_key=request.idempotency_key,
+            clock=now,
+            target_overrides=reaction_target_overrides,
+        )
     receipt = DeliveryReceipt(
         tenant_id=run.tenant_id,
         run_id=run.id,

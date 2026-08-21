@@ -18,6 +18,7 @@ from app.dao.participant_dao import participant_dao
 from app.dao.query_dao import query_dao
 from app.dao.system_setting_dao import system_setting_dao
 from app.dao.tenant_dao import tenant_dao
+from app.dao.trigger_dao import trigger_dao
 from app.dao.user_dao import user_dao
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "system_setting_dao",
     "tenant_context",
     "tenant_dao",
+    "trigger_dao",
     "TenantScopedBaseDAO",
     "user_dao",
 ]

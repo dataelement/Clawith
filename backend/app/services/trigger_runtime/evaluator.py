@@ -12,9 +12,10 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.dao import query_dao
-async_session = query_dao.session
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
+
+async_session = query_dao.session
 
 MIN_POLL_INTERVAL_MINUTES = 5
 
@@ -171,18 +172,27 @@ def is_private_url(url: str) -> bool:
         return True
 
 
-async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
+MISFIRE_GRACE = timedelta(seconds=30)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> datetime | None:
     if not trigger.is_enabled:
-        return False
+        return None
     if trigger.expires_at and now >= trigger.expires_at:
-        return False
+        return None
     if trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires:
-        return False
+        return None
 
     if trigger.last_fired_at:
         cooldown = timedelta(seconds=trigger.cooldown_seconds)
         if (now - trigger.last_fired_at) < cooldown:
-            return False
+            return None
 
     cfg = trigger.config or {}
     if isinstance(cfg, str):
@@ -195,63 +205,73 @@ async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
 
     if t == "cron":
         expr = cfg.get("expr", "* * * * *")
-        base = trigger.last_fired_at or trigger.created_at
         try:
-            tz_name = cfg.get("timezone")
-            if not tz_name:
-                from app.services.timezone_utils import get_agent_timezone
-                tz_name = await get_agent_timezone(trigger.agent_id)
+            from app.services.timezone_utils import get_agent_timezone
+
+            tz_name = await get_agent_timezone(trigger.agent_id)
             from zoneinfo import ZoneInfo
-            try:
-                tz = ZoneInfo(tz_name)
-            except (KeyError, Exception):
-                tz = ZoneInfo("UTC")
+
+            tz = ZoneInfo(tz_name)
             local_now = now.astimezone(tz)
-            local_base = base.astimezone(tz) if base.tzinfo else base.replace(tzinfo=tz)
-            cron = croniter(expr, local_base)
-            next_run = cron.get_next(datetime)
-            if local_now >= next_run:
-                if await should_skip_non_workday(trigger, local_now):
-                    await mark_trigger_skipped(trigger.id, now)
-                    logger.info(f"[Trigger] Skipped {trigger.name} on non-workday {local_now.date()}")
-                    return False
-                return True
-            return False
-        except Exception as e:
-            logger.warning(f"Invalid cron expr '{expr}' for trigger {trigger.name}: {e}")
-            return False
+            scheduled_at = croniter(
+                expr,
+                local_now + timedelta(microseconds=1),
+            ).get_prev(datetime)
+            scheduled_at_utc = _as_utc(scheduled_at)
+            now_utc = _as_utc(now)
+            created_at_utc = _as_utc(trigger.created_at)
+            if scheduled_at_utc <= created_at_utc:
+                return None
+            if scheduled_at_utc > now_utc:
+                return None
+            if now_utc - scheduled_at_utc > MISFIRE_GRACE:
+                return None
+            if await should_skip_non_workday(trigger, local_now):
+                await mark_trigger_skipped(trigger.id, now)
+                logger.info(f"[Trigger] Skipped {trigger.name} on non-workday {local_now.date()}")
+                return None
+            return scheduled_at
+        except Exception as error:
+            logger.bind(
+                trigger_id=str(trigger.id),
+                trigger_name=trigger.name,
+                trigger_type=trigger.type,
+                cron_expr=expr,
+            ).warning("Trigger occurrence evaluation failed: {}", error)
+            return None
 
     if t == "once":
         at_str = cfg.get("at")
         if not at_str:
-            return False
+            return None
         try:
             at = datetime.fromisoformat(at_str)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
-            return now >= at and trigger.fire_count == 0
+            return at if now >= at and trigger.fire_count == 0 else None
         except Exception:
-            return False
+            return None
 
     if t == "interval":
         minutes = cfg.get("minutes", 30)
         base = trigger.last_fired_at or trigger.created_at
-        return (now - base) >= timedelta(minutes=minutes)
+        scheduled_at = base + timedelta(minutes=minutes)
+        return scheduled_at if now >= scheduled_at else None
 
     if t == "poll":
         interval_min = max(cfg.get("interval_min", 5), MIN_POLL_INTERVAL_MINUTES)
         base = trigger.last_fired_at or trigger.created_at
         if (now - base) < timedelta(minutes=interval_min):
-            return False
-        return await poll_check(trigger)
+            return None
+        return now if await poll_check(trigger) else None
 
     if t == "on_message":
-        return await check_new_agent_messages(trigger)
+        return now if await check_new_agent_messages(trigger) else None
 
     if t == "webhook":
-        return False
+        return None
 
-    return False
+    return None
 
 
 async def poll_check(trigger: AgentTrigger) -> bool:

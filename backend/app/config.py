@@ -10,7 +10,12 @@ import uuid
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
-from app.services.sandbox.config import SandboxConfig, SandboxType
+from app.services.sandbox.config import (
+    CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+    SandboxConfig,
+    SandboxType,
+)
 
 
 def _running_in_container() -> bool:
@@ -197,8 +202,8 @@ class Settings(BaseSettings):
     SANDBOX_MEMORY_LIMIT: str = "256m"
     SANDBOX_ALLOW_NETWORK: bool = False
     SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING: bool = _default_allow_unsafe_bwrap_fallback()
-    SANDBOX_DEFAULT_TIMEOUT: int = 30
-    SANDBOX_MAX_TIMEOUT: int = 60
+    SANDBOX_DEFAULT_TIMEOUT: int = CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS
+    SANDBOX_MAX_TIMEOUT: int = CODE_EXECUTION_MAX_TIMEOUT_SECONDS
     SANDBOX_HTTP_PROXY: str = ""
     SANDBOX_HTTPS_PROXY: str = ""
     SANDBOX_NO_PROXY: str = ""

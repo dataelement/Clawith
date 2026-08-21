@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.api.files import list_files
+from app.api.files import download_file, list_files
+from app.dao.base import _tenant_ctx
 from app.models.user import User
 from app.services.storage_runtime.base import StorageEntry
 
@@ -101,3 +102,39 @@ async def test_list_files_cross_tenant_access_denied_raises_404(sample_user):
             
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Agent not found"
+
+
+@pytest.mark.asyncio
+async def test_download_file_query_token_binds_user_tenant_for_agent_access(sample_user):
+    """Iframe downloads must restore tenant context when auth comes from the query string."""
+    agent_id = uuid.uuid4()
+    sample_user.is_active = True
+
+    query_result = MagicMock()
+    query_result.scalar_one_or_none.return_value = sample_user
+    mock_storage = AsyncMock()
+    mock_storage.exists.return_value = True
+    mock_storage.is_file.return_value = True
+    mock_storage.presign_download_url.return_value = None
+    mock_storage.local_path_for.return_value = None
+    mock_storage.read_bytes.return_value = b"<html>preview</html>"
+
+    async def assert_tenant_context(*_args):
+        assert _tenant_ctx.get() == sample_user.tenant_id
+
+    with patch("app.core.security.decode_access_token", return_value={"sub": str(sample_user.id)}), \
+         patch("app.api.files.query_dao.execute", AsyncMock(return_value=query_result)), \
+         patch("app.api.files.check_agent_access", AsyncMock(side_effect=assert_tenant_context)), \
+         patch("app.api.files.get_storage_backend", return_value=mock_storage):
+        response = await download_file(
+            agent_id=agent_id,
+            path="workspace/site/index.html",
+            token="query-jwt",
+            inline=True,
+            credentials=None,
+            db=AsyncMock(),
+        )
+
+    assert response.status_code == 200
+    assert response.body == b"<html>preview</html>"
+    assert _tenant_ctx.get() is None

@@ -70,3 +70,12 @@ For non-trivial features or architecture refactoring, follow this workflow:
 - **[`frontend/AGENTS.md`](file:///Users/alex/Documents/Code/dataelem/Clawith/frontend/AGENTS.md)**: Frontend-specific coding standards, React/TS guidelines, HTTP wrapper usage.
 
 > **RULE**: Sub-directory `AGENTS.md` files extend root guidelines. Never duplicate root rules in sub-files. If a rule spans multiple components, put it here.
+
+## Active Technologies
+- Python 3.11+ + FastAPI, SQLAlchemy 2.x async ORM, PostgreSQL, LangGraph checkpoint, Pydantic, httpx (002-tool-runtime-contract)
+- PostgreSQL `agent_tool_executions` + LangGraph PostgreSQL checkpoint；不新增第二套 Run 生命周期状态机 (002-tool-runtime-contract)
+- Python 3.12 deployment baseline（package metadata >=3.11）；React 19 / strict TypeScript + FastAPI、SQLAlchemy async ORM、Pydantic、LangGraph Runtime、React Query、Vite；不新增依赖 (003-feishu-group-proactive)
+- PostgreSQL 15；复用 `chat_sessions` 与 `channel_deliveries`，为 Schedule/Trigger 增加可选目标 Session UUID (003-feishu-group-proactive)
+
+## Recent Changes
+- 002-tool-runtime-contract: Added Python 3.11+ + FastAPI, SQLAlchemy 2.x async ORM, PostgreSQL, LangGraph checkpoint, Pydantic, httpx

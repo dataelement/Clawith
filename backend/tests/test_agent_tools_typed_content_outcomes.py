@@ -140,6 +140,27 @@ def test_document_reader_returns_structured_parse_fact(tmp_path: Path) -> None:
     assert failure.error_code == "document_format_unsupported"
 
 
+def test_document_reader_reports_content_truncation_without_fake_continuation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "long.txt").write_text("x" * 100, encoding="utf-8")
+
+    result = agent_tools._read_document_sync(
+        tmp_path,
+        "long.txt",
+        max_chars=20,
+    )
+
+    assert result.ok is True
+    assert result.truncated is True
+    assert result.processed_scope == {
+        "characters_total": 100,
+        "characters_returned": 20,
+    }
+    assert "first 20 of 100 extracted characters" in result.content
+    assert "No continuation parameter is available" in result.content
+
+
 def test_document_reader_extracts_pptx_slides_without_slicing(
     tmp_path: Path,
 ) -> None:
@@ -200,6 +221,50 @@ async def test_document_outcome_preserves_workspace_evidence(monkeypatch) -> Non
     )
     assert outcome.status == "succeeded"
     assert outcome.evidence_refs == (f"workspace://{agent_id}/workspace/report.pdf",)
+
+
+@pytest.mark.asyncio
+async def test_document_outcome_preserves_structured_truncation_fact(
+    monkeypatch,
+) -> None:
+    agent_id = uuid.uuid4()
+
+    class TempWorkspace:
+        root = Path("/tmp/typed-document-truncation-test")
+
+        def cleanup(self):
+            return None
+
+    async def prepare(*args, **kwargs):
+        return TempWorkspace()
+
+    async def read_result(*args, **kwargs):
+        return agent_tools.DocumentReadResult(
+            True,
+            "partial document",
+            truncated=True,
+            processed_scope={"pages_processed": 50, "pages_total": 72},
+            truncation_reasons=("processed the first 50 of 72 pages",),
+        )
+
+    monkeypatch.setattr(agent_tools, "_prepare_temp_workspace", prepare)
+    monkeypatch.setattr(agent_tools, "_read_document_result", read_result)
+
+    outcome = await agent_tools._read_document_outcome(
+        agent_id,
+        {"path": "workspace/report.pdf"},
+        tenant_id=None,
+    )
+
+    assert outcome.status == "succeeded"
+    assert outcome.metadata["content_truncated"] is True
+    assert outcome.metadata["document_processed_scope"] == {
+        "pages_processed": 50,
+        "pages_total": 72,
+    }
+    assert outcome.metadata["document_truncation_reasons"] == [
+        "processed the first 50 of 72 pages"
+    ]
 
 
 @pytest.mark.asyncio
@@ -274,7 +339,13 @@ async def test_execute_code_uses_exit_code_and_never_reexecutes_unknown(
     import app.config as config_module
     from app.services.sandbox import registry
 
-    config = SimpleNamespace(max_timeout=60, allow_network=False)
+    config = SimpleNamespace(
+        default_timeout=180,
+        max_timeout=60,
+        allow_network=False,
+        workspace_mode="merge",
+        publication_owner="workspace_cas",
+    )
     monkeypatch.setattr(config_module, "get_sandbox_config", lambda: config)
 
     async def no_agent_config(*args, **kwargs):
@@ -295,7 +366,7 @@ async def test_execute_code_uses_exit_code_and_never_reexecutes_unknown(
         def _format_result(self, result):
             return f"exit={result.exit_code}"
 
-    backend = Backend(SimpleNamespace(success=True, exit_code=0))
+    backend = Backend(SimpleNamespace(success=True, exit_code=0, error=None))
     monkeypatch.setattr(registry, "get_sandbox_backend", lambda _config: backend)
     success = await agent_tools._execute_code_outcome(
         uuid.uuid4(),
@@ -304,7 +375,7 @@ async def test_execute_code_uses_exit_code_and_never_reexecutes_unknown(
     )
     assert success.status == "succeeded"
 
-    backend.result = SimpleNamespace(success=False, exit_code=7)
+    backend.result = SimpleNamespace(success=False, exit_code=7, error=None)
     failed = await agent_tools._execute_code_outcome(
         uuid.uuid4(),
         tmp_path,
@@ -330,6 +401,51 @@ async def test_execute_code_uses_exit_code_and_never_reexecutes_unknown(
     )
     assert unknown.status == "unknown"
     assert unknown.error_code == "sandbox_execution_outcome_unknown"
+
+
+@pytest.mark.asyncio
+async def test_execute_code_accepts_python3_and_uses_configured_default_timeout(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import app.config as config_module
+    from app.services.sandbox import registry
+
+    config = SimpleNamespace(
+        default_timeout=180,
+        max_timeout=300,
+        allow_network=False,
+        workspace_mode="merge",
+        publication_owner="workspace_cas",
+    )
+    monkeypatch.setattr(config_module, "get_sandbox_config", lambda: config)
+
+    async def no_agent_config(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent_tools, "_get_tool_config", no_agent_config)
+
+    observed: dict[str, object] = {}
+
+    class Backend:
+        async def execute(self, **kwargs):
+            observed.update(kwargs)
+            return SimpleNamespace(success=True, exit_code=0, error=None)
+
+        def _format_result(self, _result):
+            return "ok"
+
+    monkeypatch.setattr(registry, "get_sandbox_backend", lambda _config: Backend())
+
+    outcome = await agent_tools._execute_code_outcome(
+        uuid.uuid4(),
+        tmp_path,
+        {"language": "python3", "code": "print('ok')"},
+    )
+
+    assert outcome.status == "succeeded"
+    assert observed["language"] == "python"
+    assert observed["timeout"] == 180
 
 
 @pytest.mark.asyncio

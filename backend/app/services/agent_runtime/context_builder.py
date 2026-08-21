@@ -310,6 +310,7 @@ class ContextBuilder:
         *,
         tenant_id: uuid.UUID,
         session_id: uuid.UUID,
+        source_agent_id: uuid.UUID,
         cutoff: MessagePosition,
         pack: SessionContextPack,
     ) -> SessionContextPack:
@@ -330,7 +331,7 @@ class ContextBuilder:
         request = SessionCompactRequest(
             tenant_id=tenant_id,
             session_id=session_id,
-            source_agent_id=None,
+            source_agent_id=source_agent_id,
             checkpoint_id=(
                 f"group-cutoff:{cutoff.created_at.isoformat()}:{cutoff.message_id}"
             ),
@@ -439,6 +440,7 @@ class ContextBuilder:
                     pack = await self._rebuild_group_context_pack(
                         tenant_id=tenant_id,
                         session_id=session_id,
+                        source_agent_id=agent_id,
                         cutoff=cutoff,
                         pack=pack,
                     )

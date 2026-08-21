@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 import uuid
@@ -11,6 +12,7 @@ import pytest
 
 from app.api import feishu
 from app.services import channel_session
+from app.services import agent_tools
 from app.services.agent_runtime.chat_intake import ChatRuntimeIntake
 from app.services.agent_runtime.contracts import RunHandle, RuntimeEventCursor
 
@@ -164,17 +166,63 @@ async def test_feishu_group_message_uses_runtime_intake(monkeypatch) -> None:
     assert session_call["created_by_user_id"] == user_id
     intake_call = calls["intake"]
     assert isinstance(intake_call, dict)
-    assert intake_call["content"] == "[发送者: Alice] Hello Feishu"
+    assert intake_call["content"] == (
+        "[飞书发送者: Alice | user_id: feishu-user-1 | open_id: ou_sender] "
+        "Hello Feishu"
+    )
     assert intake_call["display_content"] == "Hello Feishu"
+    assert intake_call["runtime_instruction"] == (
+        "You are passively listening in a Feishu group. A message directly addresses you if it "
+        "@mentions you, names you or your Agent name, asks you a question or gives you an "
+        "instruction, or explicitly asks you to reply. You must visibly answer every directly "
+        "addressed message even when it is outside your usual responsibilities. For messages "
+        "that do not directly address you, reply normally only when your responsibilities require "
+        "a visible response; otherwise your entire final response must be exactly NO_REPLY, with "
+        "no other text. Your final response is automatically delivered to the input Feishu group. "
+        "Never call send_channel_message to reply to the current conversation. Use that Tool only "
+        "when the user explicitly asks you to send a separate message to another person or group, "
+        "and then set cross_session_confirmed=true."
+    )
     assert intake_call["channel_delivery_target"] == {
         "receive_id": "oc_group_1",
         "receive_id_type": "chat_id",
+        "source_message_id": event_id,
     }
     assert intake_call["message_id"] == feishu.channel_message_id(
         agent_id,
         "feishu",
         event_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_send_channel_message_rejects_unconfirmed_cross_session_target() -> None:
+    result = await agent_tools.execute_tool(
+        "send_channel_message",
+        {
+            "channel": "feishu",
+            "target_recipient_id": str(uuid.uuid4()),
+            "message": "wrong group",
+        },
+        uuid.uuid4(),
+        uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+    )
+
+    assert result.startswith("❌ Cross-Session channel delivery rejected")
+
+    typed = await agent_tools.execute_builtin_tool_outcome(
+        "send_channel_message",
+        {
+            "channel": "feishu",
+            "target_recipient_id": str(uuid.uuid4()),
+            "message": "wrong group",
+        },
+        uuid.uuid4(),
+        uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+    )
+    assert typed.error_code == "cross_session_delivery_not_confirmed"
 
 
 @pytest.mark.asyncio
@@ -224,7 +272,133 @@ async def test_feishu_event_commits_runtime_before_provider_ack(monkeypatch) -> 
     assert event_id in feishu._processed_events
     accepted = calls["accept"]
     assert isinstance(accepted, dict)
-    assert accepted["external_event_id"] == event_id
+    assert accepted["external_event_id"] == "om_message_1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("@_user_1 FYI", "@Runtime Agent FYI"),
+        ("@_user_1", "@Runtime Agent"),
+    ),
+)
+async def test_feishu_event_restores_structured_mentions_before_runtime_intake(
+    monkeypatch,
+    text,
+    expected,
+) -> None:
+    agent_id = uuid.uuid4()
+    event_id = f"feishu-event-{uuid.uuid4()}"
+    config = SimpleNamespace(app_id="app-1", app_secret="secret-1")
+    config_db = _Session(config)
+    calls: dict[str, object] = {}
+
+    async def accept(**kwargs):
+        calls["accept"] = kwargs
+        return _runtime(uuid.uuid4())
+
+    feishu._processed_events.discard(event_id)
+    monkeypatch.setattr(feishu, "_async_session", _SessionFactory(config_db))
+    monkeypatch.setattr(feishu, "_accept_feishu_runtime_message", accept)
+
+    result = await feishu.process_feishu_event(
+        agent_id,
+        {
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_sender",
+                        "user_id": "feishu-user-1",
+                    }
+                },
+                "message": {
+                    "message_id": "om_message_mention",
+                    "message_type": "text",
+                    "chat_type": "group",
+                    "chat_id": "oc_group_1",
+                    "content": json.dumps({"text": text}),
+                    "mentions": [
+                        {
+                            "key": "@_user_1",
+                            "id": {"open_id": "ou_runtime_agent"},
+                            "name": "Runtime Agent",
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert result == {"code": 0, "msg": "ok"}
+    accepted = calls["accept"]
+    assert isinstance(accepted, dict)
+    assert accepted["content"] == expected
+    assert accepted["display_content"] == expected
+
+
+@pytest.mark.asyncio
+async def test_feishu_post_at_tag_preserves_visible_mention_name(monkeypatch) -> None:
+    agent_id = uuid.uuid4()
+    event_id = f"feishu-event-{uuid.uuid4()}"
+    config = SimpleNamespace(app_id="app-1", app_secret="secret-1")
+    calls: dict[str, object] = {}
+
+    async def accept(**kwargs):
+        calls["accept"] = kwargs
+        return _runtime(uuid.uuid4())
+
+    feishu._processed_events.discard(event_id)
+    monkeypatch.setattr(feishu, "_async_session", _SessionFactory(_Session(config)))
+    monkeypatch.setattr(feishu, "_accept_feishu_runtime_message", accept)
+
+    result = await feishu.process_feishu_event(
+        agent_id,
+        {
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_sender",
+                        "user_id": "feishu-user-1",
+                    }
+                },
+                "message": {
+                    "message_id": "om_post_mention",
+                    "message_type": "post",
+                    "chat_type": "group",
+                    "chat_id": "oc_group_1",
+                    "content": json.dumps(
+                        {
+                            "content": [
+                                [
+                                    {
+                                        "tag": "at",
+                                        "user_id": "ou_runtime_agent",
+                                        "user_name": "  Runtime\nAgent  ",
+                                    },
+                                    {"tag": "text", "text": " FYI"},
+                                ]
+                            ]
+                        }
+                    ),
+                },
+            },
+        },
+    )
+
+    assert result == {"code": 0, "msg": "ok"}
+    accepted = calls["accept"]
+    assert isinstance(accepted, dict)
+    assert accepted["content"] == "@Runtime Agent FYI"
+    assert accepted["display_content"] == "@Runtime Agent FYI"
 
 
 @pytest.mark.asyncio

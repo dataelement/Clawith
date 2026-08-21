@@ -469,6 +469,7 @@
       "updatedFiles": "Updated {{count}} files",
       "deletedFiles": "Deleted {{count}} files",
       "ranCommands": "Ran {{count}} tools",
+      "toolCallsTotal": "{{count}} tool calls",
       "ranAgents": "Contacted {{count}} agents",
       "showMore": "Show more",
       "viewDetails": "View details",
@@ -2050,6 +2051,9 @@
   "customAgentModal": {
     "noModelButtonHint": "Enable at least one model in company settings before creating a platform-hosted teammate.",
     "nameRequired": "Name is required",
+    "nameInvalid": "Name must contain 2 to 100 characters",
+    "nameTooShort": "Name must be at least 2 characters",
+    "nameTooLong": "Name cannot exceed 100 characters",
     "noModelError": "No company model is enabled yet. Configure a model or switch to External agent.",
     "modelRequired": "Choose a model",
     "nativeTitle": "Create custom teammate",

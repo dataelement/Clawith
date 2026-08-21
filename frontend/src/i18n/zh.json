@@ -476,6 +476,7 @@
       "updatedFiles": "更新了 {{count}} 个文件",
       "deletedFiles": "删除了 {{count}} 个文件",
       "ranCommands": "运行了 {{count}} 个工具",
+      "toolCallsTotal": "共调用 {{count}} 次工具",
       "ranAgents": "联系了 {{count}} 个数字员工",
       "showMore": "显示更多",
       "viewDetails": "查看细节",
@@ -2140,6 +2141,9 @@
   "customAgentModal": {
     "noModelButtonHint": "需要先在公司设置中启用至少一个模型，才能创建平台托管成员。",
     "nameRequired": "请填写名称",
+    "nameInvalid": "名称必须包含 2 到 100 个字符",
+    "nameTooShort": "名称至少需要 2 个字符",
+    "nameTooLong": "名称不能超过 100 个字符",
     "noModelError": "公司还没有启用可用模型，请先配置模型或切换为外部 Agent。",
     "modelRequired": "请选择模型",
     "nativeTitle": "创建自定义成员",

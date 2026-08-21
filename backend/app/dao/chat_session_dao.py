@@ -9,6 +9,8 @@ from sqlalchemy import select
 
 from app.dao.base import TenantScopedBaseDAO
 from app.models.chat_session import ChatSession
+from app.models.group import Group, GroupMember
+from app.models.participant import Participant
 
 
 class ChatSessionDAO(TenantScopedBaseDAO[ChatSession]):
@@ -28,6 +30,70 @@ class ChatSessionDAO(TenantScopedBaseDAO[ChatSession]):
             if tenant_id is not None:
                 stmt = stmt.where(ChatSession.tenant_id == tenant_id)
             return (await session_db.execute(stmt)).scalar_one_or_none()
+
+    async def get_active_for_agent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        session_id: uuid.UUID,
+        db: Any = None,
+    ) -> ChatSession | None:
+        """Fetch an active Session for one exact tenant and Agent scope."""
+        async with self.session(db=db, readonly=True) as session_db:
+            stmt = select(ChatSession).where(
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.id == session_id,
+                ChatSession.deleted_at.is_(None),
+            )
+            return (await session_db.execute(stmt)).scalar_one_or_none()
+
+    async def get_active_for_sandbox_agent(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        session_id: uuid.UUID,
+        db: Any = None,
+    ) -> ChatSession | None:
+        """Authorize a Session for one Agent's local sandbox execution.
+
+        Direct and external-channel group Sessions retain exact Agent ownership.
+        Native group Sessions are shared, so they require an active Agent
+        participant membership in the active tenant-owned Group instead.
+        """
+        async with self.session(db=db, readonly=True) as session_db:
+            session_stmt = select(ChatSession).where(
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.id == session_id,
+                ChatSession.deleted_at.is_(None),
+            )
+            chat_session = (await session_db.execute(session_stmt)).scalar_one_or_none()
+            if chat_session is None:
+                return None
+
+            if chat_session.group_id is None:
+                return chat_session if chat_session.agent_id == agent_id else None
+
+            if chat_session.session_type != "group" or chat_session.agent_id is not None:
+                return None
+
+            membership_stmt = (
+                select(GroupMember.id)
+                .join(Group, Group.id == GroupMember.group_id)
+                .join(Participant, Participant.id == GroupMember.participant_id)
+                .where(
+                    Group.id == chat_session.group_id,
+                    Group.tenant_id == tenant_id,
+                    Group.deleted_at.is_(None),
+                    GroupMember.removed_at.is_(None),
+                    Participant.type == "agent",
+                    Participant.ref_id == agent_id,
+                )
+            )
+            membership_id = (await session_db.execute(membership_stmt)).scalar_one_or_none()
+            return chat_session if membership_id is not None else None
 
     async def get_including_deleted(self, session_id: uuid.UUID, db: Any = None) -> ChatSession | None:
         """Fetch a session by ID including soft-deleted records."""

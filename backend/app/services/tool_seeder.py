@@ -53,12 +53,53 @@ LEGACY_IMAGE_TOOL_MODEL_DEFAULTS = {
     "generate_image_google": "gemini-2.5-flash-image",
 }
 
+_CODE_EXECUTOR_NAMES = frozenset({"execute_code", "execute_code_e2b"})
+_LEGACY_CODE_EXECUTOR_DEFAULTS = {
+    "default_timeout": 30,
+    "max_timeout": 60,
+}
+
 
 def _global_builtin_config(tool_data: dict) -> dict:
     """Return config safe to store on the global builtin Tool row."""
     # Builtin tools specify defaults (like 'allow_network': True) in their 'config' dict.
     # The actual sensitive data defaults are empty strings ("") so this is safe to store globally.
     return tool_data.get("config", {})
+
+
+def _upgrade_code_executor_defaults(
+    tool_name: str,
+    existing_config: dict,
+    seed_config: dict,
+) -> dict:
+    """Upgrade only untouched legacy timeout defaults for Code Executors."""
+    upgraded = dict(existing_config)
+    if tool_name not in _CODE_EXECUTOR_NAMES:
+        return upgraded
+    for key, legacy_value in _LEGACY_CODE_EXECUTOR_DEFAULTS.items():
+        if upgraded.get(key) == legacy_value and key in seed_config:
+            upgraded[key] = seed_config[key]
+    return upgraded
+
+
+def _upgrade_code_executor_tenant_value(
+    tool_name: str,
+    setting_value: dict,
+    seed_config: dict,
+) -> dict:
+    """Upgrade timeout defaults nested in one tenant Tool setting value."""
+    tenant_config = setting_value.get("config")
+    if not isinstance(tenant_config, dict):
+        return dict(setting_value)
+    upgraded_config = _upgrade_code_executor_defaults(
+        tool_name,
+        tenant_config,
+        seed_config,
+    )
+    if upgraded_config == tenant_config:
+        return dict(setting_value)
+    return {**setting_value, "config": upgraded_config}
+
 
 # Compatibility export for UI/tests. The canonical module owns every builtin
 # name, description, schema, and execution policy.
@@ -125,6 +166,14 @@ async def seed_builtin_tools():
             else:
                 # Sync fields that may evolve
                 updated_fields = []
+                upgraded_config = _upgrade_code_executor_defaults(
+                    t["name"],
+                    existing.config or {},
+                    seed_config,
+                )
+                if upgraded_config != (existing.config or {}):
+                    existing.config = upgraded_config
+                    updated_fields.append("config")
                 if existing.category != t["category"]:
                     existing.category = t["category"]
                     updated_fields.append("category")
@@ -158,6 +207,47 @@ async def seed_builtin_tools():
                     if merged != existing.config:
                         existing.config = merged
                         updated_fields.append("config")
+                if t["name"] in _CODE_EXECUTOR_NAMES:
+                    assignment_result = await query_dao.execute(
+                        db,
+                        select(AgentTool).where(AgentTool.tool_id == existing.id),
+                    )
+                    upgraded_assignments = 0
+                    for assignment in assignment_result.scalars().all():
+                        upgraded_assignment_config = _upgrade_code_executor_defaults(
+                            t["name"],
+                            assignment.config or {},
+                            seed_config,
+                        )
+                        if upgraded_assignment_config != (assignment.config or {}):
+                            assignment.config = upgraded_assignment_config
+                            upgraded_assignments += 1
+                    if upgraded_assignments:
+                        logger.info(
+                            "[ToolSeeder] Upgraded legacy timeout defaults for "
+                            f"{upgraded_assignments} {t['name']} Agent assignments"
+                        )
+                    tenant_setting_result = await query_dao.execute(
+                        db,
+                        select(TenantSetting).where(
+                            TenantSetting.key == tenant_tool_config_key(t["name"])
+                        ),
+                    )
+                    upgraded_tenants = 0
+                    for setting in tenant_setting_result.scalars().all():
+                        upgraded_setting_value = _upgrade_code_executor_tenant_value(
+                            t["name"],
+                            setting.value or {},
+                            seed_config,
+                        )
+                        if upgraded_setting_value != (setting.value or {}):
+                            setting.value = upgraded_setting_value
+                            upgraded_tenants += 1
+                    if upgraded_tenants:
+                        logger.info(
+                            "[ToolSeeder] Upgraded legacy timeout defaults for "
+                            f"{upgraded_tenants} {t['name']} Tenant settings"
+                        )
                 legacy_model = LEGACY_IMAGE_TOOL_MODEL_DEFAULTS.get(t["name"])
                 if legacy_model and existing.config == {
                     "model": legacy_model,

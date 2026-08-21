@@ -354,6 +354,7 @@ async def test_pre_command_side_effect_runs_after_claim_commit_and_before_graph(
     reader = _Reader(command=(None, observed), latest=(None,))
     executor = _Executor(timeline)
     pre_handler = _PreCommandHandler(timeline)
+    close_sandbox = AsyncMock()
     worker = _worker(
         timeline=timeline,
         run=run,
@@ -371,6 +372,10 @@ async def test_pre_command_side_effect_runs_after_claim_commit_and_before_graph(
             "app.services.agent_runtime.command_worker.mark_command_applied",
             new=AsyncMock(),
         ),
+        patch(
+            "app.services.agent_runtime.command_worker.close_subprocess_sandbox_run",
+            new=close_sandbox,
+        ),
     ):
         result = await worker.run_once()
 
@@ -381,6 +386,7 @@ async def test_pre_command_side_effect_runs_after_claim_commit_and_before_graph(
     assert pre_handler.calls[0][1].id == command.id
     assert timeline.index("transaction_exit") < timeline.index("pre_command")
     assert timeline.index("pre_command") < timeline.index("executor_start")
+    close_sandbox.assert_awaited_once_with(str(run.id))
 
 
 @pytest.mark.asyncio

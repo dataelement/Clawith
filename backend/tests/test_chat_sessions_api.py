@@ -14,6 +14,18 @@ from app.models.agent_run_event import AgentRunEvent
 from app.services.chat_session_service import DirectSessionDeletion
 
 
+@pytest.fixture(autouse=True)
+def _stub_tool_history_projection(monkeypatch):
+    async def noop_projection(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        chat_sessions_api,
+        "project_direct_tool_history",
+        noop_projection,
+    )
+
+
 class DummyResult:
     def __init__(self, values=None, scalar_value=None):
         self._values = list(values or [])
@@ -121,7 +133,7 @@ async def test_list_all_associated_sessions_is_tenant_scoped_and_direct_unread_o
     session = _session(agent, owner_id)
     db = RecordingDB(
         DummyResult([session]),
-        DummyResult([(str(session.id), 3)]),
+        DummyResult([(str(session.id), 3, 2)]),
         DummyResult([]),
         DummyResult([(owner_id, "Alice")]),
     )
@@ -141,6 +153,8 @@ async def test_list_all_associated_sessions_is_tenant_scoped_and_direct_unread_o
     assert len(sessions) == 1
     assert sessions[0].user_id == str(owner_id)
     assert sessions[0].username == "Alice"
+    assert sessions[0].message_count == 3
+    assert sessions[0].tool_call_count == 2
     assert sessions[0].unread_count == 0
     session_sql = _sql(db.statements[0])
     assert f"chat_sessions.tenant_id = '{current_user.tenant_id}'" in session_sql
@@ -487,7 +501,17 @@ async def test_messages_use_created_at_id_cursor_and_plain_defaults(monkeypatch)
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "manage"
 
+    projected = []
+
+    async def fake_project_tool_history(_db, **scope):
+        projected.append(scope)
+
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(
+        chat_sessions_api,
+        "project_direct_tool_history",
+        fake_project_tool_history,
+    )
 
     messages = await chat_sessions_api.get_session_messages(
         agent_id=agent.id,
@@ -505,6 +529,13 @@ async def test_messages_use_created_at_id_cursor_and_plain_defaults(monkeypatch)
             "content": "hello",
             "created_at": created_at.isoformat(),
             "cursor": f"{created_at.isoformat()}|{message_id}",
+        }
+    ]
+    assert projected == [
+        {
+            "tenant_id": current_user.tenant_id,
+            "agent_id": agent.id,
+            "session_id": session.id,
         }
     ]
     sql = _sql(db.statements[1])

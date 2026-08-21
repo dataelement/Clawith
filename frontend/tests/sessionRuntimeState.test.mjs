@@ -1,15 +1,27 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  activeRunForSession,
   failClosedSessionActiveRun,
+  mergeSessionToolMessage,
+  mergeSessionToolMessages,
   runtimeCompletionNeedsMessageRefresh,
+  runtimeTerminalPacketNeedsMessageRefresh,
   sessionActiveRunFromResponse,
   sessionRuntimeStateResponseIsValid,
   mergeTerminalAssistantMessage,
   terminalAssistantMessageAlreadyPresent,
+  toolReconciliationNeedsUserAction,
+  toolReconciliationsByCallId,
   waitingSessionActiveRunHint,
 } from '../src/pages/agent-detail/sessionRuntimeState.ts';
+
+const agentDetailSource = readFileSync(
+  new URL('../src/pages/agent-detail/AgentDetailPage.tsx', import.meta.url),
+  'utf8',
+);
 
 const waitingRun = {
   runId: 'run-1',
@@ -25,6 +37,45 @@ const waitingRun = {
   pendingToolReconciliations: [],
 };
 
+test('active run controls are projected only onto their own selected session', () => {
+  assert.equal(activeRunForSession(waitingRun, 'session-2'), null);
+  assert.equal(activeRunForSession(waitingRun, null), null);
+  assert.equal(activeRunForSession(waitingRun, 'session-1'), waitingRun);
+});
+
+test('session Tool cache restores a running card after switching back', () => {
+  const running = {
+    role: 'tool_call',
+    content: '',
+    toolName: 'move_file',
+    toolCallId: 'call-1',
+    toolArgs: { path: 'draft.md' },
+    toolStatus: 'running',
+  };
+
+  assert.deepEqual(mergeSessionToolMessages([
+    { id: 'user-1', role: 'user', content: 'move it' },
+  ], [running]), [
+    { id: 'user-1', role: 'user', content: 'move it' },
+    running,
+  ]);
+});
+
+test('session Tool cache updates by call id without downgrading canonical history', () => {
+  const running = {
+    role: 'tool_call',
+    content: '',
+    toolName: 'move_file',
+    toolCallId: 'call-1',
+    toolArgs: { path: 'draft.md' },
+    toolStatus: 'running',
+  };
+  const done = { ...running, toolStatus: 'done', toolResult: 'moved' };
+
+  assert.deepEqual(mergeSessionToolMessage([running], done), [done]);
+  assert.deepEqual(mergeSessionToolMessage([done], running), [done]);
+});
+
 test('runtime-state request failure preserves display identity but disables actions', () => {
   assert.deepEqual(failClosedSessionActiveRun(waitingRun), {
     ...waitingRun,
@@ -38,6 +89,14 @@ test('settled lane transition refreshes canonical messages after websocket loss'
   assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, null), true);
   assert.equal(runtimeCompletionNeedsMessageRefresh(null, null), false);
   assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, waitingRun), false);
+});
+
+test('terminal websocket packet refreshes canonical tool-call history', () => {
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('completed'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('failed'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('cancelled'), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('waiting_user'), false);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh(undefined), false);
 });
 
 test('websocket terminal packet does not duplicate a canonical refreshed answer', () => {
@@ -199,6 +258,88 @@ test('unknown write reconciliation is parsed strictly and disables plain resume'
       pending_tool_reconciliations: [{ execution_id: 'execution-1' }],
     },
   }), null);
+});
+
+test('workspace reconciliation fields preserve status and file counts', () => {
+  const parsed = sessionActiveRunFromResponse({
+    active_run: {
+      run_id: 'run-1',
+      thread_id: 'session-1',
+      session_id: 'session-1',
+      status: 'waiting_user',
+      pending_tool_reconciliations: [{
+        execution_id: 'execution-1',
+        tool_call_id: 'call-1',
+        tool_name: 'write_file',
+        can_reconcile: true,
+        resolution_status: 'conflicted',
+        savedCount: 1,
+        pendingCount: 2,
+        conflictedCount: 1,
+        workspaceResolution: true,
+      }],
+    },
+  });
+
+  assert.deepEqual(parsed?.pendingToolReconciliations[0], {
+    executionId: 'execution-1',
+    toolCallId: 'call-1',
+    toolName: 'write_file',
+    resultSummary: null,
+    errorCode: null,
+    canReconcile: true,
+    resolutionStatus: 'conflicted',
+    savedCount: 1,
+    pendingCount: 2,
+    conflictedCount: 1,
+    workspaceResolution: true,
+  });
+  assert.equal(toolReconciliationNeedsUserAction(parsed.pendingToolReconciliations[0]), true);
+  assert.equal(
+    toolReconciliationsByCallId(parsed.pendingToolReconciliations).get('call-1')?.executionId,
+    'execution-1',
+  );
+});
+
+test('only settled verification avoids user action; pending receipts always keep an exit', () => {
+  assert.equal(toolReconciliationNeedsUserAction({
+    executionId: 'execution-1',
+    toolCallId: 'call-1',
+    toolName: 'write_file',
+    canReconcile: false,
+    resolutionStatus: 'checking',
+    workspaceResolution: true,
+  }), false);
+  assert.equal(toolReconciliationNeedsUserAction({
+    executionId: 'execution-1',
+    toolCallId: 'call-1',
+    toolName: 'write_file',
+    canReconcile: true,
+    resolutionStatus: 'saved',
+    workspaceResolution: true,
+  }), true);
+});
+
+test('workspace reconciliation keeps decisions in the composer and passive status on the tool row', () => {
+  assert.match(agentDetailSource, /toolCallId: msg\.toolCallId/);
+  assert.match(agentDetailSource, /reconciliationsByToolCallId\.get\(tc\.toolCallId\)/);
+  assert.match(agentDetailSource, /Agent 处理后的文件与工作区中的源文件不同。请选择要保留哪一个。/);
+  assert.match(agentDetailSource, /使用 Agent 的结果/);
+  assert.match(agentDetailSource, /保留源文件/);
+  assert.match(agentDetailSource, /className="chat-tool-reconciliation"/);
+  assert.doesNotMatch(agentDetailSource, /locateToolReconciliation/);
+  assert.doesNotMatch(agentDetailSource, /analysis-tool-reconciliation__actions/);
+});
+
+test('loaded Tool rows cannot be hidden behind a stale zero session count', () => {
+  assert.match(
+    agentDetailSource,
+    /Math\.max\(totalToolCount \?\? 0, toolItems\.length\)/,
+  );
+  assert.match(
+    agentDetailSource,
+    /toolCallsTotal', \{ count: resolvedToolCount \}/,
+  );
 });
 
 test('onboarding only treats an authoritative runtime-state payload as loaded', () => {

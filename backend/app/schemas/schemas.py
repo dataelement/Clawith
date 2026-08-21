@@ -3,7 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_serializer
+from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator
+
+from app.services.timezone_utils import validate_timezone_name
 
 # ─── Auth ───────────────────────────────────────────────
 
@@ -311,7 +313,7 @@ class AgentUpdate(BaseModel):
     context_window_size: int | None = Field(default=None, ge=1, le=500)
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
-    max_tool_rounds: int | None = None
+    max_tool_rounds: int | None = Field(default=None, ge=5, le=500)
     max_triggers: int | None = None
     min_poll_interval_min: int | None = None
     webhook_rate_limit: int | None = None
@@ -320,6 +322,13 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_timezone_name(value)
 
 
 class AgentStatusOut(BaseModel):

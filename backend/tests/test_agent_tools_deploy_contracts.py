@@ -219,7 +219,7 @@ async def _resolve_with_local_configs(
     monkeypatch.setattr(agent_tools, "_get_tool_config", config)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(
@@ -238,30 +238,6 @@ async def _resolve_with_local_configs(
 
     assert NetworkMustNotBeUsed.attempts == 0
     return _tool_names(resolved)
-
-
-def _conditional_requirement(
-    schema: dict,
-    *,
-    discriminator: str,
-    value: str,
-    required: str,
-) -> bool:
-    """Recognize normal JSON-Schema if/then or oneOf branch forms."""
-    for collection in ("allOf", "oneOf", "anyOf"):
-        for clause in schema.get(collection, []):
-            condition = clause.get("if", clause)
-            consequence = clause.get("then", clause)
-            property_schema = condition.get("properties", {}).get(
-                discriminator,
-                {},
-            )
-            matches = property_schema.get("const") == value or (
-                property_schema.get("enum") == [value]
-            )
-            if matches and required in consequence.get("required", []):
-                return True
-    return False
 
 
 def test_vercel_siblings_share_one_nonlocal_readiness_contract() -> None:
@@ -384,20 +360,15 @@ def test_image_tools_have_native_runtime_outcomes() -> None:
 
 def test_vercel_deploy_schema_has_upload_and_github_requirements() -> None:
     schema = builtin_model_definition("vercel_deploy")["function"]["parameters"]
+    descriptions = " ".join(
+        str(value.get("description") or "")
+        for value in schema["properties"].values()
+    ).lower()
 
     assert schema["properties"]["deploy_method"]["default"] == "upload"
-    assert _conditional_requirement(
-        schema,
-        discriminator="deploy_method",
-        value="upload",
-        required="source_dir",
-    )
-    assert _conditional_requirement(
-        schema,
-        discriminator="deploy_method",
-        value="github",
-        required="github_repo",
-    )
+    assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
+    assert "required when deploy_method='upload'" in descriptions
+    assert "required when deploy_method='github'" in descriptions
 
 
 def test_vercel_domain_bind_schema_requires_project_name_conditionally() -> None:
@@ -405,12 +376,10 @@ def test_vercel_domain_bind_schema_requires_project_name_conditionally() -> None
         "parameters"
     ]
 
-    assert _conditional_requirement(
-        schema,
-        discriminator="action",
-        value="bind",
-        required="project_name",
-    )
+    assert {"anyOf", "oneOf", "allOf"}.isdisjoint(schema)
+    assert "required for 'bind'" in schema["properties"]["project_name"][
+        "description"
+    ].lower()
 
 
 def test_vercel_env_targets_cannot_be_an_empty_list() -> None:

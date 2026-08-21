@@ -1,7 +1,6 @@
 """WeChat iLink Bot channel API routes."""
 
 from __future__ import annotations
-from typing import Any
 
 import asyncio
 import uuid
@@ -58,7 +57,7 @@ async def create_wechat_qrcode(
     agent_id: uuid.UUID,
     data: dict | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -85,7 +84,7 @@ async def get_wechat_qrcode_status(
     qrcode: str,
     route_tag: str | None = None,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -158,7 +157,7 @@ async def get_wechat_qrcode_image(
     agent_id: uuid.UUID,
     url: str,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
@@ -178,7 +177,7 @@ async def get_wechat_qrcode_image(
 async def get_wechat_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     await check_agent_access(db, current_user, agent_id)
     result = await query_dao.execute(db, 
@@ -197,7 +196,7 @@ async def get_wechat_channel(
 async def delete_wechat_channel(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     agent, _ = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):

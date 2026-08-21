@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Protocol
 
 from sqlalchemy import select
 
@@ -11,6 +13,41 @@ from app.models.agent_run_command import AgentRunCommand
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.node_executor import CancelSignal
 from app.services.agent_runtime.state import RuntimeContext, RuntimeGraphState
+from app.services.agent_runtime.tool_contracts import ToolCancelCapability
+
+
+class CancelPollSource(Protocol):
+    async def get_cancel(
+        self,
+        state: RuntimeGraphState,
+        context: RuntimeContext,
+    ) -> CancelSignal | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeToolCancelToken:
+    """Poll durable Run cancellation and describe adapter capability."""
+
+    source: CancelPollSource
+    state: RuntimeGraphState
+    context: RuntimeContext
+    capability: ToolCancelCapability
+
+    async def poll(self) -> CancelSignal | None:
+        return await self.source.get_cancel(self.state, self.context)
+
+    def telemetry(self, signal: CancelSignal) -> dict[str, object]:
+        return {
+            "cancel_requested": True,
+            "cancel_command_id": signal.command_id,
+            "cancel_reason": signal.reason,
+            "cancel_capability": self.capability,
+            "cancel_propagation": (
+                "cooperative_task_cancelled"
+                if self.capability == "cooperative"
+                else "stop_waiting_only"
+            ),
+        }
 
 
 class RuntimeCancelSourceError(RuntimeError):
@@ -84,4 +121,5 @@ class DatabaseRuntimeCancelSource:
 __all__ = [
     "DatabaseRuntimeCancelSource",
     "RuntimeCancelSourceError",
+    "RuntimeToolCancelToken",
 ]

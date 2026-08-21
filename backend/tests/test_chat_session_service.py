@@ -8,6 +8,7 @@ import uuid
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.models.audit import ChatMessage
 from app.services import chat_session_service
 
 
@@ -88,6 +89,56 @@ def _session(
         created_at=now,
         last_message_at=now,
     )
+
+
+@pytest.mark.asyncio
+async def test_save_tool_call_log_persists_agent_tenant(monkeypatch):
+    tenant_id, agent_id, user_id, _ = _scope()
+
+    class ToolLogDB:
+        def __init__(self):
+            self.added = []
+            self.committed = False
+
+        async def scalar(self, statement):
+            assert str(agent_id) in _sql(statement)
+            return tenant_id
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def commit(self):
+            self.committed = True
+
+    db = ToolLogDB()
+
+    class SessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("app.database.async_session", lambda: SessionContext())
+
+    await chat_session_service.save_tool_call_log(
+        agent_id=agent_id,
+        user_id=user_id,
+        conversation_id=str(uuid.uuid4()),
+        tool_name="list_files",
+        arguments={"path": "workspace"},
+        result="ok",
+        tool_call_id="call-1",
+    )
+
+    assert db.committed is True
+    assert len(db.added) == 1
+    message = db.added[0]
+    assert isinstance(message, ChatMessage)
+    assert message.tenant_id == tenant_id
+    assert message.agent_id == agent_id
+    assert message.user_id == user_id
+    assert message.role == "tool_call"
 
 
 @pytest.mark.asyncio

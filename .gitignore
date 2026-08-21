@@ -43,6 +43,12 @@ backend/tests/test_agent_api_live.py
 .coaligne/
 .clawith-local-designs/
 
+# Local generated and temporary artifacts
+/.tmp/
+/tmp/
+/outputs/
+/docs/internal/
+
 # Local Toolathlon benchmark harness (never commit or deploy)
 backend/app/scripts/toolathlon_benchmark.py
 backend/app/services/agent_runtime/benchmark/

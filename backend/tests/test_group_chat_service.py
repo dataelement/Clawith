@@ -840,3 +840,64 @@ async def test_unread_count_uses_message_position_and_excludes_the_reader() -> N
     assert "chat_messages.created_at =" in count_sql
     assert "chat_messages.id >" in count_sql
     assert f"chat_messages.participant_id != '{actor.id}'" in count_sql
+
+
+@pytest.mark.asyncio
+async def test_unread_count_treats_a_missing_watermark_message_as_unread(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    actor = _participant("user", user_id)
+    group = _group(tenant_id, actor.id)
+    session = _session(tenant_id, group.id, actor.id, primary=True)
+    missing_message_id = uuid.uuid4()
+    membership = _membership(
+        group.id,
+        actor.id,
+        read_state={
+            str(session.id): {
+                "last_read_message_id": str(missing_message_id),
+                "last_read_at": NOW.isoformat(),
+            }
+        },
+    )
+    db = _RecordingDB(
+        _Result([group]),
+        _Result([membership]),
+        _Result([actor]),
+        _Result([user_id]),
+        _Result([session]),
+        _Result(),
+        _Result([4]),
+    )
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        group_chat_service.logger,
+        "warning",
+        lambda _message, *args: warnings.append(args),
+    )
+
+    count = await group_chat_service.get_group_session_unread_count(
+        db,
+        tenant_id=tenant_id,
+        group_id=group.id,
+        session_id=session.id,
+        participant_id=actor.id,
+    )
+
+    assert count == 4
+    watermark_sql = _sql(db.statements[-2])
+    count_sql = _sql(db.statements[-1])
+    assert f"chat_messages.tenant_id = '{tenant_id}'" in watermark_sql
+    assert f"chat_messages.tenant_id = '{tenant_id}'" in count_sql
+    assert "chat_messages.created_at >" not in count_sql
+    assert warnings == [
+        (
+            tenant_id,
+            group.id,
+            session.id,
+            actor.id,
+            missing_message_id,
+        )
+    ]

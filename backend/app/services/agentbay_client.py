@@ -286,7 +286,10 @@ class AgentBayClient:
         if not self._session or self._image_type not in ("code", "code_latest"):
             await self.create_session("code_latest")
 
-        result = await asyncio.to_thread(self._session.code.run_code, code, sdk_lang)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(self._session.code.run_code, code, sdk_lang),
+            timeout=timeout,
+        )
 
         return {
             "stdout": result.result if result.success else "",
@@ -295,18 +298,26 @@ class AgentBayClient:
             "success": result.success,
         }
 
-    async def code_read_file(self, remote_path: str):
+    async def code_read_file(self, remote_path: str, timeout: int = 30):
         """Read a code-sandbox file while preserving the SDK result facts."""
         if not self._session or self._image_type not in ("code", "code_latest"):
             await self.create_session("code_latest")
-        return await asyncio.to_thread(
-            self._session.file_system.read_file,
-            remote_path,
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                self._session.file_system.read_file,
+                remote_path,
+            ),
+            timeout=timeout,
         )
 
     # ─── Browser: Extract & Observe ───────────────────
 
-    async def browser_extract(self, instruction: str, selector: str = "") -> dict:
+    async def browser_extract(
+        self,
+        instruction: str,
+        selector: str = "",
+        timeout: int = 30,
+    ) -> dict:
         """Extract structured data from current page using natural language instruction."""
         await self._ensure_browser_initialized()
         
@@ -320,15 +331,21 @@ class AgentBayClient:
             schema=GenericExtractSchema,
             selector=selector or None,
         )
-        success, data = await asyncio.to_thread(
-            self._session.browser.operator.extract, options
+        success, data = await asyncio.wait_for(
+            asyncio.to_thread(self._session.browser.operator.extract, options),
+            timeout=timeout,
         )
         if success and data:
             if hasattr(data, "model_dump"):
                 data = data.model_dump()
         return {"success": success, "data": data}
 
-    async def browser_observe(self, instruction: str, selector: str = "") -> dict:
+    async def browser_observe(
+        self,
+        instruction: str,
+        selector: str = "",
+        timeout: int = 30,
+    ) -> dict:
         """Observe the current page state and return interactive elements."""
         await self._ensure_browser_initialized()
         
@@ -340,8 +357,9 @@ class AgentBayClient:
             instruction=instruction,
             selector=selector or None,
         )
-        success, results = await asyncio.to_thread(
-            self._session.browser.operator.observe, options
+        success, results = await asyncio.wait_for(
+            asyncio.to_thread(self._session.browser.operator.observe, options),
+            timeout=timeout,
         )
         # Convert ObserveResult objects to dicts for serialization
         result_dicts = []

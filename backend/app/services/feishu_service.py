@@ -27,6 +27,7 @@ FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token
 FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
+FEISHU_CHAT_LIST_URL = "https://open.feishu.cn/open-apis/im/v1/chats"
 
 class FeishuAPIError(RuntimeError):
     """Structured Feishu API error that preserves provider-returned details."""
@@ -175,6 +176,27 @@ class FeishuService:
                 self._app_access_token = token
                 
             return token
+
+    async def list_bot_chats(
+        self,
+        app_id: str,
+        app_secret: str,
+        *,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> dict:
+        """List groups joined by the configured bot using app identity."""
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        params: dict[str, str | int] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                FEISHU_CHAT_LIST_URL,
+                headers={"Authorization": f"Bearer {tenant_token}"},
+                params=params,
+            )
+        return self._parse_api_response(response, stage="list_bot_chats")
 
     async def exchange_code_for_user(self, code: str) -> dict:
         """Exchange OAuth authorization code for user info.
@@ -406,6 +428,28 @@ class FeishuService:
             )
             data = self._parse_api_response(resp, stage=stage, message_id=message_id)
             return data
+
+    async def add_message_reaction(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        emoji_type: str,
+        stage: str = "add_message_reaction",
+    ) -> dict:
+        """Add one bot-identity reaction to an existing Feishu message."""
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": app_id, "app_secret": app_secret},
+            )
+            app_token = token_resp.json().get("app_access_token", "")
+            resp = await client.post(
+                f"{FEISHU_SEND_MSG_URL}/{message_id}/reactions",
+                json={"reaction_type": {"emoji_type": emoji_type}},
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+        return self._parse_api_response(resp, stage=stage, message_id=message_id)
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:

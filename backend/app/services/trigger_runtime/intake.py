@@ -19,6 +19,7 @@ from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
 from app.services.chat_session_service import ensure_primary_platform_session
+from app.services.feishu_group_targets import resolve_feishu_group_target
 from app.services.participant_identity import get_or_create_agent_participant
 from app.services.trigger_runtime.executions import build_execution_runtime_trigger
 
@@ -205,8 +206,17 @@ async def _resolve_trigger_delivery_target(
     *,
     agent: Agent,
     trigger: AgentTrigger,
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     """Resolve only user-facing direct delivery; A2A is migrated separately."""
+    delivery_target_id = getattr(trigger, "delivery_target_id", None)
+    if delivery_target_id is not None:
+        return (
+            await resolve_feishu_group_target(
+                db,
+                agent_id=agent.id,
+                target_recipient_id=delivery_target_id,
+            )
+        ).delivery_target()
     config = _trigger_config(trigger)
     if config.get("_a2a_session_id") or config.get("_origin_source_channel") == "agent":
         return None
@@ -287,11 +297,9 @@ async def enqueue_trigger_runtime(
         agent=agent,
         trigger=runtime_trigger,
     )
-    origin_user_id = (
-        uuid.UUID(delivery_target["user_id"])
-        if delivery_target is not None
-        else agent.creator_id
-    )
+    origin_user_id = agent.creator_id
+    if delivery_target is not None and delivery_target.get("user_id"):
+        origin_user_id = uuid.UUID(str(delivery_target["user_id"]))
     execution_id = str(execution.id)
     handle = await RuntimeCommandIntake(
         db,

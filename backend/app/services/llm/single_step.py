@@ -46,6 +46,7 @@ async def complete_llm_once(
     tools: list[dict] | None = None,
     agent_id: uuid.UUID | None = None,
     supports_vision: bool = False,
+    max_output_tokens: int | None = None,
 ) -> LLMCompletionStep:
     """Call one pinned model exactly once and normalize its tool proposals.
 
@@ -68,7 +69,11 @@ async def complete_llm_once(
             max_tokens=get_max_tokens(
                 model.provider,
                 model.model,
-                getattr(model, "max_output_tokens", None),
+                (
+                    max_output_tokens
+                    if max_output_tokens is not None
+                    else getattr(model, "max_output_tokens", None)
+                ),
             ),
         )
     finally:

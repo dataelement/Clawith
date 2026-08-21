@@ -1,10 +1,15 @@
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
 
-from app.api.enterprise import _llm_management_tenant_id, _llm_model_scope
+from app.api.enterprise import (
+    _llm_management_tenant_id,
+    _llm_model_scope,
+    list_llm_models,
+)
 
 
 def _user(tenant_id: uuid.UUID, role: str = "org_admin") -> SimpleNamespace:
@@ -24,6 +29,20 @@ def test_platform_admin_can_select_another_tenant_for_llm_models() -> None:
     target_tenant_id = uuid.uuid4()
 
     assert _llm_management_tenant_id(_user(uuid.uuid4(), "platform_admin"), str(target_tenant_id)) == target_tenant_id
+
+
+@pytest.mark.asyncio
+async def test_list_llm_models_accepts_resolved_uuid_tenant_scope() -> None:
+    tenant_id = uuid.uuid4()
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    db.execute.return_value = result
+
+    assert await list_llm_models(current_user=_user(tenant_id), db=db) == []
+
+    statement = db.execute.await_args.args[0]
+    assert tenant_id.hex in str(statement.compile(compile_kwargs={"literal_binds": True}))
 
 
 def test_org_admin_model_mutation_query_is_tenant_scoped() -> None:

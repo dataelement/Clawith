@@ -1,4 +1,3 @@
-from typing import Any
 """Schedule API — CRUD for agent cron jobs."""
 
 import uuid
@@ -16,6 +15,7 @@ from app.database import get_db
 from app.models.schedule import AgentSchedule
 from app.models.user import User
 from app.services.heartbeat_runtime import enqueue_schedule_runtime
+from app.services.feishu_group_targets import FeishuGroupTargetError, resolve_feishu_group_target
 from app.services.scheduler import compute_next_run
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
@@ -26,6 +26,7 @@ class ScheduleCreate(BaseModel):
     instruction: str = Field(default='', max_length=5000)
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
+    delivery_target_id: uuid.UUID | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -33,6 +34,7 @@ class ScheduleUpdate(BaseModel):
     instruction: str | None = None
     cron_expr: str | None = None
     is_enabled: bool | None = None
+    delivery_target_id: uuid.UUID | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -48,6 +50,7 @@ class ScheduleOut(BaseModel):
     created_by: uuid.UUID | None = None
     creator_username: str | None = None
     created_at: datetime | None = None
+    delivery_target_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -56,7 +59,7 @@ class ScheduleOut(BaseModel):
 async def list_schedules(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List all schedules for an agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -85,7 +88,7 @@ async def create_schedule(
     agent_id: uuid.UUID,
     data: ScheduleCreate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new schedule for an agent."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -96,6 +99,11 @@ async def create_schedule(
     next_run = compute_next_run(data.cron_expr)
     if not next_run:
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
+    if data.delivery_target_id is not None:
+        try:
+            await resolve_feishu_group_target(db, agent_id=agent_id, target_recipient_id=data.delivery_target_id)
+        except FeishuGroupTargetError as exc:
+            raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
     sched = AgentSchedule(
         agent_id=agent_id,
@@ -105,6 +113,7 @@ async def create_schedule(
         is_enabled=data.is_enabled,
         next_run_at=next_run if data.is_enabled else None,
         created_by=current_user.id,
+        delivery_target_id=data.delivery_target_id,
     )
     query_dao.add(db, sched)
     await query_dao.flush(db)
@@ -117,7 +126,7 @@ async def update_schedule(
     schedule_id: uuid.UUID,
     data: ScheduleUpdate,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a schedule."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -132,6 +141,11 @@ async def update_schedule(
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     updates = data.model_dump(exclude_unset=True)
+    if "delivery_target_id" in updates and updates["delivery_target_id"] is not None:
+        try:
+            await resolve_feishu_group_target(db, agent_id=agent_id, target_recipient_id=updates["delivery_target_id"])
+        except FeishuGroupTargetError as exc:
+            raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
     for field, value in updates.items():
         setattr(sched, field, value)
 
@@ -151,7 +165,7 @@ async def delete_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a schedule."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -174,7 +188,7 @@ async def trigger_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger a schedule execution."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
@@ -194,6 +208,7 @@ async def trigger_schedule(
         schedule_id=sched.id,
         occurrence_id=uuid.uuid4(),
         instruction=sched.instruction,
+        delivery_target_id=getattr(sched, "delivery_target_id", None),
     )
     if handle is None:
         raise HTTPException(
@@ -217,7 +232,7 @@ async def get_schedule_history(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get execution history for a schedule from activity logs."""
     await check_agent_access(db, current_user, agent_id)

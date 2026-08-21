@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from loguru import logger
+
 from app.dao import query_dao
 from app.models.trigger import AgentTrigger
 from app.services.trigger_runtime.keys import build_scheduled_execution_key
@@ -31,12 +33,22 @@ def runtime_execution_payload(trigger: AgentTrigger) -> dict:
     return payload
 
 
-async def enqueue_due_trigger(trigger: AgentTrigger, now: datetime) -> None:
+async def enqueue_due_trigger(trigger: AgentTrigger, scheduled_at: datetime) -> None:
     async with query_dao.session() as db:
-        await enqueue_trigger_execution(
-            db,
-            trigger=trigger,
-            source=trigger.type,
-            idempotency_key=build_scheduled_execution_key(trigger, now),
-            payload_obj=runtime_execution_payload(trigger),
-        )
+        try:
+            await enqueue_trigger_execution(
+                db,
+                trigger=trigger,
+                source=trigger.type,
+                idempotency_key=build_scheduled_execution_key(trigger, scheduled_at),
+                scheduled_at=scheduled_at,
+                payload_obj=runtime_execution_payload(trigger),
+            )
+        except Exception as error:
+            logger.bind(
+                trigger_id=str(trigger.id),
+                trigger_name=trigger.name,
+                trigger_type=trigger.type,
+                scheduled_at=scheduled_at.isoformat(),
+            ).error("Trigger occurrence registration failed: {}", error)
+            raise

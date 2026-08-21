@@ -8,7 +8,6 @@ from typing import Annotated, Literal, NotRequired, Protocol, TypeAlias, TypedDi
 from langchain_core.messages import AnyMessage, BaseMessage, convert_to_openai_messages
 from langgraph.graph.message import add_messages
 
-
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
@@ -105,11 +104,16 @@ class RuntimeLifecycle(TypedDict):
     reason: NotRequired[str | None]
     model_step_count: NotRequired[int]
     model_protocol_repairs: NotRequired[JsonObject]
+    tool_repair_episodes: NotRequired[JsonObject]
+    tool_repair_reset: NotRequired[JsonObject]
     verification_attempt_count: NotRequired[int]
+    verification_repair_episode: NotRequired[JsonObject]
     pending_tool_calls: NotRequired[list[JsonObject]]
+    step_tool_context: NotRequired[JsonObject | None]
     pending_group_at: NotRequired[JsonObject | None]
     deferred_resume_messages: NotRequired[list[JsonObject]]
     waiting_request: NotRequired[JsonObject | None]
+    resumed_waiting_request: NotRequired[JsonObject]
     verification_result: NotRequired[JsonObject | None]
     final_answer: NotRequired[str | None]
     finish_delivery_intent: NotRequired[JsonObject | None]
@@ -185,7 +189,7 @@ class RuntimeNodeExecutor(Protocol):
         self,
         node: RuntimeNodeName,
         state: RuntimeGraphState,
-        context: "RuntimeContext",
+        context: RuntimeContext,
         *,
         resume_value: JsonValue | None = None,
     ) -> RuntimeStateUpdate: ...

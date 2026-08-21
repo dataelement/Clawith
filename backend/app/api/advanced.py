@@ -1,4 +1,3 @@
-from typing import Any
 """Agent collaboration and template market API routes."""
 
 import uuid
@@ -37,7 +36,7 @@ class InterAgentMessage(BaseModel):
 async def list_collaborators(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """List agents that can collaborate with this agent."""
     await check_agent_access(db, current_user, agent_id)
@@ -49,7 +48,7 @@ async def delegate_task(
     agent_id: uuid.UUID,
     data: DelegateRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Delegate a task from one agent to another."""
     await check_agent_access(db, current_user, agent_id)
@@ -67,7 +66,7 @@ async def send_inter_agent_message(
     agent_id: uuid.UUID,
     data: InterAgentMessage,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Send a message between agents."""
     await check_agent_access(db, current_user, agent_id)
@@ -164,7 +163,7 @@ async def handover_agent(
     agent_id: uuid.UUID,
     data: HandoverRequest,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Transfer ownership of a digital employee to another user."""
     from app.models.audit import AuditLog
@@ -206,7 +205,7 @@ async def handover_agent(
 async def get_agent_metrics(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Any = None,
+    db: AsyncSession = Depends(get_db),
 ):
     """Get observability metrics for an agent."""
     agent, _access = await check_agent_access(db, current_user, agent_id)

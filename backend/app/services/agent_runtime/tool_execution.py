@@ -7,16 +7,17 @@ executed, or must the Runtime reuse/reconcile an earlier outcome?
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import re
 import unicodedata
-from typing import Any, Callable, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_run import AgentRun
 from app.models.agent_tool_execution import AgentToolExecution
-
+from app.services.builtin_tool_definitions import BUILTIN_TOOL_NAMES
 
 ToolExecutionStatus = Literal[
     "not_started",
@@ -35,7 +36,16 @@ ToolExecutionStatus = Literal[
 ]
 SideEffectClassification = Literal["read", "write", "external_write"]
 RetryPolicy = Literal["safe", "conditional", "never"]
-SAFE_READ_MAX_ATTEMPTS = 3
+ToolModelAction = Literal[
+    "continue",
+    "repair_arguments",
+    "choose_other_tool",
+    "ask_user",
+    "wait",
+    "reconcile",
+]
+ToolSideEffectState = Literal["none", "confirmed", "possible", "unknown"]
+SAFE_READ_MAX_ATTEMPTS = 10
 
 # These tools dispatch an external image-generation request and can therefore
 # leave the provider outcome uncertain after a response timeout.  Direct Chat
@@ -52,6 +62,18 @@ _IMAGE_GENERATION_TOOL_NAMES = frozenset(
 _PERSISTED_STATUSES = frozenset({"started", "succeeded", "failed", "unknown"})
 _SIDE_EFFECT_CLASSIFICATIONS = frozenset({"read", "write", "external_write"})
 _RETRY_POLICIES = frozenset({"safe", "conditional", "never"})
+_MODEL_ACTIONS = frozenset(
+    {
+        "continue",
+        "repair_arguments",
+        "choose_other_tool",
+        "ask_user",
+        "wait",
+        "reconcile",
+    }
+)
+_SIDE_EFFECT_STATES = frozenset({"none", "confirmed", "possible", "unknown"})
+_SAFE_REMEDIATION_MAX_BYTES = 512
 _METADATA_KEY = "__clawith_tool_execution__"
 _METADATA_VERSION = 1
 _RESULT_METADATA_MAX_BYTES = 16 * 1024
@@ -60,6 +82,13 @@ _RESULT_METADATA_KEYS = frozenset(
         "error_code",
         "error_class",
         "retryable",
+        "model_action",
+        "side_effect_state",
+        "safe_remediation",
+        "execution_id",
+        "call_instance_id",
+        "provider_call_id",
+        "contract_version",
         "artifact_refs",
         "evidence_refs",
         "nul_replacements",
@@ -97,6 +126,8 @@ _RESULT_METADATA_KEYS = frozenset(
         "status",
         "changed_fields",
         "content_truncated",
+        "document_processed_scope",
+        "document_truncation_reasons",
         "okr_content_hash",
         "stored_character_count",
         "source",
@@ -107,9 +138,19 @@ _RESULT_METADATA_KEYS = frozenset(
         "updated_refs",
         "report_type",
         "workspace_path",
+        "workspace_candidate_ref",
+        "workspace_resolution_status",
+        "workspace_saved_count",
+        "workspace_pending_count",
+        "workspace_conflicted_count",
+        "workspace_unverified_count",
         "db_status",
         "projection_status",
         "provider",
+        "provider_http_status",
+        "provider_code",
+        "provider_msg",
+        "provider_response_body",
         "operation",
         "project_id",
         "project_name",
@@ -135,18 +176,30 @@ _RESULT_METADATA_KEYS = frozenset(
         "runtime_retry_pending",
         "runtime_retry_exhausted",
         "last_error_code",
+        "deadline_policy",
+        "deadline_seconds",
+        "deadline_exceeded",
+        "cancel_requested",
+        "cancel_command_id",
+        "cancel_reason",
+        "cancel_capability",
+        "cancel_propagation",
+        "lease_renewed",
+        "lease_fenced",
         "runtime_async_pending",
         "async_operation",
         "async_poll_due_at",
         "async_poll_correlation_id",
         "async_poll_call_id",
         "async_poll_scheduled",
+        "async_poll_failure_count",
         "external_reconciliation",
         "reconciled_by_user_id",
         "reconciled_at",
         "reconciliation_note",
         "original_status",
         "original_completed_at",
+        "workspace_resolution_action",
     }
 )
 _SENSITIVE_KEYS = frozenset(
@@ -177,7 +230,7 @@ _SENSITIVE_KEYS = frozenset(
 )
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|"
-    r"authorization|cookie|dsn|client[_-]?secret)\b(\s*[:=]\s*)"
+    r"authorization|cookie|dsn|secret|client[_-]?secret)\b(\s*[:=]\s*)"
     r"(?:bearer\s+)?([^\s,;]+)"
 )
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
@@ -303,6 +356,14 @@ def _normalize_text(value: str, *, redact: bool) -> tuple[str, int, int, int]:
         return normalized, nul_replacements, control_replacements, 0
     redacted, redaction_count = _redact_text(normalized)
     return redacted, nul_replacements, control_replacements, redaction_count
+
+
+def sanitize_tool_feedback_text(value: str, *, max_bytes: int = 512) -> str:
+    """Return bounded, secret-redacted text safe for durable projections."""
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    normalized, _, _, _ = _normalize_text(value, redact=True)
+    return _truncate_utf8(normalized.strip(), max_bytes)
 
 
 def _sanitize_json(value: Any, *, sensitive: bool = False) -> Any:
@@ -453,6 +514,26 @@ def normalize_tool_outcome(
             "invalid_tool_outcome",
             "tool outcome error_code must be a string or null",
         )
+    if outcome.model_action is not None and outcome.model_action not in _MODEL_ACTIONS:
+        raise ToolExecutionError(
+            "invalid_tool_outcome",
+            "tool outcome model_action is invalid",
+        )
+    if (
+        outcome.side_effect_state is not None
+        and outcome.side_effect_state not in _SIDE_EFFECT_STATES
+    ):
+        raise ToolExecutionError(
+            "invalid_tool_outcome",
+            "tool outcome side_effect_state is invalid",
+        )
+    if outcome.safe_remediation is not None and not isinstance(
+        outcome.safe_remediation, str
+    ):
+        raise ToolExecutionError(
+            "invalid_tool_outcome",
+            "tool outcome safe_remediation must be a string or null",
+        )
     if not isinstance(outcome.retryable, bool) or not isinstance(
         outcome.metadata, dict
     ):
@@ -522,6 +603,33 @@ def normalize_tool_outcome(
         nul_replacements += nul_count
         control_replacements += control_count
         error_code = error_code[:200] or None
+    model_action = outcome.model_action or {
+        "succeeded": "continue",
+        "failed": "choose_other_tool",
+        "pending": "wait",
+        "unknown": "reconcile",
+    }[outcome.status]
+    side_effect_state = outcome.side_effect_state or {
+        "succeeded": "confirmed",
+        "failed": "none",
+        "pending": "possible",
+        "unknown": "unknown",
+    }[outcome.status]
+    safe_remediation = outcome.safe_remediation
+    if safe_remediation is not None:
+        (
+            safe_remediation,
+            remediation_nul,
+            remediation_control,
+            remediation_redactions,
+        ) = _normalize_text(safe_remediation, redact=True)
+        nul_replacements += remediation_nul
+        control_replacements += remediation_control
+        redaction_count += remediation_redactions
+        safe_remediation = _truncate_utf8(
+            safe_remediation.strip(),
+            _SAFE_REMEDIATION_MAX_BYTES,
+        ) or None
 
     archived_body: str | None = None
     summary_truncated = False
@@ -545,6 +653,9 @@ def normalize_tool_outcome(
             **outcome.metadata,
             "error_code": error_code,
             "retryable": retryable,
+            "model_action": model_action,
+            "side_effect_state": side_effect_state,
+            "safe_remediation": safe_remediation,
             "artifact_refs": list(refs[0]),
             "evidence_refs": list(refs[1]),
             "nul_replacements": nul_replacements,
@@ -568,6 +679,9 @@ def normalize_tool_outcome(
             result_ref=result_ref,
             error_code=error_code,
             retryable=retryable,
+            model_action=cast(ToolModelAction, model_action),
+            side_effect_state=cast(ToolSideEffectState, side_effect_state),
+            safe_remediation=safe_remediation,
             artifact_refs=refs[0],
             evidence_refs=refs[1],
             metadata=metadata,
@@ -586,6 +700,9 @@ class ToolExecutionOutcome:
     result_ref: str | None
     error_code: str | None = None
     retryable: bool = False
+    model_action: ToolModelAction | None = None
+    side_effect_state: ToolSideEffectState | None = None
+    safe_remediation: str | None = None
     artifact_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -865,6 +982,8 @@ def _require_exact_request(
     request_ref: str | None,
     side_effect_classification: str,
     retry_policy: str,
+    provider_call_id: str | None,
+    contract_version: str | None,
 ) -> None:
     expected = {
         "tool_name": tool_name,
@@ -873,6 +992,13 @@ def _require_exact_request(
         "request_ref": request_ref,
     }
     mismatched = [field for field, value in expected.items() if getattr(existing, field) != value]
+    for identity_field, value in (
+        ("provider_call_id", provider_call_id),
+        ("contract_version", contract_version),
+    ):
+        stored = getattr(existing, identity_field, None)
+        if stored is not None and stored != value:
+            mismatched.append(identity_field)
     if _execution_arguments(existing) != stored_arguments:
         mismatched.append("sanitized_arguments")
     if _execution_metadata(existing) != (side_effect_classification, retry_policy):
@@ -905,6 +1031,21 @@ def _outcome(execution: AgentToolExecution) -> ToolExecutionOutcome:
             else None
         ),
         retryable=metadata.get("retryable") is True,
+        model_action=(
+            cast(ToolModelAction, metadata["model_action"])
+            if metadata.get("model_action") in _MODEL_ACTIONS
+            else None
+        ),
+        side_effect_state=(
+            cast(ToolSideEffectState, metadata["side_effect_state"])
+            if metadata.get("side_effect_state") in _SIDE_EFFECT_STATES
+            else None
+        ),
+        safe_remediation=(
+            str(metadata["safe_remediation"])
+            if isinstance(metadata.get("safe_remediation"), str)
+            else None
+        ),
         artifact_refs=tuple(
             str(value) for value in artifact_refs if isinstance(value, str)
         ) if isinstance(artifact_refs, list) else (),
@@ -1127,6 +1268,8 @@ async def reserve_tool_execution(
     request_ref: str | None,
     side_effect_classification: SideEffectClassification,
     retry_policy: RetryPolicy,
+    provider_call_id: str | None = None,
+    contract_version: str | None = None,
     lease_owner: str,
     lease_ttl_seconds: int,
     resume_safe_read: bool = False,
@@ -1150,6 +1293,10 @@ async def reserve_tool_execution(
         lease_ttl_seconds=lease_ttl_seconds,
     )
     arguments_hash = fingerprint_arguments(arguments)
+    if provider_call_id is not None:
+        _require_text(provider_call_id, field="provider_call_id", max_length=255)
+    if contract_version is not None:
+        _require_text(contract_version, field="contract_version", max_length=255)
     stored_arguments = _stored_arguments(
         sanitized_arguments,
         side_effect_classification=side_effect_classification,
@@ -1176,6 +1323,8 @@ async def reserve_tool_execution(
             request_ref=request_ref,
             side_effect_classification=side_effect_classification,
             retry_policy=retry_policy,
+            provider_call_id=provider_call_id,
+            contract_version=contract_version,
         )
         prior_status = existing.status
         decision = _decision_for_existing(
@@ -1194,6 +1343,8 @@ async def reserve_tool_execution(
         tenant_id=tenant_id,
         run_id=run_id,
         tool_call_id=tool_call_id,
+        provider_call_id=provider_call_id,
+        contract_version=contract_version,
         tool_name=tool_name,
         assistant_message_id=assistant_message_id,
         arguments_hash=arguments_hash,
@@ -1242,6 +1393,8 @@ async def reserve_tool_execution(
             request_ref=request_ref,
             side_effect_classification=side_effect_classification,
             retry_policy=retry_policy,
+            provider_call_id=provider_call_id,
+            contract_version=contract_version,
         )
         # A concurrent winner has already crossed into started.  Even when its
         # lease later expires, the losing worker may not execute the call.
@@ -1842,6 +1995,7 @@ async def reconcile_unknown_tool_execution(
     confirmed_status: Literal["succeeded", "failed"],
     confirmed_by_user_id: uuid.UUID,
     note: str,
+    resolution_action: Literal["applied", "not_applied", "keep_workspace"] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> AgentToolExecution:
     """Settle one unknown receipt from an explicit, audited human confirmation."""
@@ -1871,7 +2025,7 @@ async def reconcile_unknown_tool_execution(
     if not is_user_reconcilable_unknown_execution(execution):
         raise ToolExecutionError(
             "tool_execution_reconciliation_not_supported",
-            "manual reconciliation is only supported for conditional write_file or image-generation receipts",
+            "manual reconciliation is not supported for this Tool receipt",
         )
 
     prior_metadata = (
@@ -1890,18 +2044,28 @@ async def reconcile_unknown_tool_execution(
 
     reconciled_at = (clock or (lambda: datetime.now(UTC)))()
     original_completed_at = execution.completed_at
-    error_code = (
-        "externally_confirmed_applied"
-        if confirmed_status == "succeeded"
-        else "externally_confirmed_not_applied"
+    action = resolution_action or (
+        "applied" if confirmed_status == "succeeded" else "not_applied"
     )
-    summary = (
-        f"User confirmed that the prior {execution.tool_name} operation took "
-        "effect. Do not repeat it."
-        if confirmed_status == "succeeded"
-        else f"User confirmed that the prior {execution.tool_name} operation "
-        "did not take effect. A new tool call may retry it safely."
-    )
+    if action == "keep_workspace":
+        error_code = "externally_confirmed_workspace_preserved"
+        summary = (
+            f"User chose to preserve the current Workspace instead of applying "
+            f"the prior {execution.tool_name} candidate. Do not repeat the "
+            "original Tool call automatically."
+        )
+    elif confirmed_status == "succeeded":
+        error_code = "externally_confirmed_applied"
+        summary = (
+            f"User confirmed that the prior {execution.tool_name} operation took "
+            "effect. Do not repeat it."
+        )
+    else:
+        error_code = "externally_confirmed_not_applied"
+        summary = (
+            f"User confirmed that the prior {execution.tool_name} operation "
+            "did not take effect. A new tool call may retry it safely."
+        )
     execution.status = confirmed_status
     execution.result_summary = summary
     if confirmed_status == "failed":
@@ -1915,6 +2079,7 @@ async def reconcile_unknown_tool_execution(
             "reconciled_by_user_id": str(confirmed_by_user_id),
             "reconciled_at": reconciled_at.isoformat(),
             "reconciliation_note": normalized_note,
+            "workspace_resolution_action": action,
             "original_status": "unknown",
             "original_completed_at": (
                 original_completed_at.isoformat()
@@ -1938,12 +2103,35 @@ def is_user_reconcilable_unknown_execution(execution: AgentToolExecution) -> boo
     new tool call, so the original provider request is never replayed.
     """
     effect, retry_policy = _execution_metadata(execution)
-    return (
-        execution.tool_name == "write_file"
-        and effect == "write"
-        and retry_policy == "conditional"
-    ) or (
-        execution.tool_name in _IMAGE_GENERATION_TOOL_NAMES
+    contract_version = getattr(execution, "contract_version", None)
+    tool_name = str(getattr(execution, "tool_name", "") or "")
+    metadata = (
+        execution.result_metadata
+        if isinstance(execution.result_metadata, dict)
+        else {}
+    )
+    has_workspace_candidate = isinstance(
+        metadata.get("workspace_candidate_ref"),
+        str,
+    ) and bool(metadata.get("workspace_candidate_ref"))
+    is_registered_dynamic_mcp = (
+        tool_name not in BUILTIN_TOOL_NAMES
+        and isinstance(contract_version, str)
+        and contract_version.startswith(f"registered:{tool_name}:")
         and effect == "external_write"
         and retry_policy == "never"
     )
+    is_code_executor = (
+        tool_name in {"execute_code", "execute_code_e2b"}
+        and effect == "external_write"
+        and retry_policy == "never"
+    )
+    return has_workspace_candidate or (
+        tool_name == "write_file"
+        and effect == "write"
+        and retry_policy == "conditional"
+    ) or (
+        tool_name in _IMAGE_GENERATION_TOOL_NAMES
+        and effect == "external_write"
+        and retry_policy == "never"
+    ) or is_registered_dynamic_mcp or is_code_executor

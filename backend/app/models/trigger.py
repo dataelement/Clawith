@@ -32,6 +32,7 @@ class AgentTrigger(Base):
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     focus_ref: Mapped[str | None] = mapped_column(String(200))  # optional: related focus item identifier
+    delivery_target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fire_count: Mapped[int] = mapped_column(Integer, default=0)

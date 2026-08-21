@@ -385,6 +385,102 @@ async def test_calendar_create_requires_event_id_and_attendee_receipts(
 
 
 @pytest.mark.asyncio
+async def test_calendar_create_resolves_all_names_once_before_event_write(
+    monkeypatch,
+) -> None:
+    order: list[str] = []
+    resolver_calls: list[tuple[list[str], str | None]] = []
+    transport = FakeHTTP()
+    transport.add(
+        "post",
+        FakeResponse({"code": 0, "data": {"event": {"event_id": "event-1"}}}),
+        FakeResponse({"code": 0, "data": {}}),
+        FakeResponse({"code": 0, "data": {}}),
+    )
+    install_calendar_provider(monkeypatch, transport)
+    original_request = transport.request
+
+    async def ordered_request(method, url, **kwargs):
+        order.append("event_write" if url.endswith("/events") else "invite_write")
+        return await original_request(method, url, **kwargs)
+
+    async def resolve_names(
+        _agent_id,
+        names,
+        *,
+        live_token=None,
+        raise_live_errors=False,
+    ):
+        order.append("name_lookup")
+        assert raise_live_errors is True
+        resolver_calls.append((list(names), live_token))
+        return {"Alice": "ou_Alice", "Bob": "ou_Bob"}
+
+    transport.request = ordered_request
+    monkeypatch.setattr(
+        agent_tools,
+        "_feishu_open_ids_for_visible_names",
+        resolve_names,
+    )
+
+    outcome = assert_outcome(
+        await execute(
+            "feishu_calendar_create",
+            {
+                "summary": "Review",
+                "start_time": "2026-07-16T10:00:00+08:00",
+                "end_time": "2026-07-16T11:00:00+08:00",
+                "attendee_names": ["Alice", "Bob"],
+            },
+        ),
+        "succeeded",
+    )
+
+    assert outcome.result_ref == "event-1"
+    assert resolver_calls == [(["Alice", "Bob"], "tenant-token")]
+    assert order == ["name_lookup", "event_write", "invite_write", "invite_write"]
+
+
+@pytest.mark.asyncio
+async def test_calendar_lookup_timeout_happens_before_event_write(monkeypatch) -> None:
+    transport = FakeHTTP()
+    install_calendar_provider(monkeypatch, transport)
+
+    async def lookup_timeout(
+        _agent_id,
+        _names,
+        *,
+        live_token=None,
+        raise_live_errors=False,
+    ):
+        assert live_token == "tenant-token"
+        assert raise_live_errors is True
+        raise httpx.ReadTimeout("contact lookup timed out")
+
+    monkeypatch.setattr(
+        agent_tools,
+        "_feishu_open_ids_for_visible_names",
+        lookup_timeout,
+    )
+
+    outcome = assert_outcome(
+        await execute(
+            "feishu_calendar_create",
+            {
+                "summary": "Review",
+                "start_time": "2026-07-16T10:00:00+08:00",
+                "end_time": "2026-07-16T11:00:00+08:00",
+                "attendee_names": ["Alice"],
+            },
+        ),
+        "failed",
+    )
+
+    assert outcome.retryable is True
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
 async def test_calendar_create_missing_event_id_is_unknown(monkeypatch) -> None:
     transport = FakeHTTP()
     transport.add("post", FakeResponse({"code": 0, "data": {"event": {}}}))

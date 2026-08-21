@@ -2,8 +2,12 @@
 
 from loguru import logger
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
+
+
+CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS = 180
+CODE_EXECUTION_MAX_TIMEOUT_SECONDS = 300
 
 
 class SandboxType(str, Enum):
@@ -29,14 +33,24 @@ class SandboxConfig(BaseModel):
     memory_limit: str = "256m"
     allow_network: bool = True
     allow_unsafe_fallback_when_bwrap_missing: bool = False
+    workspace_mode: Literal["merge", "isolated_output"] = "merge"
+    publication_owner: Literal["gateway", "workspace_cas"] = "workspace_cas"
 
     # API sandbox options
     api_key: str = ""
     api_url: str = ""
 
     # Common options
-    default_timeout: int = Field(default=30, ge=1, le=3600)
-    max_timeout: int = Field(default=60, ge=1, le=3600)
+    default_timeout: int = Field(
+        default=CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+        ge=1,
+        le=3600,
+    )
+    max_timeout: int = Field(
+        default=CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+        ge=1,
+        le=3600,
+    )
 
     # Proxy options
     http_proxy: Optional[str] = None
@@ -116,8 +130,16 @@ class SandboxConfig(BaseModel):
                 "allow_unsafe_fallback_when_bwrap_missing",
                 False,
             ),
-            default_timeout=get_value("default_timeout", 30),
-            max_timeout=get_value("max_timeout", 60),
+            workspace_mode=get_value("workspace_mode", "merge"),
+            publication_owner=get_value("publication_owner", "workspace_cas"),
+            default_timeout=get_value(
+                "default_timeout",
+                CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+            ),
+            max_timeout=get_value(
+                "max_timeout",
+                CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+            ),
             http_proxy=get_value("http_proxy", None),
             https_proxy=get_value("https_proxy", None),
             no_proxy=get_value("no_proxy", None),

@@ -558,3 +558,68 @@ async def test_production_verifier_repairs_an_unreadable_current_run_reference()
         "code": "tool_reference_unreadable",
         "reference": reference,
     }
+
+
+@pytest.mark.asyncio
+async def test_vercel_ready_receipt_keeps_unreadable_url_as_a_warning() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    deployment_id = "dpl_ready"
+    url = "https://ready-example.vercel.app"
+    evidence = f"vercel-deployment://{deployment_id}"
+    execution = SimpleNamespace(
+        status="succeeded",
+        tool_call_id="call-vercel",
+        tool_name="vercel_deploy",
+        result_ref=deployment_id,
+        result_metadata={
+            "provider": "vercel",
+            "deployment_id": deployment_id,
+            "deployment_state": "READY",
+            "artifact_refs": [url],
+            "evidence_refs": [evidence],
+        },
+    )
+    session_factory = _factory(_ManyResult([execution]))
+
+    async def unreadable(_reference, _tenant_id, _run_id):
+        return False
+
+    verifier = ToolLedgerRuntimeVerifier(
+        session_factory=session_factory,
+        reference_exists=unreadable,
+    )
+    context = RuntimeContext(
+        tenant_id=str(tenant_id),
+        run_id=str(run_id),
+        command_id=str(uuid.uuid4()),
+        executor=object(),  # type: ignore[arg-type]
+    )
+
+    result = await verifier.verify(  # type: ignore[arg-type]
+        {"lifecycle": {"pending_tool_calls": []}},
+        context,
+        "deployed",
+    )
+
+    assert result.outcome == "pass"
+    assert result.details["artifact_refs"] == [url]
+    assert result.details["evidence_refs"] == [evidence]
+    assert result.details["reference_warnings"] == [
+        {
+            "code": "provider_reference_unreadable",
+            "reference": url,
+            "provider": "vercel",
+            "deployment_id": deployment_id,
+            "deployment_state": "READY",
+            "tool_call_id": "call-vercel",
+        },
+        {
+            "code": "provider_reference_unreadable",
+            "reference": evidence,
+            "provider": "vercel",
+            "deployment_id": deployment_id,
+            "deployment_state": "READY",
+            "tool_call_id": "call-vercel",
+        },
+    ]

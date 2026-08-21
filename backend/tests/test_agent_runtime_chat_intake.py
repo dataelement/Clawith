@@ -348,10 +348,17 @@ async def test_external_group_chat_uses_unified_session_without_native_group_sco
     assert message.user_id is None
     assert message.participant_id == participant.id
     command = start_run.await_args.args[0]
-    assert command.runtime_thread_id is None
-    assert command.scheduling_lane_key is None
-    assert command.scheduling_position_created_at is None
-    assert command.scheduling_position_id is None
+    assert command.runtime_thread_id == str(session.id)
+    assert command.scheduling_lane_key == (
+        f"external_group_thread:{agent.tenant_id}:{session.id}"
+    )
+    assert command.scheduling_position_created_at == message.created_at
+    assert command.scheduling_position_id == message.id
+    assert command.payload["context_cutoff"] == {
+        "message_id": str(message.id),
+        "created_at": message.created_at.isoformat(),
+    }
+    assert command.payload["chat_session_type"] == "group"
     assert command.delivery_target == {
         "kind": "session",
         "session_id": str(session.id),
@@ -436,7 +443,8 @@ async def test_chat_resume_persists_explicit_correlation_with_the_user_message()
             user=user,
             session=session,
             model=model,
-            content="Yes, continue",
+            content="[发送者: Alice] 确认发起 ABC123",
+            display_content="确认发起 ABC123",
             message_id=message_id,
             resume_run_id=run_id,
             resume_correlation_id="confirm-7",
@@ -458,7 +466,8 @@ async def test_chat_resume_persists_explicit_correlation_with_the_user_message()
         "correlation_id": "confirm-7",
         "payload": {
             "message_id": str(message_id),
-            "content": "Yes, continue",
+            "content": "[发送者: Alice] 确认发起 ABC123",
+            "confirmation_text": "确认发起 ABC123",
         },
     }
     assert waiting_run.delivery_target == {
@@ -835,7 +844,11 @@ async def test_direct_resume_exact_retry_remains_idempotent_after_apply() -> Non
         payload={
             "resume_type": "user_input",
             "correlation_id": "confirm-1",
-            "payload": {"message_id": str(message_id), "content": "Continue"},
+            "payload": {
+                "message_id": str(message_id),
+                "content": "Continue",
+                "confirmation_text": "Continue",
+            },
         },
         actor_user_id=user.id,
         idempotency_key=f"resume:chat:{message_id}",

@@ -239,6 +239,7 @@ class LLMMessage:
     content: str | list | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
+    is_error: bool = False
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
     dynamic_content: str | None = None
@@ -303,6 +304,7 @@ class LLMMessage:
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
                         "content": result_content,
+                        "is_error": self.is_error,
                     }
                 ]
             }
@@ -573,10 +575,12 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
         supports_cache_control: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self.supports_cache_control = supports_cache_control
         self._client: httpx.AsyncClient | None = None
 
@@ -630,6 +634,7 @@ class OpenAICompatibleClient(LLMClient):
             payload["tools"] = tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
                 payload["parallel_tool_calls"] = True
 
         # Add any additional kwargs
@@ -1041,9 +1046,11 @@ class OpenAIResponsesClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1231,6 +1238,8 @@ class OpenAIResponsesClient(LLMClient):
             payload["tools"] = converted_tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         payload.update(kwargs)
         final_input = payload.get("input")
@@ -1482,6 +1491,7 @@ class GeminiClient(LLMClient):
                 model=self.model,
                 timeout=self.timeout,
                 supports_tool_choice=self.supports_tool_choice,
+                supports_parallel_tool_calls=False,
                 supports_cache_control=False,
             )
         return self._openai_fallback_client
@@ -1556,19 +1566,6 @@ class GeminiClient(LLMClient):
 
         return [{"text": str(content)}]
 
-    def _extract_tool_name_map(self, messages: list[LLMMessage]) -> dict[str, str]:
-        """Build tool_call_id -> function_name map from assistant messages."""
-        out: dict[str, str] = {}
-        for msg in messages:
-            if msg.role != "assistant" or not msg.tool_calls:
-                continue
-            for tc in msg.tool_calls:
-                tc_id = tc.get("id")
-                tc_name = tc.get("function", {}).get("name")
-                if tc_id and tc_name:
-                    out[tc_id] = tc_name
-        return out
-
     def _convert_tools(self, tools: list[dict] | None) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
         """Convert OpenAI-style tools to Gemini function declarations."""
         if not tools:
@@ -1609,7 +1606,7 @@ class GeminiClient(LLMClient):
         messages = normalize_provider_messages(messages)
         system_blocks: list[str] = []
         contents: list[dict[str, Any]] = []
-        tool_name_map = self._extract_tool_name_map(messages)
+        pending_tool_names: dict[str, str] = {}
 
         for msg in messages:
             if msg.role == "system":
@@ -1622,16 +1619,22 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "user":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if parts:
                     contents.append({"role": "user", "parts": parts})
                 continue
 
             if msg.role == "assistant":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
                         fn = tc.get("function", {})
+                        tc_id = tc.get("id")
+                        tc_name = fn.get("name")
+                        if tc_id and tc_name:
+                            pending_tool_names[tc_id] = tc_name
                         args = fn.get("arguments", "{}")
                         if isinstance(args, str):
                             try:
@@ -1658,21 +1661,21 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "tool":
-                name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
+                name = pending_tool_names.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
                 response_content = msg.content or ""
                 if isinstance(response_content, str):
                     try:
                         parsed = json.loads(response_content)
-                        if isinstance(parsed, dict):
-                            response_obj: dict[str, Any] = parsed
-                        else:
-                            response_obj = {"result": parsed}
+                        response_value: Any = parsed
                     except json.JSONDecodeError:
-                        response_obj = {"result": response_content}
+                        response_value = response_content
                 elif isinstance(response_content, dict):
-                    response_obj = response_content
+                    response_value = response_content
                 else:
-                    response_obj = {"result": str(response_content)}
+                    response_value = str(response_content)
+                response_obj = {
+                    "error" if msg.is_error else "output": response_value,
+                }
 
                 contents.append({
                     "role": "user",
@@ -2300,6 +2303,7 @@ class ProviderSpec:
     protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
     default_base_url: str | None
     supports_tool_choice: bool = True
+    supports_parallel_tool_calls: bool = False
     default_max_tokens: int = 4096
     model_max_tokens: dict[str, int] = field(default_factory=dict)
 
@@ -2326,6 +2330,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI",
         protocol="openai_compatible",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "openai-response": ProviderSpec(
@@ -2333,6 +2338,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI Responses",
         protocol="openai_responses",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "azure": ProviderSpec(
@@ -2340,6 +2346,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Azure OpenAI",
         protocol="openai_compatible",
         default_base_url=None,
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "deepseek": ProviderSpec(
@@ -2354,6 +2361,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Qwen (DashScope)",
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=8192,
         model_max_tokens={
             "qwen-plus": 16384,
@@ -2457,6 +2465,7 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "protocol": spec.protocol,
             "default_base_url": spec.default_base_url,
             "supports_tool_choice": spec.supports_tool_choice,
+            "supports_parallel_tool_calls": spec.supports_parallel_tool_calls,
             "default_max_tokens": spec.default_max_tokens,
             "model_max_tokens": spec.model_max_tokens,
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
@@ -2579,6 +2588,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+            supports_parallel_tool_calls=spec.supports_parallel_tool_calls,
         )
     elif spec and spec.protocol == "gemini":
         return GeminiClient(
@@ -2596,6 +2606,9 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            supports_parallel_tool_calls=(
+                spec.supports_parallel_tool_calls if spec else False
+            ),
             supports_cache_control=normalized_provider == "qwen",
         )
     else:
@@ -2606,6 +2619,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            supports_parallel_tool_calls=False,
             supports_cache_control=False,
         )
 

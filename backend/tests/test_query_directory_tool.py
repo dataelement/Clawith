@@ -96,6 +96,7 @@ def test_query_directory_tool_is_available_to_agents():
     assert "query_roster" in agent_tools._HIDDEN_FROM_LLM_TOOL_NAMES
     query_schema = next(tool["function"]["parameters"] for tool in agent_tools.AGENT_TOOLS if tool["function"]["name"] == "query_directory")
     assert "target_member_id" in query_schema["properties"]
+    assert "group" in query_schema["properties"]["member_type"]["enum"]
 
 
 def test_a2a_tools_expose_target_agent_id_not_agent_name():

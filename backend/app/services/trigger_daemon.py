@@ -99,7 +99,7 @@ async def _handle_okr_report_trigger(trigger: AgentTrigger, now: datetime) -> bo
 async def _handle_okr_collection_trigger(trigger: AgentTrigger, now: datetime) -> bool:
     return await handle_okr_collection_trigger_runtime(trigger, now)
 
-async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
+async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> datetime | None:
     return await evaluate_trigger_runtime(trigger, now)
 
 # ── Main Tick Loop ──────────────────────────────────────────────────
@@ -139,7 +139,8 @@ async def _tick():
             continue
 
         try:
-            if await _evaluate_trigger(trigger, now):
+            scheduled_at = await _evaluate_trigger(trigger, now)
+            if scheduled_at is not None:
                 handled = await _handle_okr_report_trigger(trigger, now)
                 if not handled:
                     handled = await _handle_okr_collection_trigger(trigger, now)
@@ -166,7 +167,7 @@ async def _tick():
                             continue
                         recent.append(now)
                         _on_msg_fire_log[trigger.agent_id] = recent
-                    await enqueue_due_trigger(trigger, now)
+                    await enqueue_due_trigger(trigger, scheduled_at)
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
 

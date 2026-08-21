@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-import json
 from typing import Protocol, cast
-import uuid
 
 from loguru import logger
 from sqlalchemy import select
@@ -31,14 +31,27 @@ from app.services.agent_runtime.delivery import (
     deliver_runtime_message,
 )
 from app.services.agent_runtime.state import runtime_messages_as_json
-from app.services.agent_runtime.tool_execution import sanitize_tool_arguments
+from app.services.agent_runtime.tool_execution import (
+    sanitize_tool_arguments,
+    sanitize_tool_feedback_text,
+)
 from app.services.builtin_tool_definitions import builtin_sensitive_paths
-from app.services.group_realtime import publish_stored_group_message
 from app.services.experience_retrieval import record_experience_citations
-
+from app.services.group_realtime import publish_stored_group_message
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _WAITING_PROMPT = "需要你的确认或补充信息后才能继续。"
+_MODEL_ACTIONS = frozenset(
+    {
+        "continue",
+        "repair_arguments",
+        "choose_other_tool",
+        "ask_user",
+        "wait",
+        "reconcile",
+    }
+)
+_SIDE_EFFECT_STATES = frozenset({"none", "confirmed", "possible", "unknown"})
 
 
 class RuntimeCheckpointSideEffectError(RuntimeError):
@@ -268,6 +281,31 @@ def _tool_arguments(call: Mapping[str, object], tool_name: str) -> dict:
     )
 
 
+def _tool_feedback(message: Mapping[str, object]) -> dict[str, str]:
+    feedback: dict[str, str] = {}
+    model_action = _text_field(message.get("model_action"))
+    if model_action in _MODEL_ACTIONS:
+        feedback["model_action"] = model_action
+    side_effect_state = _text_field(message.get("side_effect_state"))
+    if side_effect_state in _SIDE_EFFECT_STATES:
+        feedback["side_effect_state"] = side_effect_state
+    remediation = _text_field(message.get("safe_remediation"))
+    if remediation is not None:
+        remediation = sanitize_tool_feedback_text(remediation)
+        if remediation:
+            feedback["safe_remediation"] = remediation
+    return feedback
+
+
+def _tool_result_identity(message: Mapping[str, object]) -> dict[str, str]:
+    identity: dict[str, str] = {}
+    for field in ("execution_id", "provider_call_id", "contract_version"):
+        value = _text_field(message.get(field))
+        if value is not None:
+            identity[field] = value[:255]
+    return identity
+
+
 def _runtime_observation_events(
     run: RuntimeRunRecord,
     checkpoint: CheckpointObservation,
@@ -324,6 +362,16 @@ def _runtime_observation_events(
         raw_calls = message.get("tool_calls")
         if not isinstance(raw_calls, list):
             continue
+        provider_call_ids = message.get("provider_call_ids")
+        if not isinstance(provider_call_ids, Mapping):
+            additional_kwargs = message.get("additional_kwargs")
+            provider_call_ids = (
+                additional_kwargs.get("provider_call_ids")
+                if isinstance(additional_kwargs, Mapping)
+                else {}
+            )
+        if not isinstance(provider_call_ids, Mapping):
+            provider_call_ids = {}
         for raw_call in raw_calls:
             if not isinstance(raw_call, Mapping):
                 continue
@@ -334,11 +382,17 @@ def _runtime_observation_events(
                 continue
             detail = {
                 "call_id": call_id,
+                "call_instance_id": call_id,
                 "name": tool_name,
                 "args": _tool_arguments(raw_call, tool_name),
                 "reasoning_content": reasoning or "",
                 "assistant_message_id": message_id,
             }
+            provider_call_id = _text_field(
+                raw_call.get("provider_call_id") or provider_call_ids.get(call_id)
+            )
+            if provider_call_id is not None:
+                detail["provider_call_id"] = provider_call_id
             calls[call_id] = detail
             events.append(
                 (
@@ -370,6 +424,8 @@ def _runtime_observation_events(
             **calls[call_id],
             "result": result,
             "execution_status": execution_status,
+            **_tool_feedback(message),
+            **_tool_result_identity(message),
         }
         if error_code is not None:
             payload["error_code"] = error_code
@@ -385,15 +441,124 @@ def _runtime_observation_events(
     return events, calls
 
 
+async def project_direct_tool_history(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+) -> None:
+    """Project every settled direct-chat Tool event into durable chat history."""
+    existing_result = await db.execute(
+        select(ChatMessage.id).where(
+            ChatMessage.tenant_id == tenant_id,
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == str(session_id),
+            ChatMessage.role == "tool_call",
+        )
+    )
+    existing_ids = set(existing_result.scalars().all())
+
+    event_query = (
+        select(AgentRunEvent, AgentRun.origin_user_id)
+        .join(
+            AgentRun,
+            (AgentRun.tenant_id == AgentRunEvent.tenant_id)
+            & (AgentRun.id == AgentRunEvent.run_id),
+        )
+        .where(
+            AgentRunEvent.tenant_id == tenant_id,
+            AgentRunEvent.event_type == "status_changed",
+            AgentRunEvent.payload["activity_type"].as_string() == "tool_call",
+            AgentRunEvent.payload["status"].as_string() == "done",
+            AgentRun.agent_id == agent_id,
+            AgentRun.session_id == session_id,
+        )
+        .order_by(AgentRunEvent.created_at, AgentRunEvent.id)
+    )
+    if run_id is not None:
+        event_query = event_query.where(AgentRunEvent.run_id == run_id)
+    event_result = await db.execute(event_query)
+    for event, origin_user_id in event_result.all():
+        if origin_user_id is None:
+            continue
+        payload = event.payload
+        if not isinstance(payload, Mapping):
+            continue
+        if (
+            payload.get("activity_type") != "tool_call"
+            or payload.get("status") != "done"
+        ):
+            continue
+        call_id = _text_field(payload.get("call_id"))
+        tool_name = _text_field(payload.get("name"))
+        if call_id is None or tool_name is None:
+            continue
+        message_id = uuid.uuid5(event.run_id, f"chat-tool:{call_id}")
+        if message_id in existing_ids:
+            continue
+        execution_status = _text_field(payload.get("execution_status")) or "succeeded"
+        if execution_status == "pending":
+            continue
+        args = payload.get("args")
+        if not isinstance(args, dict):
+            args = {}
+        optional_fields = {
+            field: value
+            for field in (
+                "error_code",
+                "model_action",
+                "side_effect_state",
+                "safe_remediation",
+                "execution_id",
+                "provider_call_id",
+                "contract_version",
+            )
+            if (value := payload.get(field)) is not None
+        }
+        content = json.dumps(
+            {
+                "name": tool_name,
+                "args": args,
+                "status": "done",
+                "execution_status": execution_status,
+                "result": str(payload.get("result") or ""),
+                "tool_call_id": call_id,
+                "call_instance_id": (
+                    _text_field(payload.get("call_instance_id")) or call_id
+                ),
+                "reasoning_content": str(payload.get("reasoning_content") or ""),
+                **optional_fields,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        await db.execute(
+            insert(ChatMessage)
+            .values(
+                id=message_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                user_id=origin_user_id,
+                role="tool_call",
+                content=content,
+                conversation_id=str(session_id),
+                participant_id=None,
+                mentions=[],
+                created_at=event.created_at,
+            )
+            .on_conflict_do_nothing()
+        )
+        existing_ids.add(message_id)
+
+
 async def _record_direct_tool_history(
     db,
     *,
     run: RuntimeRunRecord,
-    checkpoint: CheckpointObservation,
-    calls: Mapping[str, dict],
 ) -> None:
-    """Persist settled direct-chat tools for refresh and reconnect recovery."""
-    if run.session_id is None or run.agent_id is None or not calls:
+    if run.session_id is None or run.agent_id is None:
         return
     run_result = await db.execute(
         select(AgentRun).where(
@@ -409,50 +574,13 @@ async def _record_direct_tool_history(
         or stored.delivery_target.get("kind") != "direct"
     ):
         return
-    created_at = checkpoint.created_at or datetime.now(UTC)
-    for message in runtime_messages_as_json(checkpoint.state):
-        if message.get("role") not in {"tool", "tool_result"}:
-            continue
-        call_id = _text_field(message.get("tool_call_id") or message.get("call_id"))
-        if call_id is None or call_id not in calls:
-            continue
-        execution_status = _text_field(message.get("execution_status")) or "succeeded"
-        if execution_status == "pending":
-            continue
-        detail = calls[call_id]
-        content = json.dumps(
-            {
-                "name": detail["name"],
-                "args": detail["args"],
-                "status": "done",
-                "execution_status": execution_status,
-                "result": str(message.get("content") or ""),
-                "tool_call_id": call_id,
-                "reasoning_content": detail.get("reasoning_content") or "",
-                **(
-                    {"error_code": message["error_code"]}
-                    if isinstance(message.get("error_code"), str)
-                    else {}
-                ),
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        await db.execute(
-            insert(ChatMessage)
-            .values(
-                id=uuid.uuid5(run.run_id, f"chat-tool:{call_id}"),
-                agent_id=uuid.UUID(run.agent_id),
-                user_id=stored.origin_user_id,
-                role="tool_call",
-                content=content,
-                conversation_id=run.session_id,
-                participant_id=None,
-                mentions=[],
-                created_at=created_at,
-            )
-            .on_conflict_do_nothing()
-        )
+    await project_direct_tool_history(
+        db,
+        tenant_id=run.tenant_id,
+        agent_id=uuid.UUID(run.agent_id),
+        session_id=run.session_id,
+        run_id=run.run_id,
+    )
 
 
 async def _record_lifecycle_events(
@@ -492,14 +620,8 @@ async def _record_lifecycle_events(
             )
         )
     else:
-        observation_events, calls = _runtime_observation_events(run, checkpoint)
+        observation_events, _ = _runtime_observation_events(run, checkpoint)
         events.extend(observation_events)
-        await _record_direct_tool_history(
-            db,
-            run=run,
-            checkpoint=checkpoint,
-            calls=calls,
-        )
         if command.command_type == "resume":
             events.append(
                 (
@@ -549,6 +671,9 @@ async def _record_lifecycle_events(
             .on_conflict_do_nothing()
         )
         await db.execute(statement)
+
+    if checkpoint is not None:
+        await _record_direct_tool_history(db, run=run)
 
 
 class RuntimeCheckpointSideEffects:
@@ -807,8 +932,8 @@ class RuntimeCheckpointSideEffects:
 
 
 __all__ = [
-    "RuntimeCheckpointSideEffectError",
     "RuntimeCheckpointProductHandler",
+    "RuntimeCheckpointSideEffectError",
     "RuntimeCheckpointSideEffects",
     "delivery_from_checkpoint",
 ]

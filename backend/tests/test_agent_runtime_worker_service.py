@@ -35,7 +35,9 @@ from app.services.agent_runtime.task_completion import TaskRuntimeCompletionHand
 from app.services.agent_runtime.tool_result_store import ToolResultReconcileResult
 from app.services.agent_runtime.trigger_completion import TriggerRuntimeCompletionHandler
 from app.services.agent_runtime.verification import (
+    CompletionGateRuntimeVerifier,
     RuntimeToolReferenceReader,
+    TaskCompletionGate,
     ToolLedgerRuntimeVerifier,
 )
 from app.services.agent_runtime.worker_service import (
@@ -293,13 +295,17 @@ def test_component_builder_installs_current_agent_and_planning_graphs() -> None:
     assert components.worker._checkpoint_reader is components.driver
     assert components.worker._command_executor is components.driver
     agent_executor = components.driver._node_executor._agent_executor
-    assert isinstance(agent_executor._verifier, ToolLedgerRuntimeVerifier)
-    reference_exists = agent_executor._verifier._reference_exists
+    assert isinstance(agent_executor._verifier, CompletionGateRuntimeVerifier)
+    assert isinstance(agent_executor._verifier._completion_gate, TaskCompletionGate)
+    deterministic = agent_executor._verifier._deterministic
+    assert isinstance(deterministic, ToolLedgerRuntimeVerifier)
+    reference_exists = deterministic._reference_exists
     assert reference_exists is not None
     assert isinstance(reference_exists.__self__, RuntimeToolReferenceReader)
-    assert agent_executor._verifier._result_store is not None
+    assert deterministic._result_store is not None
+    assert agent_executor._max_verification_repairs == 10
     assert (
-        agent_executor._verifier._result_store
+        deterministic._result_store
         is agent_executor._tool_service._tool_result_store
     )
     assert (

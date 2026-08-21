@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from loguru import logger
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1198,22 +1199,36 @@ async def get_group_session_unread_count(
     old_message_id = _watermark_message_id(state, session_id)
     position_filter = None
     if old_message_id is not None:
-        old_message = await _session_message(
-            db,
-            session_id=session_id,
-            message_id=old_message_id,
-            error_code="group_read_state_invalid",
+        result = await db.execute(
+            select(ChatMessage).where(
+                ChatMessage.tenant_id == tenant_id,
+                ChatMessage.id == old_message_id,
+                ChatMessage.conversation_id == str(session_id),
+            )
         )
-        old_created_at, _ = _message_position(
-            old_message,
-            error_code="group_read_state_invalid",
-        )
-        position_filter = or_(
-            ChatMessage.created_at > old_created_at,
-            (ChatMessage.created_at == old_created_at) & (ChatMessage.id > old_message_id),
-        )
+        old_message = result.scalar_one_or_none()
+        if old_message is not None:
+            old_created_at, _ = _message_position(
+                old_message,
+                error_code="group_read_state_invalid",
+            )
+            position_filter = or_(
+                ChatMessage.created_at > old_created_at,
+                (ChatMessage.created_at == old_created_at) & (ChatMessage.id > old_message_id),
+            )
+        else:
+            logger.warning(
+                "[GroupReadStateStale] tenant_id={} group_id={} session_id={} "
+                "participant_id={} old_message_id={}",
+                tenant_id,
+                group_id,
+                session_id,
+                participant_id,
+                old_message_id,
+            )
 
     filters = [
+        ChatMessage.tenant_id == tenant_id,
         ChatMessage.conversation_id == str(session_id),
         ChatMessage.role.in_(("user", "assistant", "system")),
         or_(
