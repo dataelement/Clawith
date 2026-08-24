@@ -2532,6 +2532,9 @@ async def test_group_confirmation_waits_for_a_human_member_without_calling_model
     assert result.waiting_request["reason"] == (
         "A prior tool outcome is unknown and requires confirmation."
     )
+    assert result.waiting_request["question"] == (
+        "A prior tool outcome is unknown. Please confirm what happened before continuing."
+    )
     assert calls == []
 
 
@@ -3199,4 +3202,5 @@ async def test_retryable_primary_error_without_fallback_pauses_for_resume() -> N
     assert result.waiting_request["waiting_type"] == "user"
     assert str(result.waiting_request["correlation_id"]).startswith("model-provider-retry:")
     assert "4 attempts" in str(result.waiting_request["reason"])
+    assert result.waiting_request["question"] == "The model provider is unavailable. Retry now?"
     assert calls == 4

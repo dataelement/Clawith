@@ -271,15 +271,16 @@ async def _direct_lane_holder(
     return holders[0] if holders else None
 
 
-async def _require_direct_start_allowed(
+async def _implicit_direct_resume(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     user_id: uuid.UUID,
+    idempotency_key: str,
     run_state_reader: RunStateReader | None,
-) -> None:
+) -> tuple[AgentRun, str] | None:
     holder = await _direct_lane_holder(
         db,
         tenant_id=tenant_id,
@@ -288,7 +289,7 @@ async def _require_direct_start_allowed(
         user_id=user_id,
     )
     if holder is None:
-        return
+        return None
     if run_state_reader is None:
         raise ChatRuntimeIntakeError(
             "chat_runtime_state_reader_required",
@@ -310,7 +311,7 @@ async def _require_direct_start_allowed(
         )
     if view.execution_status == "waiting_user":
         resume_result = await db.execute(
-            select(AgentRunCommand.id)
+            select(AgentRunCommand)
             .where(
                 AgentRunCommand.tenant_id == tenant_id,
                 AgentRunCommand.run_id == holder.id,
@@ -319,12 +320,20 @@ async def _require_direct_start_allowed(
             )
             .limit(1)
         )
-        if resume_result.scalar_one_or_none() is not None:
-            return
-        raise ChatRuntimeIntakeError(
-            "chat_waiting_reply_required",
-            "This Chat Session is waiting for an explicit reply or cancellation",
-        )
+        inflight_resume = resume_result.scalar_one_or_none()
+        if (
+            inflight_resume is not None
+            and inflight_resume.idempotency_key != idempotency_key
+        ):
+            return None
+        correlation_id = view.waiting_correlation_id
+        if not isinstance(correlation_id, str) or not correlation_id.strip():
+            raise ChatRuntimeIntakeError(
+                "chat_wait_correlation_missing",
+                "Waiting Chat Run has no stable resume correlation",
+            )
+        return holder, correlation_id.strip()
+    return None
 
 
 async def _require_direct_resume_correlation(
@@ -603,14 +612,18 @@ async def enqueue_chat_runtime(
                 run_state_reader=run_state_reader,
             )
     elif session.session_type == "direct":
-        await _require_direct_start_allowed(
+        implicit_resume = await _implicit_direct_resume(
             db,
             tenant_id=tenant_id,
             agent_id=agent.id,
             session_id=session.id,
             user_id=user.id,
+            idempotency_key=f"resume:chat:{resolved_message_id}",
             run_state_reader=run_state_reader,
         )
+        if implicit_resume is not None:
+            resumed_run, resume_correlation_id = implicit_resume
+            resume_run_id = resumed_run.id
 
     persisted_message: ChatMessage | None = None
     if persist_user_message:

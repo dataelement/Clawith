@@ -974,7 +974,7 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
             waiting_request={
                 "waiting_type": "user",
                 "correlation_id": "correlation-1",
-                "question": "Continue?",
+                "reason": "More information is required.",
             },
         ),
         ModelStepResult(intent="finish", finish_content="resumed"),
@@ -993,6 +993,9 @@ async def test_wait_interrupt_resumes_the_same_run_and_then_finishes() -> None:
     )
 
     assert interrupted["lifecycle"]["status"] == "waiting_user"
+    assert interrupted["lifecycle"]["waiting_request"]["question"] == (
+        "More information is required."
+    )
     waiting = await graph.compiled.aget_state(config)
     assert waiting.next == ("wait",)
 

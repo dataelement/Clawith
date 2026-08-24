@@ -500,7 +500,11 @@ def _schedule_compact(
     lifecycle["next_route"] = "compact"
 
 
-def _validate_waiting_request(request: JsonObject | None) -> JsonObject:
+def _validate_waiting_request(
+    request: JsonObject | None,
+    *,
+    ensure_user_question: bool = False,
+) -> JsonObject:
     if request is None:
         raise RuntimeNodeTransitionError(
             "invalid_waiting_request",
@@ -518,7 +522,20 @@ def _validate_waiting_request(request: JsonObject | None) -> JsonObject:
             "invalid_waiting_request",
             "waiting request requires a non-empty correlation_id",
         )
-    return dict(request)
+    normalized = dict(request)
+    if waiting_type == "user" and ensure_user_question:
+        question = normalized.get("question")
+        if not isinstance(question, str) or not question.strip():
+            # Historical checkpoints and older internal producers only stored
+            # a reason. Keep them resumable while ensuring every newly written
+            # waiting_user checkpoint has visible, answerable content.
+            reason = normalized.get("reason")
+            normalized["question"] = (
+                reason.strip()
+                if isinstance(reason, str) and reason.strip()
+                else "Please provide the information needed to continue."
+            )
+    return normalized
 
 
 def _async_poll_call_from_resume(resume_value: Mapping[str, object]) -> JsonObject | None:
@@ -738,7 +755,10 @@ class DeterministicRuntimeNodeExecutor:
             if result.step_tool_context is not None:
                 lifecycle["step_tool_context"] = dict(result.step_tool_context)
         elif result.intent == "wait":
-            request = _validate_waiting_request(result.waiting_request)
+            request = _validate_waiting_request(
+                result.waiting_request,
+                ensure_user_question=True,
+            )
             waiting_type = cast(str, request["waiting_type"])
             lifecycle.update(
                 {
@@ -1027,7 +1047,10 @@ class DeterministicRuntimeNodeExecutor:
                 )
             raise RuntimeInvocationCancelled(cancel)
         elif result.waiting_request is not None:
-            request = _validate_waiting_request(result.waiting_request)
+            request = _validate_waiting_request(
+                result.waiting_request,
+                ensure_user_question=True,
+            )
             waiting_type = cast(str, request["waiting_type"])
             lifecycle.update(
                 {

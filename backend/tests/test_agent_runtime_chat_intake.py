@@ -615,16 +615,27 @@ def _run_state_reader(view: SimpleNamespace) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_direct_start_fails_closed_while_lane_holder_waits_for_user() -> None:
+async def test_direct_message_implicitly_resumes_waiting_lane_holder() -> None:
     agent, user, session, model = _records()
     holder = _active_direct_run(agent, user, session, model)
     db = _Session(results=([holder], None))
     run_state_reader = _run_state_reader(
         _run_view(holder, "waiting_user", "confirm-1")
     )
+    participant = SimpleNamespace(id=uuid.uuid4())
+    handle = _handle(agent.tenant_id)
 
-    with pytest.raises(ChatRuntimeIntakeError) as raised:
-        await enqueue_chat_runtime(
+    with (
+        patch(
+            "app.services.agent_runtime.chat_intake.get_or_create_user_participant",
+            new=AsyncMock(return_value=participant),
+        ),
+        patch(
+            "app.services.agent_runtime.chat_intake.RuntimeCommandIntake.resume_run",
+            new=AsyncMock(return_value=handle),
+        ) as resume_run,
+    ):
+        result = await enqueue_chat_runtime(
             db,  # type: ignore[arg-type]
             agent=agent,
             user=user,
@@ -635,8 +646,85 @@ async def test_direct_start_fails_closed_while_lane_holder_waits_for_user() -> N
             settings_override=_settings(enabled=True),
         )
 
-    assert raised.value.code == "chat_waiting_reply_required"
+    assert result is not None and result.resumed is True
+    command = resume_run.await_args.args[0]
+    assert isinstance(command, ResumeRunCommand)
+    assert command.run_id == holder.id
+    assert command.payload["correlation_id"] == "confirm-1"
+    assert command.payload["payload"]["content"] == "Start something unrelated"
+
+
+@pytest.mark.asyncio
+async def test_direct_message_rejects_waiting_lane_without_correlation() -> None:
+    agent, user, session, model = _records()
+    holder = _active_direct_run(agent, user, session, model)
+    db = _Session(results=([holder],))
+    run_state_reader = _run_state_reader(_run_view(holder, "waiting_user"))
+
+    with pytest.raises(ChatRuntimeIntakeError) as raised:
+        await enqueue_chat_runtime(
+            db,  # type: ignore[arg-type]
+            agent=agent,
+            user=user,
+            session=session,
+            model=model,
+            content="Continue",
+            run_state_reader=run_state_reader,  # type: ignore[arg-type]
+            settings_override=_settings(enabled=True),
+        )
+
+    assert raised.value.code == "chat_wait_correlation_missing"
     assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_implicit_resume_retry_reuses_the_same_command() -> None:
+    agent, user, session, model = _records()
+    holder = _active_direct_run(agent, user, session, model)
+    message_id = uuid.uuid4()
+    pending_resume = AgentRunCommand(
+        id=uuid.uuid4(),
+        tenant_id=holder.tenant_id,
+        run_id=holder.id,
+        command_type="resume",
+        payload={"correlation_id": "confirm-1"},
+        actor_user_id=user.id,
+        idempotency_key=f"resume:chat:{message_id}",
+        status="pending",
+        attempt_count=0,
+        created_at=datetime(2026, 7, 16, 18, 2, tzinfo=UTC),
+    )
+    db = _Session(results=([holder], pending_resume))
+    run_state_reader = _run_state_reader(
+        _run_view(holder, "waiting_user", "confirm-1")
+    )
+    participant = SimpleNamespace(id=uuid.uuid4())
+    handle = _handle(agent.tenant_id)
+
+    with (
+        patch(
+            "app.services.agent_runtime.chat_intake.get_or_create_user_participant",
+            new=AsyncMock(return_value=participant),
+        ),
+        patch(
+            "app.services.agent_runtime.chat_intake.RuntimeCommandIntake.resume_run",
+            new=AsyncMock(return_value=handle),
+        ) as resume_run,
+    ):
+        result = await enqueue_chat_runtime(
+            db,  # type: ignore[arg-type]
+            agent=agent,
+            user=user,
+            session=session,
+            model=model,
+            content="Continue",
+            message_id=message_id,
+            run_state_reader=run_state_reader,  # type: ignore[arg-type]
+            settings_override=_settings(enabled=True),
+        )
+
+    assert result is not None and result.resumed is True
+    assert resume_run.await_args.args[0].idempotency_key == f"resume:chat:{message_id}"
 
 
 @pytest.mark.asyncio

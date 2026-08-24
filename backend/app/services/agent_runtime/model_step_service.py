@@ -1701,6 +1701,10 @@ class RuntimeModelStepService:
                     "waiting_type": "user",
                     "correlation_id": f"tool-confirm:{context.run_id}",
                     "reason": "A prior tool outcome is unknown and requires confirmation.",
+                    "question": (
+                        "A prior tool outcome is unknown. "
+                        "Please confirm what happened before continuing."
+                    ),
                 },
             )
         if build.blocked:
@@ -1908,6 +1912,7 @@ class RuntimeModelStepService:
                     f"Model provider remained unavailable after {attempts} attempts. "
                     "The Run checkpoint is preserved; resume to retry the model call."
                 ),
+                "question": "The model provider is unavailable. Retry now?",
                 "correlation_id": f"model-provider-retry:{context.run_id}:{model.id}",
             },
         )

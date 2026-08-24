@@ -516,12 +516,17 @@ def _waiting_request(
     requires_confirmation: bool,
     error_code: str | None,
 ) -> JsonObject:
-    return {
+    request: JsonObject = {
         "waiting_type": "user" if requires_confirmation else "external",
         "correlation_id": str(uuid.uuid5(run_id, f"tool-reconcile:{call_id}")),
         "reason": error_code or "tool_reconciliation_required",
         "tool_call_id": call_id,
     }
+    if requires_confirmation:
+        request["question"] = (
+            "A tool result could not be verified. Please confirm what happened before continuing."
+        )
+    return request
 
 
 def _async_poll_schedule_metadata(
