@@ -93,7 +93,9 @@ from app.services.agent_runtime.tool_result_store import (
 )
 from app.services.agent_runtime.trigger_completion import TriggerRuntimeCompletionHandler
 from app.services.agent_runtime.verification import (
+    CompletionGateRuntimeVerifier,
     RuntimeToolReferenceReader,
+    TaskCompletionGate,
     ToolLedgerRuntimeVerifier,
 )
 
@@ -222,6 +224,7 @@ def build_runtime_worker_components(
     model_service = RuntimeModelStepService(
         session_factory=session_factory,
         context_builder=context_builder,
+        answer_stream_enabled=runtime_settings.AGENT_RUNTIME_WEB_STREAMING_ENABLED,
     )
     tool_result_store = ToolResultStore(session_factory=session_factory)
     tool_result_reconciler = ToolResultReconciler(
@@ -250,11 +253,17 @@ def build_runtime_worker_components(
         model_service=model_service,
         tool_service=tool_service,
         run_compactor=run_compactor,
-        verifier=ToolLedgerRuntimeVerifier(
-            session_factory=session_factory,
-            result_store=tool_result_store,
-            reference_exists=reference_reader.reference_exists,
+        verifier=CompletionGateRuntimeVerifier(
+            deterministic=ToolLedgerRuntimeVerifier(
+                session_factory=session_factory,
+                result_store=tool_result_store,
+                reference_exists=reference_reader.reference_exists,
+            ),
+            completion_gate=TaskCompletionGate(
+                session_factory=session_factory,
+            ),
         ),
+        max_verification_repairs=10,
     )
     graph = build_agent_runtime_graph(
         checkpointer=checkpointer,

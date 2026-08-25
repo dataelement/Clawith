@@ -142,6 +142,113 @@ async def test_feishu_delivery_loads_credentials_but_persists_only_destination(
 
 
 @pytest.mark.asyncio
+async def test_feishu_group_delivery_reacts_to_source_message_before_reply(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def add_message_reaction(*_args, **kwargs):
+        calls.append(("reaction", kwargs["stage"]))
+        return {"code": 0, "data": {"reaction_id": "reaction-1"}}
+
+    async def send_message(*_args, **kwargs):
+        calls.append(("message", kwargs["stage"]))
+        return {"code": 0, "data": {"message_id": "om-1"}}
+
+    monkeypatch.setattr(
+        feishu_service.feishu_service,
+        "add_message_reaction",
+        add_message_reaction,
+    )
+    monkeypatch.setattr(feishu_service.feishu_service, "send_message", send_message)
+
+    await _sender(_config()).send(
+        _envelope(
+            "feishu",
+            {
+                "receive_id": "oc-1",
+                "receive_id_type": "chat_id",
+                "source_message_id": "om-source-1",
+                "reaction_emoji_type": "GLANCE",
+            },
+        )
+    )
+
+    assert calls == [
+        ("reaction", "runtime_group_reply_reaction"),
+        ("message", "runtime_channel_delivery"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_feishu_group_delivery_continues_when_reaction_fails(monkeypatch) -> None:
+    sent = False
+
+    async def add_message_reaction(*_args, **_kwargs):
+        raise RuntimeError("reaction unavailable")
+
+    async def send_message(*_args, **_kwargs):
+        nonlocal sent
+        sent = True
+        return {"code": 0, "data": {"message_id": "om-1"}}
+
+    monkeypatch.setattr(
+        feishu_service.feishu_service,
+        "add_message_reaction",
+        add_message_reaction,
+    )
+    monkeypatch.setattr(feishu_service.feishu_service, "send_message", send_message)
+
+    await _sender(_config()).send(
+        _envelope(
+            "feishu",
+            {
+                "receive_id": "oc-1",
+                "receive_id_type": "chat_id",
+                "source_message_id": "om-source-1",
+                "reaction_emoji_type": "GLANCE",
+            },
+        )
+    )
+
+    assert sent is True
+
+
+@pytest.mark.asyncio
+async def test_feishu_group_delivery_without_completed_reply_marker_skips_reaction(
+    monkeypatch,
+) -> None:
+    reacted = False
+
+    async def add_message_reaction(*_args, **_kwargs):
+        nonlocal reacted
+        reacted = True
+
+    async def send_message(*_args, **_kwargs):
+        return {"code": 0, "data": {"message_id": "om-1"}}
+
+    monkeypatch.setattr(
+        feishu_service.feishu_service,
+        "add_message_reaction",
+        add_message_reaction,
+    )
+    monkeypatch.setattr(feishu_service.feishu_service, "send_message", send_message)
+
+    await _sender(_config()).send(
+        _envelope(
+            "feishu",
+            {
+                "receive_id": "oc-1",
+                "receive_id_type": "chat_id",
+                "source_message_id": "om-source-1",
+            },
+        )
+    )
+
+    assert reacted is False
+
+
+@pytest.mark.asyncio
 async def test_dingtalk_delivery_uses_the_persisted_session_webhook(monkeypatch) -> None:
     client = _HTTPClient(_Response({"errcode": 0}))
     monkeypatch.setattr(

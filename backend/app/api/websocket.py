@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging_config import get_trace_id, new_trace_id, set_trace_id
 from app.core.permissions import check_agent_access, is_agent_expired
 from app.core.security import decode_access_token
+from app.dao.base import tenant_context
 from app.database import async_session
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
@@ -282,7 +283,11 @@ class WebSocketChatHandler:
                 return
 
             # 2. Start the message receiving and processing loop
-            await self.message_loop()
+            if self.user and self.user.tenant_id:
+                with tenant_context(self.user.tenant_id):
+                    await self.message_loop()
+            else:
+                await self.message_loop()
 
         except WebSocketDisconnect:
             logger.info(f"[WS] Client disconnected: {getattr(self.user, 'id', 'unknown')}")
@@ -329,40 +334,41 @@ class WebSocketChatHandler:
                     await self.websocket.close(code=4001)
                     return False
 
-                logger.info(f"[WS] Checking agent access for {self.agent_id}")
-                self.agent, _ = await check_agent_access(db, self.user, self.agent_id)
-                if is_agent_expired(self.agent):
-                    await self.websocket.send_json(
-                        _runtime_error_packet(
-                            code="agent_expired",
-                            message="This Agent has expired and is off duty. Please contact your admin to extend its service.",
-                            agent_id=self.agent_id,
-                            stage="request",
+                with tenant_context(self.user.tenant_id):
+                    logger.info(f"[WS] Checking agent access for {self.agent_id}")
+                    self.agent, _ = await check_agent_access(self.user, self.agent_id)
+                    if is_agent_expired(self.agent):
+                        await self.websocket.send_json(
+                            _runtime_error_packet(
+                                code="agent_expired",
+                                message="This Agent has expired and is off duty. Please contact your admin to extend its service.",
+                                agent_id=self.agent_id,
+                                stage="request",
+                            )
                         )
+                        await self.websocket.close(code=4003)
+                        return False
+
+                    self.agent_name = self.agent.name
+                    self.agent_type = self.agent.agent_type or ""
+                    self.role_description = self.agent.role_description or ""
+                    self.welcome_message = self.agent.welcome_message or ""
+                    self.ctx_size = self.agent.context_window_size or 100
+                    self.user_display_name = (self.user.display_name or "").strip() or "there"
+                    logger.info(
+                        f"[WS] Agent: {self.agent_name}, type: {self.agent_type}, model_id: {self.agent.primary_model_id}, ctx: {self.ctx_size}"
                     )
-                    await self.websocket.close(code=4003)
-                    return False
 
-                self.agent_name = self.agent.name
-                self.agent_type = self.agent.agent_type or ""
-                self.role_description = self.agent.role_description or ""
-                self.welcome_message = self.agent.welcome_message or ""
-                self.ctx_size = self.agent.context_window_size or 100
-                self.user_display_name = (self.user.display_name or "").strip() or "there"
-                logger.info(
-                    f"[WS] Agent: {self.agent_name}, type: {self.agent_type}, model_id: {self.agent.primary_model_id}, ctx: {self.ctx_size}"
-                )
+                    # Load models
+                    await self._load_models(db)
 
-                # Load models
-                await self._load_models(db)
+                    # Resolve or create chat session
+                    self.conv_id = await self._resolve_chat_session(db, user_id)
+                    if not self.conv_id:
+                        return False
 
-                # Resolve or create chat session
-                self.conv_id = await self._resolve_chat_session(db, user_id)
-                if not self.conv_id:
-                    return False
-
-                # Load history messages
-                await self._load_history(db)
+                    # Load history messages
+                    await self._load_history(db)
 
         except Exception as e:
             logger.exception(f"[WS] Setup error: {e}")

@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
 import uuid
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 
 from app.api import groups as groups_api
+from app.models.agent import Agent
+from app.models.agent_run import AgentRun
 from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
 from app.models.group import Group, GroupMember
-from app.models.agent import Agent
-from app.models.agent_run import AgentRun
 from app.models.participant import Participant
 from app.models.user import User
 from app.services.group_chat_service import GroupChatServiceError, GroupSessionDeletion
-
 
 NOW = datetime(2026, 7, 14, 10, 0, tzinfo=UTC)
 
@@ -103,6 +102,11 @@ def test_group_router_exposes_management_and_read_state_boundaries() -> None:
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/messages") in routes
     assert ("GET", "/api/groups/{group_id}/sessions/{session_id}/runs") in routes
     assert ("GET", "/api/groups/{group_id}/sessions/{session_id}/runs/{run_id}") in routes
+    reconcile_route = (
+        "/api/groups/{group_id}/sessions/{session_id}/runs/{run_id}"
+        "/tool-executions/{execution_id}/reconcile"
+    )
+    assert ("POST", reconcile_route) in routes
     assert ("POST", "/api/groups/{group_id}/sessions/{session_id}/runs/{run_id}/cancel") in routes
     assert ("GET", "/api/groups/{group_id}/announcement") in routes
     assert ("PUT", "/api/groups/{group_id}/announcement") in routes
@@ -246,6 +250,116 @@ async def test_active_group_runs_use_exact_checkpoint_status(monkeypatch) -> Non
     assert result[0].system_role is None
     assert result[1].agent_id is None
     assert result[1].system_role == "group_planning"
+
+
+@pytest.mark.asyncio
+async def test_active_group_run_exposes_workspace_candidate_for_human_decision(monkeypatch) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    session = _session(tenant_id, group.id, participant.id)
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        system_role=None,
+    )
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        run_id=run.id,
+        tool_call_id="call-workspace",
+        tool_name="write_file",
+        result_summary="unknown",
+        result_metadata={
+            "workspace_candidate_ref": "private/workspace-reconciliation/candidate",
+            "error_code": "workspace_write_outcome_unknown",
+        },
+        effect="write",
+        retry_policy="conditional",
+        contract_version="builtin:v1",
+        started_at=NOW,
+    )
+
+    class _Scalars:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class _Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return _Scalars(self.values)
+
+    class _DB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.results = iter((_Result([run]), _Result([execution])))
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    class _Reader:
+        async def get_run_state(self, _tenant_id, _run_id):
+            return SimpleNamespace(
+                execution_status="waiting_user",
+                waiting_correlation_id="tool-reconcile:run",
+            )
+
+    @asynccontextmanager
+    async def fake_reader(_db):
+        yield _Reader()
+
+    class _WorkspaceReconciler:
+        def __init__(self, _storage):
+            pass
+
+        async def verify_current(self, scope, candidate_ref):
+            assert scope.agent_id == run.agent_id
+            assert candidate_ref == execution.result_metadata["workspace_candidate_ref"]
+            return SimpleNamespace(
+                status="needs_resolution",
+                counts={"applied": 1, "not_saved": 2, "conflict": 1, "unverified": 0},
+            )
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_authorize(*_args, **kwargs):
+        assert kwargs["human_only"] is True
+        return session
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api, "_open_run_state_reader", fake_reader)
+    monkeypatch.setattr(groups_api, "WorkspaceReconciliationService", _WorkspaceReconciler)
+    monkeypatch.setattr(groups_api, "get_storage_backend", lambda: object())
+    monkeypatch.setattr(groups_api.group_chat_service, "authorize_group_session", fake_authorize)
+
+    result = await groups_api.list_active_group_runs(
+        group.id,
+        session.id,
+        current_user=user,
+        db=_DB(),
+    )
+
+    assert result[0].correlation_id == "tool-reconcile:run"
+    assert result[0].pending_tool_reconciliations[0].model_dump() == {
+        "execution_id": str(execution.id),
+        "tool_call_id": "call-workspace",
+        "tool_name": "write_file",
+        "result_summary": "unknown",
+        "error_code": "workspace_write_outcome_unknown",
+        "can_reconcile": True,
+        "workspace_resolution": True,
+        "resolution_status": "conflicted",
+        "saved_count": 1,
+        "pending_count": 2,
+        "conflicted_count": 1,
+        "unverified_count": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -702,6 +816,177 @@ async def test_create_message_commits_before_realtime_publish(monkeypatch) -> No
         f"publish:{output.cursor}",
         f"publish:{failure_output.cursor}",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected_action", "expected_apply_count"),
+    [
+        ("applied", "applied", 1),
+        ("not_applied", "keep_workspace", 0),
+    ],
+)
+async def test_current_human_member_settles_group_workspace_candidate_idempotently(
+    monkeypatch,
+    outcome,
+    expected_action,
+    expected_apply_count,
+) -> None:
+    tenant_id = uuid.uuid4()
+    user = _user(tenant_id)
+    participant = _participant(user)
+    group = _group(tenant_id, participant.id)
+    session = _session(tenant_id, group.id, participant.id)
+    run = SimpleNamespace(id=uuid.uuid4(), agent_id=uuid.uuid4())
+    candidate_ref = "private/workspace-reconciliation/candidate"
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        run_id=run.id,
+        status="unknown",
+        tool_name="write_file",
+        result_summary="unknown",
+        result_metadata={"workspace_candidate_ref": candidate_ref},
+    )
+    calls = {
+        "apply": 0,
+        "preserve": 0,
+        "discard": 0,
+        "reconcile": 0,
+        "resume": 0,
+        "commit": 0,
+    }
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return execution
+
+    class _DB(_RecordingDB):
+        async def execute(self, _statement):
+            return _Result()
+
+        async def commit(self):
+            calls["commit"] += 1
+
+    db = _DB()
+
+    async def fake_participant(_db, _user):
+        return participant
+
+    async def fake_group_run(_db, **kwargs):
+        assert kwargs["participant_id"] == participant.id
+        return run
+
+    @asynccontextmanager
+    async def fake_reader(_db):
+        class _Reader:
+            async def get_run_state(self, _tenant_id, _run_id):
+                return SimpleNamespace(
+                    execution_status="waiting_user",
+                    waiting_correlation_id="tool-reconcile:run",
+                )
+
+        yield _Reader()
+
+    class _WorkspaceReconciler:
+        def __init__(self, _storage):
+            pass
+
+        async def apply_candidate(self, scope, ref, *, authorized):
+            calls["apply"] += 1
+            assert scope.agent_id == run.agent_id
+            assert ref == candidate_ref
+            assert authorized is True
+            return SimpleNamespace(status="applied")
+
+        async def preserve_conflicts_and_apply_safe_changes(self, scope, ref):
+            calls["preserve"] += 1
+            assert scope.agent_id == run.agent_id
+            assert ref == candidate_ref
+            return SimpleNamespace(status="needs_resolution")
+
+        async def discard_candidate(self, scope, ref):
+            calls["discard"] += 1
+            assert scope.agent_id == run.agent_id
+            assert ref == candidate_ref
+
+    async def fake_reconcile(_db, **kwargs):
+        calls["reconcile"] += 1
+        assert kwargs["confirmed_status"] == "succeeded"
+        assert kwargs["resolution_action"] == expected_action
+        execution.status = "succeeded"
+        execution.result_summary = "settled"
+        execution.result_metadata = {
+            **execution.result_metadata,
+            "external_reconciliation": True,
+            "workspace_resolution_action": expected_action,
+        }
+        return execution
+
+    class _RuntimeIntake:
+        def __init__(self, _db):
+            pass
+
+        async def resume_run(self, command):
+            calls["resume"] += 1
+            assert command.run_id == run.id
+            assert command.actor_user_id == user.id
+            assert command.payload["correlation_id"] == "tool-reconcile:run"
+            assert command.payload["resume_type"] == "tool_reconciliation"
+            content = command.payload["payload"]["content"]
+            if outcome == "applied":
+                assert "Agent file result" in content
+            else:
+                assert "overrides conflicting original" in content
+            assert command.payload["payload"]["workspace_resolution_action"] == (
+                expected_action
+            )
+            return SimpleNamespace()
+
+    monkeypatch.setattr(groups_api, "_current_participant", fake_participant)
+    monkeypatch.setattr(groups_api, "_authorized_group_run", fake_group_run)
+    monkeypatch.setattr(groups_api, "_open_run_state_reader", fake_reader)
+    monkeypatch.setattr(groups_api, "WorkspaceReconciliationService", _WorkspaceReconciler)
+    monkeypatch.setattr(groups_api, "get_storage_backend", lambda: object())
+    monkeypatch.setattr(groups_api, "reconcile_unknown_tool_execution", fake_reconcile)
+    monkeypatch.setattr(groups_api, "RuntimeCommandIntake", _RuntimeIntake)
+
+    body = groups_api.ReconcileToolExecutionIn(
+        outcome=outcome,
+        correlation_id="tool-reconcile:run",
+        note="group member decision",
+    )
+    first = await groups_api.reconcile_group_tool_execution(
+        group.id,
+        session.id,
+        run.id,
+        execution.id,
+        body,
+        current_user=user,
+        db=db,
+    )
+    second = await groups_api.reconcile_group_tool_execution(
+        group.id,
+        session.id,
+        run.id,
+        execution.id,
+        body,
+        current_user=user,
+        db=db,
+    )
+
+    assert first.status == second.status == "succeeded"
+    assert first.result_summary == second.result_summary == "settled"
+    assert calls == {
+        "apply": expected_apply_count,
+        "preserve": int(outcome == "not_applied"),
+        "discard": 1,
+        "reconcile": 1,
+        "resume": 1,
+        "commit": 1,
+    }
+    audit = next(item for item in db.added if isinstance(item, AuditLog))
+    assert audit.details["participant_id"] == str(participant.id)
+    assert audit.details["confirmed_outcome"] == outcome
 
 
 @pytest.mark.asyncio

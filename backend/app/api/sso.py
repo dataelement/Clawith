@@ -1,20 +1,28 @@
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
+from app.config import get_settings
 from app.database import get_db
 from app.models.identity import SSOScanSession, IdentityProvider
-from app.schemas.schemas import TokenResponse, UserOut
+from app.schemas.schemas import UserOut
+from app.services.sso_session_security import (
+    is_valid_sso_browser_binding,
+    sign_sso_browser_binding,
+    sso_browser_cookie_name,
+)
 
 router = APIRouter(tags=["sso"])
+settings = get_settings()
 
 @router.post("/sso/session")
 async def create_sso_session(
+    response: Response,
     tenant_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db)
 ):
@@ -25,21 +33,36 @@ async def create_sso_session(
         tenant_id=tenant_id,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
     )
-    db.add(session)
-    await db.commit()
+    query_dao.add(db, session)
+    await query_dao.commit(db)
+    response.set_cookie(
+        key=sso_browser_cookie_name(session.id),
+        value=sign_sso_browser_binding(session.id),
+        httponly=True,
+        secure=not settings.DEBUG,
+        samesite="lax",
+        max_age=5 * 60,
+    )
     return {"session_id": str(session.id), "expires_at": session.expires_at}
 
 @router.get("/sso/session/{sid}/status")
-async def get_sso_session_status(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_sso_session_status(
+    sid: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
     """Check the status of an SSO scan session."""
-    result = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+    if not is_valid_sso_browser_binding(sid, request.cookies.get(sso_browser_cookie_name(sid))):
+        raise HTTPException(status_code=403, detail="SSO session is not bound to this browser")
+
+    result = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
     if session.expires_at < datetime.now(timezone.utc):
         session.status = "expired"
-        await db.commit()
+        await query_dao.commit(db)
 
     response = {
         "status": session.status,
@@ -53,7 +76,7 @@ async def get_sso_session_status(sid: uuid.UUID, db: AsyncSession = Depends(get_
         # hybrid properties (username, email, etc.) that proxy to Identity.
         from app.models.user import User
         from sqlalchemy.orm import selectinload
-        user_result = await db.execute(
+        user_result = await query_dao.execute(db, 
             select(User)
             .where(User.id == session.user_id)
             .options(selectinload(User.identity))
@@ -66,33 +89,33 @@ async def get_sso_session_status(sid: uuid.UUID, db: AsyncSession = Depends(get_
             
         # Mark as completed so it can't be reused
         session.status = "completed"
-        await db.commit()
+        await query_dao.commit(db)
         
     return response
 
 @router.put("/sso/session/{sid}/scan")
 async def mark_sso_session_scanned(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Optional: Mark session as 'scanned' when the landing page loads on mobile."""
-    result = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+    result = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
     session = result.scalar_one_or_none()
     if session and session.status == "pending":
         session.status = "scanned"
-        await db.commit()
+        await query_dao.commit(db)
     return {"status": "ok"}
 
 @router.get("/sso/config")
 async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     """List active SSO providers with their redirect URLs for the specified session ID."""
     # 1. Resolve session to get tenant context
-    res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
+    res = await query_dao.execute(db, select(SSOScanSession).where(SSOScanSession.id == sid))
     session = res.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
     # 2. Query IdentityProviders for this tenant (only those that are active AND SSO-enabled)
     query = select(IdentityProvider).where(
-        IdentityProvider.is_active == True,
-        IdentityProvider.sso_login_enabled == True,
+        IdentityProvider.is_active,
+        IdentityProvider.sso_login_enabled,
     )
     if session.tenant_id:
         query = query.where(IdentityProvider.tenant_id == session.tenant_id)
@@ -101,14 +124,14 @@ async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = De
         # In a fully isolated system, this might return empty results
         query = query.where(IdentityProvider.tenant_id.is_(None))
 
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     providers = result.scalars().all()
     
     # Determine the base URL for OAuth callbacks using centralized platform service:
     from app.services.platform_service import platform_service
     if session.tenant_id:
         from app.models.tenant import Tenant
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == session.tenant_id))
+        tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == session.tenant_id))
         tenant_obj = tenant_result.scalar_one_or_none()
         public_base = await platform_service.get_tenant_sso_base_url(db, tenant_obj, request)
     else:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-import uuid
 
 import pytest
 
@@ -160,6 +160,8 @@ def _records() -> tuple[uuid.UUID, Agent, Agent, AgentRun, ToolExecutionReservat
         tenant_id=tenant_id,
         run_id=source_run.id,
         tool_call_id="delegate-call",
+        provider_call_id="provider-delegate-call",
+        contract_version="runtime:send_message_to_agent:v1",
         tool_name="send_message_to_agent",
         assistant_message_id="assistant-message",
         arguments_hash="hash",
@@ -414,6 +416,13 @@ async def test_delegate_creates_target_run_and_receipt_in_one_transaction() -> N
     assert result.target_run_id == target_run_id
     assert result.outcome.status == "succeeded"
     assert result.outcome.result_ref == f"agent-run:{target_run_id}"
+    assert result.outcome.metadata["call_instance_id"] == "delegate-call"
+    assert result.outcome.metadata["provider_call_id"] == (
+        "provider-delegate-call"
+    )
+    assert result.outcome.metadata["execution_id"] == str(
+        reservation.execution.id
+    )
     assert result.waiting_request == {
         "waiting_type": "agent",
         "correlation_id": (
@@ -440,6 +449,14 @@ async def test_delegate_creates_target_run_and_receipt_in_one_transaction() -> N
         uuid.uuid5(source_run.id, "a2a-input:delegate-call")
     )
     assert command.payload["input_content"] == "Research the latest facts"
+    assert command.payload["source_call_instance_id"] == "delegate-call"
+    assert command.payload["source_provider_call_id"] == "provider-delegate-call"
+    assert command.payload["source_tool_execution_id"] == str(
+        reservation.execution.id
+    )
+    assert command.payload["source_tool_contract_version"] == (
+        "runtime:send_message_to_agent:v1"
+    )
     assert "a2a_message" not in command.payload
     assert cycle_guard.calls[0]["source_run_id"] == source_run.id
     messages = [value for value in db.added if isinstance(value, ChatMessage)]

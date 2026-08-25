@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.identity import IdentityProvider
 from app.models.org import OrgMember
@@ -112,7 +113,7 @@ class ChannelUserService:
 
         if org_member and org_member.user_id:
             # Case 1: OrgMember already linked to User
-            user = await db.get(User, org_member.user_id)
+            user = await query_dao.get(db, User, org_member.user_id)
             if user:
                 logger.debug(
                     f"[{channel_type}] Found user via linked OrgMember: {user.id}"
@@ -172,7 +173,7 @@ class ChannelUserService:
                             db, provider, channel_type, external_user_id, extra_info,
                             linked_user_id=user.id
                         )
-            await db.flush()
+            await query_dao.flush(db)
             return user
 
         unionid, open_id, external_id = self._get_channel_ids(
@@ -199,7 +200,7 @@ class ChannelUserService:
                     db, provider, channel_type, external_user_id, extra_info,
                     linked_user_id=user.id
                 )
-            await db.flush()
+            await query_dao.flush(db)
         logger.info(
             f"[{channel_type}] Created new user: {user.id} for external_id: {external_user_id}"
         )
@@ -218,7 +219,7 @@ class ChannelUserService:
         if tenant_id:
             query = query.where(IdentityProvider.tenant_id == tenant_id)
 
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         provider = result.scalar_one_or_none()
         if provider:
             return provider
@@ -231,7 +232,7 @@ class ChannelUserService:
             )
             if tenant_id:
                 legacy_query = legacy_query.where(IdentityProvider.tenant_id == tenant_id)
-            legacy_result = await db.execute(legacy_query)
+            legacy_result = await query_dao.execute(db, legacy_query)
             legacy_provider = legacy_result.scalar_one_or_none()
             if legacy_provider:
                 return legacy_provider
@@ -243,8 +244,8 @@ class ChannelUserService:
             config={},
             tenant_id=tenant_id,
         )
-        db.add(provider)
-        await db.flush()
+        query_dao.add(db, provider)
+        await query_dao.flush(db)
 
         return provider
 
@@ -330,7 +331,7 @@ class ChannelUserService:
                 )
                 .limit(1)
             )
-            result = await db.execute(query)
+            result = await query_dao.execute(db, query)
             return result.scalar_one_or_none()
         except Exception as e:
             # OrgMember table may not exist or org sync not enabled
@@ -369,8 +370,8 @@ class ChannelUserService:
             title=extra_info.get("title", ""),
             status="active",
         )
-        db.add(member)
-        await db.flush()
+        query_dao.add(db, member)
+        await query_dao.flush(db)
         return member
 
     async def _find_existing_org_member_for_user(
@@ -392,7 +393,7 @@ class ChannelUserService:
         )
         if tenant_id:
             query = query.where(OrgMember.tenant_id == tenant_id)
-        result = await db.execute(query.limit(1))
+        result = await query_dao.execute(db, query.limit(1))
         return result.scalar_one_or_none()
 
     async def _create_channel_user(
@@ -443,7 +444,7 @@ class ChannelUserService:
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
 
-        existing = await db.execute(query)
+        existing = await query_dao.execute(db, query)
         if existing.scalar_one_or_none():
             username = f"{username}_{identity_seed[:6]}"
 
@@ -460,7 +461,7 @@ class ChannelUserService:
             normalized_mobile = _re.sub(r"[\s\-\+]", "", mobile)
             lookup_conditions.append(Identity.phone == normalized_mobile)
 
-        id_result = await db.execute(
+        id_result = await query_dao.execute(db, 
             select(Identity).where(or_(*lookup_conditions)).limit(1)
         )
         identity = id_result.scalar_one_or_none()
@@ -475,8 +476,8 @@ class ChannelUserService:
                 is_platform_admin=False,
                 email_verified=True,  # auto-verify channel users
             )
-            db.add(identity)
-            await db.flush()  # assigns identity.id within this transaction
+            query_dao.add(db, identity)
+            await query_dao.flush(db)  # assigns identity.id within this transaction
 
         # ── Step 2: Create tenant-scoped User linked to Identity ─────────────
         user = User(
@@ -488,8 +489,8 @@ class ChannelUserService:
             tenant_id=tenant_id,
             is_active=True,
         )
-        db.add(user)
-        await db.flush()
+        query_dao.add(db, user)
+        await query_dao.flush(db)
         return user
 
 
@@ -527,7 +528,7 @@ async def get_platform_user_by_org_member(
         )
         if agent_tenant_id:
             query = query.where(User.tenant_id == agent_tenant_id)
-        user_res = await db.execute(query)
+        user_res = await query_dao.execute(db, query)
         user = user_res.scalar_one_or_none()
         if user:
             return user
@@ -542,9 +543,9 @@ async def get_platform_user_by_org_member(
     if user:
         # Link existing User to OrgMember
         org_member.user_id = user.id
-        await db.flush()
+        await query_dao.flush(db)
         # Eagerly load/refresh User.identity before returning
-        user_res = await db.execute(
+        user_res = await query_dao.execute(db, 
             select(User).where(User.id == user.id).options(selectinload(User.identity))
         )
         return user_res.scalar_one()
@@ -552,7 +553,7 @@ async def get_platform_user_by_org_member(
     # Case 3: Create new User and link to OrgMember
     # Determine channel type from provider
     from app.models.identity import IdentityProvider
-    provider = await db.get(IdentityProvider, org_member.provider_id)
+    provider = await query_dao.get(db, IdentityProvider, org_member.provider_id)
     channel_type = provider.provider_type if provider else "unknown"
     external_seed = org_member.external_id
 
@@ -577,7 +578,7 @@ async def get_platform_user_by_org_member(
     if agent_tenant_id:
         query = query.where(User.tenant_id == agent_tenant_id)
 
-    existing = await db.execute(query)
+    existing = await query_dao.execute(db, query)
     if existing.scalar_one_or_none():
         username = f"{username}_{external_seed[:6] if external_seed else org_member.id.hex[:6]}"
 
@@ -596,7 +597,7 @@ async def get_platform_user_by_org_member(
         normalized_ph = _re_pu.sub(r"[\s\-\+]", "", org_member.phone)
         lookup_conditions.append(Identity.phone == normalized_ph)
 
-    id_result = await db.execute(
+    id_result = await query_dao.execute(db, 
         select(Identity).where(or_(*lookup_conditions)).limit(1)
     )
     identity = id_result.scalar_one_or_none()
@@ -611,8 +612,8 @@ async def get_platform_user_by_org_member(
             is_platform_admin=False,
             email_verified=True,
         )
-        db.add(identity)
-        await db.flush()
+        query_dao.add(db, identity)
+        await query_dao.flush(db)
 
     user = User(
         identity=identity,
@@ -624,17 +625,17 @@ async def get_platform_user_by_org_member(
         is_active=True,
     )
 
-    db.add(user)
-    await db.flush()
+    query_dao.add(db, user)
+    await query_dao.flush(db)
 
     # Link OrgMember to new User
     org_member.user_id = user.id
-    await db.flush()
+    await query_dao.flush(db)
 
     logger.info(f"[channel_user_service] Created User {user.id} for OrgMember {org_member.id} ({name})")
     
     # Eagerly load/refresh User.identity before returning
-    user_res = await db.execute(
+    user_res = await query_dao.execute(db, 
         select(User).where(User.id == user.id).options(selectinload(User.identity))
     )
     return user_res.scalar_one()

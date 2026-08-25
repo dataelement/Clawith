@@ -1,16 +1,17 @@
 """Agent collaboration and template market API routes."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user, get_current_admin
+from app.dao import agent_metrics_dao, agent_template_dao, user_dao
 from app.database import get_db
-from app.models.agent import Agent, AgentTemplate
 from app.models.user import User
 from app.services.collaboration import collaboration_service
 
@@ -104,21 +105,16 @@ class TemplateOut(BaseModel):
 @router.get("/templates", response_model=list[TemplateOut])
 async def list_templates(
     category: str | None = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """List available agent templates."""
-    query = select(AgentTemplate).order_by(AgentTemplate.name)
-    if category:
-        query = query.where(AgentTemplate.category == category)
-    result = await db.execute(query)
-    return [TemplateOut.model_validate(t) for t in result.scalars().all()]
+    templates = await agent_template_dao.list_templates(category=category)
+    return [TemplateOut.model_validate(t) for t in templates]
 
 
 @router.get("/templates/{template_id}", response_model=TemplateOut)
-async def get_template(template_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_template(template_id: uuid.UUID):
     """Get template details."""
-    result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == template_id))
-    template = result.scalar_one_or_none()
+    template = await agent_template_dao.get(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateOut.model_validate(template)
@@ -128,21 +124,20 @@ async def get_template(template_id: uuid.UUID, db: AsyncSession = Depends(get_db
 async def create_template(
     data: TemplateCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """Create a new agent template (share to template market)."""
-    template = AgentTemplate(
-        name=data.name,
-        description=data.description,
-        icon=data.icon,
-        category=data.category,
-        soul_template=data.soul_template,
-        default_skills=data.default_skills,
-        default_autonomy_policy=data.default_autonomy_policy,
-        created_by=current_user.id,
+    template = await agent_template_dao.create_template(
+        obj_in={
+            "name": data.name,
+            "description": data.description,
+            "icon": data.icon,
+            "category": data.category,
+            "soul_template": data.soul_template,
+            "default_skills": data.default_skills,
+            "default_autonomy_policy": data.default_autonomy_policy,
+            "created_by": current_user.id,
+        }
     )
-    db.add(template)
-    await db.flush()
     return TemplateOut.model_validate(template)
 
 
@@ -150,14 +145,11 @@ async def create_template(
 async def delete_template(
     template_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
 ):
     """Delete a template (admin or creator)."""
-    result = await db.execute(select(AgentTemplate).where(AgentTemplate.id == template_id))
-    template = result.scalar_one_or_none()
-    if not template:
+    deleted = await agent_template_dao.delete(id=template_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Template not found")
-    await db.delete(template)
 
 
 # ─── Agent Handover ─────────────────────────────────────
@@ -174,23 +166,22 @@ async def handover_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Transfer ownership of a digital employee to another user."""
-    from app.core.permissions import is_agent_creator
     from app.models.audit import AuditLog
+    from app.core.permissions import is_agent_creator
 
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can handover agent")
 
     # Verify new creator exists
-    new_creator_result = await db.execute(select(User).where(User.id == data.new_creator_id))
-    new_creator = new_creator_result.scalar_one_or_none()
+    new_creator = await user_dao.get(data.new_creator_id)
     if not new_creator:
         raise HTTPException(status_code=404, detail="Target user not found")
 
     old_creator_id = agent.creator_id
     agent.creator_id = data.new_creator_id
 
-    db.add(AuditLog(
+    query_dao.add(db, AuditLog(
         user_id=current_user.id,
         agent_id=agent_id,
         action="agent:handover",
@@ -199,7 +190,7 @@ async def handover_agent(
             "to_creator": str(data.new_creator_id),
         },
     ))
-    await db.flush()
+    await query_dao.flush(db)
 
     return {
         "status": "transferred",
@@ -217,51 +208,17 @@ async def get_agent_metrics(
     db: AsyncSession = Depends(get_db),
 ):
     """Get observability metrics for an agent."""
-    from sqlalchemy import func
-    from app.models.task import Task
-    from app.models.audit import AuditLog, ApprovalRequest
-
     agent, _access = await check_agent_access(db, current_user, agent_id)
-
-    # Task stats
-    total_tasks = await db.execute(select(func.count(Task.id)).where(Task.agent_id == agent_id))
-    done_tasks = await db.execute(
-        select(func.count(Task.id)).where(Task.agent_id == agent_id, Task.status == "done")
-    )
-    pending_tasks = await db.execute(
-        select(func.count(Task.id)).where(Task.agent_id == agent_id, Task.status == "pending")
-    )
-
-    # Approval stats
-    total_approvals = await db.execute(
-        select(func.count(ApprovalRequest.id)).where(ApprovalRequest.agent_id == agent_id)
-    )
-    pending_approvals = await db.execute(
-        select(func.count(ApprovalRequest.id)).where(
-            ApprovalRequest.agent_id == agent_id, ApprovalRequest.status == "pending"
-        )
-    )
-
-    # Recent activity count (last 24h)
-    from datetime import datetime, timedelta, timezone
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    recent_actions = await db.execute(
-        select(func.count(AuditLog.id)).where(
-            AuditLog.agent_id == agent_id, AuditLog.created_at >= cutoff
-        )
-    )
+    counts = await agent_metrics_dao.get_agent_metrics_counts(agent_id=agent_id, recent_cutoff=cutoff)
 
     # Container status
     from app.services.agent_manager import agent_manager
     container_status = agent_manager.get_container_status(agent)
 
-    # Extract scalar values (each result can only be consumed once)
-    _total_tasks = total_tasks.scalar() or 0
-    _done_tasks = done_tasks.scalar() or 0
-    _pending_tasks = pending_tasks.scalar() or 0
-    _total_approvals = total_approvals.scalar() or 0
-    _pending_approvals = pending_approvals.scalar() or 0
-    _recent_actions = recent_actions.scalar() or 0
+    _total_tasks = counts["total_tasks"]
+    _done_tasks = counts["done_tasks"]
+    _pending_tasks = counts["pending_tasks"]
 
     return {
         "agent_id": str(agent_id),
@@ -293,10 +250,10 @@ async def get_agent_metrics(
             ),
         },
         "approvals": {
-            "total": _total_approvals,
-            "pending": _pending_approvals,
+            "total": counts["total_approvals"],
+            "pending": counts["pending_approvals"],
         },
         "activity": {
-            "actions_last_24h": _recent_actions,
+            "actions_last_24h": counts["recent_actions"],
         },
     }

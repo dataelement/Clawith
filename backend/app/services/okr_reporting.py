@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import and_, or_, select
 from loguru import logger
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.okr import CompanyReport, MemberDailyReport, OKRSettings
@@ -115,15 +115,16 @@ def _month_end(day: date) -> date:
 
 async def _resolve_report_models(tenant_id: uuid.UUID) -> ResolvedReportModels:
     """Load the OKR Agent's primary/fallback models for report generation."""
-    async with async_session() as db:
-        settings_result = await db.execute(
+    async with query_dao.session() as db:
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         settings = settings_result.scalar_one_or_none()
         if not settings or not settings.okr_agent_id:
             return ResolvedReportModels(primary=None, fallback=None, okr_agent_id=None)
 
-        agent_result = await db.execute(
+        agent_result = await query_dao.execute(
+            db,
             select(Agent).where(
                 Agent.id == settings.okr_agent_id,
                 Agent.tenant_id == tenant_id,
@@ -147,14 +148,14 @@ async def _resolve_report_models(tenant_id: uuid.UUID) -> ResolvedReportModels:
 
 async def list_company_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
     """Return active human members plus active non-system agents in the tenant."""
-    async with async_session() as db:
-        users_result = await db.execute(
+    async with query_dao.session() as db:
+        users_result = await query_dao.execute(db, 
             select(User).where(
                 User.tenant_id == tenant_id,
                 User.is_active == True,  # noqa: E712
             )
         )
-        agents_result = await db.execute(
+        agents_result = await query_dao.execute(db, 
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
                 Agent.is_system == False,  # noqa: E712
@@ -190,15 +191,15 @@ async def list_company_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
 
 async def list_tracked_okr_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
     """Return only members currently tracked in the OKR Agent relationship network."""
-    async with async_session() as db:
-        settings_result = await db.execute(
+    async with query_dao.session() as db:
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings).where(OKRSettings.tenant_id == tenant_id)
         )
         settings = settings_result.scalar_one_or_none()
         if not settings or not settings.okr_agent_id:
             return []
 
-        human_result = await db.execute(
+        human_result = await query_dao.execute(db, 
             select(AgentRelationship, OrgMember)
             .join(OrgMember, AgentRelationship.member_id == OrgMember.id)
             .where(
@@ -206,7 +207,7 @@ async def list_tracked_okr_members(tenant_id: uuid.UUID) -> list[CompanyMember]:
                 OrgMember.status == "active",
             )
         )
-        agent_result = await db.execute(
+        agent_result = await query_dao.execute(db, 
             select(Agent)
             .join(
                 AgentAgentRelationship,
@@ -260,8 +261,8 @@ async def upsert_member_daily_report(
     today = date.today()
     status = "late" if mark_late_if_past and report_date < today else "submitted"
 
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(MemberDailyReport).where(
                 MemberDailyReport.tenant_id == tenant_id,
                 MemberDailyReport.member_type == member_type,
@@ -287,11 +288,11 @@ async def upsert_member_daily_report(
                 status=status,
                 source=source,
             )
-            db.add(report)
+            query_dao.add(db, report)
 
         await _mark_dependent_company_reports_for_refresh(db, tenant_id, report_date)
-        await db.commit()
-        await db.refresh(report)
+        await query_dao.commit(db)
+        await query_dao.refresh(db, report)
         return report
 
 
@@ -301,8 +302,8 @@ async def list_member_daily_reports_for_date(
 ) -> list[dict]:
     """Return all tenant members with report status for a specific date."""
     members = await list_tracked_okr_members(tenant_id)
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(MemberDailyReport).where(
                 MemberDailyReport.tenant_id == tenant_id,
                 MemberDailyReport.report_date == report_date,
@@ -368,7 +369,7 @@ def _build_company_daily_content(
 ) -> str:
     """Build a concise company daily report from member daily reports."""
     lines = [
-        f"# Company Daily Report",
+        "# Company Daily Report",
         f"Date: {period_day.isoformat()}",
         "",
         "## Submission Summary",
@@ -658,8 +659,8 @@ async def _upsert_company_report(
     needs_refresh: bool = False,
 ) -> CompanyReport:
     """Insert or update a company report for the same period."""
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(CompanyReport).where(
                 CompanyReport.tenant_id == tenant_id,
                 CompanyReport.report_type == report_type,
@@ -689,17 +690,17 @@ async def _upsert_company_report(
                 missing_count=missing_count,
                 needs_refresh=needs_refresh,
             )
-            db.add(report)
-        await db.commit()
-        await db.refresh(report)
+            query_dao.add(db, report)
+        await query_dao.commit(db)
+        await query_dao.refresh(db, report)
         return report
 
 
 async def generate_company_daily_report(tenant_id: uuid.UUID, period_day: date) -> CompanyReport:
     """Generate the company daily report for a specific day."""
     members = await list_tracked_okr_members(tenant_id)
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(MemberDailyReport).where(
                 MemberDailyReport.tenant_id == tenant_id,
                 MemberDailyReport.report_date == period_day,
@@ -766,8 +767,8 @@ async def generate_company_daily_report(tenant_id: uuid.UUID, period_day: date) 
 async def generate_company_weekly_report(tenant_id: uuid.UUID, week_start: date) -> CompanyReport:
     """Generate the company weekly report for the ISO week starting at week_start."""
     week_end = week_start + timedelta(days=6)
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(CompanyReport).where(
                 CompanyReport.tenant_id == tenant_id,
                 CompanyReport.report_type == "daily",
@@ -830,8 +831,8 @@ async def generate_company_monthly_report(tenant_id: uuid.UUID, month_anchor: da
     """Generate the company monthly report for the month containing month_anchor."""
     period_start = _month_start(month_anchor)
     period_end = _month_end(month_anchor)
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, 
             select(CompanyReport).where(
                 CompanyReport.tenant_id == tenant_id,
                 CompanyReport.report_type == "weekly",
@@ -896,7 +897,7 @@ async def list_company_reports(
     limit: int = 50,
 ) -> list[CompanyReport]:
     """List company reports newest first."""
-    async with async_session() as db:
+    async with query_dao.session() as db:
         query = (
             select(CompanyReport)
             .where(CompanyReport.tenant_id == tenant_id)
@@ -905,7 +906,7 @@ async def list_company_reports(
         )
         if report_type:
             query = query.where(CompanyReport.report_type == report_type)
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         return list(result.scalars().all())
 
 
@@ -916,7 +917,7 @@ async def _mark_dependent_company_reports_for_refresh(db, tenant_id: uuid.UUID, 
     month_start = _month_start(report_day)
     month_end = _month_end(report_day)
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(CompanyReport).where(
             CompanyReport.tenant_id == tenant_id,
             or_(

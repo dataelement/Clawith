@@ -8,11 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import evaluate_roster_agent_visibility, evaluate_roster_human_visibility
 from app.models.agent import Agent as AgentModel, AgentPermission
+from app.models.chat_session import ChatSession
 from app.models.identity import IdentityProvider
 from app.models.org import AgentAgentRelationship, OrgDepartment, OrgMember
 from app.models.user import User as UserModel
 
-DirectoryMemberType = Literal["all", "agent", "human"]
+DirectoryMemberType = Literal["all", "agent", "human", "group"]
 
 
 class DirectoryQueryError(ValueError):
@@ -198,8 +199,8 @@ def _coerce_target_member_id(target_member_id: uuid.UUID | str | None) -> uuid.U
 
 def _validate_member_type(member_type: str) -> DirectoryMemberType:
     normalized = (member_type or "all").strip().lower()
-    if normalized not in {"all", "agent", "human"}:
-        raise DirectoryQueryError("invalid_member_type", "member_type must be all, agent, or human")
+    if normalized not in {"all", "agent", "human", "group"}:
+        raise DirectoryQueryError("invalid_member_type", "member_type must be all, agent, human, or group")
     return normalized  # type: ignore[return-value]
 
 
@@ -279,8 +280,21 @@ def _human_directory_conditions(
     query: str,
     target_member_uuid: uuid.UUID | None,
     include_uncontactable: bool,
+    provider_type: str | None = None,
 ) -> list:
     conditions = [OrgMember.tenant_id == source.tenant_id]
+    if provider_type:
+        conditions.append(
+            OrgMember.provider_id.in_(
+                select(IdentityProvider.id).where(
+                    IdentityProvider.provider_type == provider_type,
+                    or_(
+                        IdentityProvider.tenant_id == source.tenant_id,
+                        IdentityProvider.tenant_id.is_(None),
+                    ),
+                )
+            )
+        )
     if target_member_uuid:
         conditions.append(OrgMember.id == target_member_uuid)
     if source_mode == "private":
@@ -357,12 +371,19 @@ async def query_agent_directory(
     target_member_id: uuid.UUID | str | None = None,
     member_type: str = "all",
     include_uncontactable: bool = False,
+    provider_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
     max_limit: int = 100,
 ) -> dict:
     query = (query or "").strip()
+    provider_type = normalize_provider_type(provider_type)
     member_type = _validate_member_type(member_type)
+    if provider_type and member_type != "human":
+        raise DirectoryQueryError(
+            "invalid_provider_type_filter",
+            "provider_type can only be used with member_type human",
+        )
     target_member_uuid = _coerce_target_member_id(target_member_id)
     _validate_pagination(limit, offset, max_limit)
     if target_member_uuid and member_type == "agent":
@@ -380,6 +401,64 @@ async def query_agent_directory(
 
     source_mode = getattr(source, "access_mode", None) or "company"
 
+    if member_type == "group":
+        from app.services.feishu_group_targets import (
+            FeishuGroupTargetError,
+            format_feishu_group_target,
+            sync_feishu_group_targets,
+        )
+
+        try:
+            await sync_feishu_group_targets(db, agent=source)
+        except FeishuGroupTargetError as exc:
+            raise DirectoryQueryError(exc.code, exc.message, status_code=502) from exc
+
+        conditions = [
+            ChatSession.tenant_id == source.tenant_id,
+            ChatSession.agent_id == source.id,
+            ChatSession.session_type == "group",
+            ChatSession.is_group.is_(True),
+            ChatSession.source_channel == "feishu",
+            ChatSession.deleted_at.is_(None),
+        ]
+        if query:
+            conditions.append(or_(ChatSession.group_name.ilike(f"%{query}%"), ChatSession.title.ilike(f"%{query}%")))
+        rows = (
+            await db.execute(
+                select(ChatSession)
+                .where(*conditions)
+                .order_by(ChatSession.group_name.asc(), ChatSession.created_at.asc())
+                .offset(offset)
+                .limit(fetch_size)
+            )
+        ).scalars().all()
+        for session in rows[:limit]:
+            try:
+                members.append(format_feishu_group_target(session))
+            except ValueError:
+                if include_uncontactable:
+                    members.append({
+                        "member_type": "group",
+                        "target_recipient_id": str(session.id),
+                        "display_name": session.group_name or session.title,
+                        "provider": {"provider_type": "feishu"},
+                        "can_contact": False,
+                        "contact_tools": [],
+                        "unavailable_reason": "invalid_provider_target",
+                    })
+        return {
+            "ok": True,
+            "source_agent_id": str(source_agent_id),
+            "query": query,
+            "member_type": member_type,
+            "include_uncontactable": include_uncontactable,
+            "returned_count": len(members),
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(rows) > limit,
+            "members": members,
+        }
+
     if member_type == "all" and not target_member_uuid:
         agent_conditions = _agent_directory_conditions(
             source,
@@ -393,6 +472,7 @@ async def query_agent_directory(
             query=query,
             target_member_uuid=None,
             include_uncontactable=include_uncontactable,
+            provider_type=provider_type,
         )
         agent_contact_rank = case(
             (
@@ -538,6 +618,7 @@ async def query_agent_directory(
             query=query,
             target_member_uuid=target_member_uuid,
             include_uncontactable=include_uncontactable,
+            provider_type=provider_type,
         )
 
         human_result = await db.execute(

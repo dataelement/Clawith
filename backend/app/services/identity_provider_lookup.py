@@ -8,6 +8,7 @@ from loguru import logger
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.models.identity import AuthProviderType, IdentityProvider
 
 
@@ -61,7 +62,7 @@ async def get_preferred_identity_provider(
     is_active: bool | None = None,
 ) -> IdentityProvider | None:
     """Fetch the preferred provider without raising on duplicate rows."""
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         build_identity_provider_query(provider_type, tenant_id, is_active=is_active)
     )
     provider = choose_preferred_identity_provider(
@@ -72,7 +73,7 @@ async def get_preferred_identity_provider(
     
     # Fallback to global provider if tenant-scoped provider is not found and a tenant_id was specified
     if not provider and tenant_id is not None:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             build_identity_provider_query(provider_type, None, is_active=is_active)
         )
         provider = choose_preferred_identity_provider(

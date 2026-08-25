@@ -443,6 +443,8 @@ jobs:
     name: Publish release
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    outputs:
+      tag: ${{ steps.release_info.outputs.tag }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
@@ -459,11 +461,12 @@ jobs:
         id: release_info
         shell: bash
         env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
-          branch_name="${{ github.event.pull_request.head.ref }}"
+          branch_name="$HEAD_REF"
           tag_name="${branch_name#release/}"
 
           python <<'PY'
@@ -486,8 +489,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
-          git push origin "$TARGET_TAG"
+          release_commit="$(git rev-parse HEAD)"
+          git fetch --force --tags
+
+          if existing_commit="$(git rev-parse "$TARGET_TAG^{commit}" 2>/dev/null)"; then
+            if [ "$existing_commit" != "$release_commit" ]; then
+              echo "::error::Tag $TARGET_TAG already points to $existing_commit, expected $release_commit"
+              exit 1
+            fi
+            echo "Tag $TARGET_TAG already points to $release_commit; reusing it."
+          else
+            git tag -a "$TARGET_TAG" -m "Release $TARGET_TAG"
+            git push origin "$TARGET_TAG"
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

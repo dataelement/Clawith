@@ -10,11 +10,7 @@ from app.services.storage_runtime.base import StorageBackend
 from app.services.storage_runtime.fallback import FallbackStorageBackend
 from app.services.storage_runtime.local import LocalStorageBackend
 from app.services.storage_runtime.s3 import S3StorageBackend
-from app.services.storage_runtime.utils import (
-    agent_storage_prefix,
-    normalize_storage_key,
-    tenant_storage_prefix,
-)
+from app.services.storage_runtime.utils import agent_storage_prefix, normalize_storage_key, tenant_storage_prefix
 
 __all__ = [
     "agent_storage_prefix",

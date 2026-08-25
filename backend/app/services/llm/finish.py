@@ -1,10 +1,9 @@
-"""Finish-tool protocol helpers for agent execution loops."""
+"""One-version decoder for legacy finish calls and checkpoint repair messages."""
 
 from __future__ import annotations
 
 import json
 import re
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 import uuid
@@ -12,73 +11,6 @@ import uuid
 
 FINISH_TOOL_NAME = "finish"
 MAX_GROUP_FINISH_MENTIONS = 100
-
-FINISH_TOOL_DEFINITION: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": FINISH_TOOL_NAME,
-        "description": (
-            "Finish the current Run and send the final user-facing response only "
-            "after the user's requested outcome is complete and all required "
-            "verification has passed. Never use finish for a progress update or an "
-            "incomplete result. Put the full answer the user should see in content, "
-            "and do not call any other tools in the same response."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The final response to show to the user.",
-                },
-            },
-            "required": ["content"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-
-def group_finish_tool_definition() -> dict[str, Any]:
-    """Return the shared finish schema with the Group-only mention field."""
-    definition = deepcopy(FINISH_TOOL_DEFINITION)
-    parameters = definition["function"]["parameters"]
-    parameters["properties"]["mention_participant_ids"] = {
-        "type": "array",
-        "description": (
-            "Optional stable participant UUIDs for Agent members to @ in this final "
-            "public group reply. Each mentioned Agent is woken and must reply "
-            "publicly in the same group session. Use this only for a concrete question, "
-            "request, or responsibility that requires a new reply now; it is not limited "
-            "to ownership transfer. In every case where the Agent does not need to "
-            "answer again now, regardless of topic, wording, tone, or intent, omit its "
-            "ID and write the display name without @. This includes, but is not limited "
-            "to, greetings, thanks, acknowledgments, introductions, compliments, status "
-            "statements, summaries, references, or future collaboration. Query "
-            "group members when an ID is unknown, then put the "
-            "returned IDs in this field in the same finish call. In content, write "
-            "each target as the literal @display name and state the concrete question or request; "
-            "include only the public group message and never explain IDs, tools, "
-            "routing, Runtime, or child Runs. Textual @names in content do not wake "
-            "Agents; never infer IDs from display names."
-        ),
-        "items": {"type": "string", "format": "uuid"},
-        "maxItems": MAX_GROUP_FINISH_MENTIONS,
-        "uniqueItems": True,
-    }
-    return definition
-
-FINISH_TOOL_SEED: dict[str, Any] = {
-    "name": FINISH_TOOL_NAME,
-    "display_name": "Finish",
-    "description": FINISH_TOOL_DEFINITION["function"]["description"],
-    "category": "system",
-    "icon": "check",
-    "is_default": True,
-    "parameters_schema": FINISH_TOOL_DEFINITION["function"]["parameters"],
-    "config": {},
-    "config_schema": {},
-}
 
 FINISH_PROTOCOL_REMINDER = (
     "Your previous response did not call any tool, so this turn is not finished. "
@@ -256,3 +188,54 @@ def find_finish_call(
         )
 
     return None
+
+
+def parse_legacy_finish_content(
+    content: str,
+    *,
+    allow_group_mentions: bool = False,
+) -> FinishCall | None:
+    """Decode only unmistakable legacy finish JSON from Assistant content.
+
+    A plain ``{"content": ...}`` object may be a user-requested JSON answer, so
+    it remains visible. The legacy group field or an explicit finish envelope
+    is required before content is interpreted as Runtime control data.
+    """
+    try:
+        payload = json.loads(content.strip())
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    arguments: Any
+    if "mention_participant_ids" in payload:
+        arguments = payload
+    elif payload.get("name") == FINISH_TOOL_NAME and "arguments" in payload:
+        if set(payload) - {"id", "name", "arguments"}:
+            return None
+        arguments = payload.get("arguments")
+    else:
+        function = payload.get("function")
+        if (
+            isinstance(function, dict)
+            and function.get("name") == FINISH_TOOL_NAME
+            and not (set(payload) - {"id", "type", "function"})
+        ):
+            arguments = function.get("arguments")
+        else:
+            return None
+
+    return find_finish_call(
+        [
+            {
+                "id": str(payload.get("id") or "legacy_finish_content"),
+                "type": "function",
+                "function": {
+                    "name": FINISH_TOOL_NAME,
+                    "arguments": arguments,
+                },
+            }
+        ],
+        allow_group_mentions=allow_group_mentions,
+    )

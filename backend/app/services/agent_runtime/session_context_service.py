@@ -301,6 +301,13 @@ def _message_scope(tenant_id: uuid.UUID, session_id: uuid.UUID):
         ChatMessage.conversation_id == sa_cast(ChatSession.id, String),
         ChatMessage.role.in_(_USER_VISIBLE_ROLES),
         ChatMessage.created_at.is_not(None),
+        ~and_(
+            ChatSession.session_type == "group",
+            ChatSession.group_id.is_(None),
+            ChatSession.source_channel == "feishu",
+            ChatMessage.role == "assistant",
+            func.lower(func.btrim(ChatMessage.content)) == "no_reply",
+        ),
     )
 
 

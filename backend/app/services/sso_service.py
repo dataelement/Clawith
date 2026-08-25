@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.dao import query_dao
 from app.models.identity import AuthProviderType, IdentityProvider
 from app.models.tenant import Tenant
 from app.models.user import Identity, User
@@ -53,7 +54,7 @@ class SSOService:
         else:
             query = query.where(User.tenant_id.is_(None))
 
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         user = result.scalars().first()
 
         if user:
@@ -62,7 +63,7 @@ class SSOService:
         # 2. If not found, try to find an Identity and match within the tenant scope
         if email:
             id_query = select(Identity).where(Identity.email == email)
-            id_result = await db.execute(id_query)
+            id_result = await query_dao.execute(db, id_query)
             identity = id_result.scalar_one_or_none()
             if identity:
                 # Find any user for this identity (representative)
@@ -77,7 +78,7 @@ class SSOService:
                 )
                 if tenant_id:
                     u_query = u_query.where(User.tenant_id == tenant_id)
-                u_res = await db.execute(u_query)
+                u_res = await query_dao.execute(db, u_query)
                 return u_res.scalar_one_or_none()
 
         return None
@@ -113,14 +114,14 @@ class SSOService:
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
 
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         user = result.scalars().first()
         if user:
             return user
 
         # 2. Try Identity match
         id_query = select(Identity).where(Identity.phone == normalized_mobile)
-        id_result = await db.execute(id_query)
+        id_result = await query_dao.execute(db, id_query)
         identity = id_result.scalar_one_or_none()
         if identity:
             u_query = (
@@ -134,7 +135,7 @@ class SSOService:
             )
 
             u_query = u_query.where(User.tenant_id == tenant_id)
-            u_res = await db.execute(u_query)
+            u_res = await query_dao.execute(db, u_query)
             return u_res.scalar_one_or_none()
 
         return None
@@ -159,7 +160,7 @@ class SSOService:
             return self.DOMAIN_TENANT_HINTS[domain]
 
         # Try to find tenant by custom domain
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(Tenant).where(Tenant.sso_domain.ilike(f"%{domain}%"))
         )
         tenant = result.scalar_one_or_none()
@@ -168,7 +169,7 @@ class SSOService:
             return str(tenant.id)
 
         # Try to find tenant by matching tenant name
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(Tenant).where(
                 Tenant.name.ilike(f"%{domain.split('.')[0]}%")
             )
@@ -219,7 +220,7 @@ class SSOService:
 
         # Get user
         from sqlalchemy.orm import selectinload
-        user_result = await db.execute(
+        user_result = await query_dao.execute(db, 
             select(User).where(User.id == member.user_id).options(selectinload(User.identity))
         )
         return user_result.scalar_one_or_none()
@@ -312,7 +313,7 @@ class SSOService:
 
         for field, lookup_value in self._identity_lookup_chain(provider_type, provider_user_id, identity_data):
             column = getattr(OrgMember, field)
-            member_result = await db.execute(
+            member_result = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.provider_id == provider_id,
                     OrgMember.status == "active",
@@ -439,9 +440,9 @@ class SSOService:
                 unionid=raw_union_id if provider_type != "wecom" else None,
                 open_id=raw_open_id,
             )
-            db.add(member)
+            query_dao.add(db, member)
         
-        await db.flush()
+        await query_dao.flush(db)
         return member
 
     async def unlink_identity(
@@ -468,7 +469,7 @@ class SSOService:
 
         # Find OrgMember
         mid = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
-        member_result = await db.execute(
+        member_result = await query_dao.execute(db, 
             select(OrgMember).where(
                 OrgMember.user_id == mid,
                 OrgMember.provider_id == provider.id,
@@ -480,7 +481,7 @@ class SSOService:
             return False
 
         member.user_id = None
-        await db.flush()
+        await query_dao.flush(db)
 
         return True
 
@@ -520,7 +521,7 @@ class SSOService:
         Returns True if allowed, False if another tenant already has SSO enabled on an IP base.
         """
         # First check if this tenant already has SSO enabled
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
         tenant = tenant_result.scalar_one_or_none()
         if tenant and tenant.sso_enabled:
             # Already has SSO enabled, can freely toggle providers
@@ -546,14 +547,14 @@ class SSOService:
             IdentityProvider.is_active.is_(True),
             IdentityProvider.tenant_id != tenant_id,
         )
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         other_providers = result.scalars().all()
 
         if other_providers:
             # Collect conflicting tenant names
             conflict_names = []
             for other_provider in other_providers:
-                tenant_query = await db.execute(select(Tenant).where(Tenant.id == other_provider.tenant_id))
+                tenant_query = await query_dao.execute(db, select(Tenant).where(Tenant.id == other_provider.tenant_id))
                 conflict_tenant = tenant_query.scalar_one_or_none()
                 name = conflict_tenant.name if conflict_tenant else str(other_provider.tenant_id)
                 conflict_names.append(f"'{name}'")

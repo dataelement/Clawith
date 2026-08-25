@@ -129,8 +129,8 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
 
                 {/* API Key Display Logic */}
                 {(() => {
-                    const activeKey = apiKey || (agent?.api_key_hash?.startsWith('oc-') ? agent.api_key_hash : null);
-                    const isLegacyHash = hasKey && !activeKey;
+                    const activeKey = apiKey;
+                    const hasConfiguredKey = hasKey && !activeKey;
 
                     if (activeKey) {
                         return (
@@ -171,8 +171,8 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                 fontFamily: 'monospace', fontSize: '13px', color: 'var(--text-secondary)',
                                 letterSpacing: '0.5px',
                             }}>
-                                {isLegacyHash
-                                    ? (isChinese ? '旧版密钥（已加密隐藏），请重新生成以查看明文' : 'Legacy key (encrypted), please regenerate to view')
+                                {hasConfiguredKey
+                                    ? (isChinese ? '密钥已配置。为安全起见，无法再次显示明文。' : 'A key is configured. Its plaintext cannot be shown again for security.')
                                     : (isChinese ? '未生成' : 'Not generated')}
                             </div>
                             {canManage && <button
@@ -180,7 +180,7 @@ export default function OpenClawSettings({ agent, agentId, canManage }: OpenClaw
                                 onClick={() => setShowConfirm(true)}
                                 style={{ padding: '6px 16px', fontSize: '12px', whiteSpace: 'nowrap' }}
                             >
-                                {isLegacyHash
+                                {hasConfiguredKey
                                     ? (isChinese ? '重新生成' : 'Regenerate')
                                     : (isChinese ? '生成' : 'Generate')}
                             </button>}

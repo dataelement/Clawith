@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 import uuid
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from app.models.agent import Agent
@@ -37,6 +38,7 @@ class _QueueSession:
         self.nested = 0
         self.flushes = 0
         self.commits = 0
+        self.rollbacks = 0
 
     def begin_nested(self) -> _Nested:
         self.nested += 1
@@ -53,6 +55,9 @@ class _QueueSession:
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def _records() -> tuple[AgentTrigger, Agent]:
@@ -108,11 +113,20 @@ async def test_execution_and_runtime_start_commit_as_one_queue_transaction() -> 
             side_effect=accept_runtime,
         ),
     ):
+        scheduled_at = datetime(
+            2026,
+            8,
+            5,
+            9,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
         execution, created = await enqueue_trigger_execution(
             db,  # type: ignore[arg-type]
             trigger=trigger,
             source="poll",
             idempotency_key="poll:2026-07-13T16:00",
+            scheduled_at=scheduled_at,
         )
 
     assert created is True
@@ -123,11 +137,77 @@ async def test_execution_and_runtime_start_commit_as_one_queue_transaction() -> 
     assert db.added == [execution]
     assert trigger.fire_count == 1
     assert trigger.last_fired_at is not None
+    assert execution.scheduled_at == scheduled_at.astimezone(UTC)
 
 
 @pytest.mark.asyncio
-async def test_runtime_intake_rejection_settles_occurrence_without_legacy_fallback() -> None:
+async def test_runtime_intake_rejection_rolls_back_scheduled_occurrence() -> None:
     trigger, agent = _records()
+    db = _QueueSession(trigger)
+    error = TriggerRuntimeIntakeError(
+        "agent_model_missing",
+        "Runtime Trigger Agent has no primary model",
+    )
+
+    with (
+        patch(
+            "app.services.trigger_runtime.queue.load_trigger_agent",
+            new=AsyncMock(return_value=agent),
+        ),
+        patch(
+            "app.services.trigger_runtime.queue.enqueue_trigger_runtime",
+            new=AsyncMock(side_effect=error),
+        ),
+    ):
+        with pytest.raises(TriggerRuntimeIntakeError) as raised:
+            await enqueue_trigger_execution(
+                db,  # type: ignore[arg-type]
+                trigger=trigger,
+                source="poll",
+                idempotency_key="poll:2026-07-13T16:00",
+            )
+
+    assert raised.value.code == "agent_model_missing"
+    assert trigger.fire_count == 0
+    assert trigger.last_fired_at is None
+    assert db.commits == 0
+    assert db.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_disabled_rolls_back_scheduled_occurrence() -> None:
+    trigger, agent = _records()
+    db = _QueueSession(trigger)
+
+    with (
+        patch(
+            "app.services.trigger_runtime.queue.load_trigger_agent",
+            new=AsyncMock(return_value=agent),
+        ),
+        patch(
+            "app.services.trigger_runtime.queue.enqueue_trigger_runtime",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        with pytest.raises(TriggerRuntimeIntakeError) as raised:
+            await enqueue_trigger_execution(
+                db,  # type: ignore[arg-type]
+                trigger=trigger,
+                source="poll",
+                idempotency_key="poll:2026-07-13T16:00",
+            )
+
+    assert raised.value.code == "runtime_v2_disabled"
+    assert trigger.fire_count == 0
+    assert trigger.last_fired_at is None
+    assert db.commits == 0
+    assert db.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_intake_rejection_keeps_failure_receipt() -> None:
+    trigger, agent = _records()
+    trigger.type = "webhook"
     db = _QueueSession(trigger)
     error = TriggerRuntimeIntakeError(
         "agent_model_missing",
@@ -147,45 +227,17 @@ async def test_runtime_intake_rejection_settles_occurrence_without_legacy_fallba
         execution, created = await enqueue_trigger_execution(
             db,  # type: ignore[arg-type]
             trigger=trigger,
-            source="poll",
-            idempotency_key="poll:2026-07-13T16:00",
+            source="webhook",
+            idempotency_key="delivery-1",
+            persist_intake_failure=True,
         )
 
     assert created is True
     assert execution is not None
     assert execution.status == "failed"
-    assert execution.last_error == "agent_model_missing: Runtime Trigger Agent has no primary model"
-    assert execution.finished_at is not None
+    assert execution.last_error == (
+        "agent_model_missing: Runtime Trigger Agent has no primary model"
+    )
     assert trigger.fire_count == 0
     assert db.commits == 1
-
-
-@pytest.mark.asyncio
-async def test_runtime_disabled_settles_occurrence_without_legacy_claiming() -> None:
-    trigger, agent = _records()
-    db = _QueueSession(trigger)
-
-    with (
-        patch(
-            "app.services.trigger_runtime.queue.load_trigger_agent",
-            new=AsyncMock(return_value=agent),
-        ),
-        patch(
-            "app.services.trigger_runtime.queue.enqueue_trigger_runtime",
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        execution, created = await enqueue_trigger_execution(
-            db,  # type: ignore[arg-type]
-            trigger=trigger,
-            source="poll",
-            idempotency_key="poll:2026-07-13T16:00",
-        )
-
-    assert created is True
-    assert execution is not None
-    assert execution.status == "failed"
-    assert execution.last_error is not None
-    assert execution.last_error.startswith("runtime_v2_disabled:")
-    assert trigger.fire_count == 0
-    assert db.commits == 1
+    assert db.rollbacks == 0

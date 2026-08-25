@@ -1,5 +1,6 @@
 """Microsoft Teams Bot Channel API routes."""
 
+import hmac
 import json
 import os
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from jose import JWTError, jwk, jwt
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +38,52 @@ TEAMS_MSG_LIMIT = 28000  # Teams message char limit (approx 28KB)
 
 # In-memory cache for OAuth tokens
 _teams_tokens: dict[str, dict] = {}  # agent_id -> {access_token, expires_at}
+
+_BOT_FRAMEWORK_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+_BOT_FRAMEWORK_ISSUER = "https://api.botframework.com"
+
+
+async def _validate_teams_callback(
+    authorization: str | None,
+    activity: dict,
+    config: ChannelConfig,
+) -> bool:
+    """Verify a Bot Framework JWT and bind its serviceUrl to the activity."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization[7:].strip()
+    app_id = (config.app_id or "").strip()
+    service_url = str(activity.get("serviceUrl") or "")
+    if not token or not app_id or not service_url:
+        return False
+    try:
+        header = jwt.get_unverified_header(token)
+        algorithm = header.get("alg")
+        key_id = header.get("kid")
+        if not algorithm or algorithm == "none" or not key_id:
+            return False
+        async with httpx.AsyncClient(timeout=10) as client:
+            metadata_response = await client.get(_BOT_FRAMEWORK_OPENID_CONFIG)
+            metadata_response.raise_for_status()
+            metadata = metadata_response.json()
+            jwks_response = await client.get(metadata["jwks_uri"])
+            jwks_response.raise_for_status()
+            keys = jwks_response.json().get("keys", [])
+        key_data = next((item for item in keys if item.get("kid") == key_id), None)
+        if not key_data:
+            return False
+        claims = jwt.decode(
+            token,
+            jwk.construct(key_data, algorithm),
+            algorithms=[algorithm],
+            audience=app_id,
+            issuer=_BOT_FRAMEWORK_ISSUER,
+            options={"leeway": 300},
+        )
+        claimed_service_url = str(claims.get("serviceurl") or claims.get("serviceUrl") or "")
+        return bool(claimed_service_url) and hmac.compare_digest(claimed_service_url, service_url)
+    except (JWTError, KeyError, TypeError, ValueError, httpx.HTTPError):
+        return False
 
 
 async def _get_teams_access_token(config: ChannelConfig) -> str | None:
@@ -230,9 +278,12 @@ async def configure_teams_channel(
     tenant_id = data.get("tenant_id", "").strip()  # Optional: for single-tenant apps
     use_managed_identity = data.get("use_managed_identity", False)  # Optional: use Azure Managed Identity
     
-    # Validate: either managed identity OR app_id + app_secret required
-    if not use_managed_identity and (not app_id or not app_secret):
-        raise HTTPException(status_code=422, detail="Either use_managed_identity must be enabled, or app_id and app_secret are required")
+    # The App ID is required to verify the incoming Bot Framework JWT audience.
+    if not app_id or (not use_managed_identity and not app_secret):
+        raise HTTPException(
+            status_code=422,
+            detail="app_id is required; app_secret is required unless managed identity is enabled",
+        )
 
     result = await db.execute(
         select(ChannelConfig).where(
@@ -242,7 +293,7 @@ async def configure_teams_channel(
     )
     existing = result.scalar_one_or_none()
     if existing:
-        existing.app_id = app_id if not use_managed_identity else existing.app_id
+        existing.app_id = app_id
         existing.app_secret = app_secret if not use_managed_identity else existing.app_secret
         existing.is_configured = True
         # Store tenant_id and use_managed_identity in extra_config
@@ -266,7 +317,7 @@ async def configure_teams_channel(
     config = ChannelConfig(
         agent_id=agent_id,
         channel_type="microsoft_teams",
-        app_id=app_id if not use_managed_identity else None,
+        app_id=app_id,
         app_secret=app_secret if not use_managed_identity else None,
         is_configured=True,
         extra_config=extra_config,
@@ -381,7 +432,13 @@ async def teams_event_webhook(
             logger.warning(f"Teams: Webhook received for unconfigured agent {agent_id}")
             return Response(status_code=404)
 
-        # Extract serviceUrl from the activity for sending replies
+        if not await _validate_teams_callback(
+            request.headers.get("authorization"), activity, config
+        ):
+            logger.warning("Teams: Rejected unauthenticated callback for agent {}", agent_id)
+            return Response(status_code=401)
+
+        # This value is now authenticated by the JWT serviceUrl claim above.
         service_url = activity.get("serviceUrl")
         if service_url:
             if config.extra_config.get("service_url") != service_url:

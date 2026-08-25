@@ -3711,6 +3711,14 @@ select:focus {
   flex-direction: column;
 }
 
+.agent-chat-message-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior-y: contain;
+}
+
 .agent-detail-header {
   flex-shrink: 0;
 }
@@ -7302,12 +7310,24 @@ select:focus {
 }
 
 .chat-tool-reconciliation__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   justify-content: flex-end;
   margin-top: 10px;
 }
 
 .chat-tool-reconciliation__unsupported {
   margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.analysis-tool-reconciliation__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
   color: var(--text-tertiary);
   font-size: 12px;
 }

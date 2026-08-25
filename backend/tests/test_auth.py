@@ -1,15 +1,19 @@
 """Unit tests for the authentication API (app/api/auth.py)."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.api import auth as auth_api
+from app.api import sso as sso_api
 from app.core.security import hash_password
 from app.database import _session_ctx
+from app.services.sso_session_security import sso_browser_cookie_name
 
 
 async def run_with_db(db, func, *args, **kwargs):
@@ -231,7 +235,62 @@ async def test_oauth_callback_passes_redirect_uri():
             with patch("app.api.auth.UserOut") as MockUserOut:
                 MockUserOut.model_validate.return_value = {"id": str(user.id)}
                 with patch.object(auth_api, "create_access_token", return_value="jwt-token"):
-                    result = await run_with_db(RecordingDB(), auth_api.oauth_callback, "google", data)
+                    request = Request(
+                        {"type": "http", "headers": [(b"cookie", b"oauth_state=oauth-state")]}
+                    )
+                    result = await run_with_db(RecordingDB(), auth_api.oauth_callback, "google", data, request)
 
     provider.exchange_code_for_token.assert_awaited_once_with("oauth-code", "https://example.com/oauth/callback/google")
     assert result.access_token == "jwt-token"
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_rejects_state_from_another_browser():
+    data = SimpleNamespace(
+        code="oauth-code",
+        state="attacker-state",
+        redirect_uri="https://example.com/oauth/callback/google",
+        pending_token=None,
+        tenant_id=None,
+    )
+    request = Request({"type": "http", "headers": [(b"cookie", b"oauth_state=expected-state")]})
+
+    with pytest.raises(HTTPException, match="does not match this browser") as exc_info:
+        await run_with_db(RecordingDB(), auth_api.oauth_callback, "google", data, request)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_sso_session_status_rejects_a_browser_without_its_binding_cookie():
+    session_id = uuid.uuid4()
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(HTTPException, match="not bound to this browser") as exc_info:
+        await sso_api.get_sso_session_status(session_id, request, RecordingDB())
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sso_session_status_accepts_the_initiating_browser_cookie():
+    session_id = uuid.uuid4()
+    cookie_name = sso_browser_cookie_name(session_id)
+    cookie_value = sso_api.sign_sso_browser_binding(session_id)
+    request = Request(
+        {"type": "http", "headers": [(b"cookie", f"{cookie_name}={cookie_value}".encode())]}
+    )
+    session = SimpleNamespace(
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+        status="pending",
+        provider_type=None,
+        error_msg=None,
+    )
+
+    result = await sso_api.get_sso_session_status(
+        session_id,
+        request,
+        RecordingDB([DummyResult(scalar_value=session)]),
+    )
+
+    assert result == {"status": "pending", "provider_type": None, "error_msg": None}

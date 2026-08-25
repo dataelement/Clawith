@@ -272,6 +272,7 @@ async def test_completed_request_projects_message_and_resumes_source_atomically(
     assert len(db.added) == 1
     message = db.added[0]
     assert isinstance(message, ChatMessage)
+    assert message.tenant_id == run.tenant_id
     assert message.id == uuid.uuid5(
         run.run_id,
         "a2a-terminal:target-terminal",

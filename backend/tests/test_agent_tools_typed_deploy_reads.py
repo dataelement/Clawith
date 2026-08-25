@@ -192,7 +192,7 @@ async def test_vercel_read_is_visible_only_when_assigned_and_shared_token_is_rea
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", config)
@@ -224,7 +224,7 @@ async def test_vercel_read_is_hidden_when_shared_token_is_missing(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", no_config)

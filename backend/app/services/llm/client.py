@@ -7,6 +7,7 @@ Provides a consistent interface for all LLM operations across the application.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from abc import ABC, abstractmethod
@@ -29,6 +30,207 @@ class LLMRequestShapeError(LLMError):
     """The final provider request violates a portable message-shape invariant."""
 
 
+class LLMVisibleStreamInterrupted(LLMError):
+    """A provider stream failed after user-visible output was published."""
+
+
+_LEADING_THINK_TAG = re.compile(r"^\s*<think>", re.IGNORECASE)
+_CLOSING_THINK_TAG = re.compile(r"</think>", re.IGNORECASE)
+_TEXTUAL_TOOL_CALL = re.compile(
+    r"^\s*<tool_call>\s*(.*?)\s*</tool_call>\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_TEXTUAL_TOOL_CALL_MARKER = re.compile(r"<tool_call(?:\s[^>]*)?>", re.IGNORECASE)
+_TEXTUAL_TOOL_RESULT = re.compile(
+    r"<(?:result|tool_result)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def extract_embedded_reasoning(
+    content: str | None,
+    reasoning_content: str | None,
+) -> tuple[str, str | None]:
+    """Move leading ``<think>`` blocks into the structured reasoning channel.
+
+    Only leading blocks are treated as model protocol. Literal tags later in a
+    user-facing answer remain visible.
+    """
+    visible = content or ""
+    extracted: list[str] = []
+
+    while (opening := _LEADING_THINK_TAG.match(visible)) is not None:
+        remainder = visible[opening.end() :]
+        closing = _CLOSING_THINK_TAG.search(remainder)
+        if closing is None:
+            thought = remainder.strip()
+            if thought:
+                extracted.append(thought)
+            visible = ""
+            break
+        thought = remainder[: closing.start()].strip()
+        if thought:
+            extracted.append(thought)
+        visible = remainder[closing.end() :]
+
+    reasoning_parts: list[str] = []
+    for part in (reasoning_content, *extracted):
+        normalized = (part or "").strip()
+        if normalized and normalized not in reasoning_parts:
+            reasoning_parts.append(normalized)
+    return visible.strip(), "\n\n".join(reasoning_parts) or None
+
+
+def _available_tool_names(tools: list[dict] | None) -> frozenset[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return frozenset(names)
+
+
+def normalize_textual_tool_protocol(
+    content: str | None,
+    tools: list[dict] | None,
+) -> tuple[str, list[dict], str | None]:
+    """Convert an exact textual tool envelope or reject an invented result.
+
+    Ordinary JSON remains ordinary Assistant content. Conversion is limited to
+    an exact ``<tool_call>`` envelope (or a strict bare call object) naming a
+    tool that is actually enabled for this model step.
+    """
+    text = content or ""
+    available_names = _available_tool_names(tools)
+    protocol_visible_text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    protocol_visible_text = re.sub(r"`[^`]*`", "", protocol_visible_text)
+
+    if _TEXTUAL_TOOL_RESULT.search(protocol_visible_text):
+        next_action = (
+            "Use a native tool call to an enabled tool, wait for its Tool "
+            "Result, and only then answer from that result."
+            if available_names
+            else (
+                "No tool is enabled for this step, so answer normally from the "
+                "available context without inventing a Tool Result."
+            )
+        )
+        return (
+            "",
+            [],
+            (
+                "No tool was executed. Your previous response encoded a tool "
+                "result in Assistant text, which cannot be trusted or published. "
+                + next_action
+            ),
+        )
+
+    wrapped = _TEXTUAL_TOOL_CALL.match(text)
+    if wrapped is None and _TEXTUAL_TOOL_CALL_MARKER.search(protocol_visible_text):
+        return (
+            "",
+            [],
+            (
+                "The previous response mixed a textual <tool_call> with Assistant "
+                "content. Retry using only a native tool call."
+            ),
+        )
+    raw_payload = wrapped.group(1) if wrapped is not None else text.strip()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> envelope was not valid JSON. Retry with "
+                "a native tool call to one enabled tool."
+            ),
+        )
+    if not isinstance(payload, dict):
+        if wrapped is None:
+            return text, [], None
+        return (
+            "",
+            [],
+            "The textual <tool_call> envelope must contain one native tool call object.",
+        )
+
+    function_payload = payload.get("function")
+    if isinstance(function_payload, dict):
+        if set(payload) - {"id", "type", "function"}:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> contains unsupported control fields.",
+            )
+        name = function_payload.get("name")
+        arguments = function_payload.get("arguments", {})
+    else:
+        if set(payload) - {"id", "name", "arguments"} or "name" not in payload:
+            if wrapped is None:
+                return text, [], None
+            return (
+                "",
+                [],
+                "The textual <tool_call> must contain one named native tool call.",
+            )
+        name = payload.get("name")
+        arguments = payload.get("arguments", {})
+
+    if not isinstance(name, str) or name.strip() not in available_names:
+        return (
+            "",
+            [],
+            (
+                "The textual tool call named a tool that is not enabled. Retry "
+                "with a native tool call to one tool from the current Tool Schema."
+            ),
+        )
+
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    if not isinstance(arguments, dict):
+        return (
+            "",
+            [],
+            (
+                "The textual <tool_call> arguments must be one JSON object. Retry "
+                "with a native tool call."
+            ),
+        )
+
+    normalized_name = name.strip()
+    call_id = payload.get("id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+        call_id = f"call_text_{digest}"
+    return (
+        "",
+        [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        ],
+        None,
+    )
+
+
 # ============================================================================
 # Data Models
 # ============================================================================
@@ -41,6 +243,7 @@ class LLMMessage:
     content: str | list | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
+    is_error: bool = False
     reasoning_content: str | None = None
     reasoning_signature: str | None = None
     dynamic_content: str | None = None
@@ -105,6 +308,7 @@ class LLMMessage:
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
                         "content": result_content,
+                        "is_error": self.is_error,
                     }
                 ]
             }
@@ -263,6 +467,29 @@ class LLMResponse:
     model: str | None = None
 
 
+def normalize_llm_finish_reason(
+    finish_reason: str | None,
+    tool_calls: list[dict] | tuple[dict, ...],
+) -> str | None:
+    """Normalize provider stop metadata without treating unknown values as success."""
+    if tool_calls:
+        return "tool_calls"
+    if not isinstance(finish_reason, str) or not finish_reason.strip():
+        return None
+    normalized = finish_reason.strip().lower()
+    if normalized in {"stop", "end_turn", "stop_sequence"}:
+        return "stop"
+    if normalized in {"tool_calls", "tool_use"}:
+        return "tool_calls"
+    if normalized in {"length", "max_tokens"}:
+        return "length"
+    if normalized in {"content_filter", "safety", "recitation"}:
+        return "content_filter"
+    if normalized == "refusal":
+        return "refusal"
+    return "unknown"
+
+
 @dataclass
 class LLMStreamChunk:
     """Stream chunk format."""
@@ -279,7 +506,7 @@ class LLMStreamChunk:
 # Type Definitions
 # ============================================================================
 
-ChunkCallback = Callable[[str], Coroutine[Any, Any, None]]
+ChunkCallback = Callable[[str], Coroutine[Any, Any, bool | None]]
 ToolCallback = Callable[[dict], Coroutine[Any, Any, None]]
 ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 
@@ -352,10 +579,12 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
         supports_cache_control: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self.supports_cache_control = supports_cache_control
         self._client: httpx.AsyncClient | None = None
 
@@ -409,6 +638,7 @@ class OpenAICompatibleClient(LLMClient):
             payload["tools"] = tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
                 payload["parallel_tool_calls"] = True
 
         # Add any additional kwargs
@@ -569,12 +799,19 @@ class OpenAICompatibleClient(LLMClient):
         if delta.get("reasoning_content"):
             chunk.reasoning_content = delta["reasoning_content"]
 
-        # Regular content with think tag filtering
+        # Regular content with embedded think routing
         if delta.get("content"):
             text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
+            (
+                chunk.content,
+                embedded_reasoning,
+                in_think,
+                tag_buffer,
+            ) = self._filter_think_tags(
                 text, in_think, tag_buffer
             )
+            if embedded_reasoning:
+                chunk.reasoning_content += embedded_reasoning
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -586,13 +823,14 @@ class OpenAICompatibleClient(LLMClient):
 
     def _filter_think_tags(
         self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
-        """Filter out <think>...</think> tags from content.
+    ) -> tuple[str, str, bool, str]:
+        """Route ``<think>`` text away from visible content.
 
-        Returns (filtered_content, new_in_think, new_tag_buffer).
+        Returns visible content, reasoning content, state, and partial tag buffer.
         """
         tag_buffer += text
-        emit = ""
+        visible_emit = ""
+        reasoning_emit = ""
         i = 0
         buf = tag_buffer
 
@@ -609,10 +847,10 @@ class OpenAICompatibleClient(LLMClient):
                         # Partial match - keep in buffer
                         break
                     else:
-                        emit += buf[i]
+                        visible_emit += buf[i]
                         i += 1
                 else:
-                    emit += buf[i]
+                    visible_emit += buf[i]
                     i += 1
             else:
                 # Inside think - look for </think> close tag
@@ -624,10 +862,11 @@ class OpenAICompatibleClient(LLMClient):
                         continue
                     elif "</think>".startswith(tag_candidate):
                         break
+                reasoning_emit += buf[i]
                 i += 1
 
         tag_buffer = buf[i:]
-        return emit, in_think, tag_buffer
+        return visible_emit, reasoning_emit, in_think, tag_buffer
 
     async def complete(
         self,
@@ -659,6 +898,7 @@ class OpenAICompatibleClient(LLMClient):
         return LLMResponse(
             content=msg.get("content", ""),
             tool_calls=msg.get("tool_calls", []),
+            reasoning_content=msg.get("reasoning_content"),
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),
@@ -690,6 +930,7 @@ class OpenAICompatibleClient(LLMClient):
 
         max_retries = 3
         client = await self._get_client()
+        visible_content_emitted = False
 
         for attempt in range(max_retries):
             try:
@@ -711,7 +952,10 @@ class OpenAICompatibleClient(LLMClient):
                         if chunk.content:
                             full_content += chunk.content
                             if on_chunk:
-                                await on_chunk(chunk.content)
+                                published = await on_chunk(chunk.content)
+                                visible_content_emitted = (
+                                    visible_content_emitted or published is not False
+                                )
 
                         if chunk.reasoning_content:
                             full_reasoning += chunk.reasoning_content
@@ -756,6 +1000,10 @@ class OpenAICompatibleClient(LLMClient):
                 break  # Success
 
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+                if visible_content_emitted:
+                    raise LLMVisibleStreamInterrupted(
+                        "Provider stream interrupted after visible output was published"
+                    ) from e
                 if attempt < max_retries - 1:
                     wait = (attempt + 1) * 1
                     logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
@@ -769,13 +1017,20 @@ class OpenAICompatibleClient(LLMClient):
                 else:
                     raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
 
-        # Clean up any remaining think tags
-        full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
+        if tag_buffer:
+            if in_think:
+                full_reasoning += tag_buffer
+            else:
+                full_content += tag_buffer
+        full_content, normalized_reasoning = extract_embedded_reasoning(
+            full_content,
+            full_reasoning or None,
+        )
 
         return LLMResponse(
             content=full_content,
             tool_calls=tool_calls_data,
-            reasoning_content=full_reasoning or None,
+            reasoning_content=normalized_reasoning,
             finish_reason=last_finish_reason,
             usage=final_usage,
             model=self.model,
@@ -803,9 +1058,11 @@ class OpenAIResponsesClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        supports_parallel_tool_calls: bool = False,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -993,6 +1250,8 @@ class OpenAIResponsesClient(LLMClient):
             payload["tools"] = converted_tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
+            if self.supports_parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
 
         payload.update(kwargs)
         final_input = payload.get("input")
@@ -1011,6 +1270,7 @@ class OpenAIResponsesClient(LLMClient):
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        refusal_seen = False
 
         for item in data.get("output", []) or []:
             item_type = item.get("type")
@@ -1021,6 +1281,8 @@ class OpenAIResponsesClient(LLMClient):
                         content_parts.append(c.get("text", ""))
                     elif c_type == "reasoning":
                         reasoning_parts.append(c.get("summary", "") or c.get("text", ""))
+                    elif c_type == "refusal":
+                        refusal_seen = True
             elif item_type == "function_call":
                 args = item.get("arguments", "{}")
                 if isinstance(args, dict):
@@ -1040,7 +1302,32 @@ class OpenAIResponsesClient(LLMClient):
             content_parts.append(str(data.get("output_text", "")))
 
         usage = data.get("usage")
-        finish_reason = "tool_calls" if tool_calls else "stop"
+        status = str(data.get("status") or "").lower()
+        incomplete_details = data.get("incomplete_details")
+        incomplete_reason = (
+            str(incomplete_details.get("reason") or "").lower()
+            if isinstance(incomplete_details, dict)
+            else ""
+        )
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif refusal_seen:
+            finish_reason = "refusal"
+        elif status == "incomplete" and incomplete_reason in {
+            "max_output_tokens",
+            "max_tokens",
+        }:
+            finish_reason = "length"
+        elif status == "incomplete" and incomplete_reason in {
+            "content_filter",
+            "safety",
+            "recitation",
+        }:
+            finish_reason = "content_filter"
+        elif status in {"", "completed"}:
+            finish_reason = "stop"
+        else:
+            finish_reason = "unknown"
 
         return LLMResponse(
             content="".join(content_parts),
@@ -1071,6 +1358,21 @@ class OpenAIResponsesClient(LLMClient):
             return str(err)
 
         status = str(data.get("status") or "").lower()
+        if status == "incomplete":
+            incomplete = data.get("incomplete_details")
+            reason = (
+                str(incomplete.get("reason") or "").lower()
+                if isinstance(incomplete, dict)
+                else ""
+            )
+            if reason in {
+                "max_output_tokens",
+                "max_tokens",
+                "content_filter",
+                "safety",
+                "recitation",
+            }:
+                return None
         if status in {"failed", "incomplete", "cancelled"}:
             last_error = data.get("last_error")
             incomplete = data.get("incomplete_details")
@@ -1201,6 +1503,7 @@ class GeminiClient(LLMClient):
                 model=self.model,
                 timeout=self.timeout,
                 supports_tool_choice=self.supports_tool_choice,
+                supports_parallel_tool_calls=False,
                 supports_cache_control=False,
             )
         return self._openai_fallback_client
@@ -1275,19 +1578,6 @@ class GeminiClient(LLMClient):
 
         return [{"text": str(content)}]
 
-    def _extract_tool_name_map(self, messages: list[LLMMessage]) -> dict[str, str]:
-        """Build tool_call_id -> function_name map from assistant messages."""
-        out: dict[str, str] = {}
-        for msg in messages:
-            if msg.role != "assistant" or not msg.tool_calls:
-                continue
-            for tc in msg.tool_calls:
-                tc_id = tc.get("id")
-                tc_name = tc.get("function", {}).get("name")
-                if tc_id and tc_name:
-                    out[tc_id] = tc_name
-        return out
-
     def _convert_tools(self, tools: list[dict] | None) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
         """Convert OpenAI-style tools to Gemini function declarations."""
         if not tools:
@@ -1328,7 +1618,7 @@ class GeminiClient(LLMClient):
         messages = normalize_provider_messages(messages)
         system_blocks: list[str] = []
         contents: list[dict[str, Any]] = []
-        tool_name_map = self._extract_tool_name_map(messages)
+        pending_tool_names: dict[str, str] = {}
 
         for msg in messages:
             if msg.role == "system":
@@ -1341,16 +1631,22 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "user":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if parts:
                     contents.append({"role": "user", "parts": parts})
                 continue
 
             if msg.role == "assistant":
+                pending_tool_names = {}
                 parts = self._content_to_gemini_parts(msg.content)
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
                         fn = tc.get("function", {})
+                        tc_id = tc.get("id")
+                        tc_name = fn.get("name")
+                        if tc_id and tc_name:
+                            pending_tool_names[tc_id] = tc_name
                         args = fn.get("arguments", "{}")
                         if isinstance(args, str):
                             try:
@@ -1377,21 +1673,21 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "tool":
-                name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
+                name = pending_tool_names.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
                 response_content = msg.content or ""
                 if isinstance(response_content, str):
                     try:
                         parsed = json.loads(response_content)
-                        if isinstance(parsed, dict):
-                            response_obj: dict[str, Any] = parsed
-                        else:
-                            response_obj = {"result": parsed}
+                        response_value: Any = parsed
                     except json.JSONDecodeError:
-                        response_obj = {"result": response_content}
+                        response_value = response_content
                 elif isinstance(response_content, dict):
-                    response_obj = response_content
+                    response_value = response_content
                 else:
-                    response_obj = {"result": str(response_content)}
+                    response_value = str(response_content)
+                response_obj = {
+                    "error" if msg.is_error else "output": response_value,
+                }
 
                 contents.append({
                     "role": "user",
@@ -1442,17 +1738,7 @@ class GeminiClient(LLMClient):
 
     def _normalize_finish_reason(self, finish_reason: str | None, tool_calls: list[dict]) -> str | None:
         """Normalize Gemini finish reason to OpenAI-style labels."""
-        if tool_calls:
-            return "tool_calls"
-        if not finish_reason:
-            return None
-        mapping = {
-            "STOP": "stop",
-            "MAX_TOKENS": "length",
-            "SAFETY": "content_filter",
-            "RECITATION": "content_filter",
-        }
-        return mapping.get(finish_reason, "stop")
+        return normalize_llm_finish_reason(finish_reason, tool_calls)
 
     def _parse_response_data(self, data: dict[str, Any]) -> LLMResponse:
         """Convert Gemini native response into canonical LLMResponse."""
@@ -1568,6 +1854,8 @@ class GeminiClient(LLMClient):
         payload = self._build_payload(messages, tools, temperature, max_tokens, **kwargs)
 
         full_text = ""
+        full_reasoning = ""
+        thought_signature: str | None = None
         tool_calls: list[dict[str, Any]] = []
         seen_tool_calls: set[str] = set()
         final_usage: dict[str, int] | None = None
@@ -1617,9 +1905,17 @@ class GeminiClient(LLMClient):
                     for part in content_obj.get("parts", []) or []:
                         text = part.get("text")
                         if text:
-                            full_text += text
-                            if on_chunk:
-                                await on_chunk(text)
+                            if part.get("thought") is True:
+                                full_reasoning += text
+                                if on_thinking:
+                                    await on_thinking(text)
+                            else:
+                                full_text += text
+                                if on_chunk:
+                                    await on_chunk(text)
+                        signature = part.get("thoughtSignature")
+                        if isinstance(signature, str) and signature:
+                            thought_signature = signature
 
                         function_call = part.get("functionCall")
                         if function_call:
@@ -1649,6 +1945,8 @@ class GeminiClient(LLMClient):
         return LLMResponse(
             content=full_text,
             tool_calls=tool_calls,
+            reasoning_content=full_reasoning or None,
+            reasoning_signature=thought_signature,
             finish_reason=self._normalize_finish_reason(final_finish_reason, tool_calls),
             usage=final_usage,
             model=self.model,
@@ -2029,6 +2327,7 @@ class ProviderSpec:
     protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
     default_base_url: str | None
     supports_tool_choice: bool = True
+    supports_parallel_tool_calls: bool = False
     default_max_tokens: int = 4096
     model_max_tokens: dict[str, int] = field(default_factory=dict)
 
@@ -2055,6 +2354,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI",
         protocol="openai_compatible",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "openai-response": ProviderSpec(
@@ -2062,6 +2362,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="OpenAI Responses",
         protocol="openai_responses",
         default_base_url="https://api.openai.com/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "azure": ProviderSpec(
@@ -2069,6 +2370,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Azure OpenAI",
         protocol="openai_compatible",
         default_base_url=None,
+        supports_parallel_tool_calls=True,
         default_max_tokens=16384,
     ),
     "deepseek": ProviderSpec(
@@ -2083,6 +2385,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Qwen (DashScope)",
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        supports_parallel_tool_calls=True,
         default_max_tokens=8192,
         model_max_tokens={
             "qwen-plus": 16384,
@@ -2186,6 +2489,7 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "protocol": spec.protocol,
             "default_base_url": spec.default_base_url,
             "supports_tool_choice": spec.supports_tool_choice,
+            "supports_parallel_tool_calls": spec.supports_parallel_tool_calls,
             "default_max_tokens": spec.default_max_tokens,
             "model_max_tokens": spec.model_max_tokens,
             "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
@@ -2308,6 +2612,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+            supports_parallel_tool_calls=spec.supports_parallel_tool_calls,
         )
     elif spec and spec.protocol == "gemini":
         return GeminiClient(
@@ -2325,6 +2630,9 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            supports_parallel_tool_calls=(
+                spec.supports_parallel_tool_calls if spec else False
+            ),
             supports_cache_control=normalized_provider == "qwen",
         )
     else:
@@ -2335,6 +2643,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            supports_parallel_tool_calls=False,
             supports_cache_control=False,
         )
 

@@ -46,6 +46,39 @@ wait_healthy() {
   done
 }
 
+run_schema_command() {
+  IMAGE="$1"
+  COMMAND="$2"
+  docker run --rm \
+    --network "$NETWORK" \
+    --entrypoint /bin/bash \
+    -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+    -e REDIS_URL=redis://redis:6379/0 \
+    -e SECRET_KEY=ci-test-secret \
+    -e JWT_SECRET_KEY=ci-test-jwt-secret \
+    "$IMAGE" -lc "$COMMAND"
+}
+
+run_schema_python() {
+  IMAGE="$1"
+  PYTHON_CODE="$2"
+  docker run --rm \
+    --network "$NETWORK" \
+    --entrypoint python \
+    -e DATABASE_URL=postgresql+asyncpg://clawith:clawith@postgres:5432/clawith \
+    -e REDIS_URL=redis://redis:6379/0 \
+    -e SECRET_KEY=ci-test-secret \
+    -e JWT_SECRET_KEY=ci-test-jwt-secret \
+    "$IMAGE" -c "$PYTHON_CODE"
+}
+
+schema_revision_digest() {
+  IMAGE="$1"
+  REVISION="$2"
+  run_schema_python "$IMAGE" \
+    "import hashlib; from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config(\"alembic.ini\")); revision = script.get_revision(\"$REVISION\"); print(hashlib.sha256(open(revision.path, \"rb\").read()).hexdigest())"
+}
+
 trap cleanup EXIT
 
 compose down -v --remove-orphans >/dev/null 2>&1 || true
@@ -63,6 +96,82 @@ docker image inspect "$OLD_IMAGE" --format '{{ index .Config.Labels "org.opencon
 OLD_VERSION=$(cat /tmp/old_version | tr -d '\r')
 echo "启动升级源 version=$OLD_VERSION revision=$OLD_REVISION"
 
+SOURCE_SCHEMA_HEADS=$(run_schema_python "$OLD_IMAGE" \
+  'from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config("alembic.ini")); print("\n".join(script.get_heads()))')
+SOURCE_SCHEMA_PARENT_REVISIONS=$(run_schema_python "$OLD_IMAGE" \
+  'from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config("alembic.ini")); normalize = lambda value: () if value is None else (value,) if isinstance(value, str) else tuple(value); print("\n".join(sorted({parent for head in script.get_heads() for parent in normalize(script.get_revision(head).down_revision)})))')
+SOURCE_SCHEMA_ROOT_HEADS=$(run_schema_python "$OLD_IMAGE" \
+  'from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config("alembic.ini")); normalize = lambda value: () if value is None else (value,) if isinstance(value, str) else tuple(value); print("\n".join(sorted(head for head in script.get_heads() if not normalize(script.get_revision(head).down_revision))))')
+
+if [ -z "$SOURCE_SCHEMA_HEADS" ]; then
+  echo "无法识别升级源 Alembic revision graph"
+  exit 1
+fi
+
+echo "使用升级源镜像建立并提交 source head 的父 revision"
+# 父 revision 必须完全由升级源镜像建立；任何中间 migration 失败都会直接终止。
+for SOURCE_SCHEMA_PARENT in $SOURCE_SCHEMA_PARENT_REVISIONS; do
+  case "$SOURCE_SCHEMA_PARENT" in
+    *[!A-Za-z0-9_.-]*)
+      echo "升级源 Alembic parent revision 格式无效: $SOURCE_SCHEMA_PARENT"
+      exit 1
+      ;;
+  esac
+  run_schema_command "$OLD_IMAGE" "alembic upgrade $SOURCE_SCHEMA_PARENT"
+done
+
+echo "使用升级源镜像逐个提交 source head"
+# source head 使用独立事务，失败时不会回滚已经提交的历史 schema。
+for SOURCE_SCHEMA_HEAD in $SOURCE_SCHEMA_HEADS; do
+  case "$SOURCE_SCHEMA_HEAD" in
+    *[!A-Za-z0-9_.-]*)
+      echo "升级源 Alembic head 格式无效: $SOURCE_SCHEMA_HEAD"
+      exit 1
+      ;;
+  esac
+
+  if run_schema_command "$OLD_IMAGE" "alembic upgrade $SOURCE_SCHEMA_HEAD"; then
+    continue
+  fi
+
+  SOURCE_HEAD_IS_ROOT=false
+  for SOURCE_SCHEMA_ROOT_HEAD in $SOURCE_SCHEMA_ROOT_HEADS; do
+    if [ "$SOURCE_SCHEMA_ROOT_HEAD" = "$SOURCE_SCHEMA_HEAD" ]; then
+      SOURCE_HEAD_IS_ROOT=true
+      break
+    fi
+  done
+
+  if [ "$SOURCE_HEAD_IS_ROOT" = "true" ]; then
+    echo "升级源 root head 失败，禁止由目标镜像从空库构造旧 schema: $SOURCE_SCHEMA_HEAD"
+    exit 1
+  fi
+
+  SOURCE_HEAD_DIGEST=$(schema_revision_digest "$OLD_IMAGE" "$SOURCE_SCHEMA_HEAD")
+  TARGET_HEAD_DIGEST=$(schema_revision_digest "$NEW_IMAGE" "$SOURCE_SCHEMA_HEAD")
+  if [ "$SOURCE_HEAD_DIGEST" = "$TARGET_HEAD_DIGEST" ]; then
+    echo "目标镜像没有该 source head 的修复版本，拒绝掩盖 migration 错误: $SOURCE_SCHEMA_HEAD"
+    exit 1
+  fi
+
+  echo "升级源 head migration 失败，使用目标镜像仅修复相同 head=$SOURCE_SCHEMA_HEAD"
+  run_schema_command "$NEW_IMAGE" "alembic upgrade $SOURCE_SCHEMA_HEAD"
+done
+
+EXPECTED_SOURCE_SCHEMA_HEADS=$(printf '%s\n' "$SOURCE_SCHEMA_HEADS" | sort)
+ACTUAL_SOURCE_SCHEMA_HEADS=$(compose exec -T postgres \
+  psql -U clawith -d clawith -Atc \
+  "SELECT version_num FROM alembic_version ORDER BY version_num;" | tr -d '\r' | sort)
+if [ "$ACTUAL_SOURCE_SCHEMA_HEADS" != "$EXPECTED_SOURCE_SCHEMA_HEADS" ]; then
+  echo "升级源 schema head 不匹配"
+  echo "expected=$EXPECTED_SOURCE_SCHEMA_HEADS"
+  echo "actual=$ACTUAL_SOURCE_SCHEMA_HEADS"
+  exit 1
+fi
+
+echo "使用升级源镜像建立 LangGraph checkpoint schema"
+run_schema_command "$OLD_IMAGE" "python -m app.scripts.setup_langgraph_checkpoints"
+
 docker run -d \
   --name "$OLD_CONTAINER" \
   --network "$NETWORK" \
@@ -75,6 +184,8 @@ docker run -d \
   -e SECRET_KEY=ci-test-secret \
   -e JWT_SECRET_KEY=ci-test-jwt-secret \
   -e CORS_ORIGINS='["*"]' \
+  -e PROCESS_ROLE=api,worker \
+  -e INSTANCE_ID="$PROJECT-backend-old" \
   "$OLD_IMAGE" >/dev/null
 
 wait_healthy "$OLD_CONTAINER"

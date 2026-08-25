@@ -9,6 +9,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.dao.chat_message_dao import chat_message_dao
 from app.models.agent_run import AgentRun
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -165,7 +166,8 @@ class TriggerRuntimeCompletionHandler:
                 execution.lease_owner = None
                 execution.lease_expires_at = None
                 execution.last_error = None if status == "completed" else detail
-                db.add(
+                chat_message_dao.add_scoped(
+                    db,
                     ChatMessage(
                         id=receipt_id,
                         agent_id=stored_run.agent_id,
@@ -176,7 +178,8 @@ class TriggerRuntimeCompletionHandler:
                         participant_id=session.participant_id,
                         mentions=[],
                         created_at=now,
-                    )
+                    ),
+                    tenant_id=run.tenant_id,
                 )
                 session.last_message_at = now
                 await db.flush()

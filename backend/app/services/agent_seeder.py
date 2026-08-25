@@ -4,7 +4,7 @@ import uuid
 
 from loguru import logger
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,7 @@ from app.database import async_session
 from app.models.agent import Agent, AgentPermission
 from app.models.org import AgentAgentRelationship
 from app.models.skill import Skill
+from app.models.tenant_setting import TenantSetting
 from app.models.tool import Tool, AgentTool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
@@ -23,6 +24,8 @@ from app.services.storage import get_storage_backend, store_agent_bytes
 
 settings = get_settings()
 SEED_MARKER_KEY = "_bootstrap/.seeded"
+DEFAULT_AGENT_SEED_SETTING_KEY = "bootstrap:default_agents:v1"
+DEFAULT_AGENT_NAMES = {"morty": "Morty", "meeseeks": "Meeseeks"}
 
 
 async def _read_seed_marker() -> str:
@@ -40,6 +43,147 @@ async def _append_seed_marker(line: str) -> None:
     updated = existing if existing.endswith("\n") or not existing else existing + "\n"
     updated += f"{line}\n"
     await storage.write_text(SEED_MARKER_KEY, updated, encoding="utf-8")
+
+
+def _parse_default_agent_ids(value: object) -> dict[str, uuid.UUID | None]:
+    """Read stable default-Agent IDs from a tenant setting value."""
+    raw_agents = value.get("agents") if isinstance(value, dict) else None
+    raw_agents = raw_agents if isinstance(raw_agents, dict) else {}
+    parsed: dict[str, uuid.UUID | None] = {}
+    for key in DEFAULT_AGENT_NAMES:
+        raw_id = raw_agents.get(key)
+        try:
+            parsed[key] = uuid.UUID(str(raw_id)) if raw_id else None
+        except (TypeError, ValueError, AttributeError):
+            parsed[key] = None
+    return parsed
+
+
+def _parse_legacy_default_agent_ids(marker: str) -> dict[str, uuid.UUID | None]:
+    """Parse the last valid ID for each default Agent from the legacy marker."""
+    parsed: dict[str, uuid.UUID | None] = {key: None for key in DEFAULT_AGENT_NAMES}
+    for line in marker.splitlines():
+        key, separator, raw_id = line.partition("=")
+        if not separator or key not in DEFAULT_AGENT_NAMES:
+            continue
+        try:
+            parsed[key] = uuid.UUID(raw_id.strip())
+        except ValueError:
+            continue
+    return parsed
+
+
+def _default_agent_setting_value(
+    agent_ids: dict[str, uuid.UUID | None],
+    *,
+    source: str,
+) -> dict:
+    return {
+        "initialized": True,
+        "agents": {
+            key: str(agent_ids.get(key)) if agent_ids.get(key) else None
+            for key in DEFAULT_AGENT_NAMES
+        },
+        "source": source,
+    }
+
+
+async def _lock_default_agent_seed(db: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Serialize first-seed and compatibility backfill for one tenant."""
+    scope = f"default-agent-bootstrap:{tenant_id}"
+    await db.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(scope, 0)))
+    )
+
+
+async def _load_default_agents_by_ids(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    agent_ids: dict[str, uuid.UUID | None],
+) -> dict[str, Agent | None]:
+    wanted_ids = {agent_id for agent_id in agent_ids.values() if agent_id is not None}
+    if not wanted_ids:
+        return {key: None for key in DEFAULT_AGENT_NAMES}
+    result = await db.execute(
+        select(Agent).where(
+            Agent.tenant_id == tenant_id,
+            Agent.id.in_(wanted_ids),
+            Agent.agent_type == "native",
+        )
+    )
+    agents_by_id = {agent.id: agent for agent in result.scalars().all()}
+    return {
+        key: agents_by_id.get(agent_id) if agent_id else None
+        for key, agent_id in agent_ids.items()
+    }
+
+
+async def _load_historical_default_agents(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+) -> dict[str, Agent | None]:
+    """Find canonical-name history, including stopped and logically deleted rows."""
+    result = await db.execute(
+        select(Agent)
+        .where(
+            Agent.tenant_id == tenant_id,
+            Agent.name.in_(DEFAULT_AGENT_NAMES.values()),
+            Agent.agent_type == "native",
+        )
+        .order_by(Agent.created_at.asc())
+    )
+    historical: dict[str, Agent | None] = {key: None for key in DEFAULT_AGENT_NAMES}
+    key_by_name = {name: key for key, name in DEFAULT_AGENT_NAMES.items()}
+    for agent in result.scalars().all():
+        key = key_by_name.get(agent.name)
+        if key and historical[key] is None:
+            historical[key] = agent
+    return historical
+
+
+async def _repair_seeded_default_agents(
+    db: AsyncSession,
+    agents: dict[str, Agent | None],
+    *,
+    created_keys: set[str] | None = None,
+) -> None:
+    """Repair storage only for default Agents that still exist and are not deleted."""
+    repairable = {
+        key: agent
+        for key, agent in agents.items()
+        if agent is not None and agent.deleted_at is None
+    }
+    if not repairable:
+        return
+
+    all_skills_result = await db.execute(
+        select(Skill).options(selectinload(Skill.files))
+    )
+    all_skills = {skill.folder_name: skill for skill in all_skills_result.scalars().all()}
+    repair_specs = {
+        "morty": (MORTY_SOUL, MORTY_SKILLS),
+        "meeseeks": (MEESEEKS_SOUL, MEESEEKS_SKILLS),
+    }
+    for key, agent in repairable.items():
+        soul_content, skill_folders = repair_specs[key]
+        await _repair_default_agent_storage(
+            db,
+            agent,
+            soul_content=soul_content,
+            skill_folders=skill_folders,
+            all_skills=all_skills,
+            overwrite_skill_files=key in (created_keys or set()),
+        )
+
+
+async def _append_default_agent_seed_marker(
+    agent_ids: dict[str, uuid.UUID | None],
+) -> None:
+    """Preserve other bootstrap entries while recording default-Agent IDs."""
+    await _append_seed_marker("seeded")
+    for key, agent_id in agent_ids.items():
+        if agent_id:
+            await _append_seed_marker(f"{key}={agent_id}")
 
 
 async def _repair_default_agent_storage(
@@ -262,14 +406,9 @@ MEESEEKS_SKILLS = [
 
 
 async def seed_default_agents():
-    """Create missing default agents and repair missing storage for existing ones.
-
-    Database rows are the duplicate-creation guard. The storage marker is only
-    an operational hint because deployments can switch or lose storage while
-    preserving the database.
-    """
+    """Initialize default Agents once, then only repair surviving Agent storage."""
+    marker_ids_to_write: dict[str, uuid.UUID | None] | None = None
     async with async_session() as db:
-
         # Get platform admin as creator
         admin_result = await db.execute(
             select(User).where(User.role == "platform_admin").limit(1)
@@ -279,27 +418,78 @@ async def seed_default_agents():
             logger.warning("[AgentSeeder] No platform admin found, skipping default agents")
             return
 
-        # DB-backed idempotency is the source of truth. The storage marker can
-        # disappear when deployments switch volumes/backends, so it is only a
-        # fast-path hint and must never be the only duplicate guard.
-        existing_result = await db.execute(
-            select(Agent)
-            .where(
-                Agent.tenant_id == admin.tenant_id,
-                Agent.name.in_(["Morty", "Meeseeks"]),
-                Agent.agent_type == "native",
-                Agent.status != "stopped",
+        await _lock_default_agent_seed(db, admin.tenant_id)
+
+        setting_result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == admin.tenant_id,
+                TenantSetting.key == DEFAULT_AGENT_SEED_SETTING_KEY,
             )
-            .order_by(Agent.created_at.asc())
         )
-        existing_by_name: dict[str, Agent] = {}
-        for agent in existing_result.scalars().all():
-            existing_by_name.setdefault(agent.name, agent)
+        seed_setting = setting_result.scalar_one_or_none()
 
-        created_agents: list[Agent] = []
-        created_names: set[str] = set()
+        if seed_setting is not None:
+            seed_value = seed_setting.value if isinstance(seed_setting.value, dict) else {}
+            if seed_value.get("initialized") is not True:
+                logger.warning(
+                    "[AgentSeeder] Default-Agent initialization setting is malformed; "
+                    "skipping creation conservatively"
+                )
+            agent_ids = _parse_default_agent_ids(seed_setting.value)
+            seeded_agents = await _load_default_agents_by_ids(
+                db,
+                admin.tenant_id,
+                agent_ids,
+            )
+            await _repair_seeded_default_agents(db, seeded_agents)
+            await db.commit()
+            logger.info(
+                "[AgentSeeder] Default Agents already initialized; "
+                "creation skipped and surviving storage checked"
+            )
+            return
 
-        if "Morty" not in existing_by_name:
+        # Existing deployments predate the DB setting. Recover stable IDs from
+        # the shared legacy marker first, then fall back to canonical-name DB
+        # history including stopped and logically deleted rows.
+        try:
+            legacy_ids = _parse_legacy_default_agent_ids(await _read_seed_marker())
+        except Exception as exc:
+            logger.warning(f"[AgentSeeder] Legacy seed marker unavailable: {exc}")
+            legacy_ids = {key: None for key in DEFAULT_AGENT_NAMES}
+
+        seeded_agents = await _load_default_agents_by_ids(
+            db,
+            admin.tenant_id,
+            legacy_ids,
+        )
+        if any(agent is not None for agent in seeded_agents.values()):
+            source = "legacy_marker"
+        else:
+            seeded_agents = await _load_historical_default_agents(db, admin.tenant_id)
+            source = "database_history"
+
+        if any(agent is not None for agent in seeded_agents.values()):
+            agent_ids = {
+                key: agent.id if agent is not None else None
+                for key, agent in seeded_agents.items()
+            }
+            db.add(
+                TenantSetting(
+                    tenant_id=admin.tenant_id,
+                    key=DEFAULT_AGENT_SEED_SETTING_KEY,
+                    value=_default_agent_setting_value(agent_ids, source=source),
+                )
+            )
+            await _repair_seeded_default_agents(db, seeded_agents)
+            await db.commit()
+            marker_ids_to_write = agent_ids
+            logger.info(
+                "[AgentSeeder] Backfilled default-Agent initialization state: "
+                f"tenant={admin.tenant_id} source={source}"
+            )
+        else:
+            # No durable initialization evidence: this is a fresh tenant.
             morty = Agent(
                 name="Morty",
                 role_description="Research analyst & knowledge assistant — curious, thorough, great at finding and synthesizing information",
@@ -309,13 +499,6 @@ async def seed_default_agents():
                 tenant_id=admin.tenant_id,
                 status="idle",
             )
-            db.add(morty)
-            created_agents.append(morty)
-            created_names.add("Morty")
-        else:
-            morty = existing_by_name["Morty"]
-
-        if "Meeseeks" not in existing_by_name:
             meeseeks = Agent(
                 name="Meeseeks",
                 role_description="Task executor & project manager — goal-oriented, systematic planner, strong at breaking down and completing complex tasks",
@@ -325,100 +508,86 @@ async def seed_default_agents():
                 tenant_id=admin.tenant_id,
                 status="idle",
             )
+            db.add(morty)
             db.add(meeseeks)
-            created_agents.append(meeseeks)
-            created_names.add("Meeseeks")
-        else:
-            meeseeks = existing_by_name["Meeseeks"]
+            await db.flush()
 
-        await db.flush()  # get IDs
-
-        # ── Participant identities ──
-        from app.models.participant import Participant
-        for agent in created_agents:
-            db.add(Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
-        await db.flush()
-
-        # ── Permissions (company-wide, manage) ──
-        for agent in created_agents:
-            db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level="manage"))
-
-        # ── Assign skills ──
-        all_skills_result = await db.execute(
-            select(Skill).options(selectinload(Skill.files))
-        )
-        all_skills = {s.folder_name: s for s in all_skills_result.scalars().all()}
-
-        await _repair_default_agent_storage(
-            db,
-            morty,
-            soul_content=MORTY_SOUL,
-            skill_folders=MORTY_SKILLS,
-            all_skills=all_skills,
-            overwrite_skill_files=morty.name in created_names,
-        )
-        await _repair_default_agent_storage(
-            db,
-            meeseeks,
-            soul_content=MEESEEKS_SOUL,
-            skill_folders=MEESEEKS_SKILLS,
-            all_skills=all_skills,
-            overwrite_skill_files=meeseeks.name in created_names,
-        )
-
-        # ── Assign all default tools ──
-        default_tools_result = await db.execute(
-            select(Tool).where(Tool.is_default)
-        )
-        default_tools = default_tools_result.scalars().all()
-
-        for agent in created_agents:
-            for tool in default_tools:
-                db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
-
-        # ── Mutual relationships ──
-        relationship_specs = [
-            (
-                morty.id,
-                meeseeks.id,
-                "Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
-            ),
-            (
-                meeseeks.id,
-                morty.id,
-                "Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
-            ),
-        ]
-        for agent_id, target_agent_id, description in relationship_specs:
-            rel_result = await db.execute(
-                select(AgentAgentRelationship).where(
-                    AgentAgentRelationship.agent_id == agent_id,
-                    AgentAgentRelationship.target_agent_id == target_agent_id,
+            created_agents = {"morty": morty, "meeseeks": meeseeks}
+            agent_ids = {key: agent.id for key, agent in created_agents.items()}
+            db.add(
+                TenantSetting(
+                    tenant_id=admin.tenant_id,
+                    key=DEFAULT_AGENT_SEED_SETTING_KEY,
+                    value=_default_agent_setting_value(agent_ids, source="created"),
                 )
             )
-            if not rel_result.scalar_one_or_none():
-                db.add(AgentAgentRelationship(
-                    agent_id=agent_id,
-                    target_agent_id=target_agent_id,
-                    relation="collaborator",
-                    description=description,
-                ))
 
+            from app.models.participant import Participant
 
+            for agent in created_agents.values():
+                db.add(
+                    Participant(
+                        type="agent",
+                        ref_id=agent.id,
+                        display_name=agent.name,
+                        avatar_url=agent.avatar_url,
+                    )
+                )
+                db.add(
+                    AgentPermission(
+                        agent_id=agent.id,
+                        scope_type="company",
+                        access_level="manage",
+                    )
+                )
+            await db.flush()
 
-        await db.commit()
-        logger.info(
-            "[AgentSeeder] Default agent seeding complete: "
-            f"Morty ({morty.id}), Meeseeks ({meeseeks.id}), created={len(created_agents)}"
-        )
+            await _repair_seeded_default_agents(
+                db,
+                created_agents,
+                created_keys=set(created_agents),
+            )
 
-    # Write seed marker AFTER a successful commit so a failed seed can be retried
-    await get_storage_backend().write_text(
-        SEED_MARKER_KEY,
-        f"seeded\nmorty={morty.id}\nmeeseeks={meeseeks.id}\n",
-        encoding="utf-8",
-    )
-    logger.info(f"[AgentSeeder] Wrote seed marker to {SEED_MARKER_KEY}")
+            default_tools_result = await db.execute(select(Tool).where(Tool.is_default))
+            default_tools = default_tools_result.scalars().all()
+            for agent in created_agents.values():
+                for tool in default_tools:
+                    db.add(AgentTool(agent_id=agent.id, tool_id=tool.id, enabled=True))
+
+            relationship_specs = [
+                (
+                    morty.id,
+                    meeseeks.id,
+                    "Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
+                ),
+                (
+                    meeseeks.id,
+                    morty.id,
+                    "Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
+                ),
+            ]
+            for agent_id, target_agent_id, description in relationship_specs:
+                db.add(
+                    AgentAgentRelationship(
+                        agent_id=agent_id,
+                        target_agent_id=target_agent_id,
+                        relation="collaborator",
+                        description=description,
+                    )
+                )
+
+            await db.commit()
+            marker_ids_to_write = agent_ids
+            logger.info(
+                "[AgentSeeder] Default Agent initialization complete: "
+                f"Morty ({morty.id}), Meeseeks ({meeseeks.id})"
+            )
+
+    if marker_ids_to_write:
+        try:
+            await _append_default_agent_seed_marker(marker_ids_to_write)
+        except Exception as exc:
+            logger.warning(f"[AgentSeeder] Failed to update legacy seed marker: {exc}")
 
 
 async def seed_okr_agent():

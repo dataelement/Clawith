@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.dao.chat_message_dao import chat_message_dao
 from app.core.permissions import (
     evaluate_agent_relationship_status,
     evaluate_roster_agent_visibility,
@@ -22,6 +23,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.gateway_message import GatewayMessage
 from app.models.org import AgentAgentRelationship
+from app.services import agent_directory
 from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.config import decide_runtime_v2
@@ -36,9 +38,7 @@ from app.services.agent_runtime.tool_execution import (
     mark_tool_execution_failed,
     mark_tool_execution_succeeded,
 )
-from app.services import agent_directory
 from app.services.participant_identity import get_or_create_agent_participant
-
 
 A2AMode = Literal["notify", "consult", "task_delegate"]
 _RESPONSE_MODES = frozenset({"consult", "task_delegate"})
@@ -622,7 +622,8 @@ async def enqueue_gateway_a2a_runtime(
     )
     chat_message = await db.get(ChatMessage, chat_message_id)
     if chat_message is None:
-        db.add(
+        chat_message_dao.add_scoped(
+            db,
             ChatMessage(
                 id=chat_message_id,
                 agent_id=session.agent_id,
@@ -632,7 +633,8 @@ async def enqueue_gateway_a2a_runtime(
                 conversation_id=str(session.id),
                 participant_id=source_participant_id,
                 mentions=[],
-            )
+            ),
+            tenant_id=tenant_id,
         )
     elif (
         chat_message.conversation_id != str(session.id)
@@ -852,7 +854,8 @@ class RuntimeA2AService:
                     message_id = _input_message_id(source_run_id, tool_call_id)
                     message = await db.get(ChatMessage, message_id)
                     if message is None:
-                        db.add(
+                        chat_message_dao.add_scoped(
+                            db,
                             ChatMessage(
                                 id=message_id,
                                 agent_id=session.agent_id,
@@ -862,7 +865,8 @@ class RuntimeA2AService:
                                 conversation_id=str(session.id),
                                 participant_id=source_participant_id,
                                 mentions=[],
-                            )
+                            ),
+                            tenant_id=tenant_id,
                         )
                     elif (
                         message.conversation_id != str(session.id)
@@ -948,6 +952,16 @@ class RuntimeA2AService:
                                     "source_agent_id": str(source_agent.id),
                                     "source_agent_name": source_agent.name,
                                     "source_run_id": str(source_run.id),
+                                    "source_call_instance_id": tool_call_id,
+                                    "source_provider_call_id": (
+                                        reservation.execution.provider_call_id
+                                    ),
+                                    "source_tool_execution_id": str(
+                                        reservation.execution.id
+                                    ),
+                                    "source_tool_contract_version": (
+                                        reservation.execution.contract_version
+                                    ),
                                     "correlation_id": correlation_id,
                                 },
                                 actor_user_id=owner_user_id,
@@ -978,6 +992,16 @@ class RuntimeA2AService:
                     status="succeeded",
                     result_summary=execution.result_summary,
                     result_ref=execution.result_ref,
+                    metadata={
+                        "execution_id": str(reservation.execution.id),
+                        "call_instance_id": tool_call_id,
+                        "provider_call_id": (
+                            reservation.execution.provider_call_id
+                        ),
+                        "contract_version": (
+                            reservation.execution.contract_version
+                        ),
+                    },
                 ),
                 target_run_id=target_run_id,
                 waiting_request=waiting_request,

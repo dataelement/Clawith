@@ -2,13 +2,14 @@
 
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import get_agent_accessible_user_ids
+from app.dao import agent_access_dao
+from app.database import bind_session_context
 from app.models.agent import Agent
-from app.models.org import AgentRelationship, OrgMember
-from app.models.user import User
+from app.models.org import AgentRelationship
 from app.services.registration_service import registration_service
 
 
@@ -32,39 +33,29 @@ async def ensure_access_granted_platform_relationships(
     if access_mode != "private" or not agent.tenant_id:
         return False
 
-    user_ids = await get_agent_accessible_user_ids(db, agent)
+    user_ids = await get_agent_accessible_user_ids(agent)
     if not user_ids:
         return False
 
-    existing_result = await db.execute(
-        select(OrgMember.user_id)
-        .join(AgentRelationship, AgentRelationship.member_id == OrgMember.id)
-        .where(
-            AgentRelationship.agent_id == agent.id,
-            OrgMember.tenant_id == agent.tenant_id,
-            OrgMember.status == "active",
-            OrgMember.user_id.in_(user_ids),
+    async with bind_session_context(db):
+        existing_user_ids = await agent_access_dao.list_active_relationship_user_ids(
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            user_ids=user_ids,
         )
-    )
-    existing_user_ids = {row[0] for row in existing_result.fetchall() if row[0]}
     missing_user_ids = user_ids - existing_user_ids
     if not missing_user_ids:
         return False
 
-    users_result = await db.execute(
-        select(User).where(
-            User.id.in_(missing_user_ids),
-            User.tenant_id == agent.tenant_id,
-            User.is_active == True,  # noqa: E712
-        )
-    )
+    async with bind_session_context(db):
+        users = await agent_access_dao.list_active_users_by_ids(user_ids=missing_user_ids, tenant_id=agent.tenant_id)
 
     changed = False
-    for user in users_result.scalars().all():
+    for user in users:
         member = await registration_service.ensure_web_org_member(user)
         if not member or member.status != "active":
             continue
-        db.add(
+        query_dao.add(db, 
             AgentRelationship(
                 agent_id=agent.id,
                 member_id=member.id,
@@ -77,6 +68,6 @@ async def ensure_access_granted_platform_relationships(
         changed = True
 
     if changed:
-        await db.flush()
+        await query_dao.flush(db)
 
     return changed

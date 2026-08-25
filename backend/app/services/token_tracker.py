@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 
 from loguru import logger
+from app.dao import query_dao
 
 
 @dataclass
@@ -184,12 +185,11 @@ async def record_token_usage(
         return
 
     try:
-        from app.database import async_session
         from app.models.agent import Agent
         from sqlalchemy import select
 
-        async with async_session() as db:
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if agent:
                 agent.tokens_used_today = (agent.tokens_used_today or 0) + usage.total_tokens
@@ -234,9 +234,9 @@ async def record_token_usage(
                         estimated_tokens=DailyTokenUsage.estimated_tokens + usage.estimated_tokens,
                     )
                 )
-                await db.execute(stmt)
+                await query_dao.execute(db, stmt)
 
-                await db.commit()
+                await query_dao.commit(db)
                 logger.debug(
                     f"Recorded {usage.total_tokens:,} tokens for agent {agent.name} "
                     f"(cache_read={usage.cache_read_tokens:,})"

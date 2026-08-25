@@ -124,5 +124,5 @@ def intercept_standard_logging():
     quiet_noisy_connection_loggers()
 
 
-# Configure on import
-logger = configure_logging()
+# Configure on import.
+configured_logger = configure_logging()

@@ -3,11 +3,10 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Tuple
+from typing import Any, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy import false, or_, select, exists
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent, AgentPermission
 from app.models.org import AgentAgentRelationship, AgentRelationship, OrgMember
@@ -41,6 +40,10 @@ def _non_private_mode(agent: Agent) -> bool:
     return _agent_access_mode(agent) != "private"
 
 
+def _is_admin(user: User) -> bool:
+    return user.role in ("platform_admin", "org_admin")
+
+
 def can_use_agent_static(user: User, agent: Agent) -> bool:
     """Return whether a user can use an agent without DB-backed custom checks."""
     if not user or not agent:
@@ -62,69 +65,79 @@ def can_use_agent_static(user: User, agent: Agent) -> bool:
     return False
 
 
-async def can_use_agent(db: AsyncSession, user: User, agent: Agent) -> bool:
-    """Return whether an active human user can use an agent under Directory rules."""
-    if can_use_agent_static(user, agent):
+async def can_use_agent(
+    user_or_db: Any,
+    agent_or_user: Any,
+    agent: Agent | None = None,
+) -> bool:
+    """Return whether an active human user can use an agent under Directory rules.
+
+    Supports both ``can_use_agent(user, agent)`` and legacy ``can_use_agent(db, user, agent)``.
+    """
+    from app.dao.agent_dao import agent_dao
+
+    if agent is not None:
+        user, target_agent = agent_or_user, agent
+    else:
+        user, target_agent = user_or_db, agent_or_user
+
+    if can_use_agent_static(user, target_agent):
         return True
-    if not user or not agent:
+    if not user or not target_agent:
         return False
-    if getattr(agent, "deleted_at", None) is not None:
+    if getattr(target_agent, "deleted_at", None) is not None:
         return False
     if not getattr(user, "is_active", True):
         return False
-    if not _agent_tenant_matches_user(agent, user):
+    if not _agent_tenant_matches_user(target_agent, user):
         return False
 
-    access_mode = _agent_access_mode(agent)
+    access_mode = _agent_access_mode(target_agent)
     if access_mode != "custom":
         return False
     if _is_admin(user):
         return True
 
-    result = await db.execute(
-        select(AgentPermission.id).where(
-            AgentPermission.agent_id == agent.id,
-            AgentPermission.scope_type == "user",
-            AgentPermission.scope_id == user.id,
-            AgentPermission.access_level.in_(["use", "manage"]),
-        ).limit(1)
-    )
-    return result.scalar_one_or_none() is not None
+    perm = await agent_dao.get_user_permission(target_agent.id, user.id)
+    return perm is not None and perm.access_level in ("use", "manage")
 
 
 async def can_manage_agent(
-    db: AsyncSession,
-    user: User,
-    agent: Agent,
+    user_or_db: Any,
+    agent_or_user: Any,
+    agent: Agent | None = None,
     *,
     include_deleted: bool = False,
 ) -> bool:
-    """Return whether a human user can manage agent configuration."""
-    if not user or not agent:
+    """Return whether a human user can manage agent configuration.
+
+    Supports both ``can_manage_agent(user, agent)`` and legacy ``can_manage_agent(db, user, agent)``.
+    """
+    from app.dao.agent_dao import agent_dao
+
+    if agent is not None:
+        user, target_agent = agent_or_user, agent
+    else:
+        user, target_agent = user_or_db, agent_or_user
+
+    if not user or not target_agent:
         return False
-    if not include_deleted and getattr(agent, "deleted_at", None) is not None:
+    if not include_deleted and getattr(target_agent, "deleted_at", None) is not None:
         return False
     if not getattr(user, "is_active", True):
         return False
-    if not _agent_tenant_matches_user(agent, user):
+    if not _agent_tenant_matches_user(target_agent, user):
         return False
-    if getattr(agent, "creator_id", None) == getattr(user, "id", None):
+    if getattr(target_agent, "creator_id", None) == getattr(user, "id", None):
         return True
 
-    access_mode = _agent_access_mode(agent)
+    access_mode = _agent_access_mode(target_agent)
     if _is_admin(user) and access_mode != "private":
         return True
 
     if access_mode == "custom":
-        result = await db.execute(
-            select(AgentPermission).where(
-                AgentPermission.agent_id == agent.id,
-                AgentPermission.scope_type == "user",
-                AgentPermission.scope_id == user.id,
-                AgentPermission.access_level == "manage",
-            )
-        )
-        return result.scalar_one_or_none() is not None
+        perm = await agent_dao.get_user_permission(target_agent.id, user.id)
+        return perm is not None and perm.access_level == "manage"
 
     return False
 
@@ -215,11 +228,10 @@ def build_visible_agents_query(
     *,
     tenant_id: uuid.UUID | None = None,
 ):
-    """Build a query for agents visible to the current user.
+    """Build a SQLAlchemy query for agents visible to the current user.
 
-    Visibility defaults to "same company + creator/self-permitted/company-wide".
-    Company admins can see all non-private agents in their tenant. Private
-    user-only agents stay hidden unless the admin created them.
+    This returns a query object for use in API-level pagination without executing it.
+    Visibility: creator OR company-mode OR (custom + explicit permission / admin).
     """
     stmt = select(Agent)
 
@@ -255,83 +267,91 @@ def is_company_visible_agent(agent: Agent) -> bool:
     return (getattr(agent, "access_mode", None) or "company") == "company"
 
 
-def _is_admin(user: User) -> bool:
-    return user.role in ("platform_admin", "org_admin")
-
-
 async def get_agent_access_level_for_user_id(
-    db: AsyncSession,
-    user_id: uuid.UUID | None,
-    agent: Agent,
+    user_id_or_db: Any,
+    agent_or_user_id: Any,
+    agent: Agent | None = None,
 ) -> str | None:
     """Return 'manage', 'use', or None for a platform user and an agent.
 
-    This helper is intentionally HTTP-exception free so background jobs, gateway
-    calls, and relationship status checks can reuse the same access semantics.
+    Supports both ``get_agent_access_level_for_user_id(user_id, agent)`` and legacy with ``db``.
     """
+    from app.dao.user_dao import user_dao
+
+    if agent is not None:
+        user_id, target_agent = agent_or_user_id, agent
+    else:
+        user_id, target_agent = user_id_or_db, agent_or_user_id
+
     if not user_id:
         return None
 
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
+    user = await user_dao.get(user_id)
     if not user or not user.is_active:
         return None
-    if agent.tenant_id != user.tenant_id:
+    if target_agent.tenant_id != user.tenant_id:
         return None
-    if agent.creator_id == user.id:
+    if target_agent.creator_id == user.id:
         return "manage"
 
-    if await can_manage_agent(db, user, agent):
+    if await can_manage_agent(user, target_agent):
         return "manage"
-    if await can_use_agent(db, user, agent):
+    if await can_use_agent(user, target_agent):
         return "use"
     return None
 
 
 async def user_can_manage_agent_id(
-    db: AsyncSession,
-    user_id: uuid.UUID | None,
-    agent: Agent,
+    user_id_or_db: Any,
+    agent_or_user_id: Any,
+    agent: Agent | None = None,
 ) -> bool:
-    return (await get_agent_access_level_for_user_id(db, user_id, agent)) == "manage"
+    """Return whether a platform user can manage an agent by ID."""
+    return (await get_agent_access_level_for_user_id(user_id_or_db, agent_or_user_id, agent)) == "manage"
 
 
-async def get_agent_accessible_user_ids(db: AsyncSession, agent: Agent) -> set[uuid.UUID]:
+async def get_agent_accessible_user_ids(
+    agent_or_db: Any,
+    agent: Agent | None = None,
+) -> set[uuid.UUID]:
     """Return platform users who can access an agent under current policy."""
+    from app.dao.agent_dao import agent_dao
+
+    target_agent = agent if agent is not None else agent_or_db
+
     ids: set[uuid.UUID] = set()
-    if agent.creator_id:
-        ids.add(agent.creator_id)
+    if target_agent.creator_id:
+        ids.add(target_agent.creator_id)
 
-    access_mode = _agent_access_mode(agent)
-    if access_mode == "company":
-        result = await db.execute(
-            select(User.id).where(
-                User.tenant_id == agent.tenant_id,
-                User.is_active == True,  # noqa: E712
-            )
-        )
-        ids.update(row[0] for row in result.fetchall())
-        return ids
+    access_mode = _agent_access_mode(target_agent)
+    if access_mode in ("company", "custom"):
+        # arch-guard: allow (admin cross-tenant query scoped by agent.tenant_id)
+        async with agent_dao.session(readonly=True) as db:
+            if access_mode == "company":
+                result = await db.execute(
+                    select(User.id).where(
+                        User.tenant_id == target_agent.tenant_id,
+                        User.is_active == True,  # noqa: E712
+                    )
+                )
+                ids.update(row[0] for row in result.fetchall())
+                return ids
 
-    if access_mode == "custom":
-        admin_result = await db.execute(
-            select(User.id).where(
-                User.tenant_id == agent.tenant_id,
-                User.is_active == True,  # noqa: E712
-                User.role.in_(["platform_admin", "org_admin"]),
+            # custom: admins + explicit permissions
+            admin_result = await db.execute(
+                select(User.id).where(
+                    User.tenant_id == target_agent.tenant_id,
+                    User.is_active == True,  # noqa: E712
+                    User.role.in_(["platform_admin", "org_admin"]),
+                )
             )
-        )
-        ids.update(row[0] for row in admin_result.fetchall())
+            ids.update(row[0] for row in admin_result.fetchall())
 
-        perm_result = await db.execute(
-            select(AgentPermission.scope_id).where(
-                AgentPermission.agent_id == agent.id,
-                AgentPermission.scope_type == "user",
-                AgentPermission.scope_id.is_not(None),
-                AgentPermission.access_level.in_(["use", "manage"]),
-            )
+        perms = await agent_dao.list_permissions(target_agent.id)
+        ids.update(
+            p.scope_id for p in perms
+            if p.scope_type == "user" and p.scope_id and p.access_level in ("use", "manage")
         )
-        ids.update(row[0] for row in perm_result.fetchall() if row[0])
         return ids
 
     return ids
@@ -350,18 +370,34 @@ def _agent_available(agent: Agent | None) -> tuple[bool, str | None]:
 
 
 async def evaluate_agent_relationship_status(
-    db: AsyncSession,
-    rel: AgentAgentRelationship,
+    rel_or_db: Any,
+    rel_or_none: Any = None,
     *,
     current_user_id: uuid.UUID | None = None,
 ) -> dict:
-    """Compute the effective status for an Agent -> Agent relationship."""
-    source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
-    source = source_result.scalar_one_or_none()
-    target = rel.__dict__.get("target_agent")
-    if target is None:
-        target_result = await db.execute(select(Agent).where(Agent.id == rel.target_agent_id))
-        target = target_result.scalar_one_or_none()
+    """Compute the effective status for an Agent -> Agent relationship.
+
+    Supports both ``evaluate_agent_relationship_status(rel)`` and legacy ``(db, rel)``.
+    """
+    from app.dao.agent_dao import agent_dao
+
+    if rel_or_none is not None:
+        db = rel_or_db
+        rel = rel_or_none
+        source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
+        source = source_result.scalar_one_or_none()
+        target = rel.__dict__.get("target_agent")
+        if target is None:
+            target_result = await db.execute(select(Agent).where(Agent.id == rel.target_agent_id))
+            target = target_result.scalar_one_or_none()
+    else:
+        db = None
+        rel = rel_or_db
+        # arch-guard: allow (cross-tenant rel — must load both sides to compare tenant_id)
+        source = await agent_dao.get(rel.agent_id)
+        target = rel.__dict__.get("target_agent")
+        if target is None:
+            target = await agent_dao.get(rel.target_agent_id)
 
     if not source or not target:
         return {
@@ -386,12 +422,11 @@ async def evaluate_agent_relationship_status(
 
     created_by_user_id = getattr(rel, "created_by_user_id", None)
     if created_by_user_id:
-        if await user_can_manage_agent_id(db, created_by_user_id, source) and await user_can_manage_agent_id(db, created_by_user_id, target):
-            return {
-                "access_allowed": True,
-                "access_status": "active",
-                "access_status_reason": None,
-            }
+        if (
+            await user_can_manage_agent_id(db, created_by_user_id, source)
+            and await user_can_manage_agent_id(db, created_by_user_id, target)
+        ):
+            return {"access_allowed": True, "access_status": "active", "access_status_reason": None}
         return {
             "access_allowed": False,
             "access_status": "restricted",
@@ -400,27 +435,16 @@ async def evaluate_agent_relationship_status(
 
     target_mode = getattr(target, "access_mode", None) or "company"
     if target_mode == "company":
-        return {
-            "access_allowed": True,
-            "access_status": "active",
-            "access_status_reason": None,
-        }
+        return {"access_allowed": True, "access_status": "active", "access_status_reason": None}
 
-    candidate_user_ids = [
-        current_user_id,
-        source.creator_id,
-    ]
+    candidate_user_ids = [current_user_id, source.creator_id]
     seen: set[uuid.UUID] = set()
-    for user_id in candidate_user_ids:
-        if not user_id or user_id in seen:
+    for uid in candidate_user_ids:
+        if not uid or uid in seen:
             continue
-        seen.add(user_id)
-        if await user_can_manage_agent_id(db, user_id, source) and await user_can_manage_agent_id(db, user_id, target):
-            return {
-                "access_allowed": True,
-                "access_status": "active",
-                "access_status_reason": None,
-            }
+        seen.add(uid)
+        if await user_can_manage_agent_id(db, uid, source) and await user_can_manage_agent_id(db, uid, target):
+            return {"access_allowed": True, "access_status": "active", "access_status_reason": None}
 
     return {
         "access_allowed": False,
@@ -430,19 +454,36 @@ async def evaluate_agent_relationship_status(
 
 
 async def evaluate_human_relationship_status(
-    db: AsyncSession,
-    rel: AgentRelationship,
+    rel_or_db: Any,
+    rel_or_none: Any = None,
     *,
     source_agent: Agent | None = None,
 ) -> dict:
-    """Compute the effective status for an Agent -> Human relationship."""
-    if source_agent is None:
-        source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
-        source_agent = source_result.scalar_one_or_none()
-    member = rel.__dict__.get("member")
-    if member is None:
-        member_result = await db.execute(select(OrgMember).where(OrgMember.id == rel.member_id))
-        member = member_result.scalar_one_or_none()
+    """Compute the effective status for an Agent -> Human relationship.
+
+    Supports both ``evaluate_human_relationship_status(rel)`` and legacy ``(db, rel)``.
+    """
+    from app.dao.agent_dao import agent_dao
+    from app.dao.org_member_dao import org_member_dao
+
+    if rel_or_none is not None:
+        db = rel_or_db
+        rel = rel_or_none
+        if source_agent is None:
+            source_result = await db.execute(select(Agent).where(Agent.id == rel.agent_id))
+            source_agent = source_result.scalar_one_or_none()
+        member = rel.__dict__.get("member")
+        if member is None:
+            member_result = await db.execute(select(OrgMember).where(OrgMember.id == rel.member_id))
+            member = member_result.scalar_one_or_none()
+    else:
+        db = None
+        rel = rel_or_db
+        if source_agent is None:
+            source_agent = await agent_dao.get(rel.agent_id)  # arch-guard: allow
+        member = rel.__dict__.get("member")
+        if member is None:
+            member = await org_member_dao.get(rel.member_id)
 
     if not source_agent or not member:
         return {
@@ -471,51 +512,62 @@ async def evaluate_human_relationship_status(
                 "access_status_reason": "platform_user_no_agent_access",
             }
 
-    return {
-        "access_allowed": True,
-        "access_status": "active",
-        "access_status_reason": None,
-    }
+    return {"access_allowed": True, "access_status": "active", "access_status_reason": None}
+
 
 
 async def check_agent_access(
-    db: AsyncSession,
-    user: User,
-    agent_id: uuid.UUID,
+    a1: Any,
+    a2: Any = None,
+    a3: Any = None,
     *,
     include_deleted: bool = False,
+    db: Any = None,
 ) -> Tuple[Agent, str]:
     """Check if a user has access to a specific agent.
 
-    Returns (agent, access_level) where access_level is 'manage' or 'use'.
+    Supports signatures:
+    - ``check_agent_access(db, user, agent_id)`` (legacy / monkeypatched by tests)
+    - ``check_agent_access(user, agent_id)``
+    - ``check_agent_access(user, agent_id, db)``
 
-    Access is granted if:
-    1. User is the agent creator -> manage
-    2. Company admin + non-private agent -> manage
-    3. User has explicit permission (company/user scope) -> from permission record
+    Returns (agent, access_level) where access_level is 'manage' or 'use'.
     """
-    query = select(Agent).where(Agent.id == agent_id)
-    if not include_deleted:
-        query = query.where(Agent.deleted_at.is_(None))
-    result = await db.execute(query)
-    agent = result.scalar_one_or_none()
-    if not agent:
+    from app.dao.agent_dao import agent_dao
+
+    if isinstance(a1, User):
+        user = a1
+        target_agent_id = a2
+    elif isinstance(a2, User):
+        user = a2
+        target_agent_id = a3
+    else:
+        user = a2
+        target_agent_id = a3
+
+    if include_deleted:
+        agent_obj = await agent_dao.get_including_deleted(target_agent_id)
+    else:
+        agent_obj = await agent_dao.get_active(target_agent_id)
+
+    if not agent_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    # Tenant isolation applies to all users.
-    if agent.tenant_id != user.tenant_id:
+    # Tenant isolation check
+    if agent_obj.tenant_id != user.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 
-    # Creator always has manage access
-    if agent.creator_id == user.id:
-        return agent, "manage"
+    if agent_obj.creator_id == user.id:
+        return agent_obj, "manage"
 
-    if await can_manage_agent(db, user, agent, include_deleted=include_deleted):
-        return agent, "manage"
-    if await can_use_agent(db, user, agent):
-        return agent, "use"
+    if await can_manage_agent(user, agent_obj, include_deleted=include_deleted):
+        return agent_obj, "manage"
+    if await can_use_agent(user, agent_obj):
+        return agent_obj, "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
+
+
 
 
 def is_agent_creator(user: User, agent: Agent) -> bool:
@@ -525,9 +577,9 @@ def is_agent_creator(user: User, agent: Agent) -> bool:
 
 def is_agent_expired(agent: Agent) -> bool:
     """Return True if the agent is manually marked expired or its expires_at is in the past."""
-    if getattr(agent, 'is_expired', False):
+    if getattr(agent, "is_expired", False):
         return True
-    expires_at = getattr(agent, 'expires_at', None)
+    expires_at = getattr(agent, "expires_at", None)
     if expires_at and datetime.now(timezone.utc) > expires_at:
         return True
     return False

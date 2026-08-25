@@ -42,8 +42,9 @@ def test_remaining_default_tools_are_runtime_visible_only_after_typed_migration(
     default_application_tools = {
         definition["name"]
         for definition in BUILTIN_TOOL_DEFINITIONS
-        if definition["is_default"] and definition["name"] != "finish"
+        if definition["is_default"]
     }
+    assert "finish" not in {definition["name"] for definition in BUILTIN_TOOL_DEFINITIONS}
     assert default_application_tools <= (
         agent_tools.RUNTIME_TYPED_APPLICATION_TOOL_NAMES
     )
@@ -102,6 +103,52 @@ async def test_runtime_resolver_applies_channel_and_registry_readiness(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("trigger_type", "config"),
+    [
+        ("once", {"at": "tomorrow"}),
+        ("interval", {"minutes": "30"}),
+        ("interval", {"minutes": True}),
+        ("interval", {"minutes": 0}),
+        ("poll", {"url": "/relative"}),
+        ("poll", {"url": "https://example.test", "method": "POST"}),
+        (
+            "poll",
+            {"url": "https://example.test", "headers": {"X-Test": 1}},
+        ),
+        (
+            "poll",
+            {"url": "https://example.test", "fire_on": "match"},
+        ),
+        ("cron", {"expr": "0 9 * * *", "timezone": "Mars/Olympus"}),
+        ("webhook", {"url": "https://example.test"}),
+    ],
+)
+async def test_set_trigger_rejects_invalid_config_before_database_access(
+    monkeypatch,
+    trigger_type: str,
+    config: dict,
+) -> None:
+    def forbidden_session():
+        raise AssertionError("invalid trigger config reached the database")
+
+    monkeypatch.setattr(agent_tools, "async_session", forbidden_session)
+
+    outcome = await agent_tools._handle_set_trigger_outcome(
+        uuid.uuid4(),
+        {
+            "name": "invalid-trigger",
+            "type": trigger_type,
+            "config": config,
+            "reason": "validate me",
+        },
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", sorted(REMAINING_DEFAULT_TYPED_TOOLS))
 async def test_remaining_default_tools_have_native_typed_validation_failures(
     tool_name: str,
@@ -116,6 +163,33 @@ async def test_remaining_default_tools_have_native_typed_validation_failures(
     assert isinstance(outcome, ToolExecutionOutcome)
     assert outcome.status == "failed"
     assert outcome.error_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "file_path",
+    (
+        "../other-agent/workspace/secret.txt",
+        "workspace/../../other-agent/workspace/secret.txt",
+        r"workspace\\..\\..\\other-agent\\workspace\\secret.txt",
+    ),
+)
+async def test_send_file_to_agent_rejects_parent_traversal_before_storage_access(
+    monkeypatch,
+    file_path: str,
+) -> None:
+    def forbidden_storage_access():
+        raise AssertionError("storage must not be accessed for a traversal path")
+
+    monkeypatch.setattr(agent_tools, "get_storage_backend", forbidden_storage_access)
+
+    outcome = await agent_tools._send_file_to_agent_outcome(
+        uuid.uuid4(),
+        {"target_agent_id": str(uuid.uuid4()), "file_path": file_path},
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "workspace_path_invalid"
 
 
 @pytest.mark.asyncio

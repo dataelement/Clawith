@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import encrypt_data, get_current_user
@@ -1058,7 +1059,7 @@ let browser;
     encrypted_cookies = encrypt_data(cookies_json_str, settings.SECRET_KEY)
 
     # Try to find existing credential for this platform
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentCredential).where(
             AgentCredential.agent_id == agent_id,
             AgentCredential.platform == platform_hint,
@@ -1086,7 +1087,7 @@ let browser;
             last_login_at=now,
             status="active",
         )
-        db.add(new_cred)
+        query_dao.add(db, new_cred)
 
-    await db.commit()
+    await query_dao.commit(db)
     return len(cookies)

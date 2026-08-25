@@ -149,7 +149,68 @@ async def test_completed_delivery_maps_to_existing_done_packet() -> None:
         "message_id": str(message.id),
         "run_id": str(handle.run_id),
         "runtime_status": "completed",
+        "event_id": str(events[-1].event_id),
+        "event_cursor": (
+            f"{events[-1].created_at.isoformat()}|{events[-1].event_id}"
+        ),
     }
+
+
+@pytest.mark.asyncio
+async def test_answer_delta_maps_attempt_position_without_reasoning() -> None:
+    handle = _handle()
+    event = _event(
+        handle,
+        "status_changed",
+        position=1,
+        payload={
+            "status": "running",
+            "activity_type": "assistant_delta",
+            "attempt_id": "attempt-1",
+            "sequence": 1,
+            "content": " Hello ",
+            "reset": True,
+        },
+    )
+    packets: list[dict] = []
+
+    async def send(packet: dict) -> None:
+        packets.append(packet)
+
+    source = _EventSource([event])
+    source.events.append(
+        _event(
+            handle,
+            "delivery_failed",
+            position=2,
+            payload={
+                "delivery_kind": "terminal",
+                "lifecycle_status": "cancelled",
+                "error_code": "cancelled",
+            },
+        )
+    )
+    await stream_web_chat_run(
+        handle=handle,
+        session_factory=_SessionFactory(),  # type: ignore[arg-type]
+        send_packet=send,
+        agent_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        event_source=source,
+    )
+
+    assert packets[0] == {
+        "type": "chunk",
+        "content": " Hello ",
+        "run_id": str(handle.run_id),
+        "attempt_id": "attempt-1",
+        "sequence": 1,
+        "reset": True,
+        "event_id": str(event.event_id),
+        "event_cursor": f"{event.created_at.isoformat()}|{event.event_id}",
+    }
+    assert "reasoning_content" not in packets[0]
 
 
 @pytest.mark.asyncio

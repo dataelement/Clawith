@@ -53,9 +53,9 @@ class _Session:
 
 
 class _Request:
-    def __init__(self, body: dict) -> None:
+    def __init__(self, body: dict, headers: dict[str, str] | None = None) -> None:
         self._body = json.dumps(body).encode()
-        self.headers: dict[str, str] = {}
+        self.headers = headers or {}
 
     async def body(self) -> bytes:
         return self._body
@@ -176,7 +176,10 @@ async def test_teams_webhook_uses_runtime_intake(monkeypatch) -> None:
     config = SimpleNamespace(
         app_id="bot-1",
         app_secret="",
-        extra_config={"use_managed_identity": False},
+        extra_config={
+            "use_managed_identity": False,
+            "service_url": "https://smba.trafficmanager.net/teams/",
+        },
         is_connected=False,
     )
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=uuid.uuid4())
@@ -201,10 +204,14 @@ async def test_teams_webhook_uses_runtime_intake(monkeypatch) -> None:
         calls["intake"] = kwargs
         return intake
 
+    async def validate_callback(*_args, **_kwargs):
+        return True
+
     monkeypatch.setattr(channel_user_service, "resolve_channel_user", resolve_user)
     monkeypatch.setattr(teams, "find_or_create_channel_session", find_session)
     monkeypatch.setattr(teams, "_load_agent_and_model", load_model)
     monkeypatch.setattr(teams, "enqueue_channel_chat_runtime", enqueue)
+    monkeypatch.setattr(teams, "_validate_teams_callback", validate_callback)
 
     result = await teams.teams_event_webhook(
         agent_id,
@@ -219,6 +226,7 @@ async def test_teams_webhook_uses_runtime_intake(monkeypatch) -> None:
                     "id": "teams-conversation-1",
                     "conversationType": "personal",
                 },
+                "serviceUrl": "https://smba.trafficmanager.net/teams/",
             }
         ),  # type: ignore[arg-type]
         db,  # type: ignore[arg-type]
@@ -241,6 +249,26 @@ async def test_teams_webhook_uses_runtime_intake(monkeypatch) -> None:
         "microsoft_teams",
         activity_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_teams_webhook_rejects_requests_without_a_valid_jwt() -> None:
+    agent_id = uuid.uuid4()
+    config = SimpleNamespace(app_id="bot-1", extra_config={})
+    db = _Session(config)
+
+    result = await teams.teams_event_webhook(
+        agent_id,
+        _Request(
+            {
+                "type": "message",
+                "serviceUrl": "https://smba.trafficmanager.net/teams/",
+            }
+        ),  # type: ignore[arg-type]
+        db,  # type: ignore[arg-type]
+    )
+
+    assert result.status_code == 401
 
 
 @pytest.mark.asyncio

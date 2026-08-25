@@ -1,8 +1,6 @@
 """Feishu WebSocket Long Connection Manager."""
 
 import asyncio
-import json
-import threading
 from typing import Any, Dict
 import uuid
 
@@ -75,7 +73,7 @@ def _make_no_proxy_connect(orig_connect):
 
     return _scoped_no_proxy
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.channel_config import ChannelConfig
 from sqlalchemy import select
 
@@ -365,8 +363,8 @@ class FeishuWSManager:
             logger.info("[Feishu WS] lark-oapi not installed, skipping Feishu WS initialization")
             return
         logger.info("[Feishu WS] Initializing all active Feishu channels...")
-        async with async_session() as db:
-            result = await db.execute(
+        async with query_dao.session() as db:
+            result = await query_dao.execute(db, 
                 select(ChannelConfig).where(
                     ChannelConfig.is_configured == True,
                     ChannelConfig.channel_type == "feishu",

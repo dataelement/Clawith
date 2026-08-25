@@ -7,6 +7,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_VISION_IMAGE_BYTES = 512 * 1024
 MAX_VISION_IMAGE_EDGE = 1568
+MAX_VISION_IMAGE_PIXELS = 40_000_000
 
 _MIME_BY_EXTENSION = {
     ".png": "image/png",
@@ -15,6 +16,14 @@ _MIME_BY_EXTENSION = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".bmp": "image/bmp",
+}
+
+_MIME_BY_FORMAT = {
+    "BMP": "image/bmp",
+    "GIF": "image/gif",
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
 }
 
 
@@ -26,13 +35,18 @@ def build_vision_image_data_url(content: bytes, extension: str) -> str:
     """Return a bounded data URL while leaving the stored original intact."""
     try:
         with Image.open(BytesIO(content)) as opened:
+            if opened.width * opened.height > MAX_VISION_IMAGE_PIXELS:
+                raise VisionImagePreviewError("Image dimensions are too large")
+            source_format = opened.format
             opened.load()
             image = ImageOps.exif_transpose(opened)
             if (
                 len(content) <= MAX_VISION_IMAGE_BYTES
                 and max(image.size) <= MAX_VISION_IMAGE_EDGE
             ):
-                mime = _MIME_BY_EXTENSION.get(extension, "image/png")
+                mime = _MIME_BY_FORMAT.get(
+                    source_format, _MIME_BY_EXTENSION.get(extension, "image/png")
+                )
                 encoded = base64.b64encode(content).decode("ascii")
                 return f"data:{mime};base64,{encoded}"
 

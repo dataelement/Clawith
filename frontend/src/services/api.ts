@@ -449,7 +449,7 @@ export const scheduleApi = {
     list: (agentId: string) =>
         request<any[]>(`/agents/${agentId}/schedules/`),
 
-    create: (agentId: string, data: { name: string; instruction: string; cron_expr: string }) =>
+    create: (agentId: string, data: { name: string; instruction: string; cron_expr: string; delivery_target_id?: string | null }) =>
         request<any>(`/agents/${agentId}/schedules/`, { method: 'POST', body: JSON.stringify(data) }),
 
     update: (agentId: string, scheduleId: string, data: any) =>

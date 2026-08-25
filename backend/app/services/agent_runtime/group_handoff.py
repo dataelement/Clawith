@@ -1,7 +1,7 @@
 """Terminal public-mention handoff for native Group Agent Runs.
 
-The model submits participant IDs through the shared ``finish`` tool.  This
-module validates every target before the source Run can become terminal, freezes
+The model stages participant IDs through the Group-only ``at`` tool. This
+module validates the staged targets and final Assistant response, then freezes
 one immutable delivery intent, and later applies that exact intent inside the
 ordinary Runtime delivery transaction.
 """
@@ -290,6 +290,7 @@ class GroupAgentHandoffApplyResult:
 @dataclass(frozen=True, slots=True)
 class _ValidatedHandoff:
     scope: _SenderScope
+    mentions: tuple[ResolvedGroupMention, ...]
     targets: tuple[ResolvedGroupMention, ...]
 
 
@@ -494,10 +495,19 @@ async def _validate_targets(
         for mention in resolved
         if (
             not mention.valid
-            or not mention.triggers_agent
-            or mention.participant_type != "agent"
-            or mention.agent is None
-            or mention.model is None
+            or mention.participant_type not in {"user", "agent"}
+            or (
+                mention.participant_type == "agent"
+                and (
+                    not mention.triggers_agent
+                    or mention.agent is None
+                    or mention.model is None
+                )
+            )
+            or (
+                mention.participant_type == "user"
+                and mention.triggers_agent
+            )
         )
     ]
     if invalid:
@@ -507,7 +517,8 @@ async def _validate_targets(
         )
         raise GroupAgentHandoffError(
             "group_handoff_target_invalid",
-            "Every handoff target must be an active, wakeable Agent in this Group: "
+            "Every mention target must be an active Group member, and every Agent "
+            "target must be wakeable: "
             + reasons,
             repairable=True,
         )
@@ -517,9 +528,12 @@ async def _validate_targets(
             "Group mention resolution did not preserve the frozen participant order",
             repairable=True,
         )
+    targets = tuple(
+        mention for mention in resolved if mention.participant_type == "agent"
+    )
     self_targets = [
         mention.participant_id
-        for mention in resolved
+        for mention in targets
         if mention.agent is not None and mention.agent.id == source_agent_id
     ]
     if self_targets:
@@ -528,7 +542,7 @@ async def _validate_targets(
             "An Agent cannot create a public handoff to itself",
             repairable=True,
         )
-    for mention in resolved:
+    for mention in targets:
         assert mention.agent is not None
         if not _target_budget_available(mention.agent, now=clock):
             raise GroupAgentHandoffError(
@@ -549,7 +563,7 @@ async def _validate_targets(
 
     guard = AgentCycleGuard(max_cycle_count=settings.MAX_AGENT_CYCLE_COUNT)
     try:
-        for mention in resolved:
+        for mention in targets:
             assert mention.agent is not None
             await guard.ensure_delegation_allowed(
                 db,
@@ -564,7 +578,7 @@ async def _validate_targets(
             str(exc),
             repairable=True,
         ) from exc
-    return _ValidatedHandoff(scope=scope, targets=resolved)
+    return _ValidatedHandoff(scope=scope, mentions=resolved, targets=targets)
 
 
 def _planning_values(state: RuntimeGraphState) -> tuple[str | None, str | None]:
@@ -609,7 +623,7 @@ async def preflight_group_agent_handoff(
     if state["lifecycle"].get("status") != "running":
         raise GroupAgentHandoffError(
             "group_handoff_source_invalid",
-            "A handoff finish may be submitted only by a running Group Agent Run",
+            "A Group handoff may be submitted only by a running Group Agent Run",
             repairable=False,
         )
     tenant_id = _context_uuid(context.tenant_id, field="tenant_id")
@@ -845,7 +859,7 @@ async def apply_group_agent_handoff(
                     scope=validated.scope,
                     intent=intent,
                     content=content,
-                    mentions=validated.targets,
+                    mentions=validated.mentions,
                     target=target,
                 )
             )
@@ -858,7 +872,7 @@ async def apply_group_agent_handoff(
             message_id=intent.trigger_message_id,
             scope=validated.scope,
             content=content,
-            mentions=validated.targets,
+            mentions=validated.mentions,
             clock=intent.cutoff_created_at,
         )
     except GroupMessageServiceError as exc:

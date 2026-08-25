@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+    IconAlertTriangle,
     IconChevronDown,
     IconChevronRight,
     IconLayoutSidebarLeftCollapse,
@@ -16,6 +17,7 @@ import {
     IconTrash,
 } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
+import { fetchJson } from '../../services/api';
 import {
     compareCursor,
     type GroupActivity,
@@ -33,12 +35,32 @@ import GroupSettingsModal from './GroupSettingsModal';
 import InviteMemberModal from './InviteMemberModal';
 import CreateGroupModal from './CreateGroupModal';
 import InlineEdit from './InlineEdit';
-import type { GroupMessage, GroupSession } from '../../types/group';
+import type { GroupMessage, GroupRunState, GroupSession } from '../../types/group';
 import './groups.css';
 
 // A session whose title is being edited in place — the only inline edit; creating a group or
 // session uses a modal.
 type RenameTarget = { groupId: string; sessionId: string; current: string };
+
+interface GroupPendingToolReconciliation {
+    execution_id: string;
+    tool_call_id: string;
+    tool_name: string;
+    result_summary: string | null;
+    error_code: string | null;
+    can_reconcile: boolean;
+    workspace_resolution: boolean;
+    resolution_status: string | null;
+    saved_count: number;
+    pending_count: number;
+    conflicted_count: number;
+    unverified_count: number;
+}
+
+interface GroupRunStateWithReconciliation extends GroupRunState {
+    correlation_id: string | null;
+    pending_tool_reconciliations: GroupPendingToolReconciliation[];
+}
 
 const HISTORY_PAGE_SIZE = 30;
 const ACTIVE_RUN_TRANSITION_GRACE_MS = 5000;
@@ -82,6 +104,7 @@ export default function GroupsPage() {
     const [hasMore, setHasMore] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
     const [cancellingRuns, setCancellingRuns] = useState(false);
+    const [reconcilingExecutionId, setReconcilingExecutionId] = useState<string | null>(null);
     const [awaitingPlannedRuns, setAwaitingPlannedRuns] = useState(false);
     // One nav rail now: a tree of groups with their sessions nested underneath. It collapses to a
     // stub, and the side panel stays out of the way until asked for.
@@ -174,9 +197,13 @@ export default function GroupsPage() {
     const activeGroupId = activeGroup?.id;
     const activeSessionId = activeSession?.id;
 
-    const { data: activeRunStates = [], refetch: refetchActiveRuns } = useQuery({
+    const { data: activeRunStates = [], refetch: refetchActiveRuns } = useQuery<
+        GroupRunStateWithReconciliation[]
+    >({
         queryKey: ['group-active-runs', groupId, sessionId],
-        queryFn: () => groupApi.activeRuns(groupId!, sessionId!),
+        queryFn: async () => (
+            await groupApi.activeRuns(groupId!, sessionId!)
+        ) as GroupRunStateWithReconciliation[],
         enabled: Boolean(activeGroup && activeSession),
         retry: false,
         refetchInterval: (query) => {
@@ -194,6 +221,13 @@ export default function GroupsPage() {
     const activeRunIds = activeRunStates
         .filter((run) => run.can_cancel)
         .map((run) => run.run_id);
+    const pendingWorkspaceReconciliations = activeRunStates.flatMap((run) => (
+        run.correlation_id
+            ? run.pending_tool_reconciliations
+                .filter((pending) => pending.can_reconcile && pending.workspace_resolution)
+                .map((pending) => ({ run, pending }))
+            : []
+    ));
     const planningRunVisible = activeRunStates.some(
         (run) => run.can_cancel && run.system_role === 'group_planning',
     );
@@ -540,6 +574,36 @@ export default function GroupsPage() {
         }
     };
 
+    const reconcileWorkspaceCandidate = async (
+        run: GroupRunStateWithReconciliation,
+        pending: GroupPendingToolReconciliation,
+        outcome: 'applied' | 'not_applied',
+        allAccept = false,
+    ) => {
+        if (!groupId || !sessionId || !run.correlation_id || reconcilingExecutionId) return;
+        setReconcilingExecutionId(pending.execution_id);
+        try {
+            await fetchJson(
+                `/groups/${groupId}/sessions/${sessionId}/runs/${run.run_id}`
+                + `/tool-executions/${pending.execution_id}/reconcile`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        outcome,
+                        correlation_id: run.correlation_id,
+                        note: outcome === 'applied' ? 'apply_candidate' : 'keep_workspace',
+                        all_accept: allAccept,
+                    }),
+                },
+            );
+            await refetchActiveRuns();
+        } catch (error: unknown) {
+            toast.error(error instanceof Error ? error.message : '文件内容有变化');
+        } finally {
+            setReconcilingExecutionId(null);
+        }
+    };
+
     const createGroup = async (name: string, memberParticipantIds: string[]) => {
         if (!name.trim() || creatingGroupPending) return;
         setCreatingGroupPending(true);
@@ -841,9 +905,60 @@ export default function GroupsPage() {
                             loadingMore={loadingMore}
                             isPlanning={isPlanning}
                             runningAgents={runningAgents}
-                            onLoadMore={() => void loadMore()}
+                            onLoadMore={loadMore}
                             onLatestMessageSeen={markLatestMessageSeen}
                         />
+
+                        {pendingWorkspaceReconciliations.map(({ run, pending }) => (
+                            <div className="chat-tool-reconciliation" key={pending.execution_id}>
+                                <div className="chat-tool-reconciliation__title">
+                                    <IconAlertTriangle size={16} />
+                                    文件内容有变化
+                                </div>
+                                <div className="chat-tool-reconciliation__detail">
+                                    <span>Agent 处理后的文件与工作区中的源文件不同。请选择要保留哪一个。</span>
+                                </div>
+                                <div className="chat-tool-reconciliation__actions">
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        disabled={reconcilingExecutionId !== null}
+                                        onClick={() => void reconcileWorkspaceCandidate(
+                                            run,
+                                            pending,
+                                            'not_applied',
+                                        )}
+                                    >
+                                        保留源文件
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={reconcilingExecutionId !== null}
+                                        onClick={() => void reconcileWorkspaceCandidate(
+                                            run,
+                                            pending,
+                                            'applied',
+                                        )}
+                                    >
+                                        使用 Agent 的结果
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={reconcilingExecutionId !== null}
+                                        onClick={() => void reconcileWorkspaceCandidate(
+                                            run,
+                                            pending,
+                                            'applied',
+                                            true,
+                                        )}
+                                    >
+                                        本次任务全部使用 Agent 的结果
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
 
                         <MessageComposer
                             members={members}

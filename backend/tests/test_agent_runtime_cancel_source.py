@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -11,7 +11,9 @@ from app.models.agent_run_command import AgentRunCommand
 from app.services.agent_runtime.cancel_source import (
     DatabaseRuntimeCancelSource,
     RuntimeCancelSourceError,
+    RuntimeToolCancelToken,
 )
+from app.services.agent_runtime.node_executor import CancelSignal
 from app.services.agent_runtime.state import (
     RunInputSnapshots,
     RunRegistrySnapshot,
@@ -192,3 +194,33 @@ async def test_rejects_malformed_persisted_cancel_reason() -> None:
         )
 
     assert raised.value.code == "invalid_cancel_payload"
+
+
+@pytest.mark.asyncio
+async def test_tool_cancel_token_propagates_signal_and_capability_telemetry() -> None:
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    class Source:
+        async def get_cancel(self, state, context):
+            assert state["lifecycle"]["status"] == "running"
+            assert context.run_id == str(run_id)
+            return CancelSignal(command_id="cancel-1", reason="user_abort")
+
+    token = RuntimeToolCancelToken(
+        source=Source(),
+        state=_state(tenant_id, run_id),
+        context=_context(tenant_id, run_id),
+        capability="stop_waiting_only",
+    )
+
+    signal = await token.poll()
+
+    assert signal is not None
+    assert token.telemetry(signal) == {
+        "cancel_requested": True,
+        "cancel_command_id": "cancel-1",
+        "cancel_reason": "user_abort",
+        "cancel_capability": "stop_waiting_only",
+        "cancel_propagation": "stop_waiting_only",
+    }

@@ -5,13 +5,12 @@ in chat_messages (via ChatSession with source_channel='agent').
 This API now queries chat_sessions + chat_messages for the inbox.
 """
 
-import uuid
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -35,14 +34,14 @@ async def get_inbox(
     where the user's agents are participants.
     """
     # Find agents the current user created
-    agent_ids_q = await db.execute(select(Agent.id).where(Agent.creator_id == current_user.id))
+    agent_ids_q = await query_dao.execute(db, select(Agent.id).where(Agent.creator_id == current_user.id))
     my_agent_ids = [r[0] for r in agent_ids_q.fetchall()]
 
     if not my_agent_ids:
         return []
 
     # Find agent-to-agent chat sessions involving the user's agents
-    sessions_q = await db.execute(
+    sessions_q = await query_dao.execute(db, 
         select(ChatSession)
         .where(
             ChatSession.source_channel == "agent",
@@ -56,7 +55,7 @@ async def get_inbox(
     result_list = []
     for sess in sessions:
         # Get latest messages from this session
-        msgs_q = await db.execute(
+        msgs_q = await query_dao.execute(db, 
             select(ChatMessage)
             .where(ChatMessage.conversation_id == str(sess.id))
             .order_by(ChatMessage.created_at.desc())
@@ -65,7 +64,7 @@ async def get_inbox(
         for msg in msgs_q.scalars().all():
             sender_name = "未知"
             if msg.participant_id:
-                p_r = await db.execute(select(Participant.display_name).where(Participant.id == msg.participant_id))
+                p_r = await query_dao.execute(db, select(Participant.display_name).where(Participant.id == msg.participant_id))
                 sender_name = p_r.scalar_one_or_none() or "未知"
 
             result_list.append({
@@ -88,7 +87,7 @@ async def get_unread_count(
     db: AsyncSession = Depends(get_db),
 ):
     """Get count of unread agent-to-agent messages for the current user's agents."""
-    agent_ids_q = await db.execute(select(Agent.id).where(Agent.creator_id == current_user.id))
+    agent_ids_q = await query_dao.execute(db, select(Agent.id).where(Agent.creator_id == current_user.id))
     my_agent_ids = [r[0] for r in agent_ids_q.fetchall()]
 
     if not my_agent_ids:

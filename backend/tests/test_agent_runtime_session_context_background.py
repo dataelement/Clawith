@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections import deque
 import uuid
+from collections import deque
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -138,6 +139,127 @@ async def test_group_compact_trigger_uses_the_smallest_active_agent_budget() -> 
     assert policy.source_agent_id is None
     assert policy.threshold_tokens == _threshold(small, settings)
     assert set(policy.contributing_model_ids) == {small.id, large.id}
+
+
+@pytest.mark.asyncio
+async def test_group_compact_ignores_active_agents_without_a_usable_model() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="group",
+        group_id=group_id,
+        title="Group",
+        source_channel="web",
+        is_group=True,
+        is_primary=True,
+    )
+    agents = [
+        Agent(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            creator_id=uuid.uuid4(),
+            name="Unavailable",
+            status="idle",
+            is_expired=False,
+            access_mode="company",
+        ),
+        Agent(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            creator_id=uuid.uuid4(),
+            name="Available",
+            status="idle",
+            is_expired=False,
+            access_mode="company",
+        ),
+    ]
+    available = _model(tenant_id, input_tokens=10_000)
+    settings = Settings(AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO=0.85)
+    db = _DB(
+        _Result([session]),
+        _Result([group_id]),
+        _Result(agents),
+    )
+
+    with patch.object(
+        background,
+        "resolve_active_agent_model",
+        new=AsyncMock(side_effect=[None, available]),
+    ):
+        policy = await background.SessionCompactPolicyResolver(
+            settings=settings
+        ).resolve(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            session_id=session.id,
+        )
+
+    assert policy.threshold_tokens == _threshold(available, settings)
+    assert policy.contributing_model_ids == (available.id,)
+
+
+@pytest.mark.asyncio
+async def test_group_compact_uses_compact_model_budget_when_all_agents_lack_models() -> None:
+    tenant_id = uuid.uuid4()
+    group_id = uuid.uuid4()
+    session = ChatSession(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        session_type="group",
+        group_id=group_id,
+        title="Group",
+        source_channel="web",
+        is_group=True,
+        is_primary=True,
+    )
+    agents = [
+        Agent(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            creator_id=uuid.uuid4(),
+            name="Unavailable",
+            status="idle",
+            is_expired=False,
+            access_mode="company",
+        )
+    ]
+    compact_model = _model(tenant_id, input_tokens=20_000, platform=True)
+    settings = Settings(AGENT_RUNTIME_SUMMARY_THRESHOLD_RATIO=0.85)
+    db = _DB(
+        _Result([session]),
+        _Result([group_id]),
+        _Result(agents),
+    )
+
+    with (
+        patch.object(
+            background,
+            "resolve_active_agent_model",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            background,
+            "resolve_multi_agent_compact_model",
+            new=AsyncMock(return_value=compact_model),
+        ) as resolve_compact_model,
+    ):
+        policy = await background.SessionCompactPolicyResolver(
+            settings=settings
+        ).resolve(
+            db,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            session_id=session.id,
+        )
+
+    resolve_compact_model.assert_awaited_once_with(
+        db,
+        settings,
+        tenant_id=tenant_id,
+    )
+    assert policy.threshold_tokens == _threshold(compact_model, settings)
+    assert policy.contributing_model_ids == (compact_model.id,)
 
 
 @pytest.mark.asyncio

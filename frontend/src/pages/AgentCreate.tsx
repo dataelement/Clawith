@@ -6,6 +6,7 @@ import { IconEye, IconSettings, IconTools } from '@tabler/icons-react';
 import { agentApi, channelApi, enterpriseApi, skillApi, tenantApi } from '../services/api';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { validateAgentName } from '../utils/agentNameValidation';
 import { buildOpenClawInstruction } from '../utils/openClawInstruction';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
@@ -179,12 +180,12 @@ export default function AgentCreate() {
 
     const validateStep0 = (): boolean => {
         const errors: Record<string, string> = {};
-        const name = form.name.trim();
-        if (!name) {
+        const nameError = validateAgentName(form.name);
+        if (nameError === 'required') {
             errors.name = t('wizard.errors.nameRequired', '智能体名称不能为空');
-        } else if (name.length < 2) {
+        } else if (nameError === 'too_short') {
             errors.name = t('wizard.errors.nameTooShort', '名称至少需要 2 个字符');
-        } else if (name.length > 100) {
+        } else if (nameError === 'too_long') {
             errors.name = t('wizard.errors.nameTooLong', '名称不能超过 100 个字符');
         }
         if (form.role_description.length > 500) {

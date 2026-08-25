@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.models.identity import IdentityProvider
 from app.models.tenant import Tenant
@@ -62,7 +63,7 @@ def parse_google_oauth_state(state: str) -> tuple[str, tuple[uuid.UUID, ...]] | 
 
 
 async def get_google_provider(db: AsyncSession, provider_id: uuid.UUID) -> IdentityProvider:
-    result = await db.execute(select(IdentityProvider).where(IdentityProvider.id == provider_id))
+    result = await query_dao.execute(db, select(IdentityProvider).where(IdentityProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider or provider.provider_type != "google_workspace":
         raise HTTPException(status_code=404, detail="Google Workspace provider not found")
@@ -76,7 +77,7 @@ async def get_google_provider_base_url(
 ) -> str:
     tenant = None
     if provider.tenant_id:
-        tenant_result = await db.execute(select(Tenant).where(Tenant.id == provider.tenant_id))
+        tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == provider.tenant_id))
         tenant = tenant_result.scalar_one_or_none()
     if tenant:
         return await platform_service.get_tenant_sso_base_url(db, tenant, request)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -14,38 +15,49 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_access_token, get_current_user
 from app.core.error_contract import build_error_object, get_request_trace_id
+from app.core.security import decode_access_token, get_current_user
+from app.dao import agent_dao, user_dao
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
+from app.models.agent_tool_execution import AgentToolExecution
 from app.models.audit import AuditLog, ChatMessage
 from app.models.group import GroupMember
 from app.models.participant import Participant
 from app.models.user import User
-from app.services import group_chat_service
-from app.services import group_file_service
-from app.services import group_message_service
+from app.services import group_chat_service, group_file_service, group_message_service
+from app.services.agent_runtime.adapter import RuntimeCommandIntake
+from app.services.agent_runtime.contracts import CancelRunCommand, ResumeRunCommand
+from app.services.agent_runtime.run_state_reader import (
+    RunStateReadError,
+)
+from app.services.agent_runtime.run_state_reader import (
+    open_run_state_reader as _open_run_state_reader,
+)
 from app.services.agent_runtime.session_context_service import (
     SessionContextError,
     SessionContextService,
 )
-from app.services.agent_runtime.adapter import RuntimeCommandIntake
-from app.services.agent_runtime.contracts import CancelRunCommand
-from app.services.agent_runtime.run_state_reader import (
-    RunStateReadError,
-    open_run_state_reader as _open_run_state_reader,
+from app.services.agent_runtime.tool_execution import (
+    ToolExecutionError,
+    is_user_reconcilable_unknown_execution,
+    reconcile_unknown_tool_execution,
 )
 from app.services.group_chat_service import GroupChatServiceError
 from app.services.group_file_service import GroupFileServiceError
 from app.services.group_message_service import GroupMessageServiceError
 from app.services.group_realtime import publish_group_message_created
 from app.services.participant_identity import get_or_create_user_participant
-from app.services.storage import guess_content_type
-
+from app.services.storage import get_storage_backend, guess_content_type
+from app.services.workspace_reconciliation import (
+    ReconciliationScope,
+    WorkspaceReconciliationService,
+)
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
+logger = logging.getLogger(__name__)
 
 
 class CreateGroupIn(BaseModel):
@@ -170,12 +182,44 @@ class GroupMessageIntakeOut(BaseModel):
     error: GroupErrorOut | None = None
 
 
+class PendingToolReconciliationOut(BaseModel):
+    execution_id: str
+    tool_call_id: str
+    tool_name: str
+    result_summary: str | None = None
+    error_code: str | None = None
+    can_reconcile: bool = False
+    workspace_resolution: bool = False
+    resolution_status: str | None = None
+    saved_count: int = 0
+    pending_count: int = 0
+    conflicted_count: int = 0
+    unverified_count: int = 0
+
+
 class GroupRunStateOut(BaseModel):
     run_id: uuid.UUID
     status: str
     can_cancel: bool
     agent_id: uuid.UUID | None = None
     system_role: str | None = None
+    correlation_id: str | None = None
+    pending_tool_reconciliations: list[PendingToolReconciliationOut] = Field(
+        default_factory=list
+    )
+
+
+class ReconcileToolExecutionIn(BaseModel):
+    outcome: Literal["applied", "not_applied"]
+    correlation_id: str
+    note: str
+    all_accept: bool = False
+
+
+class ReconcileToolExecutionOut(BaseModel):
+    execution_id: str
+    status: Literal["succeeded", "failed"]
+    result_summary: str
 
 
 class GroupTextFileIn(BaseModel):
@@ -293,6 +337,98 @@ async def _authorized_group_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Group run not found")
     return run
+
+
+async def _pending_group_tool_reconciliations(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    runs: list[AgentRun],
+) -> dict[uuid.UUID, list[PendingToolReconciliationOut]]:
+    """Project unknown receipts without taking ownership of Runtime state."""
+    eligible_runs = {run.id: run for run in runs if run.agent_id is not None}
+    if not eligible_runs:
+        return {}
+    result = await db.execute(
+        select(AgentToolExecution)
+        .where(
+            AgentToolExecution.tenant_id == tenant_id,
+            AgentToolExecution.run_id.in_(eligible_runs),
+            AgentToolExecution.status == "unknown",
+        )
+        .order_by(AgentToolExecution.started_at, AgentToolExecution.id)
+    )
+    executions = list(result.scalars().all())
+    outputs: dict[uuid.UUID, list[PendingToolReconciliationOut]] = {}
+    workspace_reconciler = WorkspaceReconciliationService(get_storage_backend())
+    for execution in executions:
+        run = eligible_runs[execution.run_id]
+        assert run.agent_id is not None
+        metadata = (
+            execution.result_metadata
+            if isinstance(execution.result_metadata, dict)
+            else {}
+        )
+        candidate_ref = metadata.get("workspace_candidate_ref")
+        workspace_resolution = isinstance(candidate_ref, str) and bool(candidate_ref)
+        resolution_status = None
+        counts = {"applied": 0, "not_saved": 0, "conflict": 0, "unverified": 0}
+        if workspace_resolution:
+            try:
+                verification = await workspace_reconciler.verify_current(
+                    ReconciliationScope(
+                        tenant_id=str(tenant_id),
+                        agent_id=run.agent_id,
+                        run_id=str(run.id),
+                        execution_id=str(execution.id),
+                    ),
+                    candidate_ref,
+                )
+                resolution_status = {
+                    "applied": "saved",
+                    "not_saved": "not_saved",
+                    "needs_resolution": "conflicted",
+                    "unverified": "unavailable",
+                    "mixed": "partial",
+                }[verification.status]
+                counts = verification.counts
+            except Exception:  # noqa: BLE001 - storage adapters expose provider-specific failures
+                resolution_status = "unavailable"
+                counts["unverified"] = 1
+        outputs.setdefault(execution.run_id, []).append(
+            PendingToolReconciliationOut(
+                execution_id=str(execution.id),
+                tool_call_id=execution.tool_call_id,
+                tool_name=execution.tool_name,
+                result_summary=execution.result_summary,
+                error_code=(
+                    metadata.get("error_code")
+                    if isinstance(metadata.get("error_code"), str)
+                    else None
+                ),
+                can_reconcile=(
+                    workspace_resolution
+                    or is_user_reconcilable_unknown_execution(execution)
+                ),
+                workspace_resolution=workspace_resolution,
+                resolution_status=resolution_status,
+                saved_count=counts["applied"],
+                pending_count=counts["not_saved"],
+                conflicted_count=counts["conflict"],
+                unverified_count=counts["unverified"],
+            )
+        )
+    return outputs
+
+
+def _reconciled_group_execution_out(
+    execution: AgentToolExecution,
+) -> ReconcileToolExecutionOut:
+    return ReconcileToolExecutionOut(
+        execution_id=str(execution.id),
+        status=execution.status,  # type: ignore[arg-type]
+        result_summary=execution.result_summary or "",
+    )
 
 
 def _translate_domain_error(exc: GroupChatServiceError) -> HTTPException:
@@ -414,11 +550,11 @@ async def _member_outputs(
     agents: dict[uuid.UUID, Agent] = {}
     users: dict[uuid.UUID, User] = {}
     if agent_ref_ids:
-        agent_result = await db.execute(select(Agent).where(Agent.id.in_(agent_ref_ids)))
-        agents = {agent.id: agent for agent in agent_result.scalars().all()}
+        agent_list = await agent_dao.list_by_ids(list(agent_ref_ids), db=db)
+        agents = {agent.id: agent for agent in agent_list}
     if user_ref_ids:
-        user_result = await db.execute(select(User).where(User.id.in_(user_ref_ids)))
-        users = {user.id: user for user in user_result.scalars().all()}
+        user_list = await user_dao.list_by_ids(list(user_ref_ids), db=db)
+        users = {user.id: user for user in user_list}
 
     output: list[GroupMemberOut] = []
     for membership in memberships:
@@ -1087,7 +1223,7 @@ async def list_active_group_runs(
         .order_by(AgentRun.created_at, AgentRun.id)
     )
     candidates = list(result.scalars().all())
-    active: list[GroupRunStateOut] = []
+    active_views: list[tuple[AgentRun, Any]] = []
     async with _open_run_state_reader(db) as reader:
         for run in candidates:
             try:
@@ -1097,16 +1233,29 @@ async def list_active_group_runs(
             execution_status = view.execution_status or "created"
             if execution_status in {"completed", "failed", "cancelled"}:
                 continue
-            active.append(
-                GroupRunStateOut(
-                    run_id=run.id,
-                    status=execution_status,
-                    can_cancel=True,
-                    agent_id=run.agent_id,
-                    system_role=run.system_role,
-                )
-            )
-    return active
+            active_views.append((run, view))
+    waiting_runs = [
+        run
+        for run, view in active_views
+        if view.execution_status == "waiting_user"
+    ]
+    pending_by_run = await _pending_group_tool_reconciliations(
+        db,
+        tenant_id=tenant_id,
+        runs=waiting_runs,
+    )
+    return [
+        GroupRunStateOut(
+            run_id=run.id,
+            status=view.execution_status or "created",
+            can_cancel=True,
+            agent_id=run.agent_id,
+            system_role=run.system_role,
+            correlation_id=getattr(view, "waiting_correlation_id", None),
+            pending_tool_reconciliations=pending_by_run.get(run.id, []),
+        )
+        for run, view in active_views
+    ]
 
 
 @router.get(
@@ -1139,13 +1288,217 @@ async def get_group_run_state(
     except RunStateReadError as exc:
         raise HTTPException(status_code=409, detail=exc.code) from exc
     execution_status = view.execution_status or "created"
+    pending_by_run = await _pending_group_tool_reconciliations(
+        db,
+        tenant_id=tenant_id,
+        runs=[run] if execution_status == "waiting_user" else [],
+    )
     return GroupRunStateOut(
         run_id=run.id,
         status=execution_status,
         can_cancel=execution_status not in {"completed", "failed", "cancelled"},
         agent_id=run.agent_id,
         system_role=run.system_role,
+        correlation_id=getattr(view, "waiting_correlation_id", None),
+        pending_tool_reconciliations=pending_by_run.get(run.id, []),
     )
+
+
+@router.post(
+    "/{group_id}/sessions/{session_id}/runs/{run_id}/tool-executions/{execution_id}/reconcile",
+    response_model=ReconcileToolExecutionOut,
+)
+async def reconcile_group_tool_execution(
+    group_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    execution_id: uuid.UUID,
+    body: ReconcileToolExecutionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ReconcileToolExecutionOut:
+    """Settle a Group Run Workspace candidate chosen by a current human member."""
+    tenant_id = _tenant_id(current_user)
+    participant = await _current_participant(db, current_user)
+    try:
+        run = await _authorized_group_run(
+            db,
+            tenant_id=tenant_id,
+            group_id=group_id,
+            session_id=session_id,
+            participant_id=participant.id,
+            run_id=run_id,
+        )
+    except GroupChatServiceError as exc:
+        raise _translate_domain_error(exc) from exc
+    if run.agent_id is None:
+        raise HTTPException(status_code=409, detail="group_run_has_no_agent")
+
+    execution_result = await db.execute(
+        select(AgentToolExecution)
+        .where(
+            AgentToolExecution.id == execution_id,
+            AgentToolExecution.tenant_id == tenant_id,
+            AgentToolExecution.run_id == run_id,
+        )
+        .with_for_update()
+    )
+    pending_execution = execution_result.scalar_one_or_none()
+    if pending_execution is None:
+        raise HTTPException(status_code=404, detail="tool_execution_not_found")
+    pending_metadata = (
+        pending_execution.result_metadata
+        if isinstance(pending_execution.result_metadata, dict)
+        else {}
+    )
+    candidate_ref = pending_metadata.get("workspace_candidate_ref")
+    if not isinstance(candidate_ref, str) or not candidate_ref:
+        raise HTTPException(
+            status_code=409,
+            detail="tool_execution_reconciliation_not_supported",
+        )
+    expected_action = "applied" if body.outcome == "applied" else "keep_workspace"
+    if pending_execution.status != "unknown":
+        if (
+            pending_execution.status == "succeeded"
+            and pending_metadata.get("external_reconciliation") is True
+            and pending_metadata.get("workspace_resolution_action") == expected_action
+        ):
+            return _reconciled_group_execution_out(pending_execution)
+        raise HTTPException(
+            status_code=409,
+            detail="tool_execution_reconciliation_conflict",
+        )
+
+    try:
+        async with _open_run_state_reader(db) as reader:
+            view = await reader.get_run_state(tenant_id, run_id)
+    except RunStateReadError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    if view.execution_status != "waiting_user":
+        raise HTTPException(status_code=409, detail="run_is_not_waiting_for_user")
+    correlation_id = body.correlation_id.strip()
+    if not correlation_id or view.waiting_correlation_id != correlation_id:
+        raise HTTPException(
+            status_code=409,
+            detail="tool_reconciliation_correlation_mismatch",
+        )
+
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(status_code=422, detail="reconciliation_note_required")
+    reconciliation_scope = ReconciliationScope(
+        tenant_id=str(tenant_id),
+        agent_id=run.agent_id,
+        run_id=str(run_id),
+        execution_id=str(execution_id),
+    )
+    workspace_reconciler = WorkspaceReconciliationService(get_storage_backend())
+    if body.outcome == "applied":
+        try:
+            application = await workspace_reconciler.apply_candidate(
+                reconciliation_scope,
+                candidate_ref,
+                authorized=True,
+            )
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="workspace_candidate_unavailable",
+            ) from exc
+        if application.status not in {"applied", "already_applied"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"workspace_candidate_{application.status}",
+            )
+    else:
+        try:
+            await workspace_reconciler.preserve_conflicts_and_apply_safe_changes(
+                reconciliation_scope,
+                candidate_ref,
+            )
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="workspace_candidate_unavailable",
+            ) from exc
+    if body.outcome == "applied" and body.all_accept:
+        target = dict(run.delivery_target or {})
+        target["workspace_conflict_policy"] = "use_agent_result"
+        run.delivery_target = target
+    try:
+        execution = await reconcile_unknown_tool_execution(
+            db,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            execution_id=execution_id,
+            confirmed_status="succeeded",
+            confirmed_by_user_id=current_user.id,
+            note=note,
+            resolution_action=expected_action,
+        )
+    except ToolExecutionError as exc:
+        status_code = 404 if exc.code == "tool_execution_not_found" else 409
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            agent_id=run.agent_id,
+            action="group_runtime_tool_execution_reconciled",
+            details={
+                "tenant_id": str(tenant_id),
+                "group_id": str(group_id),
+                "session_id": str(session_id),
+                "run_id": str(run_id),
+                "execution_id": str(execution_id),
+                "tool_name": execution.tool_name,
+                "confirmed_outcome": body.outcome,
+                "status": execution.status,
+                "participant_id": str(participant.id),
+                "note": note[:2_000],
+                "all_accept": body.all_accept,
+            },
+        )
+    )
+    await RuntimeCommandIntake(db).resume_run(
+        ResumeRunCommand(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            idempotency_key=(
+                f"resume:group-tool-reconcile:{execution_id}:{expected_action}"
+            ),
+            payload={
+                "resume_type": "tool_reconciliation",
+                "correlation_id": correlation_id,
+                "payload": {
+                    "content": (
+                        "The user chose the Agent file result. Continue the current task without replaying the original Tool."
+                        if body.outcome == "applied"
+                        else "The user chose to preserve the current Workspace source files. This decision overrides conflicting original file-content requirements. Continue without replaying the original Tool."
+                    ),
+                    "confirmation_text": note,
+                    "tool_execution_id": str(execution_id),
+                    "workspace_resolution_action": expected_action,
+                },
+            },
+            actor_user_id=current_user.id,
+        )
+    )
+    await db.commit()
+    try:
+        await workspace_reconciler.discard_candidate(
+            reconciliation_scope,
+            candidate_ref,
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort after durable settlement
+        # The receipt is already durably settled; retention maintenance can retry cleanup.
+        logger.warning(
+            "Failed to discard settled Group Workspace candidate execution_id=%s: %s",
+            execution_id,
+            type(exc).__name__,
+        )
+    return _reconciled_group_execution_out(execution)
 
 
 @router.post(
@@ -1544,8 +1897,7 @@ async def _download_user(
         parsed_user_id = uuid.UUID(user_id)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
-    result = await db.execute(select(User).where(User.id == parsed_user_id))
-    user = result.scalar_one_or_none()
+    user = await user_dao.get(parsed_user_id)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

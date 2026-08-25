@@ -4,8 +4,10 @@ import base64
 import os
 from io import BytesIO
 
+import pytest
 from PIL import Image
 
+from app.services import chat_image_preview
 from app.services.chat_image_preview import (
     MAX_VISION_IMAGE_BYTES,
     MAX_VISION_IMAGE_EDGE,
@@ -26,6 +28,24 @@ def test_small_chat_image_keeps_original_encoding() -> None:
 
     assert data_url.startswith("data:image/png;base64,")
     assert _decode_data_url(data_url) == original
+
+
+def test_small_chat_image_uses_detected_format_for_mime_type() -> None:
+    output = BytesIO()
+    Image.new("RGB", (32, 24), "red").save(output, format="PNG")
+
+    data_url = build_vision_image_data_url(output.getvalue(), ".jpg")
+
+    assert data_url.startswith("data:image/png;base64,")
+
+
+def test_image_pixel_limit_is_checked_before_decode(monkeypatch) -> None:
+    output = BytesIO()
+    Image.new("RGB", (32, 24), "red").save(output, format="PNG")
+    monkeypatch.setattr(chat_image_preview, "MAX_VISION_IMAGE_PIXELS", 100)
+
+    with pytest.raises(chat_image_preview.VisionImagePreviewError):
+        build_vision_image_data_url(output.getvalue(), ".png")
 
 
 def test_large_chat_image_is_bounded_for_multi_image_messages() -> None:

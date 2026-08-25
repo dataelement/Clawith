@@ -14,8 +14,8 @@ settings = get_settings()
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -42,6 +42,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 _session_ctx: ContextVar[AsyncSession | None] = ContextVar("db_session_ctx", default=None)
+
+
+@asynccontextmanager
+async def bind_session_context(session: AsyncSession) -> AsyncGenerator[AsyncSession, None]:
+    """Temporarily expose an existing session to DAO helpers without owning its transaction."""
+    token = _session_ctx.set(session)
+    try:
+        yield session
+    finally:
+        _session_ctx.reset(token)
 
 
 @asynccontextmanager

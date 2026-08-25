@@ -11,9 +11,11 @@ from croniter import croniter
 from loguru import logger
 from sqlalchemy import select
 
-from app.database import async_session
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
+
+async_session = query_dao.session
 
 MIN_POLL_INTERVAL_MINUTES = 5
 
@@ -27,21 +29,21 @@ async def should_skip_non_workday(trigger: AgentTrigger, local_now: datetime) ->
     from app.services.business_calendar import is_non_workday
 
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(Agent.tenant_id).where(Agent.id == trigger.agent_id)
         )
         tenant_id = result.scalar_one_or_none()
         if not tenant_id:
             return False
 
-        settings_result = await db.execute(
+        settings_result = await query_dao.execute(db, 
             select(OKRSettings.daily_report_skip_non_workdays).where(OKRSettings.tenant_id == tenant_id)
         )
         skip_enabled = settings_result.scalar_one_or_none()
         if skip_enabled is False:
             return False
 
-        tenant_result = await db.execute(
+        tenant_result = await query_dao.execute(db, 
             select(Tenant.country_region).where(Tenant.id == tenant_id)
         )
         country_region = tenant_result.scalar_one_or_none()
@@ -52,11 +54,11 @@ async def should_skip_non_workday(trigger: AgentTrigger, local_now: datetime) ->
 async def mark_trigger_skipped(trigger_id: uuid.UUID, now: datetime) -> None:
     try:
         async with async_session() as db:
-            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
+            result = await query_dao.execute(db, select(AgentTrigger).where(AgentTrigger.id == trigger_id))
             trigger = result.scalar_one_or_none()
             if trigger:
                 trigger.last_fired_at = now
-                await db.commit()
+                await query_dao.commit(db)
     except Exception as e:
         logger.warning(f"Failed to mark skipped trigger {trigger_id}: {e}")
 
@@ -64,7 +66,7 @@ async def mark_trigger_skipped(trigger_id: uuid.UUID, now: datetime) -> None:
 async def mark_trigger_fired(trigger_id: uuid.UUID, now: datetime) -> None:
     try:
         async with async_session() as db:
-            result = await db.execute(select(AgentTrigger).where(AgentTrigger.id == trigger_id))
+            result = await query_dao.execute(db, select(AgentTrigger).where(AgentTrigger.id == trigger_id))
             trigger = result.scalar_one_or_none()
             if trigger:
                 trigger.last_fired_at = now
@@ -73,7 +75,7 @@ async def mark_trigger_fired(trigger_id: uuid.UUID, now: datetime) -> None:
                     trigger.is_enabled = False
                 if trigger.max_fires and trigger.fire_count >= trigger.max_fires:
                     trigger.is_enabled = False
-                await db.commit()
+                await query_dao.commit(db)
     except Exception as e:
         logger.warning(f"Failed to mark fired trigger {trigger_id}: {e}")
 
@@ -92,12 +94,12 @@ async def handle_okr_report_trigger(trigger: AgentTrigger, now: datetime) -> boo
     from app.services.timezone_utils import get_agent_timezone
 
     async with async_session() as db:
-        agent_result = await db.execute(select(Agent.tenant_id).where(Agent.id == trigger.agent_id))
+        agent_result = await query_dao.execute(db, select(Agent.tenant_id).where(Agent.id == trigger.agent_id))
         tenant_id = agent_result.scalar_one_or_none()
         if not tenant_id:
             return True
 
-        settings_result = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
+        settings_result = await query_dao.execute(db, select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
         settings = settings_result.scalar_one_or_none()
         if not settings or not settings.enabled:
             return True
@@ -132,12 +134,12 @@ async def handle_okr_collection_trigger(trigger: AgentTrigger, now: datetime) ->
     from app.services.okr_daily_collection import trigger_daily_collection_for_tenant
 
     async with async_session() as db:
-        agent_result = await db.execute(select(Agent.tenant_id).where(Agent.id == trigger.agent_id))
+        agent_result = await query_dao.execute(db, select(Agent.tenant_id).where(Agent.id == trigger.agent_id))
         tenant_id = agent_result.scalar_one_or_none()
         if not tenant_id:
             return True
 
-        settings_result = await db.execute(select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
+        settings_result = await query_dao.execute(db, select(OKRSettings).where(OKRSettings.tenant_id == tenant_id))
         settings = settings_result.scalar_one_or_none()
         if not settings or not settings.enabled or not settings.daily_report_enabled:
             return True
@@ -170,18 +172,27 @@ def is_private_url(url: str) -> bool:
         return True
 
 
-async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
+MISFIRE_GRACE = timedelta(seconds=30)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> datetime | None:
     if not trigger.is_enabled:
-        return False
+        return None
     if trigger.expires_at and now >= trigger.expires_at:
-        return False
+        return None
     if trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires:
-        return False
+        return None
 
     if trigger.last_fired_at:
         cooldown = timedelta(seconds=trigger.cooldown_seconds)
         if (now - trigger.last_fired_at) < cooldown:
-            return False
+            return None
 
     cfg = trigger.config or {}
     if isinstance(cfg, str):
@@ -194,63 +205,73 @@ async def evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
 
     if t == "cron":
         expr = cfg.get("expr", "* * * * *")
-        base = trigger.last_fired_at or trigger.created_at
         try:
-            tz_name = cfg.get("timezone")
-            if not tz_name:
-                from app.services.timezone_utils import get_agent_timezone
-                tz_name = await get_agent_timezone(trigger.agent_id)
+            from app.services.timezone_utils import get_agent_timezone
+
+            tz_name = await get_agent_timezone(trigger.agent_id)
             from zoneinfo import ZoneInfo
-            try:
-                tz = ZoneInfo(tz_name)
-            except (KeyError, Exception):
-                tz = ZoneInfo("UTC")
+
+            tz = ZoneInfo(tz_name)
             local_now = now.astimezone(tz)
-            local_base = base.astimezone(tz) if base.tzinfo else base.replace(tzinfo=tz)
-            cron = croniter(expr, local_base)
-            next_run = cron.get_next(datetime)
-            if local_now >= next_run:
-                if await should_skip_non_workday(trigger, local_now):
-                    await mark_trigger_skipped(trigger.id, now)
-                    logger.info(f"[Trigger] Skipped {trigger.name} on non-workday {local_now.date()}")
-                    return False
-                return True
-            return False
-        except Exception as e:
-            logger.warning(f"Invalid cron expr '{expr}' for trigger {trigger.name}: {e}")
-            return False
+            scheduled_at = croniter(
+                expr,
+                local_now + timedelta(microseconds=1),
+            ).get_prev(datetime)
+            scheduled_at_utc = _as_utc(scheduled_at)
+            now_utc = _as_utc(now)
+            created_at_utc = _as_utc(trigger.created_at)
+            if scheduled_at_utc <= created_at_utc:
+                return None
+            if scheduled_at_utc > now_utc:
+                return None
+            if now_utc - scheduled_at_utc > MISFIRE_GRACE:
+                return None
+            if await should_skip_non_workday(trigger, local_now):
+                await mark_trigger_skipped(trigger.id, now)
+                logger.info(f"[Trigger] Skipped {trigger.name} on non-workday {local_now.date()}")
+                return None
+            return scheduled_at
+        except Exception as error:
+            logger.bind(
+                trigger_id=str(trigger.id),
+                trigger_name=trigger.name,
+                trigger_type=trigger.type,
+                cron_expr=expr,
+            ).warning("Trigger occurrence evaluation failed: {}", error)
+            return None
 
     if t == "once":
         at_str = cfg.get("at")
         if not at_str:
-            return False
+            return None
         try:
             at = datetime.fromisoformat(at_str)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
-            return now >= at and trigger.fire_count == 0
+            return at if now >= at and trigger.fire_count == 0 else None
         except Exception:
-            return False
+            return None
 
     if t == "interval":
         minutes = cfg.get("minutes", 30)
         base = trigger.last_fired_at or trigger.created_at
-        return (now - base) >= timedelta(minutes=minutes)
+        scheduled_at = base + timedelta(minutes=minutes)
+        return scheduled_at if now >= scheduled_at else None
 
     if t == "poll":
         interval_min = max(cfg.get("interval_min", 5), MIN_POLL_INTERVAL_MINUTES)
         base = trigger.last_fired_at or trigger.created_at
         if (now - base) < timedelta(minutes=interval_min):
-            return False
-        return await poll_check(trigger)
+            return None
+        return now if await poll_check(trigger) else None
 
     if t == "on_message":
-        return await check_new_agent_messages(trigger)
+        return now if await check_new_agent_messages(trigger) else None
 
     if t == "webhook":
-        return False
+        return None
 
-    return False
+    return None
 
 
 async def poll_check(trigger: AgentTrigger) -> bool:
@@ -290,10 +311,10 @@ async def poll_check(trigger: AgentTrigger) -> bool:
         try:
             from sqlalchemy import update
             async with async_session() as db:
-                await db.execute(
+                await query_dao.execute(db, 
                     update(AgentTrigger).where(AgentTrigger.id == trigger.id).values(config=cfg)
                 )
-                await db.commit()
+                await query_dao.commit(db)
         except Exception as e:
             logger.warning(f"Failed to persist poll _last_value for {trigger.name}: {e}")
 
@@ -353,18 +374,18 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if not isinstance(from_agent_name, str):
                     return False
                 safe_agent_name = from_agent_name.replace("%", "").replace("_", r"\_")
-                agent_r = await db.execute(select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%")))
+                agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.name.ilike(f"%{safe_agent_name}%")))
                 source_agent = agent_r.scalars().first()
                 if not source_agent:
                     return False
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(Participant.id).where(Participant.type == "agent", Participant.ref_id == source_agent.id)
                 )
                 from_participant = result.scalar_one_or_none()
                 if not from_participant:
                     return False
                 from sqlalchemy import String as SaString, cast as sa_cast
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(ChatMessage)
                     .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
                     .where(
@@ -393,7 +414,7 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 from app.models.agent import Agent as AgentModel
                 from app.models.user import Identity, User
 
-                agent_r = await db.execute(select(AgentModel).where(AgentModel.id == trigger.agent_id))
+                agent_r = await query_dao.execute(db, select(AgentModel).where(AgentModel.id == trigger.agent_id))
                 agent = agent_r.scalar_one_or_none()
                 if isinstance(from_user_name, list):
                     from_user_name = from_user_name[0] if from_user_name else ""
@@ -412,11 +433,11 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 )
                 if agent and agent.tenant_id:
                     query = query.where(User.tenant_id == agent.tenant_id)
-                user_r = await db.execute(query)
+                user_r = await query_dao.execute(db, query)
                 target_user = user_r.scalars().first()
 
                 if target_user:
-                    result = await db.execute(
+                    result = await query_dao.execute(db, 
                         select(ChatMessage)
                         .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
                         .where(
@@ -430,7 +451,7 @@ async def check_new_agent_messages(trigger: AgentTrigger) -> bool:
                         .limit(1)
                     )
                 else:
-                    result = await db.execute(
+                    result = await query_dao.execute(db, 
                         select(ChatMessage)
                         .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
                         .where(

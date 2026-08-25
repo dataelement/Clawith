@@ -1,0 +1,22 @@
+kind: pipeline
+type: docker
+name: clawith-ci
+
+steps:
+  - name: backend-lint-and-tests
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    environment:
+      PYTHONPATH: .
+    commands:
+      - cd backend
+      - uv sync
+      - uv run ruff check app/ alembic/
+      - bash ../scripts/arch-guard.sh
+      - uv run pytest tests/ -q
+
+  - name: frontend-type-check
+    image: node:20-alpine
+    commands:
+      - cd frontend
+      - npm ci || npm install
+      - npx tsc --noEmit

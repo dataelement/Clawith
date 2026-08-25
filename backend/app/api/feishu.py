@@ -1,9 +1,14 @@
 """Feishu OAuth and Channel API routes."""
 
+import hashlib
+import hmac
+import json
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from lark_oapi.core.utils import AESCipher
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,10 +30,89 @@ from app.services.storage import store_agent_upload
 
 router = APIRouter(tags=["feishu"])
 
+_FEISHU_GROUP_PASSIVE_INSTRUCTION = (
+    "You are passively listening in a Feishu group. A message directly addresses you if it "
+    "@mentions you, names you or your Agent name, asks you a question or gives you an "
+    "instruction, or explicitly asks you to reply. You must visibly answer every directly "
+    "addressed message even when it is outside your usual responsibilities. For messages "
+    "that do not directly address you, reply normally only when your responsibilities require "
+    "a visible response; otherwise your entire final response must be exactly NO_REPLY, with "
+    "no other text. Your final response is automatically delivered to the input Feishu group. "
+    "Never call send_channel_message to reply to the current conversation. Use that Tool only "
+    "when the user explicitly asks you to send a separate message to another person or group, "
+    "and then set cross_session_confirmed=true."
+)
+
 _USER_RESOLUTION_ERROR_TIP = (
     "抱歉，我暂时无法稳定识别你的飞书账号，已停止本次处理以避免重复创建账号。"
     "请稍后重试，或联系管理员检查飞书 Contact API 权限。"
 )
+
+_FEISHU_MENTION_PLACEHOLDER_RE = re.compile(r"@_user_\d+")
+
+
+def _feishu_mention_label(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:100]
+
+
+def _restore_feishu_text_mentions(text: object, mentions: object) -> str:
+    """Restore provider placeholders to visible names before model intake."""
+    normalized = text if isinstance(text, str) else ""
+    if isinstance(mentions, list):
+        for mention in mentions:
+            if not isinstance(mention, dict):
+                continue
+            key = mention.get("key")
+            name = _feishu_mention_label(mention.get("name"))
+            if isinstance(key, str) and key and name:
+                normalized = normalized.replace(key, f"@{name}")
+    return _FEISHU_MENTION_PLACEHOLDER_RE.sub("", normalized).strip()
+
+
+def _verify_and_decode_feishu_callback(
+    body_bytes: bytes,
+    headers: dict[str, str],
+    config: ChannelConfig,
+) -> dict | None:
+    """Authenticate a Feishu callback before any event data is consumed."""
+    try:
+        envelope = json.loads(body_bytes)
+        if not isinstance(envelope, dict):
+            return None
+
+        encrypt_key = (config.encrypt_key or "").strip()
+        encrypted = envelope.get("encrypt")
+        if encrypted:
+            if not encrypt_key:
+                return None
+            payload = json.loads(AESCipher(encrypt_key).decrypt_str(encrypted))
+        else:
+            payload = envelope
+        if not isinstance(payload, dict):
+            return None
+
+        verification_token = (config.verification_token or "").strip()
+        actual_token = str((payload.get("header") or {}).get("token") or "")
+        if not verification_token or not hmac.compare_digest(actual_token, verification_token):
+            return None
+
+        event_type = str((payload.get("header") or {}).get("event_type") or "")
+        if encrypt_key and event_type != "url_verification":
+            timestamp = headers.get("x-lark-request-timestamp", "")
+            nonce = headers.get("x-lark-request-nonce", "")
+            signature = headers.get("x-lark-signature", "")
+            if not timestamp or not nonce or not signature:
+                return None
+            expected = hashlib.sha256(
+                (timestamp + nonce + encrypt_key).encode() + body_bytes
+            ).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                return None
+        return payload
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 # ─── OAuth ──────────────────────────────────────────────
@@ -94,7 +178,7 @@ async def feishu_oauth_callback(
 
         # Generate JWT token
         from app.core.security import create_access_token
-        token = create_access_token(str(user.id), user.role)
+        token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Feishu auth failed: {e}")
@@ -354,10 +438,17 @@ async def _accept_feishu_runtime_message(
             created_by_user_id=user.id,
         )
         _, model, _ = await _load_agent_and_model(db, agent_id)
-        sender_name = (user.display_name or "").strip()
-        executable_content = (
-            f"[发送者: {sender_name}] {content}" if sender_name else content
+        sender_name = (user.display_name or "").strip() or "未知用户"
+        sender_identity = " | ".join(
+            part
+            for part in (
+                f"飞书发送者: {sender_name}",
+                f"user_id: {sender_user_id.strip()}" if sender_user_id.strip() else "",
+                f"open_id: {sender_open_id.strip()}" if sender_open_id.strip() else "",
+            )
+            if part
         )
+        executable_content = f"[{sender_identity}] {content}"
         intake = await enqueue_channel_chat_runtime(
             db,
             agent=agent,
@@ -366,10 +457,18 @@ async def _accept_feishu_runtime_message(
             model=model,
             content=executable_content,
             display_content=display_content,
+            runtime_instruction=(
+                _FEISHU_GROUP_PASSIVE_INSTRUCTION if is_group else ""
+            ),
             source_channel="feishu",
             channel_delivery_target={
                 "receive_id": chat_id if is_group else sender_open_id,
                 "receive_id_type": "chat_id" if is_group else "open_id",
+                **(
+                    {"source_message_id": external_event_id.strip()}
+                    if is_group and external_event_id and external_event_id.strip()
+                    else {}
+                ),
             },
             message_id=channel_message_id(
                 agent_id,
@@ -391,7 +490,22 @@ async def feishu_event_webhook(
     request: Request,
 ):
     """Handle Feishu event callback for a specific agent's bot."""
-    body = await request.json()
+    body_bytes = await request.body()
+    async with _async_session() as db:
+        result = await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.channel_type == "feishu",
+            )
+        )
+        config = result.scalar_one_or_none()
+    if not config:
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+
+    body = _verify_and_decode_feishu_callback(body_bytes, dict(request.headers), config)
+    if body is None:
+        logger.warning("[Feishu] Rejected unauthenticated callback for {}", agent_id)
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
     # Handle verification challenge
     if "challenge" in body:
@@ -429,11 +543,19 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
     if event_type == "im.message.receive_v1":
         message = event.get("message", {})
         sender = event.get("sender", {}).get("sender_id", {})
+        sender_type = event.get("sender", {}).get("sender_type", "")
         sender_open_id = sender.get("open_id", "")
         sender_user_id_from_event = sender.get("user_id", "")  # tenant-stable ID, available directly in event body
         msg_type = message.get("message_type", "text")
         chat_type = message.get("chat_type", "p2p")  # p2p or group
         chat_id = message.get("chat_id", "")
+
+        if chat_type == "group" and sender_type and sender_type != "user":
+            logger.info(
+                "[Feishu] Ignoring non-user group message sender_type={}",
+                sender_type,
+            )
+            return {"code": 0, "msg": "non-user group message ignored"}
 
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, open_id={sender_open_id!r}, user_id_from_event={sender_user_id_from_event!r}")
 
@@ -462,6 +584,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                         _href = _elem.get("href", "")
                         _link_text = _elem.get("text", "")
                         _line_parts.append(f"{_link_text} ({_href})" if _href else _link_text)
+                    elif _tag == "at":
+                        _mention_name = _feishu_mention_label(
+                            _elem.get("user_name") or _elem.get("name")
+                        )
+                        if _mention_name:
+                            _line_parts.append(f"@{_mention_name}")
                     elif _tag == "img":
                         _ik = _elem.get("image_key", "")
                         if _ik:
@@ -511,7 +639,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 sender_user_id=sender_user_id_from_event,
                 chat_type=chat_type,
                 chat_id=chat_id,
-                external_event_id=event_id or message.get("message_id"),
+                external_event_id=message.get("message_id") or event_id,
             )
             if attachment is not None:
                 if event_id:
@@ -523,11 +651,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
         if msg_type != "text":
             return {"code": 0, "msg": "unsupported message type"}
 
-        import json
-        import re
-
         content = json.loads(message.get("content", "{}"))
-        user_text = re.sub(r"@_user_\d+", "", content.get("text", "")).strip()
+        user_text = _restore_feishu_text_mentions(
+            content.get("text", ""),
+            message.get("mentions"),
+        )
         if not user_text:
             return {"code": 0, "msg": "empty message after stripping mentions"}
 
@@ -549,7 +677,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 chat_id=chat_id,
                 content=user_text,
                 display_content=display_content,
-                external_event_id=event_id or message.get("message_id"),
+                external_event_id=message.get("message_id") or event_id,
             )
         except Exception as exc:
             from app.services.channel_user_service import ChannelUserResolutionError

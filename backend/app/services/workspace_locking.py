@@ -32,8 +32,10 @@ def _normalize_workspace_path(path: str) -> str:
     return "/".join(parts)
 
 
-def _lock_key(agent_id: uuid.UUID, path: str) -> str:
+def _lock_key(agent_id: uuid.UUID, path: str, tenant_id: uuid.UUID | str | None = None) -> str:
     normalized = _normalize_workspace_path(path) or "."
+    if tenant_id is not None:
+        return f"tenant:{tenant_id}:workspace-lock:{agent_id}:{normalized}"
     return f"{LOCK_PREFIX}:{agent_id}:{normalized}"
 
 
@@ -42,15 +44,22 @@ async def acquire_workspace_lock(
     path: str,
     *,
     owner_token: str,
+    tenant_id: uuid.UUID | str | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> bool:
     redis = await get_redis()
-    return bool(await redis.set(_lock_key(agent_id, path), owner_token, ex=ttl_seconds, nx=True))
+    return bool(await redis.set(_lock_key(agent_id, path, tenant_id), owner_token, ex=ttl_seconds, nx=True))
 
 
-async def release_workspace_lock(agent_id: uuid.UUID, path: str, *, owner_token: str) -> None:
+async def release_workspace_lock(
+    agent_id: uuid.UUID,
+    path: str,
+    *,
+    owner_token: str,
+    tenant_id: uuid.UUID | str | None = None,
+) -> None:
     redis = await get_redis()
-    await redis.eval(_RELEASE_IF_OWNER_SCRIPT, 1, _lock_key(agent_id, path), owner_token)
+    await redis.eval(_RELEASE_IF_OWNER_SCRIPT, 1, _lock_key(agent_id, path, tenant_id), owner_token)
 
 
 @asynccontextmanager
@@ -59,6 +68,7 @@ async def workspace_locks(
     paths: list[str],
     *,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
+    tenant_id: uuid.UUID | str | None = None,
 ):
     normalized = sorted({_normalize_workspace_path(path) or "." for path in paths if path is not None})
     owner_token = uuid.uuid4().hex
@@ -69,6 +79,7 @@ async def workspace_locks(
                 agent_id,
                 path,
                 owner_token=owner_token,
+                tenant_id=tenant_id,
                 ttl_seconds=ttl_seconds,
             )
             if not ok:
@@ -77,4 +88,4 @@ async def workspace_locks(
         yield
     finally:
         for path in reversed(acquired):
-            await release_workspace_lock(agent_id, path, owner_token=owner_token)
+            await release_workspace_lock(agent_id, path, owner_token=owner_token, tenant_id=tenant_id)

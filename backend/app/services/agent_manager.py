@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
 from app.models.agent import Agent, AgentTemplate
 from app.models.llm import LLMModel
@@ -138,7 +139,7 @@ class AgentManager:
         # Customize soul.md
         # Get creator name
         from app.models.user import User
-        result = await db.execute(select(User).where(User.id == agent.creator_id))
+        result = await query_dao.execute(db, select(User).where(User.id == agent.creator_id))
         creator = result.scalar_one_or_none()
         creator_name = creator.display_name if creator else "Unknown"
 

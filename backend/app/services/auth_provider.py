@@ -4,18 +4,16 @@ This module provides a base class for all identity providers (Feishu, DingTalk, 
 and concrete implementations for each supported provider.
 """
 
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import httpx
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, hash_password
+from app.dao import query_dao
 from app.models.identity import IdentityProvider
 from app.models.user import User, Identity
 from app.services.google_workspace_oauth import GOOGLE_HTTP_PROXY
@@ -182,8 +180,8 @@ class BaseAuthProvider(ABC):
                 config=self.config,
                 tenant_id=tenant_id,
             )
-            db.add(provider)
-            await db.flush()
+            query_dao.add(db, provider)
+            await query_dao.flush(db)
 
         self.provider = provider
         return provider
@@ -236,7 +234,7 @@ class BaseAuthProvider(ABC):
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
-        existing = await db.execute(query)
+        existing = await query_dao.execute(db, query)
         if existing.scalar_one_or_none():
             username = f"{username}_{uuid.uuid4().hex[:6]}"
 
@@ -254,8 +252,8 @@ class BaseAuthProvider(ABC):
         # Set legacy fields if needed
         await self._set_legacy_user_fields(user, user_info)
 
-        db.add(user)
-        await db.flush()
+        query_dao.add(db, user)
+        await query_dao.flush(db)
         
         # Preload identity
         user.identity = identity

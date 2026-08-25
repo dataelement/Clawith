@@ -323,7 +323,7 @@ async def dingtalk_callback(
         return HTMLResponse(f"Auth failed: {str(e)}")
 
     # 4. Standard login
-    token = create_access_token(str(user.id), user.role)
+    token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     if state:
         try:

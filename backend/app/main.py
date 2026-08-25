@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.core.error_contract import register_error_handlers
 from app.core.events import close_redis
 from app.core.logging_config import configure_logging, intercept_standard_logging
-from app.core.middleware import TraceIdMiddleware
+from app.core.middleware import TenantContextMiddleware, TraceIdMiddleware
 from app.schemas.schemas import HealthResponse
 from app.services.realtime import realtime_router
 
@@ -135,7 +135,6 @@ async def lifespan(app: FastAPI):
         )
 
     import asyncio
-    import sys
     import os
     from contextlib import AsyncExitStack
     from app.services.scheduler import start_scheduler
@@ -197,7 +196,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.models.tenant import Tenant
             from app.database import async_session as _session
-            from sqlalchemy import select as _select, update as _update
+            from sqlalchemy import select as _select
             async with _session() as _db:
                 _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
                 if not _existing.scalar_one_or_none():
@@ -359,6 +358,14 @@ register_error_handlers(app)
 # Add TraceIdMiddleware first so it's executed for all requests
 app.add_middleware(TraceIdMiddleware)
 
+# Inject tenant_id from JWT into ContextVar so TenantScopedBaseDAO methods
+# automatically receive the correct tenant without explicit passing.
+app.add_middleware(
+    TenantContextMiddleware,
+    jwt_secret=settings.JWT_SECRET_KEY,
+    jwt_algorithm=settings.JWT_ALGORITHM,
+)
+
 # CORS
 _cors_origins = settings.CORS_ORIGINS
 _allow_creds = "*" not in _cors_origins  # CORS spec forbids credentials with wildcard
@@ -479,7 +486,7 @@ async def health_check():
 # ── Version endpoint (public, no auth required) ──
 def _load_version_info() -> dict[str, str]:
     """Read version + commit hash once at startup."""
-    import os, subprocess
+    import subprocess
     version = "unknown"
     for candidate in ["../frontend/VERSION", "frontend/VERSION", "VERSION"]:
         try:

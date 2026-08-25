@@ -14,11 +14,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.database import async_session
+from app.dao import query_dao
+async_session = query_dao.session
 from app.models.skill import Skill, SkillFile
 from app.core.security import get_current_admin, get_current_user, require_role
 from app.models.user import User
-from loguru import logger
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -36,7 +36,7 @@ async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
             from app.models.tenant_setting import TenantSetting
             import uuid as _uid
             async with async_session() as db:
-                result = await db.execute(
+                result = await query_dao.execute(db, 
                     select(TenantSetting).where(
                         TenantSetting.tenant_id == _uid.UUID(tenant_id),
                         TenantSetting.key == key,
@@ -431,7 +431,7 @@ async def _save_skill_to_db(
             conflict_q = conflict_q.where(Skill.tenant_id == _uuid.UUID(tenant_id))
         else:
             conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
-        existing = await db.execute(conflict_q)
+        existing = await query_dao.execute(db, conflict_q)
         if existing.scalar_one_or_none():
             raise HTTPException(
                 409, f"A skill with folder name '{folder_name}' already exists. "
@@ -447,15 +447,15 @@ async def _save_skill_to_db(
             is_builtin=False,
             tenant_id=_uuid.UUID(tenant_id) if tenant_id else None,
         )
-        db.add(skill)
-        await db.flush()
+        query_dao.add(db, skill)
+        await query_dao.flush(db)
 
         for f in files:
             # PostgreSQL text columns cannot store null bytes
             content = f["content"].replace("\x00", "") if f.get("content") else ""
-            db.add(SkillFile(skill_id=skill.id, path=f["path"], content=content))
+            query_dao.add(db, SkillFile(skill_id=skill.id, path=f["path"], content=content))
 
-        await db.commit()
+        await query_dao.commit(db)
         return {"id": str(skill.id), "name": skill.name, "folder_name": skill.folder_name}
 
 
@@ -670,7 +670,7 @@ async def list_skills(current_user: User = Depends(get_current_user)):
         # Scope by tenant: show builtin (tenant_id is NULL) + tenant-specific skills
         if tenant_id:
             query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
-        result = await db.execute(query)
+        result = await query_dao.execute(db, query)
         skills = result.scalars().all()
         return [
             {
@@ -693,7 +693,7 @@ async def get_skill(skill_id: str, current_user: User = Depends(get_current_user
     """Get a skill with its files."""
     async with async_session() as db:
         query = select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-        result = await db.execute(_apply_skill_scope(query, current_user))
+        result = await query_dao.execute(db, _apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
@@ -725,21 +725,21 @@ async def create_skill(body: SkillCreateIn, current_user: User = Depends(get_cur
             is_builtin=False,
             tenant_id=current_user.tenant_id,
         )
-        db.add(skill)
-        await db.flush()
+        query_dao.add(db, skill)
+        await query_dao.flush(db)
 
         if not body.files:
             # Auto-create a SKILL.md template
-            db.add(SkillFile(
+            query_dao.add(db, SkillFile(
                 skill_id=skill.id,
                 path="SKILL.md",
                 content=f"---\nname: {body.name}\ndescription: {body.description}\n---\n\n# {body.name}\n\n## Overview\n{body.description}\n",
             ))
         else:
             for f in body.files:
-                db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
+                query_dao.add(db, SkillFile(skill_id=skill.id, path=f.path, content=f.content))
 
-        await db.commit()
+        await query_dao.commit(db)
         return {"id": str(skill.id), "name": skill.name}
 
 
@@ -756,7 +756,7 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = 
     """Update a skill's metadata and/or files."""
     async with async_session() as db:
         query = select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files))
-        result = await db.execute(_apply_skill_scope(query, current_user))
+        result = await query_dao.execute(db, _apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
@@ -774,12 +774,12 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = 
         # Replace files if provided
         if body.files is not None:
             for f in skill.files:
-                await db.delete(f)
-            await db.flush()
+                await query_dao.delete(db, f)
+            await query_dao.flush(db)
             for f in body.files:
-                db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
+                query_dao.add(db, SkillFile(skill_id=skill.id, path=f.path, content=f.content))
 
-        await db.commit()
+        await query_dao.commit(db)
         return {"id": str(skill.id), "name": skill.name}
 
 
@@ -788,13 +788,13 @@ async def delete_skill(skill_id: str, current_user: User = Depends(get_current_a
     """Delete a skill (not builtin)."""
     async with async_session() as db:
         query = select(Skill).where(Skill.id == skill_id)
-        result = await db.execute(_apply_skill_scope(query, current_user))
+        result = await query_dao.execute(db, _apply_skill_scope(query, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
         _ensure_skill_write_access(skill, current_user)
-        await db.delete(skill)
-        await db.commit()
+        await query_dao.delete(db, skill)
+        await query_dao.commit(db)
         return {"ok": True}
 
 
@@ -810,7 +810,7 @@ async def _upsert_tenant_setting(tenant_id, key: str, value: str):
     """Helper to upsert a tenant setting."""
     from app.models.tenant_setting import TenantSetting
     async with async_session() as db:
-        result = await db.execute(
+        result = await query_dao.execute(db, 
             select(TenantSetting).where(
                 TenantSetting.tenant_id == tenant_id,
                 TenantSetting.key == key,
@@ -820,12 +820,12 @@ async def _upsert_tenant_setting(tenant_id, key: str, value: str):
         if existing:
             existing.value = {"token": value}
         else:
-            db.add(TenantSetting(
+            query_dao.add(db, TenantSetting(
                 tenant_id=tenant_id,
                 key=key,
                 value={"token": value},
             ))
-        await db.commit()
+        await query_dao.commit(db)
 
 
 def _mask_token(token: str) -> str:
@@ -887,7 +887,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
             query = select(Skill).order_by(Skill.name)
             if tenant_id:
                 query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
-            result = await db.execute(query)
+            result = await query_dao.execute(db, query)
             skills = result.scalars().all()
             return [
                 {"name": s.folder_name, "path": s.folder_name, "is_dir": True, "size": 0}
@@ -901,7 +901,7 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         if tenant_id:
             skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
-        result = await db.execute(skill_q)
+        result = await query_dao.execute(db, skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
             return []
@@ -949,7 +949,7 @@ async def browse_read(path: str, current_user: User = Depends(get_current_user))
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
         if tenant_id:
             skill_q = skill_q.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
-        result = await db.execute(skill_q)
+        result = await query_dao.execute(db, skill_q)
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
@@ -973,7 +973,7 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
     folder, file_path = parts
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        result = await db.execute(_apply_skill_scope(skill_q, current_user))
+        result = await query_dao.execute(db, _apply_skill_scope(skill_q, current_user))
         skill = result.scalar_one_or_none()
         created_new_skill = False
         if not skill:
@@ -987,8 +987,8 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
                 is_builtin=False,
                 tenant_id=current_user.tenant_id,
             )
-            db.add(skill)
-            await db.flush()
+            query_dao.add(db, skill)
+            await query_dao.flush(db)
             created_new_skill = True
         else:
             _ensure_skill_write_access(skill, current_user)
@@ -1003,8 +1003,8 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
         if existing:
             existing.content = body.content
         else:
-            db.add(SkillFile(skill_id=skill.id, path=file_path, content=body.content))
-        await db.commit()
+            query_dao.add(db, SkillFile(skill_id=skill.id, path=file_path, content=body.content))
+        await query_dao.commit(db)
         return {"ok": True}
 
 
@@ -1015,7 +1015,7 @@ async def browse_delete(path: str, current_user: User = Depends(get_current_admi
     folder = parts[0]
     async with async_session() as db:
         skill_q = select(Skill).where(Skill.folder_name == folder).options(selectinload(Skill.files))
-        result = await db.execute(_apply_skill_scope(skill_q, current_user))
+        result = await query_dao.execute(db, _apply_skill_scope(skill_q, current_user))
         skill = result.scalar_one_or_none()
         if not skill:
             raise HTTPException(404, "Skill not found")
@@ -1023,13 +1023,13 @@ async def browse_delete(path: str, current_user: User = Depends(get_current_admi
 
         if len(parts) == 1:
             # Delete entire skill
-            await db.delete(skill)
+            await query_dao.delete(db, skill)
         else:
             # Delete specific file
             file_path = parts[1]
             for f in skill.files:
                 if f.path == file_path:
-                    await db.delete(f)
+                    await query_dao.delete(db, f)
                     break
-        await db.commit()
+        await query_dao.commit(db)
         return {"ok": True}

@@ -5,18 +5,16 @@ Each agent stores its own email credentials in per-agent tool config.
 """
 
 import imaplib
-import socket
 import smtplib
 import ssl
 import email as email_lib
 import uuid
-import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from email.header import decode_header
-from email.utils import parseaddr, formataddr, make_msgid
+from email.utils import parseaddr, make_msgid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional

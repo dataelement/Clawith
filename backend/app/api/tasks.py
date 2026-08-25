@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -20,7 +21,7 @@ async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
     """Convert Task to TaskOut with creator_username populated."""
     out = TaskOut.model_validate(task)
     if task.created_by:
-        user_result = await db.execute(select(User).where(User.id == task.created_by))
+        user_result = await query_dao.execute(db, select(User).where(User.id == task.created_by))
         user = user_result.scalar_one_or_none()
         if user:
             out.creator_username = user.username
@@ -43,13 +44,13 @@ async def list_tasks(
     if type_filter:
         query = query.where(Task.type == type_filter)
     query = query.order_by(Task.created_at.desc())
-    result = await db.execute(query)
+    result = await query_dao.execute(db, query)
     tasks_list = result.scalars().all()
     # Batch-load creator usernames
     creator_ids = {t.created_by for t in tasks_list if t.created_by}
     creator_map = {}
     if creator_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
+        users_result = await query_dao.execute(db, select(User).where(User.id.in_(creator_ids)))
         creator_map = {u.id: u.username for u in users_result.scalars().all()}
     out_list = []
     for t in tasks_list:
@@ -80,8 +81,8 @@ async def create_task(
         supervision_channel=data.supervision_channel,
         remind_schedule=data.remind_schedule,
     )
-    db.add(task)
-    await db.flush()
+    query_dao.add(db, task)
+    await query_dao.flush(db)
 
     runtime_handle = None
     if data.type == "todo":
@@ -96,7 +97,7 @@ async def create_task(
     task_out = await _enrich_task_out(task, db)
 
     # Commit so the background executor can see the task in its own session
-    await db.commit()
+    await query_dao.commit(db)
 
     # Fire background execution for todo tasks
     if data.type == "todo" and runtime_handle is None:
@@ -117,14 +118,14 @@ async def update_task(
 ):
     """Update a task."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
+    result = await query_dao.execute(db, select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
-    await db.flush()
+    await query_dao.flush(db)
     return await _enrich_task_out(task, db)
 
 
@@ -137,7 +138,7 @@ async def get_task_logs(
 ):
     """Get progress logs for a task."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc())
     )
     return [TaskLogOut.model_validate(log) for log in result.scalars().all()]
@@ -154,8 +155,8 @@ async def add_task_log(
     """Add a progress log entry to a task."""
     await check_agent_access(db, current_user, agent_id)
     log = TaskLog(task_id=task_id, content=data.content)
-    db.add(log)
-    await db.flush()
+    query_dao.add(db, log)
+    await query_dao.flush(db)
     return TaskLogOut.model_validate(log)
 
 
@@ -172,7 +173,7 @@ async def trigger_task(
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
 
-    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
+    result = await query_dao.execute(db, select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")

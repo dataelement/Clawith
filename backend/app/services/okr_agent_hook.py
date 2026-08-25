@@ -4,6 +4,7 @@ import uuid
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.dao import query_dao
 from app.models.agent import Agent
 from app.models.org import AgentRelationship, AgentAgentRelationship, OrgMember
 
@@ -14,14 +15,14 @@ async def hook_new_org_member(db: AsyncSession, member_id: uuid.UUID, tenant_id:
         return
 
     # Check if relationship already exists
-    existing = await db.execute(
+    existing = await query_dao.execute(db, 
         select(AgentRelationship).where(
             AgentRelationship.agent_id == okr_agent.id,
             AgentRelationship.member_id == member_id
         )
     )
     if not existing.scalar_one_or_none():
-        db.add(AgentRelationship(
+        query_dao.add(db, AgentRelationship(
             agent_id=okr_agent.id,
             member_id=member_id,
             relation="okr_coordinator"
@@ -40,14 +41,14 @@ async def sync_okr_agent_platform_members(db: AsyncSession, tenant_id: uuid.UUID
     if not okr_agent:
         return 0
 
-    existing_result = await db.execute(
+    existing_result = await query_dao.execute(db, 
         select(AgentRelationship.member_id).where(
             AgentRelationship.agent_id == okr_agent.id,
         )
     )
     existing_member_ids = {row[0] for row in existing_result.fetchall() if row[0]}
 
-    member_result = await db.execute(
+    member_result = await query_dao.execute(db, 
         select(OrgMember).where(
             OrgMember.tenant_id == tenant_id,
             OrgMember.status == "active",
@@ -58,7 +59,7 @@ async def sync_okr_agent_platform_members(db: AsyncSession, tenant_id: uuid.UUID
     for member in member_result.scalars().all():
         if member.id in existing_member_ids:
             continue
-        db.add(AgentRelationship(
+        query_dao.add(db, AgentRelationship(
             agent_id=okr_agent.id,
             member_id=member.id,
             relation="okr_coordinator",
@@ -67,14 +68,14 @@ async def sync_okr_agent_platform_members(db: AsyncSession, tenant_id: uuid.UUID
         added += 1
 
     if added:
-        await db.flush()
+        await query_dao.flush(db)
         logger.info(f"[OKR Hook] Backfilled {added} platform member(s) to OKR Agent {okr_agent.id}")
 
     return added
 
 async def hook_new_agent(db: AsyncSession, new_agent_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
     """When a new company-visible agent is created, bind to OKR Agent."""
-    agent_res = await db.execute(
+    agent_res = await query_dao.execute(db, 
         select(Agent)
         .where(
             Agent.id == new_agent_id,
@@ -92,28 +93,28 @@ async def hook_new_agent(db: AsyncSession, new_agent_id: uuid.UUID, tenant_id: u
         return
         
     # Bind OKR Agent -> New Agent
-    existing1 = await db.execute(
+    existing1 = await query_dao.execute(db, 
         select(AgentAgentRelationship).where(
             AgentAgentRelationship.agent_id == okr_agent.id,
             AgentAgentRelationship.target_agent_id == new_agent_id
         )
     )
     if not existing1.scalar_one_or_none():
-        db.add(AgentAgentRelationship(
+        query_dao.add(db, AgentAgentRelationship(
             agent_id=okr_agent.id,
             target_agent_id=new_agent_id,
             relation="okr_coordinator"
         ))
         
     # Bind New Agent -> OKR Agent (Mutual)
-    existing2 = await db.execute(
+    existing2 = await query_dao.execute(db, 
         select(AgentAgentRelationship).where(
             AgentAgentRelationship.agent_id == new_agent_id,
             AgentAgentRelationship.target_agent_id == okr_agent.id
         )
     )
     if not existing2.scalar_one_or_none():
-        db.add(AgentAgentRelationship(
+        query_dao.add(db, AgentAgentRelationship(
             agent_id=new_agent_id,
             target_agent_id=okr_agent.id,
             relation="okr_coordinator"
@@ -123,7 +124,7 @@ async def hook_new_agent(db: AsyncSession, new_agent_id: uuid.UUID, tenant_id: u
 
 async def _get_okr_agent(db: AsyncSession, tenant_id: uuid.UUID) -> Agent | None:
     # Find system agent named 'OKR Agent' in this tenant
-    res = await db.execute(
+    res = await query_dao.execute(db, 
         select(Agent).where(
             Agent.tenant_id == tenant_id,
             Agent.is_system == True,

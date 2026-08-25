@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef } from 'react
 import { useTranslation } from 'react-i18next';
 import { IconRobot } from '@tabler/icons-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { useOlderHistoryGesture, usePrependScrollAnchor } from '../../hooks/useHistoryPaginationScroll';
 import type { GroupMember, GroupMessage } from '../../types/group';
 
 interface MessageStreamProps {
@@ -60,8 +61,17 @@ export default function MessageStream({
     const scrollRef = useRef<HTMLDivElement>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const pinnedToBottomRef = useRef(true);
-    const previousHeightRef = useRef(0);
-    const previousCountRef = useRef(0);
+    const prependAnchor = usePrependScrollAnchor({
+        containerRef: scrollRef,
+        itemCount: messages.length,
+        scopeKey: sessionId,
+    });
+    const historyLoadGesture = useOlderHistoryGesture({
+        containerRef: scrollRef,
+        canLoad: hasMore && !loadingMore,
+        onLoadMore,
+        beforeLoad: prependAnchor.captureAnchor,
+    });
     const latestMessageId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
 
     const reportLatestMessageSeen = useCallback(() => {
@@ -85,27 +95,18 @@ export default function MessageStream({
         const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
         pinnedToBottomRef.current = distanceFromBottom < 80;
         reportLatestMessageSeen();
-        if (node.scrollTop < 60 && hasMore && !loadingMore) {
-            previousHeightRef.current = node.scrollHeight;
-            onLoadMore();
-        }
+        historyLoadGesture.onScroll();
     };
 
     useLayoutEffect(() => {
         const node = scrollRef.current;
         if (!node) return;
 
-        const grewAtTop = messages.length > previousCountRef.current && previousHeightRef.current > 0;
-        if (grewAtTop) {
-            // Older messages prepended: hold the reading position instead of jumping.
-            node.scrollTop += node.scrollHeight - previousHeightRef.current;
-            previousHeightRef.current = 0;
-        } else if (pinnedToBottomRef.current) {
+        if (!prependAnchor.isPrependingRef.current && pinnedToBottomRef.current) {
             bottomRef.current?.scrollIntoView({ block: 'end' });
         }
-        previousCountRef.current = messages.length;
         reportLatestMessageSeen();
-    }, [messages, isPlanning, runningAgents, reportLatestMessageSeen]);
+    }, [messages, isPlanning, runningAgents, reportLatestMessageSeen, prependAnchor.isPrependingRef]);
 
     // A background tab or unfocused window is not a read. Re-check when the user returns.
     useEffect(() => {
@@ -122,15 +123,24 @@ export default function MessageStream({
     // A different session starts a different scroll history.
     useEffect(() => {
         pinnedToBottomRef.current = true;
-        previousCountRef.current = 0;
-        previousHeightRef.current = 0;
     }, [sessionId]);
 
     return (
-        <div className="group-stream" ref={scrollRef} onScroll={onScroll}>
+        <div
+            className="group-stream"
+            ref={scrollRef}
+            onScroll={onScroll}
+            onWheelCapture={historyLoadGesture.onWheelCapture}
+            onPointerDownCapture={historyLoadGesture.onPointerDownCapture}
+            onTouchStartCapture={historyLoadGesture.onTouchStartCapture}
+            onTouchMoveCapture={historyLoadGesture.onTouchMoveCapture}
+            onTouchEndCapture={historyLoadGesture.onTouchEndCapture}
+            onKeyDownCapture={historyLoadGesture.onKeyDownCapture}
+            tabIndex={0}
+        >
             {hasMore && (
                 <div className="group-stream-more">
-                    <button type="button" className="btn btn-ghost" onClick={onLoadMore} disabled={loadingMore}>
+                    <button type="button" className="btn btn-ghost" onClick={() => void historyLoadGesture.requestOlder()} disabled={loadingMore}>
                         {loadingMore
                             ? t('common.loading', '加载中...')
                             : t('groups.loadMore', '加载更早的消息')}

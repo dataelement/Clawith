@@ -368,11 +368,13 @@ function HtmlPreviewFrame({
         if (fitRafRef.current != null) cancelAnimationFrame(fitRafRef.current);
     }, []);
 
+    // Keep untrusted agent HTML in an opaque origin: combining scripts and same-origin
+    // would let it access the application's storage and authenticated browser state.
     return (
         <div className="workspace-op-html-fit" ref={containerRef}>
             <iframe
                 ref={frameRef}
-                sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock allow-top-navigation-by-user-activation"
+                sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock allow-top-navigation-by-user-activation"
                 src={src}
                 srcDoc={src ? undefined : renderContent}
                 title={title}

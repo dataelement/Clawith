@@ -12,11 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
-
 from app.config import get_settings
-from app.database import async_session
+from app.dao import focus_dao
+from app.database import bind_session_context
 from app.models.focus import AgentFocusItem as AgentFocusItemModel
 
 
@@ -206,15 +204,13 @@ def _serialize_focus_item(item: AgentFocusItemModel) -> dict:
 async def migrate_legacy_focus_file(agent_id: uuid.UUID, db=None) -> int:
     """Import legacy focus.md once when the DB has no focus rows."""
     if db is not None:
-        return await _migrate_legacy_focus_file_impl(db, agent_id, should_commit=False)
-    async with async_session() as new_db:
-        return await _migrate_legacy_focus_file_impl(new_db, agent_id, should_commit=True)
+        async with bind_session_context(db):
+            return await _migrate_legacy_focus_file_impl(agent_id)
+    return await _migrate_legacy_focus_file_impl(agent_id)
 
 
-async def _migrate_legacy_focus_file_impl(db, agent_id: uuid.UUID, should_commit: bool) -> int:
-    existing_count = await db.scalar(
-        select(func.count()).select_from(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
-    )
+async def _migrate_legacy_focus_file_impl(agent_id: uuid.UUID) -> int:
+    existing_count = await focus_dao.count_by_agent(agent_id)
     if existing_count:
         return 0
 
@@ -248,37 +244,17 @@ async def _migrate_legacy_focus_file_impl(db, agent_id: uuid.UUID, should_commit
             "item_metadata": {"legacy_section": legacy.section, "legacy_marker": legacy.marker},
         })
     if rows:
-        stmt = insert(AgentFocusItemModel).values(rows)
-        stmt = stmt.on_conflict_do_nothing(index_elements=["agent_id", "key"])
-        result = await db.execute(stmt)
-        if should_commit:
-            await db.commit()
-        else:
-            await db.flush()
-        return result.rowcount or 0
+        return await focus_dao.bulk_insert_legacy_rows(rows)
     return 0
 
 
 async def list_focus_items(agent_id: uuid.UUID, *, include_completed: bool = True, db=None) -> list[dict]:
-    await migrate_legacy_focus_file(agent_id, db=db)
     if db is not None:
-        return await _list_focus_items_impl(db, agent_id, include_completed)
-    async with async_session() as new_db:
-        return await _list_focus_items_impl(new_db, agent_id, include_completed)
-
-
-async def _list_focus_items_impl(db, agent_id: uuid.UUID, include_completed: bool) -> list[dict]:
-    stmt = select(AgentFocusItemModel).where(AgentFocusItemModel.agent_id == agent_id)
-    if not include_completed:
-        stmt = stmt.where(AgentFocusItemModel.status != "completed")
-    stmt = stmt.order_by(
-        AgentFocusItemModel.status.desc(),
-        AgentFocusItemModel.kind.desc(),
-        AgentFocusItemModel.sort_order.asc(),
-        AgentFocusItemModel.created_at.asc(),
-    )
-    result = await db.execute(stmt)
-    return [_serialize_focus_item(item) for item in result.scalars().all()]
+        async with bind_session_context(db):
+            await _migrate_legacy_focus_file_impl(agent_id)
+            return [_serialize_focus_item(item) for item in await focus_dao.list_by_agent(agent_id=agent_id, include_completed=include_completed)]
+    await _migrate_legacy_focus_file_impl(agent_id)
+    return [_serialize_focus_item(item) for item in await focus_dao.list_by_agent(agent_id=agent_id, include_completed=include_completed)]
 
 
 async def upsert_focus_item(
@@ -305,63 +281,41 @@ async def upsert_focus_item(
         kind = "normal"
 
     if db is not None:
-        return await _upsert_focus_item_impl(db, agent_id, item_key, title, desc, status, kind, source, metadata, should_commit=False)
-    async with async_session() as new_db:
-        return await _upsert_focus_item_impl(new_db, agent_id, item_key, title, desc, status, kind, source, metadata, should_commit=True)
-
-
-async def _upsert_focus_item_impl(
-    db,
-    agent_id: uuid.UUID,
-    item_key: str,
-    title: str | None,
-    desc: str,
-    status: str,
-    kind: str,
-    source: str,
-    metadata: dict | None,
-    should_commit: bool,
-) -> dict:
-    result = await db.execute(
-        select(AgentFocusItemModel).where(
-            AgentFocusItemModel.agent_id == agent_id,
-            AgentFocusItemModel.key == item_key,
-        )
+        async with bind_session_context(db):
+            item = await focus_dao.upsert_item(
+                agent_id=agent_id,
+                key=item_key,
+                title=title,
+                description=desc,
+                status=status,
+                kind=kind,
+                source=source,
+                metadata=metadata,
+                completed_at=datetime.now(timezone.utc) if status == "completed" else None,
+            )
+            return _serialize_focus_item(item)
+    item = await focus_dao.upsert_item(
+        agent_id=agent_id,
+        key=item_key,
+        title=title,
+        description=desc,
+        status=status,
+        kind=kind,
+        source=source,
+        metadata=metadata,
+        completed_at=datetime.now(timezone.utc) if status == "completed" else None,
     )
-    item = result.scalar_one_or_none()
-    if item:
-        if title is not None:
-            item.title = title
-        item.description = desc or item.description or item_key
-        item.status = status
-        item.kind = kind
-        item.source = source or item.source or "user"
-        if metadata:
-            item.item_metadata = {**(item.item_metadata or {}), **metadata}
-        item.completed_at = datetime.now(timezone.utc) if status == "completed" else None
-    else:
-        max_order = await db.scalar(
-            select(func.max(AgentFocusItemModel.sort_order)).where(AgentFocusItemModel.agent_id == agent_id)
-        )
-        item = AgentFocusItemModel(
-            agent_id=agent_id,
-            key=item_key,
-            title=title,
-            description=desc or item_key,
-            status=status,
-            kind=kind,
-            source=source or "user",
-            item_metadata=metadata or {},
-            sort_order=(max_order or 0) + 1,
-            completed_at=datetime.now(timezone.utc) if status == "completed" else None,
-        )
-        db.add(item)
-    if should_commit:
-        await db.commit()
-        await db.refresh(item)
-    else:
-        await db.flush()
     return _serialize_focus_item(item)
+
+
+async def complete_focus_item(agent_id: uuid.UUID, *, key: str) -> dict | None:
+    await migrate_legacy_focus_file(agent_id)
+    item = await focus_dao.complete_item(
+        agent_id=agent_id,
+        key=key,
+        completed_at=datetime.now(timezone.utc),
+    )
+    return _serialize_focus_item(item) if item else None
 
 
 async def ensure_focus_item(
@@ -385,25 +339,6 @@ async def ensure_focus_item(
         db=db,
     )
     return item["key"]
-
-
-async def complete_focus_item(agent_id: uuid.UUID, *, key: str) -> dict | None:
-    await migrate_legacy_focus_file(agent_id)
-    async with async_session() as db:
-        result = await db.execute(
-            select(AgentFocusItemModel).where(
-                AgentFocusItemModel.agent_id == agent_id,
-                AgentFocusItemModel.key == key,
-            )
-        )
-        item = result.scalar_one_or_none()
-        if not item:
-            return None
-        item.status = "completed"
-        item.completed_at = datetime.now(timezone.utc)
-        await db.commit()
-        await db.refresh(item)
-        return _serialize_focus_item(item)
 
 
 async def render_focus_context(agent_id: uuid.UUID) -> str:

@@ -22,6 +22,7 @@ class ExperienceReference(Base):
     """One reuse event of an experience entry by an agent."""
 
     __tablename__ = "experience_references"
+    __tenant_scoped__ = True
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entry_id: Mapped[uuid.UUID] = mapped_column(

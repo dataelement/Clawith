@@ -143,10 +143,36 @@ async def stream_web_chat_run(
             if content is not None:
                 await send_packet({"type": "thinking", "content": content, **packet_position})
             continue
-        if event.event_type == "status_changed" and activity_type == "assistant_progress":
-            content = _text(payload.get("content"))
+        if event.event_type == "status_changed" and activity_type in {
+            "assistant_progress",
+            "assistant_delta",
+        }:
+            raw_content = payload.get("content")
+            content = (
+                raw_content
+                if activity_type == "assistant_delta"
+                and isinstance(raw_content, str)
+                and raw_content
+                else _text(raw_content)
+            )
             if content is not None:
-                await send_packet({"type": "chunk", "content": content, **packet_position})
+                packet = {"type": "chunk", "content": content, **packet_position}
+                if activity_type == "assistant_delta":
+                    attempt_id = _text(payload.get("attempt_id"))
+                    sequence = payload.get("sequence")
+                    if attempt_id is None or not isinstance(sequence, int) or sequence <= 0:
+                        raise ChatRuntimeStreamError(
+                            "invalid_runtime_answer_delta",
+                            "Runtime answer delta has no valid attempt position",
+                        )
+                    packet.update(
+                        {
+                            "attempt_id": attempt_id,
+                            "sequence": sequence,
+                            "reset": payload.get("reset") is True,
+                        }
+                    )
+                await send_packet(packet)
             continue
         if event.event_type == "status_changed" and activity_type == "tool_call":
             tool_name = _text(payload.get("name"))
@@ -258,6 +284,7 @@ async def stream_web_chat_run(
                     "error": error,
                     "runtime_status": status,
                     "delivery_error": error_code,
+                    **packet_position,
                 }
             )
             return ChatRuntimeStreamOutcome(
@@ -287,8 +314,8 @@ async def stream_web_chat_run(
             "role": "assistant",
             "content": message.content,
             "message_id": str(message.id),
-            "run_id": str(handle.run_id),
             "runtime_status": status,
+            **packet_position,
         }
         if status == "failed":
             error_code = (

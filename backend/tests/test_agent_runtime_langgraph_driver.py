@@ -509,6 +509,42 @@ async def test_resume_validates_wait_contract_and_uses_its_own_metadata() -> Non
 
 
 @pytest.mark.asyncio
+async def test_tool_reconciliation_can_resume_a_waiting_user_run() -> None:
+    run = _run(uuid.uuid4())
+    start = _command(run, "start")
+    driver = _driver(WaitingExecutor())
+    await driver.execute(connection=_connection(), run=run, command=start, checkpoint=None)
+    waiting = await driver.read_latest(connection=_connection(), run=run)
+    assert waiting is not None
+    assert waiting.state["lifecycle"]["status"] == "waiting_user"
+
+    resume = _command(
+        run,
+        "resume",
+        payload={
+            "resume_type": "tool_reconciliation",
+            "correlation_id": "correlation-1",
+            "payload": {
+                "content": "The operator settled the unknown Tool receipt.",
+                "confirmation_text": "confirmed",
+                "tool_execution_id": str(uuid.uuid4()),
+            },
+        },
+    )
+    await driver.execute(
+        connection=_connection(),
+        run=run,
+        command=resume,
+        checkpoint=waiting,
+    )
+
+    completed = await driver.read_latest(connection=_connection(), run=run)
+    assert completed is not None
+    assert completed.state["lifecycle"]["status"] == "completed"
+    assert completed.metadata["clawith_command_id"] == str(resume.id)
+
+
+@pytest.mark.asyncio
 async def test_resume_rejects_a_mismatched_correlation_without_advancing() -> None:
     run = _run(uuid.uuid4())
     start = _command(run, "start")

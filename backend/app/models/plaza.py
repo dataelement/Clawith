@@ -14,6 +14,7 @@ class PlazaPost(Base):
     """A post in the Agent Plaza social feed."""
 
     __tablename__ = "plaza_posts"
+    __tenant_scoped__ = True
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     author_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)

@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission, AgentTemplate
@@ -47,7 +48,7 @@ def _status_payload(row: UserTenantOnboarding | None) -> dict:
 async def _get_row(db: AsyncSession, user: User) -> UserTenantOnboarding | None:
     if not user.tenant_id:
         return None
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(UserTenantOnboarding).where(
             UserTenantOnboarding.user_id == user.id,
             UserTenantOnboarding.tenant_id == user.tenant_id,
@@ -68,7 +69,7 @@ async def _ensure_row(db: AsyncSession, user: User, entry_mode: str) -> UserTena
             row.current_step = "assistant"
         return row
 
-    await db.execute(
+    await query_dao.execute(db, 
         pg_insert(UserTenantOnboarding)
         .values(
             id=uuid.uuid4(),
@@ -94,11 +95,11 @@ async def _ensure_row(db: AsyncSession, user: User, entry_mode: str) -> UserTena
 async def _tenant_default_model_id(db: AsyncSession, tenant_id: uuid.UUID | None) -> uuid.UUID | None:
     if not tenant_id:
         return None
-    tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant_result = await query_dao.execute(db, select(Tenant).where(Tenant.id == tenant_id))
     tenant = tenant_result.scalar_one_or_none()
     if tenant and tenant.default_model_id:
         return tenant.default_model_id
-    model_result = await db.execute(
+    model_result = await query_dao.execute(db, 
         select(LLMModel.id).where(
             LLMModel.tenant_id == tenant_id,
             LLMModel.enabled == True,  # noqa: E712
@@ -115,7 +116,7 @@ async def _create_personal_assistant(
     if not user.tenant_id:
         raise HTTPException(status_code=400, detail="Company is required before creating a personal assistant")
 
-    template_result = await db.execute(
+    template_result = await query_dao.execute(db, 
         select(AgentTemplate).where(AgentTemplate.name == "Private Assistant")
     )
     template = template_result.scalar_one_or_none()
@@ -144,12 +145,12 @@ async def _create_personal_assistant(
     if template and template.default_autonomy_policy:
         agent.autonomy_policy = template.default_autonomy_policy
 
-    db.add(agent)
-    await db.flush()
+    query_dao.add(db, agent)
+    await query_dao.flush(db)
 
-    db.add(Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
-    db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=user.id, access_level="manage"))
-    await db.flush()
+    query_dao.add(db, Participant(type="agent", ref_id=agent.id, display_name=agent.name, avatar_url=agent.avatar_url))
+    query_dao.add(db, AgentPermission(agent_id=agent.id, scope_type="user", scope_id=user.id, access_level="manage"))
+    await query_dao.flush(db)
     await ensure_access_granted_platform_relationships(db, agent, created_by_user_id=user.id)
 
     from app.services.agent_manager import agent_manager
@@ -168,7 +169,7 @@ async def _create_personal_assistant(
         agent.status = "error"
         raise
 
-    await db.flush()
+    await query_dao.flush(db)
     return agent
 
 
@@ -189,7 +190,7 @@ async def start_onboarding(
 ):
     """Start or resume onboarding for the current user/company."""
     row = await _ensure_row(db, current_user, data.entry_mode)
-    await db.commit()
+    await query_dao.commit(db)
     return _status_payload(row)
 
 
@@ -202,7 +203,8 @@ async def create_personal_assistant(
     """Create the user's private assistant and advance onboarding."""
     row = await _ensure_row(db, current_user, "join")
     if row.personal_assistant_agent_id:
-        result = await db.execute(
+        result = await query_dao.execute(
+            db,
             select(Agent).where(
                 Agent.id == row.personal_assistant_agent_id,
                 Agent.deleted_at.is_(None),
@@ -211,14 +213,14 @@ async def create_personal_assistant(
         existing = result.scalar_one_or_none()
         if existing:
             row.current_step = "opening"
-            await db.commit()
+            await query_dao.commit(db)
             return {"agent": {"id": str(existing.id), "name": existing.name}, "onboarding": _status_payload(row)}
 
     agent = await _create_personal_assistant(db, current_user, data)
     row.personal_assistant_agent_id = agent.id
     row.current_step = "opening"
     row.status = "in_progress"
-    await db.commit()
+    await query_dao.commit(db)
     return {"agent": {"id": str(agent.id), "name": agent.name}, "onboarding": _status_payload(row)}
 
 
@@ -234,5 +236,5 @@ async def complete_onboarding(
     row.status = "completed"
     row.current_step = "completed"
     row.completed_at = datetime.now(timezone.utc)
-    await db.commit()
+    await query_dao.commit(db)
     return _status_payload(row)

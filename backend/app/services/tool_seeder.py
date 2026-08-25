@@ -2,7 +2,7 @@
 
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.dao import query_dao
 from app.models.tenant import Tenant
 from app.models.tenant_setting import TenantSetting
 from app.models.tool import Tool
@@ -10,7 +10,6 @@ from app.services.builtin_tool_definitions import BUILTIN_TOOL_SEEDS
 from app.services.tool_config import meaningful_config, tenant_tool_config_key
 
 SYNC_IS_DEFAULT_TOOL_NAMES = {
-    "finish",
     "read_webpage",
     "duckduckgo_search",
     "jina_search",
@@ -54,12 +53,53 @@ LEGACY_IMAGE_TOOL_MODEL_DEFAULTS = {
     "generate_image_google": "gemini-2.5-flash-image",
 }
 
+_CODE_EXECUTOR_NAMES = frozenset({"execute_code", "execute_code_e2b"})
+_LEGACY_CODE_EXECUTOR_DEFAULTS = {
+    "default_timeout": 30,
+    "max_timeout": 60,
+}
+
 
 def _global_builtin_config(tool_data: dict) -> dict:
     """Return config safe to store on the global builtin Tool row."""
     # Builtin tools specify defaults (like 'allow_network': True) in their 'config' dict.
     # The actual sensitive data defaults are empty strings ("") so this is safe to store globally.
     return tool_data.get("config", {})
+
+
+def _upgrade_code_executor_defaults(
+    tool_name: str,
+    existing_config: dict,
+    seed_config: dict,
+) -> dict:
+    """Upgrade only untouched legacy timeout defaults for Code Executors."""
+    upgraded = dict(existing_config)
+    if tool_name not in _CODE_EXECUTOR_NAMES:
+        return upgraded
+    for key, legacy_value in _LEGACY_CODE_EXECUTOR_DEFAULTS.items():
+        if upgraded.get(key) == legacy_value and key in seed_config:
+            upgraded[key] = seed_config[key]
+    return upgraded
+
+
+def _upgrade_code_executor_tenant_value(
+    tool_name: str,
+    setting_value: dict,
+    seed_config: dict,
+) -> dict:
+    """Upgrade timeout defaults nested in one tenant Tool setting value."""
+    tenant_config = setting_value.get("config")
+    if not isinstance(tenant_config, dict):
+        return dict(setting_value)
+    upgraded_config = _upgrade_code_executor_defaults(
+        tool_name,
+        tenant_config,
+        seed_config,
+    )
+    if upgraded_config == tenant_config:
+        return dict(setting_value)
+    return {**setting_value, "config": upgraded_config}
+
 
 # Compatibility export for UI/tests. The canonical module owns every builtin
 # name, description, schema, and execution policy.
@@ -72,23 +112,23 @@ async def seed_builtin_tools():
     from app.models.agent import Agent
 
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Legacy rename: older environments persisted this tool as
         # `send_web_message`. Rename or merge it in-place so agents keep the
         # same assignment after the first startup on the new version.
         old_name = "send_web_message"
         new_name = "send_platform_message"
-        old_result = await db.execute(select(Tool).where(Tool.name == old_name))
+        old_result = await query_dao.execute(db, select(Tool).where(Tool.name == old_name))
         old_tool = old_result.scalar_one_or_none()
-        new_result = await db.execute(select(Tool).where(Tool.name == new_name))
+        new_result = await query_dao.execute(db, select(Tool).where(Tool.name == new_name))
         new_tool = new_result.scalar_one_or_none()
         if old_tool and not new_tool:
             old_tool.name = new_name
             logger.info(f"[ToolSeeder] Renamed builtin tool: {old_name} -> {new_name}")
         elif old_tool and new_tool:
-            old_assignments = await db.execute(select(AgentTool).where(AgentTool.tool_id == old_tool.id))
+            old_assignments = await query_dao.execute(db, select(AgentTool).where(AgentTool.tool_id == old_tool.id))
             for assignment in old_assignments.scalars().all():
-                existing_assignment = await db.execute(
+                existing_assignment = await query_dao.execute(db, 
                     select(AgentTool).where(
                         AgentTool.agent_id == assignment.agent_id,
                         AgentTool.tool_id == new_tool.id,
@@ -96,13 +136,13 @@ async def seed_builtin_tools():
                 )
                 if not existing_assignment.scalar_one_or_none():
                     assignment.tool_id = new_tool.id
-            await db.delete(old_tool)
+            await query_dao.delete(db, old_tool)
             logger.info(f"[ToolSeeder] Merged legacy builtin tool into {new_name}")
 
         new_tool_ids = []
         for t in BUILTIN_TOOL_SEEDS:
             seed_config = _global_builtin_config(t)
-            result = await db.execute(select(Tool).where(Tool.name == t["name"]))
+            result = await query_dao.execute(db, select(Tool).where(Tool.name == t["name"]))
             existing = result.scalar_one_or_none()
             if not existing:
                 tool = Tool(
@@ -118,14 +158,22 @@ async def seed_builtin_tools():
                     config_schema=t.get("config_schema", {}),
                     source="builtin",
                 )
-                db.add(tool)
-                await db.flush()  # get tool.id
+                query_dao.add(db, tool)
+                await query_dao.flush(db)  # get tool.id
                 if t["is_default"]:
                     new_tool_ids.append(tool.id)
                 logger.info(f"[ToolSeeder] Created builtin tool: {t['name']}")
             else:
                 # Sync fields that may evolve
                 updated_fields = []
+                upgraded_config = _upgrade_code_executor_defaults(
+                    t["name"],
+                    existing.config or {},
+                    seed_config,
+                )
+                if upgraded_config != (existing.config or {}):
+                    existing.config = upgraded_config
+                    updated_fields.append("config")
                 if existing.category != t["category"]:
                     existing.category = t["category"]
                     updated_fields.append("category")
@@ -159,6 +207,47 @@ async def seed_builtin_tools():
                     if merged != existing.config:
                         existing.config = merged
                         updated_fields.append("config")
+                if t["name"] in _CODE_EXECUTOR_NAMES:
+                    assignment_result = await query_dao.execute(
+                        db,
+                        select(AgentTool).where(AgentTool.tool_id == existing.id),
+                    )
+                    upgraded_assignments = 0
+                    for assignment in assignment_result.scalars().all():
+                        upgraded_assignment_config = _upgrade_code_executor_defaults(
+                            t["name"],
+                            assignment.config or {},
+                            seed_config,
+                        )
+                        if upgraded_assignment_config != (assignment.config or {}):
+                            assignment.config = upgraded_assignment_config
+                            upgraded_assignments += 1
+                    if upgraded_assignments:
+                        logger.info(
+                            "[ToolSeeder] Upgraded legacy timeout defaults for "
+                            f"{upgraded_assignments} {t['name']} Agent assignments"
+                        )
+                    tenant_setting_result = await query_dao.execute(
+                        db,
+                        select(TenantSetting).where(
+                            TenantSetting.key == tenant_tool_config_key(t["name"])
+                        ),
+                    )
+                    upgraded_tenants = 0
+                    for setting in tenant_setting_result.scalars().all():
+                        upgraded_setting_value = _upgrade_code_executor_tenant_value(
+                            t["name"],
+                            setting.value or {},
+                            seed_config,
+                        )
+                        if upgraded_setting_value != (setting.value or {}):
+                            setting.value = upgraded_setting_value
+                            upgraded_tenants += 1
+                    if upgraded_tenants:
+                        logger.info(
+                            "[ToolSeeder] Upgraded legacy timeout defaults for "
+                            f"{upgraded_tenants} {t['name']} Tenant settings"
+                        )
                 legacy_model = LEGACY_IMAGE_TOOL_MODEL_DEFAULTS.get(t["name"])
                 if legacy_model and existing.config == {
                     "model": legacy_model,
@@ -179,19 +268,19 @@ async def seed_builtin_tools():
 
         # Auto-assign new default tools to all existing agents
         if new_tool_ids:
-            agents_result = await db.execute(select(Agent.id))
+            agents_result = await query_dao.execute(db, select(Agent.id))
             agent_ids = [row[0] for row in agents_result.fetchall()]
             for agent_id in agent_ids:
                 for tool_id in new_tool_ids:
                     # Check if already assigned
-                    check = await db.execute(
+                    check = await query_dao.execute(db, 
                         select(AgentTool).where(
                             AgentTool.agent_id == agent_id,
                             AgentTool.tool_id == tool_id,
                         )
                     )
                     if not check.scalar_one_or_none():
-                        db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
+                        query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
         # AgentBay desktop window helpers are non-default tools, but should be
@@ -210,12 +299,12 @@ async def seed_builtin_tools():
             "agentbay_computer_close_window",
             "agentbay_computer_dismiss_dialog",
         ]
-        anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(computer_anchor_names)))
+        anchor_tools_r = await query_dao.execute(db, select(Tool.id).where(Tool.name.in_(computer_anchor_names)))
         anchor_tool_ids = [row[0] for row in anchor_tools_r.fetchall()]
-        helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(computer_helper_names)))
+        helper_tools_r = await query_dao.execute(db, select(Tool).where(Tool.name.in_(computer_helper_names)))
         helper_tools = helper_tools_r.scalars().all()
         if anchor_tool_ids and helper_tools:
-            enabled_agent_r = await db.execute(
+            enabled_agent_r = await query_dao.execute(db, 
                 select(AgentTool.agent_id)
                 .where(AgentTool.tool_id.in_(anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
                 .distinct()
@@ -224,14 +313,14 @@ async def seed_builtin_tools():
             assigned_count = 0
             for agent_id in enabled_agent_ids:
                 for helper_tool in helper_tools:
-                    existing_assignment = await db.execute(
+                    existing_assignment = await query_dao.execute(db, 
                         select(AgentTool).where(
                             AgentTool.agent_id == agent_id,
                             AgentTool.tool_id == helper_tool.id,
                         )
                     )
                     if not existing_assignment.scalar_one_or_none():
-                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
                         assigned_count += 1
             if assigned_count:
                 logger.info(
@@ -246,12 +335,12 @@ async def seed_builtin_tools():
             "agentbay_browser_screenshot",
         ]
         browser_helper_names = ["agentbay_browser_save_screenshot"]
-        browser_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(browser_anchor_names)))
+        browser_anchor_tools_r = await query_dao.execute(db, select(Tool.id).where(Tool.name.in_(browser_anchor_names)))
         browser_anchor_tool_ids = [row[0] for row in browser_anchor_tools_r.fetchall()]
-        browser_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(browser_helper_names)))
+        browser_helper_tools_r = await query_dao.execute(db, select(Tool).where(Tool.name.in_(browser_helper_names)))
         browser_helper_tools = browser_helper_tools_r.scalars().all()
         if browser_anchor_tool_ids and browser_helper_tools:
-            browser_enabled_agent_r = await db.execute(
+            browser_enabled_agent_r = await query_dao.execute(db, 
                 select(AgentTool.agent_id)
                 .where(AgentTool.tool_id.in_(browser_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
                 .distinct()
@@ -260,14 +349,14 @@ async def seed_builtin_tools():
             browser_assigned_count = 0
             for agent_id in browser_enabled_agent_ids:
                 for helper_tool in browser_helper_tools:
-                    existing_assignment = await db.execute(
+                    existing_assignment = await query_dao.execute(db, 
                         select(AgentTool).where(
                             AgentTool.agent_id == agent_id,
                             AgentTool.tool_id == helper_tool.id,
                         )
                     )
                     if not existing_assignment.scalar_one_or_none():
-                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
                         browser_assigned_count += 1
             if browser_assigned_count:
                 logger.info(
@@ -287,12 +376,12 @@ async def seed_builtin_tools():
             "agentbay_code_read_file",
             "agentbay_code_edit_file",
         ]
-        code_anchor_tools_r = await db.execute(select(Tool.id).where(Tool.name.in_(code_anchor_names)))
+        code_anchor_tools_r = await query_dao.execute(db, select(Tool.id).where(Tool.name.in_(code_anchor_names)))
         code_anchor_tool_ids = [row[0] for row in code_anchor_tools_r.fetchall()]
-        code_helper_tools_r = await db.execute(select(Tool).where(Tool.name.in_(code_helper_names)))
+        code_helper_tools_r = await query_dao.execute(db, select(Tool).where(Tool.name.in_(code_helper_names)))
         code_helper_tools = code_helper_tools_r.scalars().all()
         if code_anchor_tool_ids and code_helper_tools:
-            code_enabled_agent_r = await db.execute(
+            code_enabled_agent_r = await query_dao.execute(db, 
                 select(AgentTool.agent_id)
                 .where(AgentTool.tool_id.in_(code_anchor_tool_ids), AgentTool.enabled == True)  # noqa: E712
                 .distinct()
@@ -301,14 +390,14 @@ async def seed_builtin_tools():
             code_assigned_count = 0
             for agent_id in code_enabled_agent_ids:
                 for helper_tool in code_helper_tools:
-                    existing_assignment = await db.execute(
+                    existing_assignment = await query_dao.execute(db, 
                         select(AgentTool).where(
                             AgentTool.agent_id == agent_id,
                             AgentTool.tool_id == helper_tool.id,
                         )
                     )
                     if not existing_assignment.scalar_one_or_none():
-                        db.add(AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
+                        query_dao.add(db, AgentTool(agent_id=agent_id, tool_id=helper_tool.id, enabled=True))
                         code_assigned_count += 1
             if code_assigned_count:
                 logger.info(
@@ -318,20 +407,20 @@ async def seed_builtin_tools():
 
         OBSOLETE_TOOLS = ["bing_search", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:
-            result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
+            result = await query_dao.execute(db, select(Tool).where(Tool.name == obsolete_name))
             obsolete = result.scalar_one_or_none()
             if obsolete:
-                await db.delete(obsolete)
+                await query_dao.delete(db, obsolete)
                 logger.info(f"[ToolSeeder] Removed obsolete tool: {obsolete_name}")
 
         # Legacy deployments stored company credentials for builtin tools in
         # the global tools.config row. Move those values into the first tenant's
         # tenant_settings once, then clear the global row so new companies do
         # not inherit another company's keys.
-        first_tenant_r = await db.execute(select(Tenant).order_by(Tenant.created_at).limit(1))
+        first_tenant_r = await query_dao.execute(db, select(Tenant).order_by(Tenant.created_at).limit(1))
         first_tenant = first_tenant_r.scalar_one_or_none()
         if first_tenant:
-            builtin_config_tools_r = await db.execute(select(Tool).where(Tool.source == "builtin"))
+            builtin_config_tools_r = await query_dao.execute(db, select(Tool).where(Tool.source == "builtin"))
             migrated = 0
             for tool in builtin_config_tools_r.scalars().all():
                 if not (tool.config_schema or {}).get("fields"):
@@ -340,14 +429,14 @@ async def seed_builtin_tools():
                 if not legacy_config:
                     continue
                 setting_key = tenant_tool_config_key(tool.name)
-                existing_setting_r = await db.execute(
+                existing_setting_r = await query_dao.execute(db, 
                     select(TenantSetting).where(
                         TenantSetting.tenant_id == first_tenant.id,
                         TenantSetting.key == setting_key,
                     )
                 )
                 if not existing_setting_r.scalar_one_or_none():
-                    db.add(TenantSetting(
+                    query_dao.add(db, TenantSetting(
                         tenant_id=first_tenant.id,
                         key=setting_key,
                         value={"config": legacy_config},
@@ -368,7 +457,7 @@ async def seed_builtin_tools():
                     f"to tenant_settings for tenant {first_tenant.id}"
                 )
 
-        await db.commit()
+        await query_dao.commit(db)
         logger.info("[ToolSeeder] Builtin tools seeded")
 
 
@@ -382,9 +471,9 @@ async def clean_orphaned_mcp_tools():
     from app.models.tool import AgentTool
     from sqlalchemy import and_, delete
     
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # 1. Get all currently assigned tool IDs
-        all_assigned_r = await db.execute(select(AgentTool.tool_id).distinct())
+        all_assigned_r = await query_dao.execute(db, select(AgentTool.tool_id).distinct())
         assigned_ids = [row[0] for row in all_assigned_r.fetchall()]
         
         # 2. Delete MCP tools that have NO tenant_id AND are NOT in the assigned list
@@ -396,9 +485,9 @@ async def clean_orphaned_mcp_tools():
                 ~Tool.id.in_(assigned_ids) if assigned_ids else True
             )
         )
-        result = await db.execute(stmt)
+        result = await query_dao.execute(db, stmt)
         deleted_count = result.rowcount
-        await db.commit()
+        await query_dao.commit(db)
         
         if deleted_count > 0:
             logger.info(f"[ToolSeeder] Cleaned up {deleted_count} orphaned MCP tools")
@@ -447,9 +536,9 @@ async def seed_atlassian_rovo_config():
     import os
     env_key = os.environ.get("ATLASSIAN_API_KEY", "").strip()
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         t = ATLASSIAN_ROVO_CONFIG_TOOL
-        result = await db.execute(select(Tool).where(Tool.name == t["name"]))
+        result = await query_dao.execute(db, select(Tool).where(Tool.name == t["name"]))
         existing = result.scalar_one_or_none()
         if not existing:
             initial_config = dict(t["config"])
@@ -470,8 +559,8 @@ async def seed_atlassian_rovo_config():
                 mcp_server_name="Atlassian Rovo",
                 source="admin",
             )
-            db.add(tool)
-            await db.commit()
+            query_dao.add(db, tool)
+            await query_dao.commit(db)
             logger.info("[ToolSeeder] Created Atlassian Rovo config tool")
         else:
             updated = False
@@ -486,14 +575,14 @@ async def seed_atlassian_rovo_config():
                 existing.config = {**(existing.config or {}), "api_key": env_key}
                 updated = True
             if updated:
-                await db.commit()
+                await query_dao.commit(db)
                 logger.info("[ToolSeeder] Updated Atlassian Rovo config tool")
 
 
 async def get_atlassian_api_key() -> str:
     """Read the Atlassian API key from the platform config tool."""
-    async with async_session() as db:
-        result = await db.execute(select(Tool).where(Tool.name == "atlassian_rovo"))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(Tool).where(Tool.name == "atlassian_rovo"))
         tool = result.scalar_one_or_none()
         if tool and tool.config:
             return tool.config.get("api_key", "")

@@ -12,11 +12,12 @@ try:
 except ImportError:
     lark = None  # type: ignore
     _HAS_LARK = False
-from sqlalchemy import select, or_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.config import get_settings
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.user import User, Identity
 from app.models.identity import IdentityProvider
 
@@ -26,6 +27,7 @@ FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token
 FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
+FEISHU_CHAT_LIST_URL = "https://open.feishu.cn/open-apis/im/v1/chats"
 
 class FeishuAPIError(RuntimeError):
     """Structured Feishu API error that preserves provider-returned details."""
@@ -175,6 +177,27 @@ class FeishuService:
                 
             return token
 
+    async def list_bot_chats(
+        self,
+        app_id: str,
+        app_secret: str,
+        *,
+        page_size: int = 100,
+        page_token: str | None = None,
+    ) -> dict:
+        """List groups joined by the configured bot using app identity."""
+        tenant_token = await self.get_tenant_access_token(app_id, app_secret)
+        params: dict[str, str | int] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                FEISHU_CHAT_LIST_URL,
+                headers={"Authorization": f"Bearer {tenant_token}"},
+                params=params,
+            )
+        return self._parse_api_response(response, stage="list_bot_chats")
+
     async def exchange_code_for_user(self, code: str) -> dict:
         """Exchange OAuth authorization code for user info.
 
@@ -224,7 +247,7 @@ class FeishuService:
         # Resolve provider (needed for OrgMember.provider_id scoping)
         provider_query = select(IdentityProvider).where(IdentityProvider.provider_type == "feishu")
         provider_query = provider_query.where(IdentityProvider.tenant_id == tenant_id)
-        provider_result = await db.execute(provider_query)
+        provider_result = await query_dao.execute(db, provider_query)
         provider = provider_result.scalars().first()
         if not provider:
             provider = IdentityProvider(
@@ -234,14 +257,14 @@ class FeishuService:
                 config={"app_id": self.app_id, "app_secret": self.app_secret},
                 tenant_id=tenant_id,
             )
-            db.add(provider)
-            await db.flush()
+            query_dao.add(db, provider)
+            await query_dao.flush(db)
 
         # 1. Look up OrgMember by open_id (primary) or external_id (user_id)
         #    Also filter by tenant_id and provider_id for accuracy
         member = None
         if open_id:
-            member_r = await db.execute(
+            member_r = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.open_id == open_id,
                     OrgMember.provider_id == provider.id,
@@ -250,7 +273,7 @@ class FeishuService:
             )
             member = member_r.scalars().first()
         if not member and user_id:
-            member_r = await db.execute(
+            member_r = await query_dao.execute(db, 
                 select(OrgMember).where(
                     OrgMember.external_id == user_id,
                     OrgMember.provider_id == provider.id,
@@ -262,7 +285,7 @@ class FeishuService:
         # 2. Resolve User from OrgMember
         user = None
         if member and member.user_id:
-            u_result = await db.execute(select(User).where(User.id == member.user_id))
+            u_result = await query_dao.execute(db, select(User).where(User.id == member.user_id))
             user = u_result.scalars().first()
 
         # 3. Fallback: find by email matching (exact match)
@@ -270,7 +293,7 @@ class FeishuService:
             query = select(User).join(User.identity).where(Identity.email == fs_email)
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
-            result = await db.execute(query)
+            result = await query_dao.execute(db, query)
             user = result.scalars().first()
 
         if user:
@@ -302,7 +325,7 @@ class FeishuService:
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
             
-            existing = await db.execute(query)
+            existing = await query_dao.execute(db, query)
             if existing.scalar_one_or_none():
                 import uuid
                 username = f"{username}_{uuid.uuid4().hex[:6]}"
@@ -327,16 +350,16 @@ class FeishuService:
                 is_active=True,
             )
 
-            db.add(user)
-            await db.flush()
+            query_dao.add(db, user)
+            await query_dao.flush(db)
 
             # Link back to OrgMember if found
             if member:
                 member.user_id = user.id
 
-        await db.flush()
+        await query_dao.flush(db)
 
-        token = create_access_token(str(user.id), user.role)
+        token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
         return user, token
 
 
@@ -405,6 +428,28 @@ class FeishuService:
             )
             data = self._parse_api_response(resp, stage=stage, message_id=message_id)
             return data
+
+    async def add_message_reaction(
+        self,
+        app_id: str,
+        app_secret: str,
+        message_id: str,
+        emoji_type: str,
+        stage: str = "add_message_reaction",
+    ) -> dict:
+        """Add one bot-identity reaction to an existing Feishu message."""
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": app_id, "app_secret": app_secret},
+            )
+            app_token = token_resp.json().get("app_access_token", "")
+            resp = await client.post(
+                f"{FEISHU_SEND_MSG_URL}/{message_id}/reactions",
+                json={"reaction_type": {"emoji_type": emoji_type}},
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+        return self._parse_api_response(resp, stage=stage, message_id=message_id)
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:

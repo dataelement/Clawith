@@ -213,6 +213,7 @@ async def test_latest_compact_after_cutoff_is_transiently_rebuilt_without_mutati
     ]
     assert service.write_calls == 0
     assert len(compactor.requests) == 1
+    assert compactor.requests[0].source_agent_id == uuid.UUID(int=102)
     assert compactor.requests[0].snapshot == SessionContextSnapshot.empty()
     assert [message["id"] for message in compactor.requests[0].messages] == [
         str(old_id)

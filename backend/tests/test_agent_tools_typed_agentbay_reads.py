@@ -435,7 +435,7 @@ async def test_runtime_exposes_only_assigned_and_locally_ready_agentbay_reads(
     monkeypatch.setattr(agent_tools, "get_agent_tools_for_llm", assigned_tools)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     monkeypatch.setattr(agent_tools, "_get_tool_config", local_config)

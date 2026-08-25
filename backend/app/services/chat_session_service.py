@@ -411,7 +411,16 @@ async def save_tool_call_log(
 
     try:
         async with async_session() as db:
+            tenant_id = await db.scalar(
+                select(Agent.tenant_id).where(Agent.id == agent_id)
+            )
+            if tenant_id is None:
+                logger.warning(
+                    f"Failed to save tool call log: agent {agent_id} has no tenant"
+                )
+                return
             db.add(ChatMessage(
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 user_id=user_id,
                 role="tool_call",

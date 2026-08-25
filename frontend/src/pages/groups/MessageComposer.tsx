@@ -47,6 +47,8 @@ export default function MessageComposer({
 }: MessageComposerProps) {
     const { t } = useTranslation();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const mentionPopupRef = useRef<HTMLDivElement>(null);
+    const mentionOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const [value, setValue] = useState('');
     const [query, setQuery] = useState<MentionQuery | null>(null);
     const [highlighted, setHighlighted] = useState(0);
@@ -63,12 +65,27 @@ export default function MessageComposer({
     const candidates = useMemo(() => {
         if (!query) return [];
         const needle = query.text.toLowerCase();
-        return members
-            .filter((member) => member.display_name.toLowerCase().includes(needle))
-            .slice(0, 8);
+        return members.filter((member) => member.display_name.toLowerCase().includes(needle));
     }, [members, query]);
 
-    useEffect(() => setHighlighted(0), [query?.text]);
+    useEffect(() => {
+        setHighlighted(0);
+        if (mentionPopupRef.current) mentionPopupRef.current.scrollTop = 0;
+    }, [query?.text]);
+
+    useEffect(() => {
+        const popup = mentionPopupRef.current;
+        const option = mentionOptionRefs.current[highlighted];
+        if (!popup || !option) return;
+
+        const popupRect = popup.getBoundingClientRect();
+        const optionRect = option.getBoundingClientRect();
+        if (optionRect.top < popupRect.top) {
+            popup.scrollTop -= popupRect.top - optionRect.top;
+        } else if (optionRect.bottom > popupRect.bottom) {
+            popup.scrollTop += optionRect.bottom - popupRect.bottom;
+        }
+    }, [candidates, highlighted]);
 
     // Auto-grow the textarea to fit its content (capped by max-height in CSS). Runs for typing,
     // mention insertion and the post-send clear alike, since they all flow through `value`.
@@ -177,9 +194,12 @@ export default function MessageComposer({
     return (
         <div className="group-composer">
             {query && candidates.length > 0 && (
-                <div className="group-mention-popup">
+                <div ref={mentionPopupRef} className="group-mention-popup">
                     {candidates.map((member, index) => (
                         <button
+                            ref={(element) => {
+                                mentionOptionRefs.current[index] = element;
+                            }}
                             key={member.participant_id}
                             type="button"
                             className={`group-mention-option ${index === highlighted ? 'active' : ''}`}

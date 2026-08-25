@@ -13,6 +13,7 @@ from app.models.agent import Agent
 from app.services.agent_runtime.adapter import RuntimeCommandIntake
 from app.services.agent_runtime.config import decide_runtime_v2
 from app.services.agent_runtime.contracts import RunHandle, StartRunCommand
+from app.services.feishu_group_targets import resolve_feishu_group_target
 
 
 class HeartbeatRuntimeIntakeError(RuntimeError):
@@ -206,6 +207,7 @@ async def enqueue_schedule_runtime(
     schedule_id: uuid.UUID,
     occurrence_id: uuid.UUID,
     instruction: str,
+    delivery_target_id: uuid.UUID | None = None,
     settings_override: Settings | None = None,
 ) -> RunHandle | None:
     """Register one cron schedule occurrence on the shared background Runtime."""
@@ -225,6 +227,15 @@ async def enqueue_schedule_runtime(
             "Runtime schedule instruction is empty",
         )
     source_execution_id = f"schedule:{schedule_id}:{occurrence_id}"
+    delivery_target = None
+    if delivery_target_id is not None:
+        delivery_target = (
+            await resolve_feishu_group_target(
+                db,
+                agent_id=agent.id,
+                target_recipient_id=delivery_target_id,
+            )
+        ).delivery_target()
     return await RuntimeCommandIntake(
         db,
         settings=runtime_settings,
@@ -238,13 +249,15 @@ async def enqueue_schedule_runtime(
             goal=f"[自动调度任务] {normalized_instruction}",
             run_kind="background",
             model_id=agent.primary_model_id,
-            delivery_status="not_required",
+            delivery_status="pending" if delivery_target else "not_required",
+            delivery_target=delivery_target,
             idempotency_key=f"start:{source_execution_id}",
             payload={
                 "background_mode": "schedule",
                 "schedule_id": str(schedule_id),
                 "schedule_occurrence_id": str(occurrence_id),
                 "schedule_instruction": normalized_instruction,
+                "delivery_target_id": str(delivery_target_id) if delivery_target_id else None,
             },
             origin_user_id=agent.creator_id,
         )

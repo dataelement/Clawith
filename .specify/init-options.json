@@ -1,0 +1,11 @@
+{
+  "ai": "codex",
+  "ai_commands_dir": null,
+  "ai_skills": true,
+  "branch_numbering": "sequential",
+  "here": true,
+  "offline": true,
+  "preset": null,
+  "script": "sh",
+  "speckit_version": "0.4.1"
+}

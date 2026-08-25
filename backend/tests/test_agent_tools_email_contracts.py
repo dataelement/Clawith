@@ -86,7 +86,7 @@ async def _install_runtime_selection(
     monkeypatch.setattr(agent_tools, "_get_email_config", email_config)
     monkeypatch.setattr(
         agent_tools,
-        "_get_runtime_dynamic_mcp_tool_names",
+        "_get_runtime_dynamic_mcp_bindings",
         no_dynamic_mcp,
     )
     if include_untyped_email_writes:

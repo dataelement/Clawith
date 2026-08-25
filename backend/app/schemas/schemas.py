@@ -3,8 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator
 
+from app.services.timezone_utils import validate_timezone_name
 
 # ─── Auth ───────────────────────────────────────────────
 
@@ -287,7 +288,6 @@ class AgentOut(BaseModel):
     openclaw_last_seen: datetime | None = None
     unread_count: int = 0
     has_api_key: bool = False
-    api_key_hash: str | None = None
     # True when the current viewer already has an onboarding row for this
     # agent. Computed per-request by the API layer from the junction table;
     # not an ORM attribute, so callers must set it explicitly. Defaults to
@@ -313,7 +313,7 @@ class AgentUpdate(BaseModel):
     context_window_size: int | None = Field(default=None, ge=1, le=500)
     max_tokens_per_day: int | None = None
     max_tokens_per_month: int | None = None
-    max_tool_rounds: int | None = None
+    max_tool_rounds: int | None = Field(default=None, ge=5, le=500)
     max_triggers: int | None = None
     min_poll_interval_min: int | None = None
     webhook_rate_limit: int | None = None
@@ -322,6 +322,13 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_timezone_name(value)
 
 
 class AgentStatusOut(BaseModel):
@@ -462,9 +469,6 @@ class ChannelConfigOut(BaseModel):
     agent_id: uuid.UUID
     channel_type: str
     app_id: str | None = None
-    app_secret: str | None = None
-    encrypt_key: str | None = None
-    verification_token: str | None = None
     is_configured: bool
     is_connected: bool
     last_tested_at: datetime | None = None
@@ -472,6 +476,44 @@ class ChannelConfigOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("extra_config")
+    def serialize_extra_config(self, value: dict | None) -> dict | None:
+        """Keep channel credentials out of every API response.
+
+        Channel integrations store provider-specific settings in ``extra_config``.
+        Those settings can include bot tokens and signing secrets, so applying this
+        at the shared response schema prevents a newly added channel endpoint from
+        accidentally disclosing them.
+        """
+        if value is None:
+            return None
+        return _redact_channel_secrets(value)
+
+
+_CHANNEL_SECRET_KEY_PARTS = (
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "private_key",
+    "api_key",
+    "encrypt_key",
+    "verification_key",
+)
+
+
+def _redact_channel_secrets(value: object) -> object:
+    """Return a recursively redacted copy of provider-specific configuration."""
+    if isinstance(value, dict):
+        return {
+            key: _redact_channel_secrets(item)
+            for key, item in value.items()
+            if not any(part in key.lower() for part in _CHANNEL_SECRET_KEY_PARTS)
+        }
+    if isinstance(value, list):
+        return [_redact_channel_secrets(item) for item in value]
+    return value
 
 
 # ─── Approval ───────────────────────────────────────────

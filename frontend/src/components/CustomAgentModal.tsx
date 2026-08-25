@@ -15,6 +15,7 @@ import {
 import { agentApi, authApi, enterpriseApi, tenantApi } from '../services/api';
 import { useDialog } from './Dialog/DialogProvider';
 import LinearCopyButton from './LinearCopyButton';
+import { validateAgentName } from '../utils/agentNameValidation';
 import { buildOpenClawInstruction } from '../utils/openClawInstruction';
 
 type Mode = 'native' | 'openclaw';
@@ -126,8 +127,8 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
     const createAgent = useMutation({
         mutationFn: async ({ chatNow }: { chatNow: boolean }) => {
             const trimmedName = name.trim();
-            if (!trimmedName) {
-                throw new Error(t('customAgentModal.nameRequired'));
+            if (validateAgentName(trimmedName)) {
+                throw new Error(t('customAgentModal.nameInvalid'));
             }
             if (mode === 'native' && enabledModels.length === 0) {
                 throw new Error(t('customAgentModal.noModelError'));
@@ -175,6 +176,13 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
     if (!open) return null;
 
     const busy = createAgent.isPending;
+    const nameError = validateAgentName(name);
+    const nameErrorText = nameError === 'too_short'
+        ? t('customAgentModal.nameTooShort')
+        : nameError === 'too_long'
+            ? t('customAgentModal.nameTooLong')
+            : '';
+    const nameInvalid = nameError !== null;
     const setupInstruction = createdExternal?.api_key
         ? buildOpenClawInstruction(createdExternal.api_key, !!i18n.language?.startsWith('zh'))
         : '';
@@ -275,8 +283,19 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                             : t('customAgentModal.namePlaceholderExternal')}
                                         disabled={busy}
                                         autoFocus
+                                        aria-invalid={nameErrorText ? true : undefined}
+                                        aria-describedby={nameErrorText ? 'custom-agent-name-error' : undefined}
                                         style={{ width: '100%' }}
                                     />
+                                    {nameErrorText ? (
+                                        <span
+                                            id="custom-agent-name-error"
+                                            role="alert"
+                                            style={{ fontSize: '12px', color: 'var(--error)', lineHeight: 1.4 }}
+                                        >
+                                            {nameErrorText}
+                                        </span>
+                                    ) : null}
                                 </Field>
 
                                 <Field label={t('customAgentModal.role')}>
@@ -360,7 +379,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                     >
                                         <button
                                             className="btn btn-secondary"
-                                            disabled={busy || nativeHasNoModel}
+                                            disabled={busy || nativeHasNoModel || nameInvalid}
                                             style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
                                             onClick={() => createAgent.mutate({ chatNow: false })}
                                         >
@@ -373,7 +392,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                                     >
                                         <button
                                             className="btn btn-primary"
-                                            disabled={busy || nativeHasNoModel}
+                                            disabled={busy || nativeHasNoModel || nameInvalid}
                                             style={{ pointerEvents: nativeHasNoModel ? 'none' : undefined }}
                                             onClick={() => createAgent.mutate({ chatNow: true })}
                                         >
@@ -384,7 +403,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
                             ) : (
                                 <button
                                     className="btn btn-primary"
-                                    disabled={busy}
+                                    disabled={busy || nameInvalid}
                                     onClick={() => createAgent.mutate({ chatNow: false })}
                                 >
                                     {busy ? t('customAgentModal.creating') : t('customAgentModal.createConnection')}

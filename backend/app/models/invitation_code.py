@@ -14,6 +14,7 @@ class InvitationCode(Base):
     """An invitation code that can be used to register new accounts."""
 
     __tablename__ = "invitation_codes"
+    __tenant_scoped__ = True
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)

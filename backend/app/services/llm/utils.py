@@ -59,18 +59,20 @@ def get_model_api_key(model: LLMModel) -> str:
 def get_tool_params(provider: str) -> dict:
     """Return provider-specific tool calling parameters.
 
-    Qwen and OpenAI support `tool_choice` and `parallel_tool_calls`.
-    Anthropic uses a different tool calling format, so we skip these params.
+    Provider support for choosing a Tool and emitting multiple Tool Calls are
+    separate wire capabilities. Neither flag implies concurrent business
+    execution; Durable Runtime still applies accepted calls sequentially.
 
     Note: This function is kept for backward compatibility.
     The new client classes handle this internally.
     """
-    if provider in TOOL_CHOICE_PROVIDERS:
-        return {
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
-    return {}
+    spec = get_provider_spec(provider)
+    if spec is None or not spec.supports_tool_choice:
+        return {}
+    params = {"tool_choice": "auto"}
+    if spec.supports_parallel_tool_calls:
+        params["parallel_tool_calls"] = True
+    return params
 
 
 def convert_chat_messages_to_llm_format(messages) -> list[dict]:

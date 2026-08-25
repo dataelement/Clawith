@@ -9,6 +9,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.dao.chat_message_dao import chat_message_dao
 from app.models.agent import Agent
 from app.models.agent_run import AgentRun
 from app.models.audit import ChatMessage
@@ -206,7 +207,8 @@ class A2ARuntimeCompletionHandler:
                     select(ChatMessage.id).where(ChatMessage.id == receipt_id)
                 )
                 if receipt_result.scalar_one_or_none() is None:
-                    db.add(
+                    chat_message_dao.add_scoped(
+                        db,
                         ChatMessage(
                             id=receipt_id,
                             agent_id=session.agent_id,
@@ -217,7 +219,8 @@ class A2ARuntimeCompletionHandler:
                             participant_id=participant.id,
                             mentions=[],
                             created_at=now,
-                        )
+                        ),
+                        tenant_id=run.tenant_id,
                     )
                 inbound.status = "completed"
                 inbound.result = content
@@ -374,7 +377,8 @@ class A2ARuntimeCompletionHandler:
                     )
 
                 now = self._clock()
-                db.add(
+                chat_message_dao.add_scoped(
+                    db,
                     ChatMessage(
                         id=receipt_id,
                         agent_id=session.agent_id,
@@ -385,7 +389,8 @@ class A2ARuntimeCompletionHandler:
                         participant_id=participant.id,
                         mentions=[],
                         created_at=now,
-                    )
+                    ),
+                    tenant_id=run.tenant_id,
                 )
                 session.last_message_at = now
 

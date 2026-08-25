@@ -169,7 +169,6 @@ async def main():
 
         # Find duplicate display_names within the same tenant
         # These are likely the same person created multiple times from different apps
-        from sqlalchemy import or_, and_, cast, String as SAString
         r = await db.execute(
             select(User.display_name, User.tenant_id, func.count(User.id).label("cnt"))
             .where(User.display_name.isnot(None), User.display_name != "")

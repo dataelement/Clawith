@@ -1257,6 +1257,8 @@ export default function EnterpriseSettings() {
                                                 return aMeta.label.localeCompare(bMeta.label);
                                             })
                                             .map(([category, catTools]) => {
+                                            // System tools are Runtime protocol details, not company-managed capabilities.
+                                            if (category === 'system') return null;
                                             const allCatTools = allGrouped[category] || catTools;
                                             const meta = getToolGroupMeta(category, allCatTools);
                                             const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[meta.configCategory];

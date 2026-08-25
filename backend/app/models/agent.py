@@ -23,6 +23,7 @@ class Agent(Base):
     """
 
     __tablename__ = "agents"
+    __tenant_scoped__ = True
     __table_args__ = (
         Index(
             "ix_agents_active_tenant_created_at",

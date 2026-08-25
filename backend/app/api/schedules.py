@@ -8,12 +8,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dao import query_dao
 from app.core.permissions import check_agent_access, is_agent_creator, is_agent_expired
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.schedule import AgentSchedule
 from app.models.user import User
 from app.services.heartbeat_runtime import enqueue_schedule_runtime
+from app.services.feishu_group_targets import FeishuGroupTargetError, resolve_feishu_group_target
 from app.services.scheduler import compute_next_run
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
@@ -24,6 +26,7 @@ class ScheduleCreate(BaseModel):
     instruction: str = Field(default='', max_length=5000)
     cron_expr: str = Field(min_length=1, max_length=100)
     is_enabled: bool = True
+    delivery_target_id: uuid.UUID | None = None
 
 
 class ScheduleUpdate(BaseModel):
@@ -31,6 +34,7 @@ class ScheduleUpdate(BaseModel):
     instruction: str | None = None
     cron_expr: str | None = None
     is_enabled: bool | None = None
+    delivery_target_id: uuid.UUID | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -46,6 +50,7 @@ class ScheduleOut(BaseModel):
     created_by: uuid.UUID | None = None
     creator_username: str | None = None
     created_at: datetime | None = None
+    delivery_target_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -58,7 +63,7 @@ async def list_schedules(
 ):
     """List all schedules for an agent."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentSchedule)
         .where(AgentSchedule.agent_id == agent_id)
         .order_by(AgentSchedule.created_at.desc())
@@ -68,7 +73,7 @@ async def list_schedules(
     creator_ids = {s.created_by for s in schedules if s.created_by}
     creator_map = {}
     if creator_ids:
-        users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
+        users_result = await query_dao.execute(db, select(User).where(User.id.in_(creator_ids)))
         creator_map = {u.id: u.username for u in users_result.scalars().all()}
     out_list = []
     for s in schedules:
@@ -94,6 +99,11 @@ async def create_schedule(
     next_run = compute_next_run(data.cron_expr)
     if not next_run:
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
+    if data.delivery_target_id is not None:
+        try:
+            await resolve_feishu_group_target(db, agent_id=agent_id, target_recipient_id=data.delivery_target_id)
+        except FeishuGroupTargetError as exc:
+            raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
     sched = AgentSchedule(
         agent_id=agent_id,
@@ -103,9 +113,10 @@ async def create_schedule(
         is_enabled=data.is_enabled,
         next_run_at=next_run if data.is_enabled else None,
         created_by=current_user.id,
+        delivery_target_id=data.delivery_target_id,
     )
-    db.add(sched)
-    await db.flush()
+    query_dao.add(db, sched)
+    await query_dao.flush(db)
     return ScheduleOut.model_validate(sched)
 
 
@@ -122,7 +133,7 @@ async def update_schedule(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
     )
     sched = result.scalar_one_or_none()
@@ -130,6 +141,11 @@ async def update_schedule(
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     updates = data.model_dump(exclude_unset=True)
+    if "delivery_target_id" in updates and updates["delivery_target_id"] is not None:
+        try:
+            await resolve_feishu_group_target(db, agent_id=agent_id, target_recipient_id=updates["delivery_target_id"])
+        except FeishuGroupTargetError as exc:
+            raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
     for field, value in updates.items():
         setattr(sched, field, value)
 
@@ -140,7 +156,7 @@ async def update_schedule(
         else:
             sched.next_run_at = None
 
-    await db.flush()
+    await query_dao.flush(db)
     return ScheduleOut.model_validate(sched)
 
 
@@ -156,15 +172,15 @@ async def delete_schedule(
     if not is_agent_creator(current_user, agent):
         raise HTTPException(status_code=403, detail="Only creator can manage schedules")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
     )
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    await db.delete(sched)
-    await db.flush()
+    await query_dao.delete(db, sched)
+    await query_dao.flush(db)
 
 
 @router.post("/{schedule_id}/run")
@@ -179,7 +195,7 @@ async def trigger_schedule(
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired and cannot be triggered.")
 
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentSchedule).where(AgentSchedule.id == schedule_id, AgentSchedule.agent_id == agent_id)
     )
     sched = result.scalar_one_or_none()
@@ -192,6 +208,7 @@ async def trigger_schedule(
         schedule_id=sched.id,
         occurrence_id=uuid.uuid4(),
         instruction=sched.instruction,
+        delivery_target_id=getattr(sched, "delivery_target_id", None),
     )
     if handle is None:
         raise HTTPException(
@@ -201,7 +218,7 @@ async def trigger_schedule(
 
     sched.last_run_at = datetime.now(timezone.utc)
     sched.run_count = (sched.run_count or 0) + 1
-    await db.flush()
+    await query_dao.flush(db)
 
     return {
         "status": "queued",
@@ -220,7 +237,7 @@ async def get_schedule_history(
     """Get execution history for a schedule from activity logs."""
     await check_agent_access(db, current_user, agent_id)
     from app.models.activity_log import AgentActivityLog
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(AgentActivityLog)
         .where(
             AgentActivityLog.agent_id == agent_id,

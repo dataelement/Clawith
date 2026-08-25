@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from app.dao import query_dao
+from app.dao.base import tenant_context
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
@@ -236,7 +238,7 @@ async def list_files(
     path_is_dir = await storage.is_dir(storage_key)
     if not path_exists and not path_is_dir:
         if not (
-            normalized_path in {"", "workspace"}
+            normalized_path in {"", "workspace", "skills"}
             or (is_enterprise and normalized_path == "enterprise_info")
         ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
@@ -584,12 +586,13 @@ async def download_file(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    result = await query_dao.execute(db, select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
-    await check_agent_access(db, user, agent_id)
+    with tenant_context(user.tenant_id):
+        await check_agent_access(db, user, agent_id)
     storage = get_storage_backend()
     key, _ = _visible_storage_key(agent_id, path, user.tenant_id)
     if not await storage.exists(key) or not await storage.is_file(key):
@@ -658,7 +661,7 @@ async def write_file(
     )
     if not result.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": result.path, "revision_id": result.revision_id}
 
 
@@ -680,7 +683,7 @@ async def lock_file(
         user_id=current_user.id,
         session_id=data.session_id,
     )
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": lock.path, "expires_at": lock.expires_at.isoformat()}
 
 
@@ -694,7 +697,7 @@ async def unlock_file(
     """Release the current user's edit lock for a file."""
     await check_agent_access(db, current_user, agent_id)
     await release_edit_lock(db, agent_id=agent_id, path=path, user_id=current_user.id)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -738,7 +741,7 @@ async def restore_file_revision(
 ):
     """Restore a file to a previous revision's after-content."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(WorkspaceFileRevision).where(
             WorkspaceFileRevision.id == data.revision_id,
             WorkspaceFileRevision.agent_id == agent_id,
@@ -764,7 +767,7 @@ async def restore_file_revision(
     )
     if not restored.ok:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=restored.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": revision.path, "revision_id": restored.revision_id}
 
 
@@ -801,7 +804,7 @@ async def delete_file(
         if "not found" in result.message.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.message)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result.message)
-    await db.commit()
+    await query_dao.commit(db)
     return {"status": "ok", "path": path}
 
 
@@ -827,7 +830,7 @@ async def import_skill_to_agent(
     from app.models.skill import Skill
 
     # Load the global skill with its files
-    result = await db.execute(
+    result = await query_dao.execute(db, 
         select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
     )
     skill = result.scalar_one_or_none()

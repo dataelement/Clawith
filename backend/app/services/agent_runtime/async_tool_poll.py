@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-import uuid
 
 from sqlalchemy import false, func, select
 
 from app.models.agent_tool_execution import AgentToolExecution
 from app.services.agent_runtime.command_worker import RuntimeSessionFactory
 from app.services.agent_runtime.persistence import enqueue_resume
-
 
 AsyncToolPollStatus = Literal["idle", "deferred", "scheduled"]
 
@@ -211,6 +210,22 @@ class AsyncToolPollScheduler:
                         "payload": {
                             "operation_key": operation_key,
                             "tool_call_id": execution.tool_call_id,
+                            "call_instance_id": execution.tool_call_id,
+                            "tool_execution_id": str(execution.id),
+                            **(
+                                {"provider_call_id": execution.provider_call_id}
+                                if execution.provider_call_id is not None
+                                else {}
+                            ),
+                            **(
+                                {
+                                    "tool_contract_version": (
+                                        execution.contract_version
+                                    )
+                                }
+                                if execution.contract_version is not None
+                                else {}
+                            ),
                             "poll_call_id": poll_call_id,
                             "poll": {
                                 "tool": poll_tool_name,

@@ -1,8 +1,10 @@
 """Seed builtin skills into the global skill registry."""
 
+import hashlib
+
 from loguru import logger
 from sqlalchemy import select
-from app.database import async_session
+from app.dao import query_dao
 from app.models.skill import Skill, SkillFile
 
 
@@ -948,6 +950,32 @@ To avoid unnecessary deployments, save Vercel build limits, and prevent serving 
 ]
 
 
+def _default_skills_sync_digest(skills) -> str:
+    """Hash the complete default-Skill registry state used for repair runs."""
+    hasher = hashlib.sha256()
+    for skill in sorted(skills, key=lambda item: item.folder_name):
+        hasher.update(skill.folder_name.encode("utf-8"))
+        hasher.update(b"\0")
+        for skill_file in sorted(skill.files, key=lambda item: item.path):
+            hasher.update(skill_file.path.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(skill_file.content.encode("utf-8"))
+            hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+async def _sync_missing_default_skill_files(storage, agent_prefix: str, skill) -> int:
+    """Fill missing files for one installed default Skill without overwriting files."""
+    written = 0
+    for skill_file in skill.files:
+        key = f"{agent_prefix}/skills/{skill.folder_name}/{skill_file.path}"
+        if await storage.is_file(key):
+            continue
+        await storage.write_text(key, skill_file.content, encoding="utf-8")
+        written += 1
+    return written
+
+
 async def seed_skills():
     """Insert builtin skills if they don't exist."""
     from app.services.skill_creator_content import get_skill_creator_files
@@ -972,9 +1000,9 @@ async def seed_skills():
             else:
                 logger.warning("[SkillSeeder] mcp-installer/SKILL.md not found in agent_template/skills/")
 
-    async with async_session() as db:
+    async with query_dao.session() as db:
         for skill_data in BUILTIN_SKILLS:
-            result = await db.execute(
+            result = await query_dao.execute(db, 
                 select(Skill).where(Skill.folder_name == skill_data["folder_name"])
             )
             existing = result.scalar_one_or_none()
@@ -988,7 +1016,7 @@ async def seed_skills():
                 existing.is_default = is_default
                 # Sync files — add missing ones
                 from sqlalchemy.orm import selectinload
-                res2 = await db.execute(
+                res2 = await query_dao.execute(db, 
                     select(Skill).where(Skill.id == existing.id).options(selectinload(Skill.files))
                 )
                 sk = res2.scalar_one()
@@ -1001,7 +1029,7 @@ async def seed_skills():
                             existing_file.content = f["content"]
                             logger.info(f"[SkillSeeder] Updated {f['path']} in {skill_data['name']}")
                     else:
-                        db.add(SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
+                        query_dao.add(db, SkillFile(skill_id=existing.id, path=f["path"], content=f["content"]))
                         logger.info(f"[SkillSeeder] Added file {f['path']} to {skill_data['name']}")
             else:
                 skill = Skill(
@@ -1013,12 +1041,12 @@ async def seed_skills():
                     is_builtin=True,
                     is_default=is_default,
                 )
-                db.add(skill)
-                await db.flush()
+                query_dao.add(db, skill)
+                await query_dao.flush(db)
                 for f in skill_data["files"]:
-                    db.add(SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
+                    query_dao.add(db, SkillFile(skill_id=skill.id, path=f["path"], content=f["content"]))
                 logger.info(f"[SkillSeeder] Created skill: {skill_data['name']}")
-        await db.commit()
+        await query_dao.commit(db)
         logger.info("[SkillSeeder] Skills seeded")
 
 
@@ -1034,25 +1062,19 @@ async def push_default_skills_to_existing_agents():
     from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
     from app.services.storage import get_storage_backend
-    import hashlib
-
-    async with async_session() as db:
+    async with query_dao.session() as db:
         # Load all is_default skills with their files
-        default_skills_r = await db.execute(
-            select(Skill).where(Skill.is_default == True).options(selectinload(Skill.files))
+        default_skills_r = await query_dao.execute(db, 
+            select(Skill).where(Skill.is_default.is_(True)).options(selectinload(Skill.files))
         )
         default_skills = default_skills_r.scalars().all()
         if not default_skills:
             return
 
-        # Compute a hash of default skill folder names to detect newly added skills
-        hasher = hashlib.sha256()
-        for skill in sorted(default_skills, key=lambda s: s.folder_name):
-            hasher.update(skill.folder_name.encode("utf-8"))
-        current_hash = hasher.hexdigest()
+        current_hash = _default_skills_sync_digest(default_skills)
 
         # Check if we already synced this version of default skills
-        setting_r = await db.execute(
+        setting_r = await query_dao.execute(db, 
             select(SystemSetting).where(SystemSetting.key == "default_skills_sync_hash")
         )
         setting = setting_r.scalar_one_or_none()
@@ -1061,8 +1083,8 @@ async def push_default_skills_to_existing_agents():
             return
 
         # Load all agents
-        agents_r = await db.execute(
-            select(Agent).where(Agent.deleted_at.is_(None))
+        agents_r = await query_dao.execute(
+            db, select(Agent).where(Agent.deleted_at.is_(None))
         )
         agents = agents_r.scalars().all()
 
@@ -1081,24 +1103,24 @@ async def push_default_skills_to_existing_agents():
             for skill in default_skills:
                 if not skill.files:
                     continue
-
-                # Determine if the agent already has this skill by checking if its first file exists in storage
-                first_file_key = f"{agent_prefix}/skills/{skill.folder_name}/{skill.files[0].path}"
-                if await storage.is_file(first_file_key):
-                    continue  # Skill already exists, do not update
-
-                for sf in skill.files:
-                    key = f"{agent_prefix}/skills/{skill.folder_name}/{sf.path}"
-                    await storage.write_text(key, sf.content, encoding="utf-8")
-                    pushed += 1
-                logger.info(f"[SkillSeeder] Pushed new default skill '{skill.name}' to agent {agent.id}")
+                written = await _sync_missing_default_skill_files(
+                    storage,
+                    agent_prefix,
+                    skill,
+                )
+                if written:
+                    pushed += written
+                    logger.info(
+                        f"[SkillSeeder] Repaired {written} missing file(s) for "
+                        f"default skill '{skill.name}' on agent {agent.id}"
+                    )
 
         # Save/update the sync hash in settings
         if setting:
             setting.value = {"hash": current_hash}
         else:
-            db.add(SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
-        await db.commit()
+            query_dao.add(db, SystemSetting(key="default_skills_sync_hash", value={"hash": current_hash}))
+        await query_dao.commit(db)
 
         if pushed or removed_legacy:
             logger.info(

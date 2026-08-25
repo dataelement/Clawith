@@ -5,7 +5,14 @@ set -e
 
 PROCESS_ROLE="${PROCESS_ROLE:-all}"
 ALLOW_MIGRATION_FAILURE="${ALLOW_MIGRATION_FAILURE:-false}"
-START_COMMAND="${START_COMMAND:-uvicorn app.main:app --host 0.0.0.0 --port 8000}"
+APP_WORKERS="${APP_WORKERS:-1}"
+DEFAULT_UVICORN_WORKERS="1"
+case ",${PROCESS_ROLE}," in
+    *,api,*|*,all,*)
+        DEFAULT_UVICORN_WORKERS="${APP_WORKERS}"
+        ;;
+esac
+START_COMMAND="${START_COMMAND:-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${DEFAULT_UVICORN_WORKERS}}"
 
 role_contains() {
     case ",${PROCESS_ROLE}," in

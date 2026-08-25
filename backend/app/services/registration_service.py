@@ -10,7 +10,7 @@ import re
 import uuid
 from typing import Any
 
-from app.config import get_settings
+from app.dao import query_dao
 from app.core.security import hash_password_async
 from app.dao import (
     identity_dao,
@@ -275,7 +275,6 @@ class RegistrationService:
             if not access_token:
                 return None, False, "Failed to get access token from provider"
 
-            from app.services.auth_provider import ExternalUserInfo
             user_info_obj = await auth_provider.get_user_info(access_token)
 
             user_info = {
@@ -381,7 +380,7 @@ class RegistrationService:
                 user.primary_mobile = member.phone
 
             async with org_member_dao.session() as db:
-                await db.flush()
+                await query_dao.flush(db)
 
             from app.services.okr_agent_hook import hook_new_org_member
             async with org_member_dao.session() as db:
@@ -439,7 +438,7 @@ class RegistrationService:
                     user_id=user.id,
                     status="active",
                 )
-                db.add(member)
+                query_dao.add(db, member)
                 created = True
 
             desired_name = user.display_name or member.name or "User"
@@ -452,7 +451,7 @@ class RegistrationService:
             if member.title in (None, "", "Web User"):
                 member.title = "Platform User"
 
-            await db.flush()
+            await query_dao.flush(db)
 
         if created or linked_existing:
             from app.services.okr_agent_hook import hook_new_org_member
@@ -488,7 +487,7 @@ class RegistrationService:
                     member.email = user.email
                 if sync_phone and member.phone != user.primary_mobile:
                     member.phone = user.primary_mobile
-            await db.flush()
+            await query_dao.flush(db)
 
 
 # Global registration service

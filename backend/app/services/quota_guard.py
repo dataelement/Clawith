@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, func as sa_func
 
-from app.database import async_session
+from app.dao import query_dao
 
 
 class QuotaExceeded(Exception):
@@ -31,8 +31,8 @@ async def check_conversation_quota(user_id: uuid.UUID) -> None:
     """Check if user has remaining conversation quota. Raises QuotaExceeded if not."""
     from app.models.user import User
 
-    async with async_session() as db:
-        result = await db.execute(select(User).where(User.id == user_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
             return
@@ -49,7 +49,7 @@ async def check_conversation_quota(user_id: uuid.UUID) -> None:
                 # Period expired — reset counter
                 user.quota_messages_used = 0
                 user.quota_period_start = now
-                await db.commit()
+                await query_dao.commit(db)
 
         if user.quota_messages_used >= user.quota_message_limit:
             raise QuotaExceeded(
@@ -63,8 +63,8 @@ async def increment_conversation_usage(user_id: uuid.UUID) -> None:
     """Increment conversation usage counter for a user."""
     from app.models.user import User
 
-    async with async_session() as db:
-        result = await db.execute(select(User).where(User.id == user_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
             return
@@ -79,7 +79,7 @@ async def increment_conversation_usage(user_id: uuid.UUID) -> None:
             user.quota_period_start = now
 
         user.quota_messages_used += 1
-        await db.commit()
+        await query_dao.commit(db)
 
 
 # ── Agent expiry ────────────────────────────────────────────────────
@@ -88,8 +88,9 @@ async def check_agent_expired(agent_id: uuid.UUID) -> None:
     """Check if agent has expired. If so, mark it and raise AgentExpired."""
     from app.models.agent import Agent
 
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(
+            db,
             select(Agent).where(
                 Agent.id == agent_id,
                 Agent.deleted_at.is_(None),
@@ -107,7 +108,7 @@ async def check_agent_expired(agent_id: uuid.UUID) -> None:
             agent.is_expired = True
             agent.status = "stopped"
             agent.heartbeat_enabled = False
-            await db.commit()
+            await query_dao.commit(db)
             raise AgentExpired(agent.name)
 
 
@@ -122,8 +123,9 @@ async def check_agent_llm_quota(agent_id: uuid.UUID) -> None:
     """Check if agent has remaining daily LLM calls."""
     from app.models.agent import Agent
 
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(
+            db,
             select(Agent).where(
                 Agent.id == agent_id,
                 Agent.deleted_at.is_(None),
@@ -139,7 +141,7 @@ async def check_agent_llm_quota(agent_id: uuid.UUID) -> None:
         if agent.llm_calls_reset_at and now.date() > agent.llm_calls_reset_at.date():
             agent.llm_calls_today = 0
             agent.llm_calls_reset_at = now
-            await db.commit()
+            await query_dao.commit(db)
 
         if agent.llm_calls_today >= agent.max_llm_calls_per_day:
             raise QuotaExceeded(
@@ -153,8 +155,9 @@ async def increment_agent_llm_usage(agent_id: uuid.UUID) -> None:
     """Increment agent's daily LLM call counter."""
     from app.models.agent import Agent
 
-    async with async_session() as db:
-        result = await db.execute(
+    async with query_dao.session() as db:
+        result = await query_dao.execute(
+            db,
             select(Agent).where(
                 Agent.id == agent_id,
                 Agent.deleted_at.is_(None),
@@ -170,7 +173,7 @@ async def increment_agent_llm_usage(agent_id: uuid.UUID) -> None:
             agent.llm_calls_reset_at = now
         else:
             agent.llm_calls_today += 1
-        await db.commit()
+        await query_dao.commit(db)
 
 
 # ── Agent creation quota ───────────────────────────────────────────
@@ -180,8 +183,8 @@ async def check_agent_creation_quota(user_id: uuid.UUID) -> None:
     from app.models.user import User
     from app.models.agent import Agent
 
-    async with async_session() as db:
-        result = await db.execute(select(User).where(User.id == user_id))
+    async with query_dao.session() as db:
+        result = await query_dao.execute(db, select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if not user:
             return
@@ -190,7 +193,7 @@ async def check_agent_creation_quota(user_id: uuid.UUID) -> None:
             return
 
         # Count user's non-expired agents
-        count_result = await db.execute(
+        count_result = await query_dao.execute(db, 
             select(sa_func.count()).select_from(Agent).where(
                 Agent.creator_id == user_id,
                 Agent.is_expired == False,
@@ -224,14 +227,14 @@ async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None
     async def _enforce(session, floor_val):
         # If floor not provided, read from tenant
         if floor_val is None:
-            result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+            result = await query_dao.execute(session, select(Tenant).where(Tenant.id == tenant_id))
             tenant = result.scalar_one_or_none()
             if not tenant:
                 return 0
             floor_val = tenant.min_heartbeat_interval_minutes
 
         # Find agents with interval below floor
-        agents_result = await session.execute(
+        agents_result = await query_dao.execute(session, 
             select(Agent).where(
                 Agent.tenant_id == tenant_id,
                 Agent.heartbeat_interval_minutes < floor_val,
@@ -243,13 +246,13 @@ async def enforce_heartbeat_floor(tenant_id: uuid.UUID, floor: int | None = None
             agent.heartbeat_interval_minutes = floor_val
 
         if agents:
-            await session.commit()
+            await query_dao.commit(session)
         return len(agents)
 
     if db is not None:
         return await _enforce(db, floor)
     else:
-        async with async_session() as new_db:
+        async with query_dao.session() as new_db:
             return await _enforce(new_db, floor)
 
 

@@ -204,15 +204,24 @@ def test_agent_run_event_model_captures_product_projection_contract():
     assert table.primary_key.name == "pk_agent_run_events"
     assert _constraint_names(table, sa.UniqueConstraint) == {
         "uq_agent_run_events_run_idempotency",
-        "uq_agent_run_events_checkpoint_type",
     }
     assert _constraint_names(table, sa.CheckConstraint) == {
         "ck_agent_run_events_event_type"
     }
     assert {index.name for index in table.indexes} == {
+        "uq_agent_run_events_checkpoint_type_non_delivery",
         "ix_agent_run_events_run_created",
         "ix_agent_run_events_tenant_type_created",
     }
+    checkpoint_type_index = next(
+        index
+        for index in table.indexes
+        if index.name == "uq_agent_run_events_checkpoint_type_non_delivery"
+    )
+    assert checkpoint_type_index.unique is True
+    assert str(
+        checkpoint_type_index.dialect_options["postgresql"]["where"]
+    ) == "event_type NOT IN ('delivery_succeeded', 'delivery_failed')"
     assert table.c.agent_id.nullable is True
     assert str(table.c.artifact_refs.server_default.arg) == "'[]'::jsonb"
     assert _foreign_key_specs(table)["fk_agent_run_events_tenant_run_agent_runs"] == (
@@ -270,8 +279,10 @@ def test_agent_tool_execution_model_captures_idempotency_and_lease_contract():
         "tenant_id",
         "run_id",
         "tool_call_id",
+        "provider_call_id",
         "tool_name",
         "assistant_message_id",
+        "contract_version",
         "arguments_hash",
         "sanitized_arguments",
         "request_ref",

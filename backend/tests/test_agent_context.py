@@ -53,7 +53,7 @@ async def test_base_prompt_starts_with_name_and_soul_and_never_injects_self_role
             agent_id,
             "TestAgent",
             "THIS ROLE MUST NOT ENTER THE MODEL",
-            allowed_tool_names={"finish", "wait"},
+            allowed_tool_names={"wait"},
         )
 
     assert static.startswith("# Identity\n\nYou are TestAgent, a digital employee in Clawith.")
@@ -64,6 +64,8 @@ async def test_base_prompt_starts_with_name_and_soul_and_never_injects_self_role
     assert "The release owner is Alice." not in static
     assert "The release owner is Alice." in dynamic
     assert "## Role" not in static
+    assert "call `finish`" not in static
+    assert "return the exact final answer as normal Assistant content" in static
 
 
 @pytest.mark.asyncio
@@ -78,13 +80,12 @@ async def test_focus_mechanism_is_constant_but_tool_policy_follows_effective_too
         without_tools, _ = await build_agent_context(
             agent_id,
             "TestAgent",
-            allowed_tool_names={"finish", "wait"},
+            allowed_tool_names={"wait"},
         )
         with_focus_tools, _ = await build_agent_context(
             agent_id,
             "TestAgent",
             allowed_tool_names={
-                "finish",
                 "wait",
                 "list_focus_items",
                 "upsert_focus_item",
@@ -113,12 +114,12 @@ async def test_skill_catalog_requires_read_file_and_prompt_has_no_hardcoded_chan
         without_loader, _ = await build_agent_context(
             agent_id,
             "TestAgent",
-            allowed_tool_names={"finish", "wait"},
+            allowed_tool_names={"wait"},
         )
         with_loader, _ = await build_agent_context(
             agent_id,
             "TestAgent",
-            allowed_tool_names={"finish", "wait", "read_file", "list_files"},
+            allowed_tool_names={"wait", "read_file", "list_files"},
         )
 
     assert "Risk Review" not in without_loader
@@ -180,7 +181,6 @@ async def test_directory_and_human_send_policies_only_name_enabled_tools():
             agent_id,
             "TestAgent",
             allowed_tool_names={
-                "finish",
                 "wait",
                 "query_directory",
                 "send_platform_message",
@@ -208,7 +208,6 @@ async def test_experience_policy_is_short_and_only_names_enabled_operations():
             agent_id,
             "TestAgent",
             allowed_tool_names={
-                "finish",
                 "wait",
                 "search_experience",
                 "read_experience",
@@ -218,7 +217,6 @@ async def test_experience_policy_is_short_and_only_names_enabled_operations():
             agent_id,
             "TestAgent",
             allowed_tool_names={
-                "finish",
                 "wait",
                 "search_experience",
                 "read_experience",

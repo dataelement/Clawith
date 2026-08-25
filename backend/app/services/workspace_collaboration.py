@@ -547,8 +547,10 @@ async def write_workspace_file(
     enforce_human_lock: bool = True,
     merge_user_autosave: bool = False,
     expected_version_token: str | None = None,
+    require_absent: bool = False,
+    append: bool = False,
 ) -> WorkspaceWriteResult:
-    """Write text content, enforcing human locks for agent/system actors."""
+    """Write or append text content, enforcing human locks for agent/system actors."""
     normalized = normalize_workspace_path(path)
     if not normalized:
         return WorkspaceWriteResult(False, normalized, "Missing file path")
@@ -568,17 +570,36 @@ async def write_workspace_file(
 
     storage = get_storage_backend()
     storage_key = normalize_storage_key(f"{agent_id}/{normalized}")
+    current_version = await storage.get_version(storage_key)
+    if append and not current_version.exists:
+        return WorkspaceWriteResult(
+            False,
+            normalized,
+            f"Cannot append to missing file: {normalized}",
+        )
     local_base_available = _should_mirror_to_local_filesystem(storage)
     try:
         target = safe_agent_path(base_dir, normalized)
     except Exception:
         target = None
         local_base_available = False
-    before = await storage.read_text(storage_key, encoding="utf-8", errors="replace") if await storage.exists(storage_key) else None
+    before = (
+        await storage.read_text(storage_key, encoding="utf-8", errors="replace")
+        if current_version.exists
+        else None
+    )
+    after = f"{before or ''}{content}" if append else content
+    condition = None
+    if require_absent:
+        condition = WriteCondition(require_absent=True)
+    elif expected_version_token is not None:
+        condition = WriteCondition(version_token=expected_version_token)
+    elif append:
+        condition = WriteCondition(version_token=current_version.token)
     write_result = await storage.write_bytes_if_match(
         storage_key,
-        content.encode("utf-8"),
-        condition=WriteCondition(version_token=expected_version_token) if expected_version_token is not None else None,
+        after.encode("utf-8"),
+        condition=condition,
         content_type="text/plain; charset=utf-8",
     )
     if not write_result.ok:
@@ -586,7 +607,7 @@ async def write_workspace_file(
     if local_base_available and target is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(target, "w", encoding="utf-8") as f:
-            await f.write(content)
+            await f.write(after)
 
     revision = await record_revision(
         db,
@@ -596,14 +617,18 @@ async def write_workspace_file(
         actor_type=actor_type,
         actor_id=actor_id,
         before_content=before,
-        after_content=content,
+        after_content=after,
         session_id=session_id,
         merge_user_autosave=merge_user_autosave,
     )
     return WorkspaceWriteResult(
         True,
         normalized,
-        f"Written to {normalized} ({len(content)} chars)",
+        (
+            f"Appended to {normalized} ({len(content)} chars; {len(after)} total)"
+            if append
+            else f"Written to {normalized} ({len(content)} chars)"
+        ),
         revision_id=str(revision.id) if revision else None,
     )
 
@@ -619,6 +644,7 @@ async def delete_workspace_file(
     session_id: str | None = None,
     enforce_human_lock: bool = True,
     expected_version_token: str | None = None,
+    expected_version_tokens: dict[str, str] | None = None,
 ) -> WorkspaceWriteResult:
     """Delete a workspace file and record the deleted content."""
     normalized = normalize_workspace_path(path)
@@ -647,10 +673,23 @@ async def delete_workspace_file(
     async with workspace_locks(agent_id, [normalized]):
         if storage_is_dir:
             entries = await _collect_storage_tree_versions(storage, storage_key)
+            if expected_version_tokens is not None and {
+                entry_key for entry_key, _version_token in entries
+            } != set(expected_version_tokens):
+                return WorkspaceWriteResult(
+                    False,
+                    normalized,
+                    f"Conflict detected while deleting {normalized}",
+                )
             for entry_key, version_token in reversed(entries):
+                expected_token = (
+                    expected_version_tokens[entry_key]
+                    if expected_version_tokens is not None
+                    else version_token
+                )
                 delete_result = await storage.delete_if_match(
                     entry_key,
-                    condition=WriteCondition(version_token=version_token),
+                    condition=WriteCondition(version_token=expected_token),
                 )
                 if not delete_result.ok:
                     return WorkspaceWriteResult(False, normalized, f"Conflict detected while deleting {normalized}")
@@ -700,6 +739,8 @@ async def move_workspace_path(
     overwrite: bool = False,
     expected_source_version_token: str | None = None,
     expected_destination_version_token: str | None = None,
+    expected_source_versions: dict[str, str] | None = None,
+    expected_destination_versions: dict[str, str | None] | None = None,
 ) -> WorkspaceWriteResult:
     """Move or rename a workspace file/folder while respecting edit locks."""
     source_normalized = normalize_workspace_path(source_path)
@@ -746,6 +787,16 @@ async def move_workspace_path(
     destination_exists = await storage.exists(destination_key)
     destination_is_dir = await storage.is_dir(destination_key)
     async with workspace_locks(agent_id, [source_normalized, destination_normalized]):
+        destination_version = await storage.get_version(destination_key)
+        destination_before = (
+            await storage.read_text(
+                destination_key,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if destination_exists and not destination_is_dir
+            else None
+        )
         if destination_exists or destination_is_dir:
             if not overwrite:
                 return WorkspaceWriteResult(
@@ -753,36 +804,83 @@ async def move_workspace_path(
                     destination_normalized,
                     f"Destination already exists: {destination_normalized}. Set overwrite=true to replace it.",
                 )
-            if destination_is_dir:
-                await storage.delete_tree(destination_key)
-            else:
-                delete_result = await storage.delete_if_match(
-                    destination_key,
-                    condition=WriteCondition(version_token=expected_destination_version_token) if expected_destination_version_token is not None else None,
-                )
-                if not delete_result.ok:
-                    return WorkspaceWriteResult(False, destination_normalized, f"Conflict detected while replacing {destination_normalized}")
+            # Directory replacement is expanded into conditional per-file
+            # writes below. Never erase the target tree before candidates are
+            # durably written and verified.
 
         source = destination = None
         if _should_mirror_to_local_filesystem(storage):
             source = safe_agent_path(base_dir, source_normalized)
             destination = safe_agent_path(base_dir, destination_normalized)
         source_before = await storage.read_text(source_key, encoding="utf-8", errors="replace") if source_exists else None
-        destination_before = await storage.read_text(destination_key, encoding="utf-8", errors="replace") if destination_exists else None
 
         if source_is_dir:
             entries = await _collect_storage_tree_versions(storage, source_key)
+            if expected_source_versions is not None and {
+                entry_key for entry_key, _version_token in entries
+            } != set(expected_source_versions):
+                return WorkspaceWriteResult(
+                    False,
+                    source_normalized,
+                    f"Conflict detected while moving {source_normalized}",
+                )
+            actual_target_keys = {
+                normalize_storage_key(
+                    f"{agent_id}/{destination_normalized}/"
+                    f"{entry_key.removeprefix(source_key.rstrip('/') + '/')}"
+                )
+                for entry_key, _version_token in entries
+            }
+            if (
+                expected_destination_versions is not None
+                and actual_target_keys != set(expected_destination_versions)
+            ):
+                return WorkspaceWriteResult(
+                    False,
+                    destination_normalized,
+                    f"Conflict detected while moving into {destination_normalized}",
+                )
             for entry_key, version_token in entries:
                 rel = entry_key.removeprefix(source_key.rstrip("/") + "/")
                 target_key = normalize_storage_key(f"{agent_id}/{destination_normalized}/{rel}")
                 current_version = await storage.get_version(entry_key)
-                if current_version.token != version_token:
+                expected_source_token = (
+                    expected_source_versions[entry_key]
+                    if expected_source_versions is not None
+                    else version_token
+                )
+                if current_version.token != expected_source_token:
                     return WorkspaceWriteResult(False, source_normalized, f"Conflict detected while moving {source_normalized}")
-                await storage.write_bytes(target_key, await storage.read_bytes(entry_key))
+                target_version = await storage.get_version(target_key)
+                expected_target_token = (
+                    expected_destination_versions.get(target_key)
+                    if expected_destination_versions is not None
+                    else (target_version.token if target_version.exists else None)
+                )
+                target_write = await storage.write_bytes_if_match(
+                    target_key,
+                    await storage.read_bytes(entry_key),
+                    condition=(
+                        WriteCondition(version_token=expected_target_token)
+                        if expected_target_token is not None and overwrite
+                        else WriteCondition(require_absent=True)
+                    ),
+                )
+                if not target_write.ok:
+                    return WorkspaceWriteResult(
+                        False,
+                        destination_normalized,
+                        f"Conflict detected while moving into {destination_normalized}",
+                    )
             for entry_key, version_token in reversed(entries):
+                expected_source_token = (
+                    expected_source_versions[entry_key]
+                    if expected_source_versions is not None
+                    else version_token
+                )
                 delete_result = await storage.delete_if_match(
                     entry_key,
-                    condition=WriteCondition(version_token=version_token),
+                    condition=WriteCondition(version_token=expected_source_token),
                 )
                 if not delete_result.ok:
                     return WorkspaceWriteResult(False, source_normalized, f"Conflict detected while finalizing move for {source_normalized}")
@@ -790,7 +888,26 @@ async def move_workspace_path(
             source_version = await storage.get_version(source_key)
             if expected_source_version_token is not None and source_version.token != expected_source_version_token:
                 return WorkspaceWriteResult(False, source_normalized, f"Conflict detected while moving {source_normalized}")
-            await storage.write_bytes(destination_key, await storage.read_bytes(source_key))
+            destination_write = await storage.write_bytes_if_match(
+                destination_key,
+                await storage.read_bytes(source_key),
+                condition=(
+                    WriteCondition(
+                        version_token=(
+                            expected_destination_version_token
+                            or destination_version.token
+                        )
+                    )
+                    if destination_version.exists
+                    else WriteCondition(require_absent=True)
+                ),
+            )
+            if not destination_write.ok:
+                return WorkspaceWriteResult(
+                    False,
+                    destination_normalized,
+                    f"Conflict detected while replacing {destination_normalized}",
+                )
             delete_result = await storage.delete_if_match(
                 source_key,
                 condition=WriteCondition(version_token=source_version.token),

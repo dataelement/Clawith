@@ -10,7 +10,12 @@ import uuid
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
-from app.services.sandbox.config import SandboxConfig, SandboxType
+from app.services.sandbox.config import (
+    CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS,
+    CODE_EXECUTION_MAX_TIMEOUT_SECONDS,
+    SandboxConfig,
+    SandboxType,
+)
 
 
 def _running_in_container() -> bool:
@@ -89,6 +94,8 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://clawith:clawith@localhost:5432/clawith"
     DATABASE_AUTO_CREATE_TABLES: bool = False
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -120,6 +127,9 @@ class Settings(BaseSettings):
 
     # Process role
     PROCESS_ROLE: str = "all"
+    APP_WORKERS: int = 1
+    BCRYPT_WORKERS: int = 4
+    LOGIN_SLOW_LOG_THRESHOLD_MS: int = 1000
 
     # Agent Runtime
     AGENT_RUNTIME_V2_ENABLED: bool = True
@@ -149,6 +159,7 @@ class Settings(BaseSettings):
     AGENT_RUNTIME_RUN_COMPACT_TOOL_RESULT_BYTES: int | None = Field(default=None, gt=0)
     AGENT_RUNTIME_VERIFY_REPAIR_COMPACT_ROUNDS: int | None = Field(default=None, gt=0)
     AGENT_RUNTIME_MODEL_CAPABILITY_REFRESH_SECONDS: int = Field(default=86400, gt=0)
+    AGENT_RUNTIME_WEB_STREAMING_ENABLED: bool = True
     AGENT_RUNTIME_FALLBACK_CONTEXT_WINDOW_TOKENS: int = Field(default=131072, gt=0)
     MULTI_AGENT_COMPACT_MODEL_ID: uuid.UUID | None = None
     MULTI_AGENT_PLANNING_MODEL_ID: uuid.UUID | None = None
@@ -171,6 +182,8 @@ class Settings(BaseSettings):
     FEISHU_REDIRECT_URI: str = ""
     PUBLIC_BASE_URL: str = ""
     HTTP_PROXY: str = ""
+    HTTPS_PROXY: str = ""
+    NO_PROXY: str = ""
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
@@ -190,8 +203,11 @@ class Settings(BaseSettings):
     SANDBOX_MEMORY_LIMIT: str = "256m"
     SANDBOX_ALLOW_NETWORK: bool = False
     SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING: bool = _default_allow_unsafe_bwrap_fallback()
-    SANDBOX_DEFAULT_TIMEOUT: int = 30
-    SANDBOX_MAX_TIMEOUT: int = 60
+    SANDBOX_DEFAULT_TIMEOUT: int = CODE_EXECUTION_DEFAULT_TIMEOUT_SECONDS
+    SANDBOX_MAX_TIMEOUT: int = CODE_EXECUTION_MAX_TIMEOUT_SECONDS
+    SANDBOX_HTTP_PROXY: str = ""
+    SANDBOX_HTTPS_PROXY: str = ""
+    SANDBOX_NO_PROXY: str = ""
 
     @field_validator(
         "LANGGRAPH_CHECKPOINT_DATABASE_URL",
@@ -256,4 +272,7 @@ def get_sandbox_config() -> SandboxConfig:
         allow_unsafe_fallback_when_bwrap_missing=settings.SANDBOX_ALLOW_UNSAFE_FALLBACK_WHEN_BWRAP_MISSING,
         default_timeout=settings.SANDBOX_DEFAULT_TIMEOUT,
         max_timeout=settings.SANDBOX_MAX_TIMEOUT,
+        http_proxy=settings.SANDBOX_HTTP_PROXY or settings.HTTP_PROXY or None,
+        https_proxy=settings.SANDBOX_HTTPS_PROXY or settings.HTTPS_PROXY or None,
+        no_proxy=settings.SANDBOX_NO_PROXY or settings.NO_PROXY or None,
     )

@@ -22,6 +22,14 @@ const messageStream = readFileSync(
   new URL('../src/pages/groups/MessageStream.tsx', import.meta.url),
   'utf8',
 );
+const messageComposer = readFileSync(
+  new URL('../src/pages/groups/MessageComposer.tsx', import.meta.url),
+  'utf8',
+);
+const groupStyles = readFileSync(
+  new URL('../src/pages/groups/groups.css', import.meta.url),
+  'utf8',
+);
 
 test('new group sessions may use the backend default title while group names stay required', () => {
   assert.match(promptModal, /allowEmpty\?: boolean/);
@@ -88,6 +96,17 @@ test('group composer and stream use session-wide active runs', () => {
   assert.match(groupsPage, /runningAgents=\{runningAgents\}/);
 });
 
+test('group and direct histories share user-driven prepend pagination semantics', () => {
+  assert.match(messageStream, /useOlderHistoryGesture/);
+  assert.match(messageStream, /usePrependScrollAnchor/);
+  assert.match(messageStream, /onWheelCapture=\{historyLoadGesture\.onWheelCapture\}/);
+  assert.match(messageStream, /onTouchMoveCapture=\{historyLoadGesture\.onTouchMoveCapture\}/);
+  assert.match(messageStream, /prependAnchor\.isPrependingRef\.current/);
+  assert.doesNotMatch(messageStream, /previousHeightRef/);
+  assert.match(groupStyles, /\.group-stream\s*\{[\s\S]*?overflow-anchor:\s*none/);
+  assert.match(groupStyles, /\.group-stream\s*\{[\s\S]*?overscroll-behavior-y:\s*contain/);
+});
+
 test('planning-to-entry transition keeps polling and preserves the typing indicator', () => {
   assert.match(groupsPage, /ACTIVE_RUN_TRANSITION_GRACE_MS/);
   assert.match(groupsPage, /planningTransitionUntilRef/);
@@ -115,4 +134,13 @@ test('group planning failures preserve the backend message and diagnostics', () 
   assert.match(groupsPage, /intake\.error\?\.message/);
   assert.match(groupsPage, /intake\.error\?\.trace_id/);
   assert.match(groupsPage, /intake\.error\?\.code \?\? intake\.error_code/);
+});
+
+test('mention candidates stay reachable by pointer and keyboard scrolling', () => {
+  assert.doesNotMatch(messageComposer, /\.slice\(0, 8\)/);
+  assert.match(messageComposer, /mentionPopupRef/);
+  assert.match(messageComposer, /mentionOptionRefs/);
+  assert.match(messageComposer, /popup\.scrollTop/);
+  assert.match(groupStyles, /\.group-mention-popup\s*\{[\s\S]*?overflow-y:\s*auto/);
+  assert.match(groupStyles, /\.group-mention-popup\s*\{[\s\S]*?overscroll-behavior:\s*contain/);
 });

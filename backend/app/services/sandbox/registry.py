@@ -1,7 +1,6 @@
 """Sandbox backend registry and factory."""
 
 from typing import Type
-from loguru import logger
 
 from app.services.sandbox.base import SandboxBackend
 from app.services.sandbox.config import SandboxConfig, SandboxType
