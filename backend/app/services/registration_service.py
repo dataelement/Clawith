@@ -109,6 +109,15 @@ class RegistrationService:
         """
         identity: Identity | None = None
 
+        # identities.email and .phone are both unique and nullable. Postgres allows
+        # many NULLs in a unique index but only a single empty string, so persisting
+        # "" makes the *second* contact-less identity fail with
+        # UniqueViolationError on ix_identities_email / ix_identities_phone.
+        # SSO providers pass ExternalUserInfo defaults ("") when the upstream
+        # directory exposes no address, so normalize before both lookup and insert.
+        email = (email or "").strip() or None
+        phone = (phone or "").strip() or None
+
         # Match by email (primary ownership claim)
         if email:
             identity = await identity_dao.get_by_email(email)
