@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   ApiError,
   AppError,
+  getErrorMessage,
   normalizeUnknownError,
   parseHttpError,
   parseHttpErrorResponse,
@@ -102,6 +103,18 @@ test('object details never degrade to object stringification when a message exis
 test('plain text and empty responses receive useful messages', () => {
   assert.equal(parseHttpError({ status: 502, bodyText: 'Upstream unavailable' }).message, 'Upstream unavailable');
   assert.equal(parseHttpError({ status: 404, statusText: 'Not Found', bodyText: '' }).message, 'HTTP 404 Not Found');
+});
+
+test('user-facing errors unwrap nested messages and reject object coercion', () => {
+  assert.equal(
+    getErrorMessage({ message: { error: { message: 'Session backend unavailable' } } }, 'Could not create session'),
+    'Session backend unavailable',
+  );
+
+  const malformed = new Error('placeholder');
+  Object.defineProperty(malformed, 'message', { value: { detail: 'Session creation denied' } });
+  assert.equal(getErrorMessage(malformed, 'Could not create session'), 'Session creation denied');
+  assert.equal(getErrorMessage(new Error('[object Object]'), 'Could not create session'), 'Could not create session');
 });
 
 test('unknown thrown values normalize to typed AppError instances', () => {

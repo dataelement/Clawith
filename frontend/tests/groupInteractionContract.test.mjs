@@ -31,6 +31,14 @@ const groupStyles = readFileSync(
   'utf8',
 );
 
+test('session creation displays a normalized string error instead of object coercion', () => {
+  assert.match(groupsPage, /import \{ getErrorMessage \} from '\.\.\/\.\.\/services\/apiError'/);
+  assert.match(
+    groupsPage,
+    /const createSession = async[\s\S]*?catch \(error: unknown\) \{[\s\S]*?toast\.error\(getErrorMessage\(error, t\('groups\.createSessionFailed'/,
+  );
+});
+
 test('new group sessions may use the backend default title while group names stay required', () => {
   assert.match(promptModal, /allowEmpty\?: boolean/);
   assert.match(promptModal, /allowEmpty \|\| Boolean\(value\.trim\(\)\)/);

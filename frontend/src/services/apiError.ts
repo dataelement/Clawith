@@ -99,17 +99,17 @@ function validationMessage(items: unknown[]): string | undefined {
     return messages.length ? messages.join('; ') : undefined;
 }
 
-function messageFromValue(value: unknown): string | undefined {
+function messageFromValue(value: unknown, depth = 0): string | undefined {
+    if (depth > 4) return undefined;
     if (typeof value === 'string') return optionalString(value);
     if (Array.isArray(value)) return validationMessage(value);
     if (!isRecord(value)) return value == null ? undefined : String(value);
 
-    const direct = optionalString(value.message) ?? optionalString(value.detail);
+    const direct = messageFromValue(value.message, depth + 1)
+        ?? messageFromValue(value.detail, depth + 1);
     if (direct) return direct;
-    if (isRecord(value.error)) {
-        const nested = optionalString(value.error.message) ?? optionalString(value.error.detail);
-        if (nested) return nested;
-    }
+    const nested = messageFromValue(value.error, depth + 1);
+    if (nested) return nested;
     return stableStringify(value);
 }
 
@@ -180,14 +180,18 @@ export async function parseHttpErrorResponse(response: Response): Promise<ApiErr
     });
 }
 
+export function getErrorMessage(error: unknown, fallback: string): string {
+    const value = error instanceof Error ? error.message : error;
+    const message = messageFromValue(value);
+    return message && message !== '[object Object]' ? message : fallback;
+}
+
 export function normalizeUnknownError(
     error: unknown,
     context: Partial<Omit<AppErrorContext, 'message'>> = {},
 ): AppError {
     if (error instanceof AppError) return error;
-    const message = error instanceof Error
-        ? error.message
-        : messageFromValue(error) ?? 'Unknown error';
+    const message = getErrorMessage(error, 'Unknown error');
     return new AppError({
         message,
         code: context.code ?? 'unknown_error',

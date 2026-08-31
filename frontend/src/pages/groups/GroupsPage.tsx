@@ -18,6 +18,7 @@ import {
 } from '@tabler/icons-react';
 import { groupApi } from '../../services/groupApi';
 import { fetchJson } from '../../services/api';
+import { getErrorMessage } from '../../services/apiError';
 import {
     compareCursor,
     type GroupActivity,
@@ -634,8 +635,8 @@ export default function GroupsPage() {
             await queryClient.invalidateQueries({ queryKey: ['group-sessions', targetGroupId] });
             setExpandedGroups((current) => new Set(current).add(targetGroupId));
             navigate(`/groups/${targetGroupId}/${session.id}`);
-        } catch (error: any) {
-            toast.error(error?.message ?? t('groups.createSessionFailed', '创建会话失败'));
+        } catch (error: unknown) {
+            toast.error(getErrorMessage(error, t('groups.createSessionFailed', '创建会话失败')));
         }
     };
 
