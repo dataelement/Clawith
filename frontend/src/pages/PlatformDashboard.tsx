@@ -349,7 +349,7 @@ export default function PlatformDashboard() {
     const ChurnTable = () => {
         const data = enhanced?.churn_warnings || [];
         return (
-            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+            <div className="card" style={{ padding: '0', overflow: 'visible' }}>
                 <div style={{
                     padding: '20px',
                     fontSize: '13px',
@@ -413,7 +413,7 @@ export default function PlatformDashboard() {
         title: string; tooltip: string; items: any[];
         renderItem: (item: any, i: number) => React.ReactNode;
     }) => (
-        <div className="card" style={{ flex: 1, minWidth: '300px', padding: '0', overflow: 'hidden' }}>
+        <div className="card" style={{ flex: 1, minWidth: '300px', padding: '0', overflow: 'visible' }}>
             <div style={{
                 padding: '20px',
                 fontSize: '13px',
