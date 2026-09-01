@@ -297,6 +297,7 @@ class AgentOut(BaseModel):
     created_at: datetime
     last_active_at: datetime | None = None
     deleted_at: datetime | None = None
+    memory_context_max_chars: int = 2000
 
     model_config = {"from_attributes": True}
 
@@ -322,6 +323,11 @@ class AgentUpdate(BaseModel):
     heartbeat_active_hours: str | None = None
     timezone: str | None = None
     expires_at: datetime | None = None  # Admin only — extend agent expiry
+    memory_context_max_chars: int | None = Field(
+        default=None,
+        ge=0,
+        le=100000,
+    )
 
     @field_validator("timezone")
     @classmethod
