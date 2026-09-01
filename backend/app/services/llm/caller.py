@@ -225,26 +225,44 @@ def _usage_from_response_or_estimate(response, api_messages: list[LLMMessage]) -
 # Helper Functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _get_agent_config(agent_id) -> tuple[int, str | None]:
-    """Get agent config: max_tool_rounds and token limit status."""
+async def _get_agent_config(agent_id) -> tuple[int, int, str | None]:
+    """Get agent config: max_tool_rounds, memory context limit and token limit status."""
     if not agent_id:
-        return 50, None
+        return 50, 2000, None
 
     try:
         from app.models.agent import Agent as AgentModel
+
         async with async_session() as _db:
             _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             _agent = _ar.scalar_one_or_none()
             if _agent:
                 max_rounds = _agent.max_tool_rounds or 50
+                memory_context_max_chars = (
+                    _agent.memory_context_max_chars
+                    if _agent.memory_context_max_chars is not None
+                    else 2000
+                )
                 if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
-                    return max_rounds, f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
+                    return (
+                        max_rounds,
+                        memory_context_max_chars,
+                        f"⚠ Daily token usage has reached the limit "
+                        f"({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). "
+                        "Please try again tomorrow or ask admin to increase the limit.",
+                    )
                 if _agent.max_tokens_per_month and _agent.tokens_used_month >= _agent.max_tokens_per_month:
-                    return max_rounds, f"⚠️ Monthly token usage has reached the limit ({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). Please ask admin to increase the limit."
-                return max_rounds, None
+                    return (
+                        max_rounds,
+                        memory_context_max_chars,
+                        f"⚠ Monthly token usage has reached the limit "
+                        f"({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). "
+                        "Please ask admin to increase the limit.",
+                    )
+                return max_rounds, memory_context_max_chars, None
     except Exception:
         pass
-    return 50, None
+    return 50, 2000, None
 
 
 async def _get_user_name(user_id) -> str | None:
@@ -495,7 +513,7 @@ async def call_llm(
 ) -> str:
     """Call LLM via unified client with function-calling tool loop."""
     # Get agent config for tool rounds
-    _max_tool_rounds, _token_limit_msg = await _get_agent_config(agent_id)
+    _max_tool_rounds, _memory_context_max_chars, _token_limit_msg = await _get_agent_config(agent_id)
     if _token_limit_msg:
         return _token_limit_msg
     if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
@@ -549,6 +567,7 @@ async def call_llm(
         "",
         current_user_name=_user_name,
         allowed_tool_names=allowed_tool_names,
+        memory_context_max_chars=_memory_context_max_chars,
     )
     if system_prompt_suffix:
         dynamic_prompt = f"{dynamic_prompt}\n\n{system_prompt_suffix.strip()}"
@@ -647,7 +666,7 @@ async def call_llm(
             if agent_id and _unsaved_usage.total_tokens > 0:
                 await record_token_usage(agent_id, _unsaved_usage)
                 _unsaved_usage = TokenUsage()
-                _, _token_limit_msg = await _get_agent_config(agent_id)
+                _, _, _token_limit_msg = await _get_agent_config(agent_id)
                 if _token_limit_msg:
                     logger.warning(f"[LLM] Token limit exceeded mid-loop: {_token_limit_msg}")
                     await client.close()

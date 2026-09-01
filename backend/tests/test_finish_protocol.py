@@ -354,7 +354,7 @@ async def test_call_llm_returns_natural_assistant_stop_without_finish(monkeypatc
         _plain_response("Final answer."),
     ])
 
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((3, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((3, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -408,7 +408,7 @@ async def test_call_llm_routes_embedded_thinking_before_final_content(monkeypatc
     monkeypatch.setattr(
         caller,
         "_get_agent_config",
-        lambda _agent_id: _async_return((3, None)),
+        lambda _agent_id: _async_return((3, 2000, None)),
     )
     monkeypatch.setattr(
         caller,
@@ -471,7 +471,7 @@ async def test_call_llm_executes_exact_textual_tool_call_before_finishing(
     monkeypatch.setattr(
         caller,
         "_get_agent_config",
-        lambda _agent_id: _async_return((3, None)),
+        lambda _agent_id: _async_return((3, 2000, None)),
     )
     monkeypatch.setattr(
         caller,
@@ -553,7 +553,7 @@ async def test_call_llm_repairs_textual_result_instead_of_publishing_it(monkeypa
     monkeypatch.setattr(
         caller,
         "_get_agent_config",
-        lambda _agent_id: _async_return((3, None)),
+        lambda _agent_id: _async_return((3, 2000, None)),
     )
     monkeypatch.setattr(
         caller,
@@ -622,7 +622,7 @@ async def test_legacy_tool_loop_calls_saved_model_without_verified_tool_calling(
     model.supports_tool_calling = supports_tool_calling
     fake_client = FakeStreamClient([_finish_response("Final answer.")])
 
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -662,7 +662,7 @@ async def test_call_llm_truncated_output_repair_is_bounded(monkeypatch):
         _plain_response("Second partial response.", finish_reason="length"),
     ])
 
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -716,7 +716,7 @@ async def test_invalid_finish_does_not_stop_and_is_returned_as_tool_error(monkey
         _finish_response("Recovered final."),
     ])
 
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((3, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((3, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -766,7 +766,7 @@ async def test_repeated_invalid_finish_is_bounded_by_protocol_code(monkeypatch):
         _finish_response_with_arguments("{}"),
         _finish_response_with_arguments("{}"),
     ])
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -815,7 +815,7 @@ async def test_repeated_invalid_tool_json_is_bounded_by_protocol_code(monkeypatc
         ],
     )
     fake_client = FakeStreamClient([invalid] * 11)
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -867,7 +867,7 @@ async def test_invalid_write_file_json_gets_ten_bounded_repairs(monkeypatch):
         ],
     )
     fake_client = FakeStreamClient([invalid] * 11)
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((50, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -910,7 +910,7 @@ async def test_skip_tools_uses_natural_completion_without_any_tools(monkeypatch)
 
     fake_client = FakeStreamClient([_plain_response("Onboarding done.")])
 
-    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((1, None)))
+    monkeypatch.setattr(caller, "_get_agent_config", lambda _agent_id: _async_return((1, 2000, None)))
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))
     monkeypatch.setattr(
         "app.services.agent_context.build_agent_context",
@@ -997,8 +997,8 @@ async def test_mid_loop_token_limit_checking(monkeypatch):
         nonlocal configs_called
         configs_called += 1
         if configs_called > 1:
-            return 50, "⚠️ Daily token usage limit exceeded"
-        return 50, None
+            return 50, 2000, "⚠️ Daily token usage limit exceeded"
+        return 50, 2000, None
 
     monkeypatch.setattr(caller, "_get_agent_config", mock_get_agent_config)
     monkeypatch.setattr(caller, "_get_user_name", lambda _user_id: _async_return("Ray"))

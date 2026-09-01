@@ -67,6 +67,45 @@ async def test_base_prompt_starts_with_name_and_soul_and_never_injects_self_role
     assert "call `finish`" not in static
     assert "return the exact final answer as normal Assistant content" in static
 
+@pytest.mark.asyncio
+async def test_memory_context_uses_configured_character_limit():
+    from app.services.agent_context import build_agent_context
+
+    agent_id = uuid.uuid4()
+    observed_limits = []
+
+    async def fake_read_file(key, max_chars=3000):
+        if key.endswith("/memory/memory.md"):
+            observed_limits.append(max_chars)
+            return "memory"
+        return ""
+
+    with (
+        patch("app.services.agent_context._read_file_safe", side_effect=fake_read_file),
+        patch(
+            "app.services.agent_context._load_skills_index",
+            new_callable=AsyncMock,
+            return_value="",
+        ),
+        patch(
+            "app.services.agent_context._load_relationships_from_db",
+            new_callable=AsyncMock,
+            return_value="",
+        ),
+        patch(
+            "app.services.timezone_utils.get_agent_timezone",
+            new_callable=AsyncMock,
+            return_value="UTC",
+        ),
+    ):
+        await build_agent_context(
+            agent_id,
+            "TestAgent",
+            allowed_tool_names={"wait"},
+            memory_context_max_chars=500,
+        )
+
+    assert observed_limits == [500]
 
 @pytest.mark.asyncio
 async def test_focus_mechanism_is_constant_but_tool_policy_follows_effective_tools():

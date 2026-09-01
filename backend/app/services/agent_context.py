@@ -437,6 +437,7 @@ async def build_agent_context(
     current_user_name: str | None = None,
     *,
     allowed_tool_names: Collection[str] | None = None,
+    memory_context_max_chars: int = 2000,
 ) -> tuple[str, str]:
     """Build Base Prompt V1 plus bounded, explicitly low-trust context data."""
     # `role_description` remains product metadata and is intentionally ignored by
@@ -463,12 +464,12 @@ async def build_agent_context(
 
     memory = await _read_file_safe(
         normalize_storage_key(f"{agent_id}/memory/memory.md"),
-        2000,
+        memory_context_max_chars,
     )
     if not memory:
         memory = await _read_file_safe(
             normalize_storage_key(f"{agent_id}/memory.md"),
-            2000,
+            memory_context_max_chars,
         )
     if memory.startswith("# "):
         memory = "\n".join(memory.split("\n")[1:]).strip()
