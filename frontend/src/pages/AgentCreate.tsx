@@ -11,6 +11,18 @@ import { buildOpenClawInstruction } from '../utils/openClawInstruction';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
 
+const groupActivationExtra = (channelValues: Record<string, string>, channelId: string) => {
+    const mode = channelValues[`${channelId}_activation_mode`] || 'mention';
+    const keywords = (channelValues[`${channelId}_keywords`] || '')
+        .split(',')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+    return {
+        activation_mode: mode,
+        ...(keywords.length ? { keywords } : {}),
+    };
+};
+
 export default function AgentCreate() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
@@ -103,7 +115,8 @@ export default function AgentCreate() {
                         app_secret: channelValues.feishu_app_secret,
                         encrypt_key: channelValues.feishu_encrypt_key || undefined,
                         extra_config: {
-                            connection_mode: channelValues.feishu_connection_mode || 'websocket'
+                            connection_mode: channelValues.feishu_connection_mode || 'websocket',
+                            ...groupActivationExtra(channelValues, 'feishu'),
                         }
                     });
                 } catch (err) {

@@ -549,7 +549,14 @@
         "websocketConnected": "Connected via WebSocket (No callback URL needed)",
         "websocketDisconnected": "Configured for WebSocket, but currently disconnected",
         "websocketDisconnectedHint": "Reconnect by saving the WeCom WebSocket configuration again.",
-        "saveChannel": "Save Config"
+        "saveChannel": "Save Config",
+        "activationMode": "Group Activation Mode",
+        "activationMention": "Mention only (recommended)",
+        "activationKeyword": "Keyword trigger",
+        "activationAlways": "Always respond",
+        "activationSilent": "Silent in groups",
+        "keywordsPlaceholder": "Comma separated, e.g. 价格,周报",
+        "activationHint": "Controls when the bot responds to group messages. Private chats always get answered."
       },
       "danger": {
         "title": "Danger Zone",

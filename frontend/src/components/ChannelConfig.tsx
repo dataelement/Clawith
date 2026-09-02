@@ -73,6 +73,7 @@ interface ChannelDef {
     wsFields?: ChannelField[];
     // Atlassian-specific test connection feature
     hasTestConnection?: boolean;
+    groupActivation?: boolean;
 }
 
 // ─── SVG Icons ──────────────────────────────────────────
@@ -154,6 +155,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         desc: 'Feishu / Lark',
         useChannelApi: true,
         connectionMode: true,
+        groupActivation: true,
         fields: [
             { key: 'app_id', label: 'App ID', placeholder: 'cli_xxxxxxxxxxxxxxxx', required: true },
             { key: 'app_secret', label: 'App Secret', type: 'password', required: true },
@@ -326,6 +328,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         wecom: 'websocket',
         dingtalk: 'websocket',
         discord: 'gateway',
+    });
+
+    const [activationModes, setActivationModes] = useState<Record<string, string>>({
+        feishu: 'mention',
+    });
+    const [activationKeywords, setActivationKeywords] = useState<Record<string, string>>({
+        feishu: '',
     });
 
     // Password visibility
@@ -643,20 +652,42 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // ─── Build save payload for a channel ───────────────
     const buildPayload = (ch: ChannelDef, form: Record<string, string>) => {
         if (ch.id === 'feishu') {
+            const keywords = (activationKeywords[ch.id] || '')
+                .split(',')
+                .map((s: string) => s.trim())
+                .filter(Boolean);
             return {
                 channel_type: 'feishu',
                 app_id: form.app_id,
                 app_secret: form.app_secret,
                 encrypt_key: form.encrypt_key || undefined,
-                extra_config: { connection_mode: connectionModes.feishu || 'websocket' },
+                extra_config: {
+                    connection_mode: connectionModes[ch.id] || 'websocket',
+                    ...(ch.groupActivation ? {
+                        activation_mode: activationModes[ch.id] || 'mention',
+                        ...(keywords.length ? { keywords } : {}),
+                    } : {}),
+                },
             };
         }
         if (ch.id === 'wecom') {
             const connMode = connectionModes.wecom || 'websocket';
+            const keywords = (activationKeywords[ch.id] || '')
+                .split(',')
+                .map((s: string) => s.trim())
+                .filter(Boolean);
             if (connMode === 'websocket') {
                 return { connection_mode: 'websocket', bot_id: form.bot_id, bot_secret: form.bot_secret };
             }
-            return { ...form, connection_mode: 'webhook' };
+            return {
+                ...form,
+                extra_config: {
+                    ...(ch.groupActivation ? {
+                        activation_mode: activationModes[ch.id] || 'mention',
+                        ...(keywords.length ? { keywords } : {}),
+                    } : {}),
+                },
+            };
         }
         if (ch.id === 'discord') {
             const connMode = connectionModes.discord || 'gateway';
@@ -831,6 +862,33 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     <input type="radio" checked={!isWs} onChange={() => setConnectionModes(p => ({ ...p, [ch.id]: 'webhook' }))} />
                                     {t('agent.settings.channel.modeWebhook', 'Webhook')}
                                 </label>
+                            </div>
+                        )}
+
+                                               {/* Feishu group activation mode (create mode) */}
+                        {ch.groupActivation && (
+                            <div style={{ marginBottom: '16px' }}>
+                                <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>{t('agent.settings.channel.activationMode')}</label>
+                                <select
+                                    value={values?.[`${ch.id}_activation_mode`] || 'mention'}
+                                    onChange={(e) => onChange?.({ ...values, [`${ch.id}_activation_mode`]: e.target.value })}
+                                    style={{ width: '100%', padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                >
+                                    <option value="mention">{t('agent.settings.channel.activationMention')}</option>
+                                    <option value="keyword">{t('agent.settings.channel.activationKeyword')}</option>
+                                    <option value="always">{t('agent.settings.channel.activationAlways')}</option>
+                                    <option value="silent">{t('agent.settings.channel.activationSilent')}</option>
+                                </select>
+                                {(values?.[`${ch.id}_activation_mode`] || 'mention') === 'keyword' && (
+                                    <input
+                                        type="text"
+                                        value={values?.[`${ch.id}_keywords`] || ''}
+                                        onChange={(e) => onChange?.({ ...values, [`${ch.id}_keywords`]: e.target.value })}
+                                        placeholder={t('agent.settings.channel.keywordsPlaceholder')}
+                                        style={{ width: '100%', padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', marginTop: '8px' }}
+                                    />
+                                )}
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>{t('agent.settings.channel.activationHint')}</div>
                             </div>
                         )}
 
@@ -1066,6 +1124,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             onClick={() => {
                                                 // Populate form with existing config data
                                                 const prefill: Record<string, string> = {};
+                                                // 通用回填激活模式(所有 groupActivation 渠道)
+                                                if (ch.groupActivation) {
+                                                    setActivationModes(prev => ({ ...prev, [ch.id]: config.extra_config?.activation_mode || 'mention' }));
+                                                    setActivationKeywords(prev => ({ ...prev, [ch.id]: Array.isArray(config.extra_config?.keywords) ? config.extra_config.keywords.join(', ') : (config.extra_config?.keywords || '') }));
+                                                }
                                                 if (ch.id === 'feishu') {
                                                     prefill.app_id = config.app_id || '';
                                                     prefill.app_secret = config.app_secret || '';
@@ -1074,6 +1137,8 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 } else if (ch.id === 'wecom') {
                                                     const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
                                                     setConnectionModes(prev => ({ ...prev, wecom: cm }));
+                                                    setActivationModes(prev => ({ ...prev, [ch.id]: config.extra_config?.activation_mode || 'mention' }));
+                                                    setActivationKeywords(prev => ({ ...prev, [ch.id]: Array.isArray(config.extra_config?.keywords) ? config.extra_config.keywords.join(', ') : (config.extra_config?.keywords || '') }));
                                                     if (cm === 'websocket') {
                                                         prefill.bot_id = config.extra_config?.bot_id || '';
                                                         prefill.bot_secret = config.extra_config?.bot_secret || '';
@@ -1173,6 +1238,33 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 {t('wizard.step5.modeWebhook')}
                                             </label>
                                         </div>
+                                    </div>
+                                )}
+
+                                {/* Feishu group activation mode */}
+                                {ch.groupActivation && (
+                                    <div style={{ marginBottom: '8px' }}>
+                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>{t('agent.settings.channel.activationMode')}</label>
+                                        <select
+                                            value={activationModes[ch.id] || 'mention'}  // ✅ 通用
+                                            onChange={(e) => setActivationModes(prev => ({ ...prev, [ch.id]: e.target.value }))}
+                                            style={{ width: '100%', padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                        >
+                                            <option value="mention">{t('agent.settings.channel.activationMention')}</option>
+                                            <option value="keyword">{t('agent.settings.channel.activationKeyword')}</option>
+                                            <option value="always">{t('agent.settings.channel.activationAlways')}</option>
+                                            <option value="silent">{t('agent.settings.channel.activationSilent')}</option>
+                                        </select>
+                                         {(activationModes[ch.id] || 'mention') === 'keyword' && (
+                                            <input
+                                                type="text"
+                                                value={activationKeywords[ch.id] || ''}  // ✅ 通用
+                                                onChange={(e) => setActivationKeywords(prev => ({ ...prev, [ch.id]: e.target.value }))}
+                                                placeholder={t('agent.settings.channel.keywordsPlaceholder')}
+                                                style={{ width: '100%', padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', marginTop: '8px' }}
+                                            />
+                                        )}
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>{t('agent.settings.channel.activationHint')}</div>
                                     </div>
                                 )}
 

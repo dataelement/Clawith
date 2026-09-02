@@ -558,7 +558,14 @@
         "websocketConnected": "已通过 WebSocket 连接（无需回调 URL）",
         "websocketDisconnected": "已配置为 WebSocket，但当前未连接",
         "websocketDisconnectedHint": "重新保存一次企业微信 WebSocket 配置即可重新连接。",
-        "saveChannel": "保存配置"
+        "saveChannel": "保存配置",
+        "activationMode": "群聊激活方式",
+        "activationMention": "仅 @ 机器人时响应（推荐）",
+        "activationKeyword": "命中关键词时响应",
+        "activationAlways": "所有消息都响应",
+        "activationSilent": "群聊内静默",
+        "keywordsPlaceholder": "用逗号分隔，例如：价格,周报",
+        "activationHint": "控制机器人在群聊中何时响应。私聊始终会回复。"
       },
       "danger": {
         "title": "危险操作",
