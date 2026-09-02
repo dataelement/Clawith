@@ -5,9 +5,11 @@ import hmac
 import json
 import re
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
+from voluptuous import message
 from lark_oapi.core.utils import AESCipher
 from loguru import logger
 from sqlalchemy import select
@@ -234,7 +236,7 @@ async def configure_channel(
         existing.app_secret = data.app_secret
         existing.encrypt_key = data.encrypt_key
         existing.verification_token = data.verification_token
-        existing.extra_config = data.extra_config or {}
+        existing.extra_config = {**(existing.extra_config or {}), **(data.extra_config or {})}
         existing.is_configured = True
         await db.flush()
         
@@ -557,6 +559,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             )
             return {"code": 0, "msg": "non-user group message ignored"}
 
+        # 兜底:发送者就是机器人自己 → 忽略,防止回执/自我消息被当成用户消息回环处理
+        if chat_type == "group" and sender_open_id:
+            bot_open_id = await feishu_service.get_bot_open_id(
+                config.app_id, config.app_secret
+            )
+            if bot_open_id and sender_open_id == bot_open_id:
+                logger.info("[Feishu] Ignoring self-sent bot message")
+                return {"code": 0, "msg": "bot self message ignored"}
+
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, open_id={sender_open_id!r}, user_id_from_event={sender_user_id_from_event!r}")
 
         # ── Normalize post (rich text) → extract text + schedule image downloads ──
@@ -628,8 +639,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             # Rewrite as text message so existing handler processes it
             message["content"] = _json_post.dumps({"text": _final_content})
             msg_type = "text"
-            logger.info(f"[Feishu] Normalized post → text='{_extracted_text[:100]}', images={len(_image_markers)}")
-
+         
         if msg_type in ("file", "image"):
             attachment = await _accept_feishu_file_runtime(
                 agent_id=agent_id,
@@ -652,12 +662,110 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             return {"code": 0, "msg": "unsupported message type"}
 
         content = json.loads(message.get("content", "{}"))
-        user_text = _restore_feishu_text_mentions(
-            content.get("text", ""),
-            message.get("mentions"),
+        raw_text = content.get("text", "")
+
+        from app.services.agent_runtime.channel_activation import (
+            prepare_llm_user_text,
+            resolve_effective_mode,
         )
+        effective_mode, keywords = resolve_effective_mode(config.extra_config, chat_id)
+
+        full_text = re.sub(r"\s+", " ", re.sub(r"@[^\s@]+", "", raw_text)).strip()
+
+        bot_tokens: list[str] = []
+        if chat_type == "group" and effective_mode in ("mention", "keyword"):
+            bot_open_id_for_text = await feishu_service.get_bot_open_id(
+                config.app_id, config.app_secret
+            )
+            if bot_open_id_for_text:
+                for _m in (message.get("mentions") or []):
+                    if (_m.get("id") or {}).get("open_id") == bot_open_id_for_text:
+                        if _m.get("key"):
+                            bot_tokens.append(_m["key"])
+                        if _m.get("name"):
+                            bot_tokens.append(_m["name"])
+        user_text = prepare_llm_user_text(
+            mode=effective_mode,
+            keywords=keywords,
+            raw_text=raw_text,
+            full_text=full_text,
+            bot_tokens=bot_tokens,
+        )
+
+        if chat_type == "group" and full_text:
+            cmd_text = re.sub(r"^@[^\s]+", "", full_text).strip()
+            cmd_match = re.match(
+                r"^/config\s+mode\s+([a-zA-Z]+)(?:\s+([\w一-龥，,、\s]+))?$",
+                cmd_text,
+            )
+            if cmd_match:
+                _cmd_result = await _handle_group_config_command(
+                    config=config,
+                    chat_id=chat_id,
+                    sender_open_id=sender_open_id,
+                    match=cmd_match,
+                )
+                if event_id:
+                    _processed_events.add(event_id)
+                    if len(_processed_events) > 1000:
+                        _processed_events.clear()
+                return _cmd_result
+
+        from app.services.agent_runtime.channel_activation import evaluate_group_activation
+        is_mentioned = False
+        should_process = True
+        skip_reason = None
+        # if chat_type == "group":
+        #     # 飞书特有的 mention 检测（保留）
+        #     if effective_mode in ("mention", "keyword"):
+        #         bot_open_id = await feishu_service.get_bot_open_id(
+        #             config.app_id, config.app_secret
+        #         )
+        #         mentions = message.get("mentions", []) or []
+        #         is_mentioned = any(
+        #             (m.get("id") or {}).get("open_id") == bot_open_id
+        #             for m in mentions
+        #         )
+        if chat_type == "group":
+            if effective_mode in ("mention", "keyword"):
+                extra = config.extra_config or {}
+
+                bot_open_id = extra.get("bot_open_id")
+
+                if not bot_open_id:
+                    bot_open_id = await feishu_service.get_bot_open_id(
+                        config.app_id, config.app_secret
+                    )
+
+                mentions = message.get("mentions", []) or []
+                is_mentioned = any(
+                    (m.get("id") or {}).get("open_id") == bot_open_id
+                    for m in mentions
+                )
+
+                logger.info(
+                    "[Feishu] mention check: effective_mode={!r} bot_open_id={!r} mentions={!r} is_mentioned={}",
+                    effective_mode,
+                    bot_open_id,
+                    mentions,
+                    is_mentioned,
+                )
+            should_process, skip_reason = await evaluate_group_activation(
+                extra_config=config.extra_config,
+                chat_type=chat_type,
+                chat_id=chat_id,
+                user_text=full_text,
+                is_mentioned=is_mentioned,
+            )
+
+        if not should_process:
+            return {"code": 0, "msg": skip_reason}
+
         if not user_text:
-            return {"code": 0, "msg": "empty message after stripping mentions"}
+            if not is_mentioned:
+                return {"code": 0, "msg": "empty message after stripping mentions"}
+            user_text = "你好，请问有什么可以帮你的？"
+        executable_content = f"[群聊中@了机器人] {user_text}" if is_mentioned else user_text
 
         display_content = re.sub(
             r"\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]",
@@ -675,16 +783,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
                 sender_user_id=sender_user_id_from_event,
                 chat_type=chat_type,
                 chat_id=chat_id,
-                content=user_text,
+                content=executable_content,
                 display_content=display_content,
                 external_event_id=message.get("message_id") or event_id,
             )
         except Exception as exc:
             from app.services.channel_user_service import ChannelUserResolutionError
-
             if not isinstance(exc, ChannelUserResolutionError):
                 raise
-            logger.warning(f"[Feishu] Sender resolution refused: {exc}")
+
             reply_target = chat_id if chat_type == "group" else sender_open_id
             receive_id_type = "chat_id" if chat_type == "group" else "open_id"
             await feishu_service.send_message(
@@ -702,6 +809,113 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict):
             if len(_processed_events) > 1000:
                 _processed_events.clear()
         return {"code": 0, "msg": "ok"}
+    return {"code": 0, "msg": "ok"}
+
+
+async def _handle_group_config_command(
+    *,
+    config: ChannelConfig,
+    chat_id: str,
+    sender_open_id: str,
+    match: Any,
+) -> dict:
+    """群主在群里发命令改本群激活配置。
+
+    只更新 extra_config.group_overrides[chat_id],不碰凭证字段(避免把
+    app_secret / encrypt_key 等隐私授权给群主)。命令格式:
+      /config mode silent
+      /config mode mention
+      /config mode always
+      /config mode keyword 价格,周报
+    """
+    import re as _re
+
+    mode_raw = (match.group(1) or "").lower()
+    mode_map = {
+        "mention": "mention",
+        "keyword": "keyword",
+        "always": "always",
+        "silent": "silent",
+    }
+    mode = mode_map.get(mode_raw)
+    if mode is None:
+        await feishu_service.send_message(
+            config.app_id,
+            config.app_secret,
+            chat_id,
+            "text",
+            json.dumps(
+                {
+                    "text": (
+                        f"无效模式：{mode_raw}。\n"
+                        "可用模式：\n"
+                        "- mention 仅@机器人时响应\n"
+                        "- keyword 命中关键词时响应\n"
+                        "- always 所有消息都响应\n"
+                        "- silent 群聊内静默\n"
+                        "用法：/config mode <模式> [关键词]"
+                    )
+                }
+            ),
+            receive_id_type="chat_id",
+        )
+        return {"code": 0, "msg": "unknown_command"}
+
+    # ① 群主校验(fail-closed:查不到 owner_id 一律拒绝)
+    owner_id = await feishu_service.get_group_owner_id(
+        config.app_id, config.app_secret, chat_id
+    )
+    if not owner_id or owner_id != sender_open_id:
+        await feishu_service.send_message(
+            config.app_id,
+            config.app_secret,
+            chat_id,
+            "text",
+            json.dumps({"text": "仅群主可配置本群激活方式。"}),
+            receive_id_type="chat_id",
+        )
+        return {"code": 0, "msg": "not_owner"}
+
+    # ② 解析关键词
+    keywords: list[str] = []
+    if mode == "keyword" and match.group(2):
+        keywords = [
+            k.strip() for k in _re.split(r"[，,、\s]+", match.group(2)) if k.strip()
+        ]
+
+    # ③ 写入 group_overrides(读-改-写,只动这一个群)
+    async with _async_session() as db:
+        result = await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == config.agent_id,
+                ChannelConfig.channel_type == "feishu",
+            )
+        )
+        db_config = result.scalar_one_or_none()
+        if db_config is None:
+            return {"code": 0, "msg": "channel_not_found"}
+        extra = dict(db_config.extra_config or {})
+        overrides = dict(extra.get("group_overrides") or {})
+        entry: dict = {"activation_mode": mode}
+        if keywords:
+            entry["keywords"] = keywords
+        overrides[chat_id] = entry
+        extra["group_overrides"] = overrides
+        db_config.extra_config = extra
+        await db.commit()
+
+    # ④ 回执
+    desc = mode
+    if keywords:
+        desc += f" keywords={', '.join(keywords)}"
+    await feishu_service.send_message(
+        config.app_id,
+        config.app_secret,
+        chat_id,
+        "text",
+        json.dumps({"text": f"已配置：本群激活方式 = {desc}"}),
+        receive_id_type="chat_id",
+    )
     return {"code": 0, "msg": "ok"}
 
 

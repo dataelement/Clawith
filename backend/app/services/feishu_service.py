@@ -1,6 +1,7 @@
 """Feishu (Lark) OAuth and API integration service."""
 
 import json
+import time
 from collections import OrderedDict
 
 import httpx
@@ -402,6 +403,81 @@ class FeishuService:
             )
             data = self._parse_api_response(resp, stage=stage)
             return data
+    _BOT_OPEN_ID_TTL_SECONDS = 6 * 60 * 60  # 6h
+    _bot_open_id_cache: dict[tuple[str, str], tuple[str, float]] = {}
+
+    async def get_bot_open_id(self, app_id: str, app_secret: str) -> str | None:
+        if not app_id or not app_secret:
+            return None
+        now = time.time()
+        cached = self._bot_open_id_cache.get((app_id, app_secret))
+        if cached:
+            open_id, ts = cached
+            if now - ts < self._BOT_OPEN_ID_TTL_SECONDS:
+                return open_id
+
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": app_id, "app_secret": app_secret},
+            )
+            app_token = (token_resp.json() or {}).get("app_access_token", "")
+            if not app_token:
+                logger.warning("[Feishu] get_bot_open_id: no app_access_token")
+                return None
+
+            resp = await client.get(
+                "https://open.feishu.cn/open-apis/bot/v3/info",
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+            data = resp.json()
+            logger.info(
+                f"[Feishu] get_bot_open_id response: "
+                f"status={resp.status_code} data={data!r}"
+            )
+            if data.get("code") != 0:
+                logger.warning(
+                    f"[Feishu] get_bot_open_id failed: code={data.get('code')} msg={data.get('msg')}"
+                )
+                return None
+            open_id = ((data.get("bot") or {}).get("open_id") or "").strip() or None
+            
+        if open_id:
+            self._bot_open_id_cache[(app_id, app_secret)] = (open_id, now)
+        return open_id
+
+    async def get_group_owner_id(
+        self, app_id: str, app_secret: str, chat_id: str
+    ) -> str | None:
+        """Return the group owner's open_id for a Feishu chat.
+
+        Calls GET /open-apis/im/v1/chats/{chat_id}. Returns the owner's open_id,
+        or None when credentials/chat_id are missing or the API fails — callers
+        must treat None as "cannot verify" (fail-closed).
+        """
+        if not app_id or not app_secret or not chat_id:
+            return None
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(
+                FEISHU_APP_TOKEN_URL,
+                json={"app_id": app_id, "app_secret": app_secret},
+            )
+            app_token = (token_resp.json() or {}).get("app_access_token", "")
+            if not app_token:
+                logger.warning("[Feishu] get_group_owner_id: no app_access_token")
+                return None
+            resp = await client.get(
+                f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}",
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(
+                    f"[Feishu] get_group_owner_id failed: code={data.get('code')} msg={data.get('msg')}"
+                )
+                return None
+            owner_id = ((data.get("data") or {}).get("owner_id") or "").strip() or None
+        return owner_id
 
     async def patch_message(
         self,
