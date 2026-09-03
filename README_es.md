@@ -92,6 +92,24 @@ bash restart.sh   # Inicia los servicios
 
 > **Nota:** `setup.sh` detecta automáticamente PostgreSQL disponible. Si no encuentra ninguno, **descarga e inicia una instancia local automáticamente**. Para usar una instancia específica de PostgreSQL, configure `DATABASE_URL` en el archivo `.env`.
 
+### Docker
+
+```bash
+git clone https://github.com/dataelement/Clawith.git
+cd Clawith && cp .env.example .env
+# Descargar imágenes precompiladas desde GitHub Container Registry
+docker compose up -d
+# → http://localhost:3008
+# Compilar desde el código fuente actual
+# docker compose up -d --build
+```
+
+**Para actualizar un despliegue existente:**
+```bash
+git pull
+docker compose pull && docker compose up -d
+```
+
 El primer usuario en registrarse se convierte automáticamente en **administrador de la plataforma**.
 
 ### Solución de Problemas de Red

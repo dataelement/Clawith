@@ -121,14 +121,17 @@ bash restart.sh
 ```bash
 git clone https://github.com/dataelement/Clawith.git
 cd Clawith && cp .env.example .env
+# Pull prebuilt images from GitHub Container Registry
 docker compose up -d
 # → http://localhost:3008
+# Build from the checked-out source instead
+# docker compose up -d --build
 ```
 
 **To update an existing deployment:**
 ```bash
 git pull
-docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 **Agent workspace data storage:**
