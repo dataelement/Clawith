@@ -30,6 +30,7 @@ services:
       retries: 5
 
   backend:
+    image: ghcr.io/dataelement/clawith-backend:latest
     build:
       context: ./backend
       args:
@@ -91,6 +92,7 @@ services:
         max-size: "10m"
         max-file: "3"
   frontend:
+    image: ghcr.io/dataelement/clawith-frontend:latest
     build: ./frontend
     restart: unless-stopped
     ports:
