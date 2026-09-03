@@ -160,14 +160,17 @@ bash restart.sh
 ```bash
 git clone https://github.com/dataelement/Clawith.git
 cd Clawith && cp .env.example .env
+# سحب الصور المسبقة البناء من GitHub Container Registry
 docker compose up -d
-# → http://localhost:3000
+# → http://localhost:3008
+# البناء من المصدر الحالي بدلاً من ذلك
+# docker compose up -d --build
 ```
 
 **لتحديث نشر موجود:**
 ```bash
 git pull
-docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 **تخزين بيانات مساحة عمل الوكيل:**

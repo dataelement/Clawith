@@ -108,14 +108,17 @@ bash restart.sh
 ```bash
 git clone https://github.com/dataelement/Clawith.git
 cd Clawith && cp .env.example .env
+# 从 GitHub Container Registry 拉取预构建镜像
 docker compose up -d
 # → http://localhost:3008
+# 改为从当前源码构建
+# docker compose up -d --build
 ```
 
 **更新已有部署：**
 ```bash
 git pull
-docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 > **🇨🇳 Docker 镜像加速（国内用户）：** 如果 `docker compose up -d` 拉取镜像失败或超时，请先配置 Docker 镜像加速源：

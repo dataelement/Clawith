@@ -92,6 +92,24 @@ bash restart.sh   # 서비스 시작
 
 > **참고:** `setup.sh`는 사용 가능한 PostgreSQL을 자동으로 감지합니다. 찾을 수 없는 경우 **로컬 인스턴스를 자동으로 다운로드하고 시작합니다**. 특정 PostgreSQL 인스턴스를 사용하려면 `.env` 파일에서 `DATABASE_URL`을 설정하세요.
 
+### Docker
+
+```bash
+git clone https://github.com/dataelement/Clawith.git
+cd Clawith && cp .env.example .env
+# GitHub Container Registry에서 미리 빌드된 이미지 다운로드
+docker compose up -d
+# → http://localhost:3008
+# 현재 소스에서 빌드
+# docker compose up -d --build
+```
+
+**기존 배포 업데이트:**
+```bash
+git pull
+docker compose pull && docker compose up -d
+```
+
 처음 등록한 사용자가 자동으로 **플랫폼 관리자**가 됩니다.
 
 ### 네트워크 문제 해결
