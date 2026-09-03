@@ -19,11 +19,30 @@ owns CI validation, artifact transfer, and production deployment.
    - verify the proxied API health endpoint;
    - send a Feishu notification when the release succeeds or fails.
 5. GitHub Actions publishes the GitHub Release and finishes without waiting for
-   Drone. Drone continues the deployment asynchronously and reports its status
-   on the tagged commit.
+   Drone. It also publishes multi-architecture backend and frontend images to
+   GitHub Container Registry. Drone continues the deployment asynchronously and
+   reports its status on the tagged commit.
 
 Only tags matching `refs/tags/v*` enter the Drone release pipeline. Branch
 pushes and pull requests still run CI, but never export or deploy images.
+
+## Public container images
+
+Each GitHub Release published by this workflow produces `linux/amd64` and
+`linux/arm64` images:
+
+- `ghcr.io/dataelement/clawith-backend:<release-tag>`;
+- `ghcr.io/dataelement/clawith-frontend:<release-tag>`.
+
+The release GitHub identifies as latest also receives the `latest` tag. GHCR is
+the only public registry written by the upstream release workflow. Image builds
+use the release tag as their source and the existing Dockerfiles as their build
+definitions.
+
+After the workflow creates each package for the first time, an organization
+owner must set its visibility to public. Linking a package to this repository
+grants the workflow access but does not set public visibility. Before announcing
+the release, verify that both images can be pulled without GHCR authentication.
 
 ## Drone configuration
 

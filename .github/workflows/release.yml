@@ -511,3 +511,76 @@ jobs:
           body_path: release-notes.extracted.md
           prerelease: ${{ github.event.pull_request.draft }}
           generate_release_notes: false
+
+  publish_images:
+    name: Publish ${{ matrix.image.name }} image
+    needs: publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: backend
+            context: backend
+            dockerfile: backend/Dockerfile
+          - name: frontend
+            context: frontend
+            dockerfile: frontend/Dockerfile
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.publish_release.outputs.tag }}
+
+      - name: Check latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ needs.publish_release.outputs.tag }}
+        run: |
+          latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [ "$TARGET_TAG" = "$latest_tag" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/dataelement/clawith-${{ matrix.image.name }}
+          tags: |
+            type=raw,value=${{ needs.publish_release.outputs.tag }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_latest == 'true' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.publish_release.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
