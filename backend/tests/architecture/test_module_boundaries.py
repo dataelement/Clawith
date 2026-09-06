@@ -78,10 +78,16 @@ def _validate_owner_private_imports(root: Path) -> None:
             if len(parts) < 4 or parts[:2] != ["app", "modules"]:
                 continue
             imported_owner = parts[2]
-            private_surface = parts[3] in {"model", "models", "repository", "repositories"}
+            private_surface = parts[3] in {
+                "crypto",
+                "model",
+                "models",
+                "repository",
+                "repositories",
+            }
             if imported_owner != importing_owner and private_surface:
                 raise BoundaryViolation(
-                    f"{importing_owner} imports {imported_owner}'s private persistence surface: {imported}"
+                    f"{importing_owner} imports {imported_owner}'s private owner surface: {imported}"
                 )
 
 
@@ -152,8 +158,8 @@ def test_owner_can_import_another_owners_public_service_contract(tmp_path: Path)
     _validate_owner_private_imports(tmp_path)
 
 
-@pytest.mark.parametrize("private_module", ["models", "repositories"])
-def test_owner_cannot_import_another_owners_private_persistence(
+@pytest.mark.parametrize("private_module", ["crypto", "models", "repositories"])
+def test_owner_cannot_import_another_owners_private_surface(
     tmp_path: Path, private_module: str
 ) -> None:
     _write(
@@ -162,8 +168,18 @@ def test_owner_cannot_import_another_owners_private_persistence(
         f"from app.modules.run.{private_module} import Run\n",
     )
 
-    with pytest.raises(BoundaryViolation, match="private persistence surface"):
+    with pytest.raises(BoundaryViolation, match="private owner surface"):
         _validate_owner_private_imports(tmp_path)
+
+
+def test_owner_can_import_its_own_private_crypto(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "app/modules/credential/public.py",
+        "from app.modules.credential.crypto import CredentialKeyring\n",
+    )
+
+    _validate_owner_private_imports(tmp_path)
 
 
 def test_runtime_accepts_run_loop_execution_mechanics(tmp_path: Path) -> None:

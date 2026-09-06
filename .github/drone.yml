@@ -8,8 +8,18 @@ clone:
 steps:
   - name: backend-g002
     image: ghcr.io/astral-sh/uv:python3.13-bookworm
+    environment:
+      CLAWITH_TEST_POSTGRES_URL: postgresql+asyncpg://clawith_test:isolated-test-only@postgres:5432/clawith_target
     commands:
-      - bash scripts/ci-g002-gates.sh
+      - bash scripts/ci-g003-gates.sh
+
+services:
+  - name: postgres
+    image: postgres:15
+    environment:
+      POSTGRES_USER: clawith_test
+      POSTGRES_PASSWORD: isolated-test-only
+      POSTGRES_DB: clawith_target
 
 trigger:
   event:

@@ -3,5 +3,6 @@
   {"id": "models", "path": "app/modules/session/service.py", "source": "from app.modules.run.models import Run\n"},
   {"id": "repository", "path": "app/modules/session/service.py", "source": "from app.modules.run.repository import RunRepository\n"},
   {"id": "repositories", "path": "app/modules/session/service.py", "source": "import app.modules.run.repositories as run_repositories\n"},
-  {"id": "relative_repository", "path": "app/modules/session/service.py", "source": "from ..run.repository import RunRepository\n"}
+  {"id": "relative_repository", "path": "app/modules/session/service.py", "source": "from ..run.repository import RunRepository\n"},
+  {"id": "cross_owner_crypto", "path": "app/modules/model/service.py", "source": "from app.modules.credential.crypto import CredentialKeyring\n"}
 ]

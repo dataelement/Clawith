@@ -23,7 +23,13 @@ LEGACY_MODULES = {
     "app.config",
     "app.database",
 }
-PRIVATE_PERSISTENCE_MODULES = {"model", "models", "repository", "repositories"}
+PRIVATE_OWNER_MODULES = {
+    "crypto",
+    "model",
+    "models",
+    "repository",
+    "repositories",
+}
 METADATA_FACTORIES = {
     "sqlalchemy.MetaData",
     "sqlalchemy.orm.registry",
@@ -228,7 +234,7 @@ def _scan_target_tree(
                 if (
                     imported_owner in owner_ids
                     and imported_owner != importing_owner
-                    and parts[3] in PRIVATE_PERSISTENCE_MODULES
+                    and parts[3] in PRIVATE_OWNER_MODULES
                 ):
                     violations.append(
                         Violation("cross-owner-private-import", relative, imported)
@@ -247,7 +253,7 @@ def _scan_target_tree(
                 _matches_owner_fact(part.removesuffix(".py"), product_owners)
                 for part in relative_parts[1:]
             ) or any(
-                part.removesuffix(".py") in PRIVATE_PERSISTENCE_MODULES
+                part.removesuffix(".py") in PRIVATE_OWNER_MODULES
                 for part in relative_parts[1:]
             ):
                 violations.append(Violation("runtime-product-fact", relative, "module path"))

@@ -152,7 +152,7 @@
         },
         {
           "id": "foundation-schema-and-integration",
-          "command": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
+          "command": "uv run --extra dev pytest tests/database tests/modules/identity_tenant tests/modules/credential tests/modules/model tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
           "artifacts": ["backend/artifacts/rewrite/G003/foundation-tests.txt"]
         }
       ],

@@ -1,6 +1,6 @@
 # Agent Note: Cumulative Goal Checkpoints for the Backend Rewrite
 
-Status: proposed — the tracked contract and G001/G002 evidence exist; G003 preflight adds minimal Auth and login-scoped authorization, while domain implementation and later E2E fixtures remain pending
+Status: proposed — the tracked contract and G003 foundation services exist; fresh checkpoint evidence and later E2E gates remain independently required
 
 ## Problem
 
@@ -61,4 +61,4 @@ This would hide a Goal-owned mutation fact inside generic ledger code and let th
 
 ## Risks and open evidence
 
-G001 and G002 now have tracked checkpoint evidence. The manifest still names fixtures and receipts that G003-G009 must create; their presence in the contract is not evidence that those tests ran or that E2E is currently available. The tracked validator proves only governance consistency. Each later Goal still needs the fresh command output, service fixtures, database state, and receipt artifacts named by its gate. The live `.omx` plans and Ultragoal files mirror this tracked authority for execution convenience but remain ignored, non-authoritative runtime artifacts.
+G001 and G002 have tracked checkpoint evidence. G003 has S0/S1 schema and foundation service tests; its exact integration command includes all database tests and the seven implemented owner directories. G004-G009 still need their named fixtures and receipts. Presence in the contract is not evidence that a test ran or that E2E is currently available. The tracked validator proves only governance consistency. Each Goal still requires fresh command results bound to its verified source. The live `.omx` plans and Ultragoal files mirror this tracked authority for execution convenience but remain ignored, non-authoritative runtime artifacts.

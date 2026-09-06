@@ -22,7 +22,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = BACKEND_ROOT.parent
 CI_GATE_SCRIPT = REPOSITORY_ROOT / "scripts/ci-g002-gates.sh"
 G001_REFERENCE_SCRIPT = REPOSITORY_ROOT / "scripts/check-g001-reference.sh"
-SHARED_CI_COMMAND = "bash scripts/ci-g002-gates.sh"
+SHARED_CI_COMMAND = "bash scripts/ci-g003-gates.sh"
 SETUP = REPOSITORY_ROOT / "setup.sh"
 RESTART = REPOSITORY_ROOT / "restart.sh"
 BACKEND_ENV_EXAMPLE = BACKEND_ROOT / ".env.example"
@@ -1911,8 +1911,8 @@ def test_ci_workflow_rejects_continue_on_error() -> None:
         encoding="utf-8"
     )
     poisoned = github.replace(
-        "run: bash scripts/ci-g002-gates.sh",
-        "continue-on-error: true\n        run: bash scripts/ci-g002-gates.sh",
+        f"run: {SHARED_CI_COMMAND}",
+        f"continue-on-error: true\n        run: {SHARED_CI_COMMAND}",
     )
 
     with pytest.raises(StartupContractError, match="gate-only"):

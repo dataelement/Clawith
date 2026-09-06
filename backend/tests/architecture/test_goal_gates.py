@@ -87,6 +87,36 @@ def test_g001_checks_product_integrity_while_g007_requires_auth_semantic_approva
     assert manifest["goals"][7]["contract_approval_owners"] == []
 
 
+def test_g003_foundation_command_covers_database_transactions_and_exact_owner_directories() -> None:
+    command = _manifest()["goals"][3]["validations"][1]["command"]
+
+    assert command == (
+        "uv run --extra dev pytest tests/database tests/modules/identity_tenant "
+        "tests/modules/credential tests/modules/model tests/modules/agent "
+        "tests/modules/permission tests/modules/auth tests/modules/audit"
+    )
+
+
+def test_validator_rejects_narrowing_g003_to_schema_files_or_a_nonexistent_model_fixture(
+    tmp_path: Path,
+) -> None:
+    for current, replacement in (
+        (
+            "tests/database",
+            "tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py",
+        ),
+        ("tests/modules/model", "tests/modules/model/test_configuration.py"),
+    ):
+        manifest = _manifest()
+        command = manifest["goals"][3]["validations"][1]["command"]
+        manifest["goals"][3]["validations"][1]["command"] = command.replace(current, replacement)
+        with pytest.raises(
+            goal_gates.GateContractError,
+            match="validation command mismatch for G003: foundation-schema-and-integration",
+        ):
+            goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
+
+
 def test_validator_rejects_missing_or_replaced_g007_auth_product_prerequisite(tmp_path: Path) -> None:
     manifest = _manifest()
     manifest["goals"][7]["validations"].pop(0)

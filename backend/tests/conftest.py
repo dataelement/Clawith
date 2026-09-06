@@ -1,24 +1,65 @@
 """Opt-in real PostgreSQL fixtures; legacy unit tests never start a database."""
 
+import asyncio
 import os
 import subprocess
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import ArgumentError, DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.infrastructure.database import Base
 from app.infrastructure.transactions import TransactionContext, transaction
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+async def _probe_postgres(url: URL) -> None:
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    finally:
+        await engine.dispose()
+
+
+async def _wait_for_configured_postgres(
+    url: URL,
+    *,
+    timeout_seconds: float = 30,
+    retry_interval: float = 0.25,
+    probe: Callable[[URL], Awaitable[None]] = _probe_postgres,
+) -> None:
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            while True:
+                try:
+                    await probe(url)
+                    return
+                except (ConnectionRefusedError, asyncpg.CannotConnectNowError):
+                    await asyncio.sleep(retry_interval)
+                except DBAPIError as exc:
+                    original = exc.orig
+                    if not (
+                        isinstance(original, asyncpg.CannotConnectNowError)
+                        or getattr(original, "sqlstate", None) == "57P03"
+                    ):
+                        raise
+                    await asyncio.sleep(retry_interval)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Configured PostgreSQL did not become ready within {timeout_seconds:g} seconds"
+        ) from exc
 
 
 @pytest.fixture(scope="session")
@@ -32,6 +73,7 @@ def postgres_url() -> Iterator[URL]:
             raise RuntimeError("Invalid CLAWITH_TEST_POSTGRES_URL") from None
         if url.drivername != "postgresql+asyncpg" or url.database != "clawith_target":
             raise RuntimeError("Tests require async PostgreSQL and database clawith_target")
+        asyncio.run(_wait_for_configured_postgres(url))
         yield url
         return
 

@@ -13,6 +13,22 @@ permissions:
 jobs:
   backend-g002:
     runs-on: ubuntu-latest
+    env:
+      CLAWITH_TEST_POSTGRES_URL: postgresql+asyncpg://clawith_test:isolated-test-only@127.0.0.1:5432/clawith_target
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: clawith_test
+          POSTGRES_PASSWORD: isolated-test-only
+          POSTGRES_DB: clawith_target
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clawith_test -d clawith_target"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,4 +39,4 @@ jobs:
         with:
           python-version: "3.13"
       - name: Run cumulative Backend gates
-        run: bash scripts/ci-g002-gates.sh
+        run: bash scripts/ci-g003-gates.sh

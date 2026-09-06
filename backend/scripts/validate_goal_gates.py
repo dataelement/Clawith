@@ -204,7 +204,7 @@ EXPECTED_VALIDATION_COMMANDS = {
     "G003": {
         "foundation-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1"
         + G003_APPROVAL_RECEIPT_ARGUMENTS,
-        "foundation-schema-and-integration": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
+        "foundation-schema-and-integration": "uv run --extra dev pytest tests/database tests/modules/identity_tenant tests/modules/credential tests/modules/model tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
     },
     "G004": {
         "product-input-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2"
