@@ -1,6 +1,6 @@
 # Agent Note: Cumulative Goal Checkpoints for the Backend Rewrite
 
-Status: proposed — the tracked contract and G003 foundation services exist; fresh checkpoint evidence and later E2E gates remain independently required
+Status: proposed — cumulative G000–G003 validation is recorded; G004–G009 and their later E2E gates remain pending
 
 ## Problem
 
@@ -20,7 +20,7 @@ G001 uses repository commands to validate the actual 401-row disposition state w
 
 Drone and GitHub Actions invoke one tracked shell entry that carries G000 and G001 into G002 in manifest order, then adds the complete Backend test suite required by the current checkpoint. Both workflows fetch full history. The CI entry invokes the exact G001 wrapper declared by the manifest instead of duplicating its worktree command or persistence environment. The wrapper creates a temporary detached worktree at the fixed legacy commit, installs that checkout into its own `backend/.venv`, supplies explicit distinct reference and target persistence values, and passes that exact virtual-environment Python path to the immutable-reference validator. Its interpreter may be a normal venv symlink to a system executable; no other override path is accepted. This validation override never binds, releases, or rewrites the canonical manifest. Cleanup preserves the gate result, removes the temporary path, and prunes only to recover a failed worktree removal.
 
-The tracked `backend/artifacts/rewrite/G001/` and `backend/artifacts/rewrite/G002/` files record the first completed cumulative checkpoints. They bind the exact commands, source commit, time, exit status, and bounded result summary. They are point-in-time evidence rather than permanent health claims; any later source change must rerun the affected cumulative gates and replace the evidence in a new commit instead of treating the old result as current.
+The tracked `backend/artifacts/rewrite/G001/`, `backend/artifacts/rewrite/G002/` and `backend/artifacts/rewrite/G003/` files record completed cumulative checkpoints through source `c18acd6c`. They bind the exact commands, source commit, time, exit status, and bounded result summary. The G003 record includes real PostgreSQL service integration and independent domain/architecture review; the immutable legacy fixture still proves only application import. These are point-in-time evidence rather than permanent health claims; any later source change must rerun the affected cumulative gates and replace the evidence in a new commit instead of treating the old result as current.
 
 G005 also requires an adversarial execution-scheduler test. After each bounded Model Step or bounded Tool batch, a still-runnable Run releases its scarce execution slot and re-enters the in-memory Tenant-then-Agent scheduler. With 50 continuously runnable, nonterminating Tenant A Runs occupying all initial slots, an eligible Tenant B Run obtains its next Model Step after at most one consecutive eligible-Tenant skip, while FIFO remains per Agent. Cancellation or failure removes the Run and releases capacity. The test does not use the initial admission queue as a substitute and does not introduce a persisted queue, checkpoint, durable scheduler state, or whole-Run limit.
 

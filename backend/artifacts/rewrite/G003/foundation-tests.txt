@@ -1,0 +1,16 @@
+goal: G003
+validation: foundation-schema-and-integration
+command: uv run --extra dev pytest tests/database tests/modules/identity_tenant tests/modules/credential tests/modules/model tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit
+verified_source_head: c18acd6cc409b11ef7b6ebb9f3fbb037e64f88bd
+verified_at: 2026-09-06T07:29:21Z
+exit_code: 0
+result: 82 passed in 8.76s
+cumulative_command: bash scripts/ci-g003-gates.sh
+cumulative_exit_code: 0
+supporting_full_backend: 1888 passed, 4 warnings in 86.71s
+supporting_architecture: 1655 passed, 1 warning in 66.97s
+database: PostgreSQL 15; explicit isolated service URL; unique per-test schemas
+cleanup: zero test schemas remained; owned test container and network removed
+type_evidence: configured pyright app passed; not a whole-repository strict-mode claim
+review: independent domain code/security APPROVE; independent architecture CLEAR
+not_verified: hosted CI, product HTTP/E2E, migrations, Providers, Runner/Loop, frontend and 50-execution load
