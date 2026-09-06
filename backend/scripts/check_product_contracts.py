@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -76,7 +77,12 @@ def _resolve_artifact(raw_path: str, manifest_path: Path) -> Path:
             return resolved
         raise ProductContractError(f"artifact does not exist: {raw_path}")
 
-    repository_root = Path(__file__).resolve().parents[2]
+    resolved_manifest = manifest_path.resolve()
+    repository_root = (
+        resolved_manifest.parents[2]
+        if resolved_manifest.parent.name == "rewrite" and resolved_manifest.parent.parent.name == "backend"
+        else Path(__file__).resolve().parents[2]
+    )
     for unresolved in (Path.cwd() / candidate, manifest_path.parent / candidate, repository_root / candidate):
         resolved = unresolved.resolve()
         if resolved.is_file():
@@ -95,6 +101,42 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _require_tracked_contract_artifact(path: Path, module_id: str) -> None:
+    try:
+        repository_root = Path(
+            subprocess.run(
+                ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        ).resolve()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ProductContractError(f"product contract artifact is not in a Git worktree: {module_id}") from exc
+    expected_path = (repository_root / "specs" / "backend-products" / f"{module_id}.md").resolve()
+    if path != expected_path:
+        raise ProductContractError(
+            f"product contract artifact for {module_id} must be specs/backend-products/{module_id}.md"
+        )
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository_root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                path.relative_to(repository_root).as_posix(),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ProductContractError(f"product contract artifact is not tracked: {module_id}") from exc
+
+
 def _is_resolved(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip())
@@ -105,7 +147,9 @@ def _is_resolved(value: Any) -> bool:
     return False
 
 
-def validate_roster(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def validate_roster(
+    manifest: dict[str, Any], manifest_path: Path = Path("product-contracts.json")
+) -> dict[str, dict[str, Any]]:
     if manifest.get("version") != 1:
         raise ProductContractError("product contract manifest version must be 1")
     rows = manifest.get("modules")
@@ -140,6 +184,43 @@ def validate_roster(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
             ]
             if any(value is not None for value in approval_values) or row.get("evidence") != []:
                 raise ProductContractError(f"unreviewed product contract has approval data: {module_id}")
+        else:
+            raw_artifact = row.get("contract_artifact")
+            if not isinstance(raw_artifact, str) or not raw_artifact:
+                raise ProductContractError(f"approved product contract has no artifact: {module_id}")
+            expected_artifact = f"specs/backend-products/{module_id}.md"
+            if raw_artifact.replace("\\", "/") != expected_artifact:
+                raise ProductContractError(
+                    f"product contract artifact for {module_id} must be the repository-relative path "
+                    f"{expected_artifact}"
+                )
+            artifact_path = _resolve_artifact(raw_artifact, manifest_path)
+            _require_tracked_contract_artifact(artifact_path, module_id)
+            if row.get("contract_hash") != _sha256(artifact_path):
+                raise ProductContractError(f"product contract artifact hash mismatch: {module_id}")
+
+            evidence = row.get("evidence")
+            if not isinstance(evidence, list) or not evidence:
+                raise ProductContractError(f"approved product contract has no evidence: {module_id}")
+            seen_evidence: set[str] = set()
+            for evidence_index, evidence_row in enumerate(evidence):
+                if not isinstance(evidence_row, dict) or set(evidence_row) != {"path", "sha256"}:
+                    raise ProductContractError(
+                        f"evidence row {evidence_index} for {module_id} must contain path and sha256"
+                    )
+                evidence_path_value = evidence_row.get("path")
+                if not isinstance(evidence_path_value, str) or not evidence_path_value:
+                    raise ProductContractError(
+                        f"evidence row {evidence_index} for {module_id} has an invalid path"
+                    )
+                if evidence_path_value in seen_evidence:
+                    raise ProductContractError(f"duplicate product evidence for {module_id}: {evidence_path_value}")
+                seen_evidence.add(evidence_path_value)
+                evidence_path = _resolve_artifact(evidence_path_value, manifest_path)
+                if evidence_row.get("sha256") != _sha256(evidence_path):
+                    raise ProductContractError(
+                        f"product evidence hash mismatch for {module_id}: {evidence_path_value}"
+                    )
         modules[module_id] = row
     missing = sorted(expected_modules - set(modules))
     if missing:
@@ -148,40 +229,14 @@ def validate_roster(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def check_product_contract(manifest_path: Path, module_id: str) -> dict[str, Any]:
-    modules = validate_roster(_load_json(manifest_path))
+    manifest_path = manifest_path.resolve()
+    manifest = _load_json(manifest_path)
+    modules = validate_roster(manifest, manifest_path)
     row = modules.get(module_id)
     if row is None:
         raise ProductContractError(f"unknown product module: {module_id}")
     if row["state"] != "contract_approved":
         raise ProductContractError(f"product contract is not approved: {module_id}")
-
-    raw_artifact = row.get("contract_artifact")
-    if not isinstance(raw_artifact, str) or not raw_artifact:
-        raise ProductContractError(f"approved product contract has no artifact: {module_id}")
-    expected_suffix = f".omx/specs/backend-products/{module_id}.md"
-    normalized_artifact = raw_artifact.replace("\\", "/")
-    if not normalized_artifact.endswith(expected_suffix):
-        raise ProductContractError(f"product contract artifact for {module_id} must be {expected_suffix}")
-    artifact_path = _resolve_artifact(raw_artifact, manifest_path)
-    if row.get("contract_hash") != _sha256(artifact_path):
-        raise ProductContractError(f"product contract artifact hash mismatch: {module_id}")
-
-    evidence = row.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        raise ProductContractError(f"approved product contract has no evidence: {module_id}")
-    seen_evidence: set[str] = set()
-    for index, evidence_row in enumerate(evidence):
-        if not isinstance(evidence_row, dict) or set(evidence_row) != {"path", "sha256"}:
-            raise ProductContractError(f"evidence row {index} for {module_id} must contain path and sha256")
-        evidence_path_value = evidence_row.get("path")
-        if not isinstance(evidence_path_value, str) or not evidence_path_value:
-            raise ProductContractError(f"evidence row {index} for {module_id} has an invalid path")
-        if evidence_path_value in seen_evidence:
-            raise ProductContractError(f"duplicate product evidence for {module_id}: {evidence_path_value}")
-        seen_evidence.add(evidence_path_value)
-        evidence_path = _resolve_artifact(evidence_path_value, manifest_path)
-        if evidence_row.get("sha256") != _sha256(evidence_path):
-            raise ProductContractError(f"product evidence hash mismatch for {module_id}: {evidence_path_value}")
 
     unresolved = [field for field in RESOLUTION_FIELDS if not _is_resolved(row.get(field))]
     if unresolved:

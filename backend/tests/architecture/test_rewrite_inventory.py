@@ -166,15 +166,26 @@ def _approve_owner(
     evidence_record = _artifact(evidence)
     owners = owner_manifest["owners"]
     assert isinstance(owners, list)
-    owner = next(row for row in owners if row["owner_id"] == owner_id)
-    owner.update(
-        {
-            "state": "contract_approved",
-            "contract_artifact": str(contract_artifact),
-            "contract_hash": contract_hash,
-            "evidence": [evidence_record],
-        }
-    )
+    owners_by_id = {row["owner_id"]: row for row in owners}
+    dag = json.loads(_CANONICAL_OWNER_DAG.read_text(encoding="utf-8"))
+    dependencies_by_owner = {row["owner_id"]: row["depends_on"] for row in dag["owners"]}
+
+    def approve_with_dependencies(current_owner_id: str) -> None:
+        for dependency in dependencies_by_owner[current_owner_id]:
+            approve_with_dependencies(dependency)
+        owner = owners_by_id[current_owner_id]
+        if owner["state"] == "contract_approved":
+            return
+        owner.update(
+            {
+                "state": "contract_approved",
+                "contract_artifact": str(contract_artifact),
+                "contract_hash": contract_hash,
+                "evidence": [evidence_record],
+            }
+        )
+
+    approve_with_dependencies(owner_id)
     return contract_hash
 
 

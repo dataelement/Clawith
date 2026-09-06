@@ -44,7 +44,7 @@ EXPECTED_E2E_LEVELS = {
     "G009": "complete_backend",
 }
 EXPECTED_SCHEMA_OWNERS = {
-    "G003": ["identity_tenant", "credential", "model", "agent", "permission", "audit", "run", "context"],
+    "G003": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "run", "context"],
     "G004": [
         "workspace",
         "tool",
@@ -64,6 +64,7 @@ EXPECTED_APPROVALS = {
         "model",
         "agent",
         "permission",
+        "auth",
         "audit",
         "workspace",
         "tool",
@@ -77,11 +78,11 @@ EXPECTED_IMPLEMENTATION_OWNERS = {
     "G000": [],
     "G001": [],
     "G002": [],
-    "G003": ["identity_tenant", "credential", "model", "agent", "permission", "audit"],
+    "G003": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit"],
     "G004": ["workspace", "tool", "capability_market", "model"],
     "G005": ["run", "context"],
     "G006": ["session", "a2a", "group", "trigger", "heartbeat", "channel"],
-    "G007": ["S3-approved-owner"],
+    "G007": ["auth", "S3-approved-owner"],
     "G008": [],
     "G009": [],
 }
@@ -95,6 +96,7 @@ EXPECTED_MUTATIONS = {
         "approve-model-contract-only",
         "approve-agent-contract-only",
         "approve-permission-contract-only",
+        "approve-auth-contract-only",
         "approve-audit-contract-only",
         "approve-workspace-contract-only",
         "approve-tool-contract-only",
@@ -149,6 +151,7 @@ EXPECTED_VALIDATION_ARTIFACTS = {
         "backend/artifacts/performance/mixed.json",
     ],
     "G007": [
+        "backend/artifacts/rewrite/G007/auth-product-contract.txt",
         "backend/artifacts/rewrite/G007/cumulative-module-e2e.txt",
         "backend/artifacts/rewrite/G007/coverage-progress.json",
     ],
@@ -165,6 +168,21 @@ EXPECTED_VALIDATION_ARTIFACTS = {
         "backend/artifacts/performance/final.json",
     ],
 }
+
+
+def _approval_receipt_argument(goal_id: str, owner_id: str) -> str:
+    owner_slug = owner_id.replace("_", "-")
+    return f" --approval-receipt backend/artifacts/rewrite/{goal_id}/receipts/{owner_slug}-contract-approval.json"
+
+
+G003_APPROVAL_RECEIPT_ARGUMENTS = "".join(
+    _approval_receipt_argument("G003", owner_id) for owner_id in EXPECTED_APPROVALS["G003"]
+)
+G004_APPROVAL_RECEIPT_ARGUMENTS = "".join(
+    _approval_receipt_argument("G004", owner_id) for owner_id in EXPECTED_APPROVALS["G004"]
+)
+
+
 EXPECTED_VALIDATION_COMMANDS = {
     "G000": {
         "goal-gate-contract": "uv run python scripts/validate_goal_gates.py --manifest rewrite/goal-gates.json",
@@ -184,11 +202,14 @@ EXPECTED_VALIDATION_COMMANDS = {
         "full-test-collection-disposition": "uv run --extra dev pytest --collect-only",
     },
     "G003": {
-        "foundation-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1",
-        "foundation-schema-and-integration": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/audit",
+        "foundation-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1"
+        + G003_APPROVAL_RECEIPT_ARGUMENTS,
+        "foundation-schema-and-integration": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
     },
     "G004": {
-        "product-input-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2",
+        "product-input-contract-prerequisites": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2"
+        + G003_APPROVAL_RECEIPT_ARGUMENTS
+        + G004_APPROVAL_RECEIPT_ARGUMENTS,
         "execution-dependency-integration": "uv run --extra dev pytest tests/database/test_schema_wave_S2.py tests/modules/workspace tests/modules/tool tests/modules/capability_market tests/modules/model/test_execution.py tests/modules/model/test_continuation.py",
     },
     "G005": {
@@ -200,6 +221,7 @@ EXPECTED_VALIDATION_COMMANDS = {
         "mixed-product-input-load": "uv run python tests/performance/run_backend_load.py --profile tests/performance/profiles/backend_50.json --scenario mixed --out artifacts/performance/mixed.json",
     },
     "G007": {
+        "auth-product-contract": "uv run python scripts/check_product_contracts.py --manifest rewrite/product-contracts.json --module auth",
         "all-implemented-module-e2e": "uv run --extra dev pytest tests/e2e",
         "coverage-terminal-progress": "uv run python scripts/rewrite_inventory.py check --manifest rewrite/coverage.json",
     },
@@ -305,19 +327,28 @@ EXPECTED_HOSTILE_FAIRNESS = {
 REPLAY_POLICY = "verify_receipt_before_execute"
 APPROVAL_COMMAND = (
     "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json "
-    "--owner {owner} --contract-artifact <path> --evidence <path>"
+    "--owner {owner} --contract-artifact <path> --evidence <path> --receipt {receipt}"
 )
 EXPECTED_MUTATION_COMMANDS = {
     "G003": {
-        f"approve-{owner.replace('_', '-')}-contract-only": APPROVAL_COMMAND.format(owner=owner)
+        f"approve-{owner.replace('_', '-')}-contract-only": APPROVAL_COMMAND.format(
+            owner=owner,
+            receipt=f"backend/artifacts/rewrite/G003/receipts/{owner.replace('_', '-')}-contract-approval.json",
+        )
         for owner in EXPECTED_APPROVALS["G003"]
     },
     "G004": {
-        f"approve-{owner.replace('_', '-')}-contract-only": APPROVAL_COMMAND.format(owner=owner)
+        f"approve-{owner.replace('_', '-')}-contract-only": APPROVAL_COMMAND.format(
+            owner=owner,
+            receipt=f"backend/artifacts/rewrite/G004/receipts/{owner.replace('_', '-')}-contract-approval.json",
+        )
         for owner in EXPECTED_APPROVALS["G004"]
     },
     "G007": {
-        "approve-s3-owner-contract": APPROVAL_COMMAND.format(owner="<owner>"),
+        "approve-s3-owner-contract": APPROVAL_COMMAND.format(
+            owner="<owner>",
+            receipt="backend/artifacts/rewrite/G007/receipts/<owner>-contract-approval.json",
+        ),
         "transition-coverage-row": "uv run python scripts/rewrite_inventory.py transition --manifest rewrite/coverage.json --id <id> --to <state> --evidence <path>",
     },
     "G008": {
@@ -372,7 +403,7 @@ def check_product_roster_and_linkage(manifest_path: Path) -> None:
     owner_path = manifest_path.with_name("owner-contracts.json")
     product_path = manifest_path.with_name("product-contracts.json")
     try:
-        product_checker.validate_roster(json.loads(product_path.read_text(encoding="utf-8")))
+        product_checker.validate_roster(json.loads(product_path.read_text(encoding="utf-8")), product_path)
         owner_checker.validate_manifest(json.loads(owner_path.read_text(encoding="utf-8")), owner_path)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise GateContractError(f"product roster or linkage is invalid: {exc}") from exc

@@ -16,7 +16,17 @@ goal_gates = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(goal_gates)
 
 EXPECTED_GOALS = [f"G{number:03d}" for number in range(10)]
-G003_SCHEMA_OWNERS = ["identity_tenant", "credential", "model", "agent", "permission", "audit", "run", "context"]
+G003_SCHEMA_OWNERS = [
+    "identity_tenant",
+    "credential",
+    "model",
+    "agent",
+    "permission",
+    "auth",
+    "audit",
+    "run",
+    "context",
+]
 G004_SCHEMA_OWNERS = [
     "workspace",
     "tool",
@@ -34,6 +44,7 @@ G003_APPROVAL_OWNERS = [
     "model",
     "agent",
     "permission",
+    "auth",
     "audit",
     "workspace",
     "tool",
@@ -60,6 +71,38 @@ def test_canonical_manifest_passes_validation() -> None:
 
 def test_phase_zero_product_roster_and_linkage_pass_current_ledgers() -> None:
     goal_gates.check_product_roster_and_linkage(MANIFEST_PATH)
+
+
+def test_g001_checks_product_integrity_while_g007_requires_auth_semantic_approval() -> None:
+    manifest = _manifest()
+    g001 = {validation["id"]: validation["command"] for validation in manifest["goals"][1]["validations"]}
+    g007 = {validation["id"]: validation["command"] for validation in manifest["goals"][7]["validations"]}
+
+    assert g001["product-roster-and-linkage"].endswith("--check-product-roster-and-linkage")
+    assert g007["auth-product-contract"] == (
+        "uv run python scripts/check_product_contracts.py "
+        "--manifest rewrite/product-contracts.json --module auth"
+    )
+    assert manifest["goals"][7]["implementation_owners"] == ["auth", "S3-approved-owner"]
+    assert manifest["goals"][7]["contract_approval_owners"] == []
+
+
+def test_validator_rejects_missing_or_replaced_g007_auth_product_prerequisite(tmp_path: Path) -> None:
+    manifest = _manifest()
+    manifest["goals"][7]["validations"].pop(0)
+    with pytest.raises(goal_gates.GateContractError, match="validation roster mismatch for G007"):
+        goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
+
+    manifest = _manifest()
+    manifest["goals"][7]["validations"][0]["command"] = (
+        "uv run python scripts/check_product_contracts.py "
+        "--manifest rewrite/product-contracts.json --module sso"
+    )
+    with pytest.raises(
+        goal_gates.GateContractError,
+        match="validation command mismatch for G007: auth-product-contract",
+    ):
+        goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
 
 
 def test_validator_rejects_goal_roster_or_order_drift(tmp_path: Path) -> None:
@@ -188,6 +231,47 @@ def test_validator_requires_one_receipted_approval_per_schema_owner(tmp_path: Pa
 
     manifest["goals"][3]["mutations"].pop()
     with pytest.raises(goal_gates.GateContractError, match="mutations mismatch for G003"):
+        goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
+
+
+def test_owner_approval_commands_receive_their_declared_receipt() -> None:
+    manifest = _manifest()
+    for goal_index in (3, 4, 7):
+        for mutation in manifest["goals"][goal_index]["mutations"]:
+            if "check_owner_contracts.py approve" not in mutation["command"]:
+                continue
+            assert mutation["command"].endswith(f"--receipt {mutation['receipt']}")
+
+
+def test_cumulative_owner_checks_receive_every_prior_approval_receipt() -> None:
+    manifest = _manifest()
+    g003_receipts = [mutation["receipt"] for mutation in manifest["goals"][3]["mutations"]]
+    g004_receipts = [mutation["receipt"] for mutation in manifest["goals"][4]["mutations"]]
+    g003_check = manifest["goals"][3]["validations"][0]["command"]
+    g004_check = manifest["goals"][4]["validations"][0]["command"]
+
+    assert [path for path in g003_receipts if f"--approval-receipt {path}" not in g003_check] == []
+    assert [path for path in [*g003_receipts, *g004_receipts] if f"--approval-receipt {path}" not in g004_check] == []
+
+
+def test_validator_rejects_a_cumulative_check_missing_a_receipt(tmp_path: Path) -> None:
+    manifest = _manifest()
+    command = manifest["goals"][4]["validations"][0]["command"]
+    receipt = manifest["goals"][3]["mutations"][0]["receipt"]
+    manifest["goals"][4]["validations"][0]["command"] = command.replace(
+        f" --approval-receipt {receipt}", ""
+    )
+
+    with pytest.raises(goal_gates.GateContractError, match="validation command mismatch for G004"):
+        goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
+
+
+def test_validator_rejects_an_approval_command_without_receipt_input(tmp_path: Path) -> None:
+    manifest = _manifest()
+    command = manifest["goals"][3]["mutations"][0]["command"]
+    manifest["goals"][3]["mutations"][0]["command"] = command.split(" --receipt ", 1)[0]
+
+    with pytest.raises(goal_gates.GateContractError, match="mutation command mismatch for G003"):
         goal_gates.validate_manifest(_write_manifest(tmp_path, manifest))
 
 

@@ -65,7 +65,7 @@ The clean-break rewrite is implemented directly on `develop`. The target tree ha
 
 The target is one modular monolith under `app/modules/<owner>/`, with narrow execution mechanics under `app/runtime/` and shared database, transaction, and configuration infrastructure under `app/infrastructure/`. Every owner keeps its ORM models and repositories private. Another owner may use only its typed public service contract; it must not import the private model or repository, issue writes to the owner's tables, or recreate the owner's policy.
 
-Cross-owner atomic operations use the infrastructure `TransactionContext` and typed application orchestration ports. The orchestrator selects one transaction and invokes owner services; it never writes owner tables directly. Define consumer-facing ports such as `OutcomeConsumer` and the authorization-dependency writer before their callers depend on them.
+Cross-owner atomic operations use the infrastructure `TransactionContext` and typed application orchestration ports. The orchestrator selects one transaction and invokes owner services; it never writes owner tables directly. Define consumer-facing ports such as `OutcomeConsumer` before their callers depend on them. Login-scoped authorization supersedes the former authorization-dependency writer; no live generation projection or cancellation sweep is part of the target.
 
 Object storage is infrastructure mechanics, not an alternate Workspace owner. Infrastructure and application composition may construct concrete local or S3 backends. The Workspace owner may depend only on `app.infrastructure.object_storage.base`; every other product owner and `app.runtime` must use the approved Workspace public service rather than importing object-storage contracts or implementations directly. The empty `object_storage` package initializer does not re-export implementations.
 
@@ -100,9 +100,9 @@ The owner roster and schema-registration waves are exact:
 | Wave | Owners |
 | --- | --- |
 | S0 | `identity_tenant` |
-| S1 | `agent`, `credential`, `model`, `audit`, `run`, `permission`, `context` |
+| S1 | `agent`, `credential`, `model`, `audit`, `run`, `permission`, `context`, `auth` |
 | S2 | `workspace`, `tool`, `capability_market`, `session`, `a2a`, `group`, `trigger`, `heartbeat`, `channel` |
-| S3 | `auth`, `sso`, `organization`, `invitation`, `onboarding`, `okr`, `focus`, `notification`, `published_page`, `plaza`, `enterprise_settings`, `platform_administration`, `agentbay`, `directory`, `agent_template`, `observability`, `tenant_knowledge` |
+| S3 | `sso`, `organization`, `invitation`, `onboarding`, `okr`, `focus`, `notification`, `published_page`, `plaza`, `enterprise_settings`, `platform_administration`, `agentbay`, `directory`, `agent_template`, `observability`, `tenant_knowledge` |
 
 The acyclic public DAG controls service implementation order. S0-S3 control schema integration and may register strongly connected foreign keys together; they do not authorize a service to bypass the public DAG. One serialized schema-integration owner registers each wave into the complete shared metadata registry. Each wave gate uses real PostgreSQL to create and drop every registered table, constraint, and index, reject unresolved foreign keys and duplicate table ownership, and exercise positive and negative constraints.
 
@@ -116,7 +116,7 @@ The three rewrite ledgers have separate authority:
 - `rewrite/owner-contracts.json` is the sole readiness authority for every target owner, including owners without a legacy endpoint.
 - `rewrite/product-contracts.json` records S3 product decisions and supplies evidence for approving the corresponding owner-contract row; it does not replace that row.
 
-A rewrite coverage row reaches `contract_approved` only when it references exactly one approved owner-contract row and the contract hashes match. Target-tree replacement and G002 legacy-authority deletion must not begin until every coverage row is `disposition_approved`. The current 401/401 `disposition_approved` rows collectively authorize G002 to delete the target-tree legacy authorities classified by those rows. Per-category deletion commits are reviewable execution slices of that collective approval; they do not introduce another approval state, boundary, or ledger. Schema or service work for an owner must not begin until that owner is `contract_approved`; S3 work additionally requires its complete approved product contract. The initial baseline and legacy-reference removal require every coverage row to be terminal.
+A rewrite coverage row reaches `contract_approved` only when it references exactly one approved owner-contract row and the contract hashes match. Target-tree replacement and G002 legacy-authority deletion must not begin until every coverage row is `disposition_approved`. The current 401/401 `disposition_approved` rows collectively authorize G002 to delete the target-tree legacy authorities classified by those rows. Per-category deletion commits are reviewable execution slices of that collective approval; they do not introduce another approval state, boundary, or ledger. Schema or service work for an owner must not begin until that owner is `contract_approved`; S3 work additionally requires its complete approved product contract. Minimal Auth is S1/G003; its later registration/recovery/product workflow expansion still requires the separate Auth product-contract gate, without creating or approving another Auth owner. The initial baseline and legacy-reference removal require every coverage row to be terminal.
 
 Phase 0 passes only when `unreviewed=0`, `disposition_missing=0`, the exact owner roster is complete and unique, ledger transitions and references validate, the governance and DAG/wave checks pass, the benchmark/pool/queue/fairness configuration validates, and the legacy reference remains clean, fixed at `8ed4ae2f`, boot-isolated, and black-box verified. Stop on any missing, extra, duplicate, unapproved, unhashed, mismatched, or invalid row. No target schema or source replacement begins before all Phase 0 gates pass.
 
@@ -154,7 +154,7 @@ Treat stable model-visible wording and schemas as behavior. Changes require an u
 
 ## Enforcement
 
-The operation that reads protected data, mutates authoritative state, or causes an external side effect must obtain and enforce authorization, tenant scope, limits, and policy decisions from the owning Backend permission model at that execution boundary. Upstream layers may perform an equivalent preflight for faster feedback, but Frontend visibility, prompt instructions, Tool-schema omission, API wrappers, and ordinary call ordering are user-experience guidance, not security enforcement.
+The operation that reads protected data, mutates authoritative state, or causes an external side effect must stay within the authenticated, pre-resolved Tenant and capability scope. Human permissions are fixed for a valid login session; Agent-owned execution configuration is resolved for each new Run and fixed in Run Snapshot. Runner and Agent Loop do not reauthenticate users or poll live role/grant changes. Login validity and expiry remain Backend entry concerns. The owning boundary still enforces input limits and cannot trust caller-supplied scope. Upstream layers may perform an equivalent preflight for faster feedback, but Frontend visibility, prompt instructions, Tool-schema omission, API wrappers, and ordinary call ordering are user-experience guidance, not security enforcement.
 
 Tests for a denial rule must exercise the real executor or mutation boundary, including relevant alternate callers that could bypass an upstream check.
 

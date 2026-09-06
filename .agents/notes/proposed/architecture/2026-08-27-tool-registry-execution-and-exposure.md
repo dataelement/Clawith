@@ -23,7 +23,7 @@ Tool Definition
   - input_schema
 ```
 
-`name` is the unique and stable machine identity used by the model and Registry. `description` explains the capability to the model. `input_schema` validates model-produced JSON arguments. The exact canonical naming convention is deferred, but registration never infers identity from an Executor type or compatibility prefix.
+`name` is the unique and stable machine identity used by the model and Registry. `description` explains the capability to the model. `input_schema` validates model-produced JSON arguments. Canonical naming follows the scoped rules below; registration never infers identity from an Executor type or compatibility prefix.
 
 Execution is bound separately:
 
@@ -117,11 +117,11 @@ Available Tool Set
       +------------> Tool Call dispatch
 ```
 
-Dispatch performs an ordinary name lookup in the same frozen Available Tool Set supplied to exposure. An absent name returns Unknown Tool. After process restart or Waiting resume, Tool System reconstructs dispatch target and non-Secret parameters from the persisted Run Snapshot rather than current mutable Definition, Catalog, Grant, or Connection configuration. Current rows are read only to revalidate Tenant, enablement, revocation, Credential ownership, and Secret availability or rotation; they cannot redirect or reconfigure the current Run. Tool System does not rerun complete discovery or exposure policy when the model calls a Tool, but every protected read, mutation, or external side effect still enforces current Tenant isolation and basic RBAC at the concrete execution boundary.
+Dispatch performs an ordinary name lookup in the same frozen Available Tool Set supplied to exposure. An absent name returns Unknown Tool. After process restart or Waiting resume, Tool System reconstructs dispatch target and non-Secret parameters from the persisted Run Snapshot rather than current mutable Definition, Catalog, Grant, or Connection configuration. Execution uses its resolved Tenant and binding scope; current Credential bytes may be read for actual use or rotation, and missing resources return owned errors. Current permission or configuration rows cannot redirect or reconfigure the active Run. Tool System does not rerun complete discovery or exposure policy when the model calls a Tool, and the concrete execution boundary remains constrained by the resolved Tenant and capability scope without live role/grant revalidation.
 
 Executor keys are versioned code contracts. Deployment validation must retain every executor key referenced by a non-terminal Run and every decoder required by its Snapshot schema; an upgrade that removes one is blocked rather than silently binding the Run to new behavior. Definition refresh changes current catalog and new Runs but never rewrites a stored Available Tool Set. External service behavior may still fail at call time, but the Tool name, schema, authorization identity, and local dispatch meaning observed by the Run do not drift.
 
-The permission owner retains enough relation to identify active Running or Waiting Runs that depend on a revoked Tenant, User, Agent, Group, Tool, or Workspace authorization. Revocation requests cancellation through Agent Runner for those Runs and their Child Runs; it does not attempt to remove facts already observed by the model or rewrite Run History. Newly granted permission never expands a frozen Available Tool Set or current Context and becomes available only to new Runs.
+Human permission is resolved at login. Each new Run resolves current Agent-owned Tool/MCP configuration within that scope and freezes its Available Tool Set. A newly installed capability can become usable in a subsequent Run without another login. Permission changes do not expand existing Runs or trigger cancellation sweeps; actual Secret or resource failure remains an owned execution error.
 
 Tools with no permission never enter the direct or searchable candidate set. Approval policy, approval persistence, approver selection, and approval-driven Run behavior are deferred to the future Permission architecture and do not add fields or states to the first-release Tool contract.
 
@@ -323,7 +323,7 @@ This repeatedly sends dozens of full schemas to the model, increases Context cos
 
 ### Re-resolve the complete authorized Tool set after every model output
 
-Rebuilding exposure after the model produces a call can disagree with the Definition set the model received and adds unnecessary work. One immutable Available Tool Set supplies both model presentation and dispatch, while the concrete protected operation still enforces current RBAC and permission revocation cancels affected Runs.
+Rebuilding exposure after the model produces a call can disagree with the Definition set the model received and adds unnecessary work. One immutable Available Tool Set supplies both model presentation and dispatch, while the concrete protected operation stays inside the captured authorization scope and reports actual resource errors.
 
 ### Keep the generic Tool Ledger for audit
 
@@ -347,7 +347,7 @@ The three intents have different product meaning, but only `notify` is one-way; 
 - Skills remain authoritative Workspace file packages behind a logical catalog and do not enter the Tool Registry; reusable external API scripts become Tools.
 - Authorization produces one immutable Available Tool Set used by both Context and dispatch; Run Snapshot persists every Definition, versioned executor binding, complete resolved non-Secret executor configuration, and authorized connection descriptor required for Waiting resume.
 - Deployment retains every executor binding referenced by a non-terminal Run and blocks an incompatible upgrade rather than dispatching that Run through new Tool semantics.
-- Permission grants affect only new Runs; revocation cancels affected Running and Waiting Runs and their Child Runs without rewriting prior Context or History.
+- Human permission follows login-session lifetime; new Runs resolve current Agent capability configuration, and active Runs retain their frozen bindings without revocation sweeps.
 - Unauthorized Tools are neither directly exposed nor searchable.
 - A small default Tool set and one `search_tools` Tool provide access to the authorized searchable remainder.
 - Tool Call contains `id`, `name`, and `input`; Tool Result contains `call_id`, model-visible `content`, and `is_error`.

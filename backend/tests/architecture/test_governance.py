@@ -15,7 +15,7 @@ DAG_PATH = BACKEND_ROOT / "rewrite/owner-dag.json"
 
 EXPECTED_WAVES = {
     "S0": ["identity_tenant"],
-    "S1": ["agent", "credential", "model", "audit", "run", "permission", "context"],
+    "S1": ["agent", "credential", "model", "audit", "run", "permission", "context", "auth"],
     "S2": [
         "workspace",
         "tool",
@@ -28,7 +28,6 @@ EXPECTED_WAVES = {
         "channel",
     ],
     "S3": [
-        "auth",
         "sso",
         "organization",
         "invitation",

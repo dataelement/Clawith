@@ -22,7 +22,7 @@ The target also has no configurable per-Run, per-Agent, daily, monthly, or other
 
 The first release persists Tenant-scoped `llm_models`, one non-null `Agent.model_id`, and required per-Run `provider_continuation_states`. It has no `agent_model_policies` table. Tenant default Model is used only to initialize a new Agent's explicit `model_id`; later Tenant-default changes do not alter existing Agents. Run creation resolves the selected Model into the immutable Model Policy stored in Run Snapshot.
 
-An LLM Model stores its Tenant, Tenant-owned Credential reference, Provider, model identifier, label, base URL, hard context/input/output capabilities, optional image, streaming, cache, and continuation capabilities, versioned non-Secret request settings, enabled state, archive timestamp, and timestamps. The binding rejects Membership- or Agent-owned Credential even when it belongs to the same Tenant. Disabling or archiving Model prevents new Runs and cancels dependent non-terminal Runs; historical Run Snapshot remains unchanged.
+An LLM Model stores its Tenant, Tenant-owned Credential reference, Provider, model identifier, label, base URL, hard context/input/output capabilities, optional image, streaming, cache, and continuation capabilities, versioned non-Secret request settings, enabled state, archive timestamp, and timestamps. The binding rejects Membership- or Agent-owned Credential even when it belongs to the same Tenant. Disabling or archiving Model affects selection for new Runs without cancelling existing Runs; historical Run Snapshot remains unchanged and actual Provider/resource failure remains an execution error.
 
 Hard context, input, and output capabilities resolve once when Model configuration is accepted. Resolution precedence is authoritative Provider model metadata when the Provider exposes it, then the maintained Builtin Model Catalog, then explicit administrator input for a custom or unknown model. The stored capability source is `provider_api`, `builtin_catalog`, or `manual`. Missing required hard limits prevents Model enablement; Runtime never invents a default or probes limits by sending oversized requests. A Run does not refresh these facts from Provider API.
 
@@ -45,7 +45,7 @@ Tool, image, file, and request-overhead rules
 supported caching, compaction, streaming, and continuation capabilities
 ```
 
-The Model Context Profile never contains credentials, credential references, access tokens, authorization headers, Provider endpoints, secret-store locations, or raw Provider configuration. Those facts remain private to Model System and are not model-visible Context or Run facts.
+The Model Context Profile never contains Provider Credential references, access tokens, authorization headers, Provider endpoints, secret-store locations, or raw Provider configuration. The private Model Policy in the existing Run Snapshot retains the resolved non-Secret Provider endpoint, Credential reference, and request settings required to continue the same execution after Waiting. Model System consumes those private fields; Context receives only the explicitly selected Model Context Profile. Product-managed Secret bytes remain in Credential and are obtained only for the external call, never stored in Run Snapshot.
 
 Context calculates effective input budget, source allocation, retained history, Compaction thresholds, and final model view. Model System does not choose which Session, Run, Memory, Skill, File, or Tool Result content to omit because those semantics belong to Context and their source owners.
 
@@ -163,7 +163,7 @@ Agent Loop, streaming, usage, and failure handling need different narrow contrac
 - Streaming, Usage, Error, and Provider Execution Metadata use separate narrow contracts.
 - Tool Calls retain normalized stable call identity before entering Tool System.
 - Partial Streaming Deltas do not settle Model or Run outcome.
-- Raw Provider responses, credentials, credential references, endpoints, SDK objects, and internal errors do not leave Model System.
+- Raw Provider responses, Credential material, SDK objects, and internal errors do not enter model-visible results. Non-Secret Provider endpoints and Credential references may persist in the private Run Snapshot Model Policy but never enter Model Context Profile or model-visible Context.
 - Any later retry policy may call only the same fixed Model and Provider; exact retry and error behavior remains an implementation decision, and the target contains no fallback Model field, list, resolution, or execution path.
 
 ## Risks and open questions

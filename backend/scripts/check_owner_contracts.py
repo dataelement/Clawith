@@ -7,7 +7,8 @@ Run from ``backend/``::
     uv run python scripts/check_owner_contracts.py approve \
         --manifest rewrite/owner-contracts.json --owner run \
         --contract-artifact ../.agents/notes/proposed/architecture/run.md \
-        --evidence ../.omx/evidence/run-contract-review.md
+        --evidence ../.omx/evidence/run-contract-review.md \
+        --receipt artifacts/rewrite/G003/receipts/run-contract-approval.json
     uv run python scripts/check_owner_contracts.py check \
         --manifest rewrite/owner-contracts.json --require-approved-wave S1
 """
@@ -15,14 +16,17 @@ Run from ``backend/``::
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -37,6 +41,17 @@ OWNER_FIELDS = {
     "evidence",
 }
 EVIDENCE_FIELDS = {"path", "sha256"}
+RECEIPT_FIELDS = {
+    "version",
+    "operation",
+    "owner_id",
+    "manifest_path",
+    "contract_artifact",
+    "contract_hash",
+    "evidence",
+    "resulting_state",
+    "resulting_owner_row_hash",
+}
 APPROVED_STATE = "contract_approved"
 UNREVIEWED_STATE = "unreviewed"
 
@@ -47,7 +62,7 @@ def _owners(*owner_ids: str, wave: str, phase: int) -> list[tuple[str, str, int]
 
 EXPECTED_OWNERS = tuple(
     _owners("identity_tenant", wave="S0", phase=2)
-    + _owners("agent", "credential", "model", "audit", "run", "permission", "context", wave="S1", phase=4)
+    + _owners("agent", "credential", "model", "auth", "audit", "run", "permission", "context", wave="S1", phase=4)
     + _owners(
         "workspace",
         "tool",
@@ -62,7 +77,6 @@ EXPECTED_OWNERS = tuple(
         phase=5,
     )
     + _owners(
-        "auth",
         "sso",
         "organization",
         "invitation",
@@ -92,6 +106,7 @@ IMPLEMENTATION_PHASE_OVERRIDES = {
     "model": 2,
     "audit": 2,
     "permission": 2,
+    "auth": 2,
     "workspace": 3,
     "tool": 3,
     "capability_market": 3,
@@ -99,7 +114,7 @@ IMPLEMENTATION_PHASE_OVERRIDES = {
 EXPECTED_OWNER_MAP = {
     owner_id: (wave, IMPLEMENTATION_PHASE_OVERRIDES.get(owner_id, phase)) for owner_id, wave, phase in EXPECTED_OWNERS
 }
-REQUIRED_APPROVAL_DEPENDENCIES = {"sso": {"credential"}}
+REQUIRED_DAG_EDGES = {"sso": {"credential"}}
 
 
 class ContractError(ValueError):
@@ -128,13 +143,34 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _render_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+
+
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    rendered = _render_json(value)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         handle.write(rendered)
         temporary_path = Path(handle.name)
     os.replace(temporary_path, path)
+
+
+def _json_hash(value: dict[str, Any]) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def _manifest_lock(manifest_path: Path) -> Iterator[None]:
+    lock_path = manifest_path.with_name(f".{manifest_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _require_list(value: Any, label: str) -> list[Any]:
@@ -162,7 +198,7 @@ def _resolve_artifact(raw_path: str, manifest_path: Path) -> Path:
             return resolved
         raise ContractError(f"artifact does not exist: {raw_path}")
 
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = _repository_root_for_manifest(manifest_path)
     candidates = (Path.cwd() / candidate, manifest_path.parent / candidate, repository_root / candidate)
     for unresolved in candidates:
         resolved = unresolved.resolve()
@@ -177,6 +213,27 @@ def _stored_path(path: Path) -> str:
         return path.relative_to(repository_root).as_posix()
     except ValueError:
         return str(path)
+
+
+def _repository_root_for_manifest(manifest_path: Path) -> Path:
+    resolved = manifest_path.resolve()
+    if resolved.parent.name == "rewrite" and resolved.parent.parent.name == "backend":
+        return resolved.parents[2]
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_output_path(raw_path: str, manifest_path: Path | None = None) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    repository_root = (
+        _repository_root_for_manifest(manifest_path)
+        if manifest_path is not None
+        else Path(__file__).resolve().parents[2]
+    )
+    if candidate.parts and candidate.parts[0] == "backend":
+        return (repository_root / candidate).resolve()
+    return (Path.cwd() / candidate).resolve()
 
 
 def _validate_dag(dag: dict[str, Any]) -> list[dict[str, Any]]:
@@ -227,7 +284,7 @@ def _validate_dag(dag: dict[str, Any]) -> list[dict[str, Any]]:
             raise ContractError(f"owner DAG has unknown dependencies for {owner_id}: {', '.join(unknown)}")
         if owner_id in dependencies:
             raise ContractError(f"owner DAG owner depends on itself: {owner_id}")
-        missing_required = sorted(REQUIRED_APPROVAL_DEPENDENCIES.get(owner_id, set()) - set(dependencies))
+        missing_required = sorted(REQUIRED_DAG_EDGES.get(owner_id, set()) - set(dependencies))
         if missing_required:
             raise ContractError(
                 f"owner DAG is missing required dependencies for {owner_id}: {', '.join(missing_required)}"
@@ -267,11 +324,7 @@ def _validate_required_approval_dependencies(
     owners: dict[str, dict[str, Any]],
     dag_by_owner: dict[str, dict[str, Any]],
 ) -> None:
-    required_dependencies = REQUIRED_APPROVAL_DEPENDENCIES.get(owner_id, set())
-    dag_dependencies = set(dag_by_owner[owner_id]["depends_on"])
-    if not required_dependencies <= dag_dependencies:
-        missing = sorted(required_dependencies - dag_dependencies)
-        raise ContractError(f"owner DAG is missing approval dependencies for {owner_id}: {', '.join(missing)}")
+    required_dependencies = set(dag_by_owner[owner_id]["depends_on"])
     unapproved = sorted(
         dependency for dependency in required_dependencies if owners[dependency]["state"] != APPROVED_STATE
     )
@@ -406,31 +459,150 @@ def validate_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
 
 
 def build_manifest(manifest_path: Path, dag_path: Path) -> None:
-    dag_rows = _validate_dag(_load_json(dag_path))
-    preserved: dict[str, dict[str, Any]] = {}
-    if manifest_path.exists():
-        existing = _load_json(manifest_path)
-        preserved = validate_manifest(existing, manifest_path)
+    manifest_path = manifest_path.resolve()
+    dag_path = dag_path.resolve()
+    with _manifest_lock(manifest_path):
+        dag_rows = _validate_dag(_load_json(dag_path))
+        preserved: dict[str, dict[str, Any]] = {}
+        if manifest_path.exists():
+            existing = _load_json(manifest_path)
+            preserved = validate_manifest(existing, manifest_path)
 
-    owners: list[dict[str, Any]] = []
-    for dag_row in dag_rows:
-        owner_id = dag_row["owner_id"]
-        existing_row = preserved.get(owner_id)
-        if existing_row is not None and existing_row["state"] == APPROVED_STATE:
-            owners.append(existing_row)
-            continue
-        owners.append(
-            {
-                "owner_id": owner_id,
-                "schema_wave": dag_row["schema_wave"],
-                "implementation_phase": dag_row["implementation_phase"],
-                "state": UNREVIEWED_STATE,
-                "contract_artifact": None,
-                "contract_hash": None,
-                "evidence": [],
-            }
-        )
-    _write_json(manifest_path, {"version": 1, "owners": owners})
+        owners: list[dict[str, Any]] = []
+        for dag_row in dag_rows:
+            owner_id = dag_row["owner_id"]
+            existing_row = preserved.get(owner_id)
+            if existing_row is not None and existing_row["state"] == APPROVED_STATE:
+                owners.append(existing_row)
+                continue
+            owners.append(
+                {
+                    "owner_id": owner_id,
+                    "schema_wave": dag_row["schema_wave"],
+                    "implementation_phase": dag_row["implementation_phase"],
+                    "state": UNREVIEWED_STATE,
+                    "contract_artifact": None,
+                    "contract_hash": None,
+                    "evidence": [],
+                }
+            )
+        _write_json(manifest_path, {"version": 1, "owners": owners})
+
+
+def _expected_receipt(manifest_path: Path, row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "operation": "approve_owner_contract",
+        "owner_id": row["owner_id"],
+        "manifest_path": _stored_path(manifest_path),
+        "contract_artifact": row["contract_artifact"],
+        "contract_hash": row["contract_hash"],
+        "evidence": row["evidence"],
+        "resulting_state": APPROVED_STATE,
+        "resulting_owner_row_hash": _json_hash(row),
+    }
+
+
+def _declared_approval_receipts(
+    manifest_path: Path, approved_owners: set[str]
+) -> dict[str, str]:
+    if not approved_owners:
+        return {}
+    gate_path = manifest_path.with_name("goal-gates.json")
+    gate_manifest = _load_json(gate_path)
+    if gate_manifest.get("version") != 1:
+        raise ContractError("goal-gate manifest version must be 1")
+    goals = _require_list(gate_manifest.get("goals"), "goal-gate goals")
+    receipts_by_owner: dict[str, str] = {}
+    generic_receipt: str | None = None
+    for goal in goals:
+        if not isinstance(goal, dict):
+            raise ContractError("goal-gate goals must contain objects")
+        mutations = _require_list(goal.get("mutations"), f"mutations for {goal.get('id', '<unknown>')}")
+        for mutation in mutations:
+            if not isinstance(mutation, dict):
+                raise ContractError("goal-gate mutations must contain objects")
+            command = mutation.get("command")
+            receipt = mutation.get("receipt")
+            if not isinstance(command, str) or "scripts/check_owner_contracts.py approve" not in command:
+                continue
+            if not isinstance(receipt, str) or not receipt:
+                raise ContractError("owner approval mutation has no declared receipt")
+            arguments = shlex.split(command)
+            try:
+                owner_id = arguments[arguments.index("--owner") + 1]
+                command_receipt = arguments[arguments.index("--receipt") + 1]
+            except (ValueError, IndexError) as exc:
+                raise ContractError("owner approval mutation has incomplete owner or receipt arguments") from exc
+            if command_receipt != receipt:
+                raise ContractError("owner approval mutation command and receipt declaration differ")
+            if owner_id == "<owner>":
+                if generic_receipt is not None and generic_receipt != receipt:
+                    raise ContractError("multiple generic owner approval receipt declarations")
+                generic_receipt = receipt
+                continue
+            if owner_id in receipts_by_owner:
+                raise ContractError(f"duplicate owner approval receipt declaration: {owner_id}")
+            receipts_by_owner[owner_id] = receipt
+
+    declared: dict[str, str] = {}
+    for owner_id in sorted(approved_owners):
+        receipt = receipts_by_owner.get(owner_id)
+        if receipt is None and generic_receipt is not None:
+            receipt = generic_receipt.replace("<owner>", owner_id)
+        if receipt is None:
+            raise ContractError(f"approved owner has no canonical receipt declaration: {owner_id}")
+        declared[owner_id] = receipt
+    return declared
+
+
+def _validate_approval_receipts(
+    manifest_path: Path,
+    owners: dict[str, dict[str, Any]],
+    receipt_paths: Sequence[str],
+) -> None:
+    approved_owners = {owner_id for owner_id, row in owners.items() if row["state"] == APPROVED_STATE}
+    gate_path = manifest_path.with_name("goal-gates.json")
+    declared_receipts = (
+        _declared_approval_receipts(manifest_path, approved_owners)
+        if gate_path.is_file() or not receipt_paths
+        else {}
+    )
+    receipts_by_owner: dict[str, Path] = {}
+
+    def validate_receipt(raw_path: str, *, require_declared_path: bool) -> None:
+        receipt_path = _resolve_output_path(raw_path, manifest_path)
+        receipt = _load_json(receipt_path)
+        if set(receipt) != RECEIPT_FIELDS:
+            raise ContractError(f"approval receipt has unexpected or missing fields: {receipt_path}")
+        owner_id = receipt.get("owner_id")
+        if not isinstance(owner_id, str) or owner_id not in owners:
+            raise ContractError(f"approval receipt has an unknown owner: {receipt_path}")
+        if owner_id in receipts_by_owner:
+            raise ContractError(f"duplicate approval receipt for owner: {owner_id}")
+        declared_path = declared_receipts.get(owner_id)
+        if require_declared_path and (
+            declared_path is None
+            or receipt_path != _resolve_output_path(declared_path, manifest_path)
+        ):
+            raise ContractError(f"approval receipt path is not canonical for owner: {owner_id}")
+        row = owners[owner_id]
+        if row["state"] != APPROVED_STATE or receipt != _expected_receipt(manifest_path, row):
+            raise ContractError(f"approval receipt does not match owner ledger state: {owner_id}")
+        receipts_by_owner[owner_id] = receipt_path
+
+    for raw_path in receipt_paths:
+        validate_receipt(raw_path, require_declared_path=bool(declared_receipts))
+    for owner_id, raw_path in declared_receipts.items():
+        if owner_id not in receipts_by_owner:
+            validate_receipt(raw_path, require_declared_path=False)
+
+    missing = sorted(approved_owners - set(receipts_by_owner))
+    if missing:
+        raise ContractError(f"approved owners are missing approval receipts: {', '.join(missing)}")
+    extra = sorted(set(receipts_by_owner) - approved_owners)
+    if extra:
+        raise ContractError(f"approval receipts exist for unapproved owners: {', '.join(extra)}")
 
 
 def approve_owner(
@@ -438,49 +610,78 @@ def approve_owner(
     owner_id: str,
     contract_artifact: str,
     evidence: Sequence[str],
-) -> None:
-    manifest = _load_json(manifest_path)
-    owners = validate_manifest(manifest, manifest_path)
-    if owner_id not in owners:
-        raise ContractError(f"unknown owner: {owner_id}")
-    row = owners[owner_id]
-    if row["state"] == APPROVED_STATE:
-        raise ContractError(f"owner contract is already approved: {owner_id}")
+    receipt: str,
+) -> str:
     if not evidence:
         raise ContractError("at least one evidence artifact is required")
-    dag_by_owner = {row["owner_id"]: row for row in _dag_rows_for_manifest(manifest_path)}
-    _validate_required_approval_dependencies(owner_id, owners, dag_by_owner)
+    manifest_path = manifest_path.resolve()
+    receipt_path = _resolve_output_path(receipt, manifest_path)
 
-    artifact_path = _resolve_artifact(contract_artifact, manifest_path)
-    evidence_rows: list[dict[str, str]] = []
-    seen_paths: set[Path] = set()
-    for raw_evidence_path in evidence:
-        evidence_path = _resolve_artifact(raw_evidence_path, manifest_path)
-        if evidence_path in seen_paths:
-            raise ContractError(f"duplicate evidence artifact: {raw_evidence_path}")
-        seen_paths.add(evidence_path)
-        evidence_rows.append({"path": _stored_path(evidence_path), "sha256": _sha256(evidence_path)})
+    with _manifest_lock(manifest_path):
+        manifest = _load_json(manifest_path)
+        owners = validate_manifest(manifest, manifest_path)
+        if owner_id not in owners:
+            raise ContractError(f"unknown owner: {owner_id}")
+        row = owners[owner_id]
 
-    candidate_row = {
-        **row,
-        "state": APPROVED_STATE,
-        "contract_artifact": _stored_path(artifact_path),
-        "contract_hash": _sha256(artifact_path),
-        "evidence": evidence_rows,
-    }
-    if row["schema_wave"] == "S3":
-        _validate_s3_product_link(candidate_row, manifest_path)
+        artifact_path = _resolve_artifact(contract_artifact, manifest_path)
+        evidence_rows: list[dict[str, str]] = []
+        seen_paths: set[Path] = set()
+        for raw_evidence_path in evidence:
+            evidence_path = _resolve_artifact(raw_evidence_path, manifest_path)
+            if evidence_path in seen_paths:
+                raise ContractError(f"duplicate evidence artifact: {raw_evidence_path}")
+            seen_paths.add(evidence_path)
+            evidence_rows.append({"path": _stored_path(evidence_path), "sha256": _sha256(evidence_path)})
+        dag_path = manifest_path.with_name("owner-dag.json").resolve()
+        if receipt_path in {manifest_path, dag_path, artifact_path, *seen_paths}:
+            raise ContractError(
+                "approval receipt must be separate from the manifest, owner DAG, contract, and evidence artifacts"
+            )
 
-    row.update(candidate_row)
-    _write_json(manifest_path, manifest)
+        candidate_row = {
+            **row,
+            "state": APPROVED_STATE,
+            "contract_artifact": _stored_path(artifact_path),
+            "contract_hash": _sha256(artifact_path),
+            "evidence": evidence_rows,
+        }
+        if row["schema_wave"] == "S3":
+            _validate_s3_product_link(candidate_row, manifest_path)
+
+        expected_receipt = _expected_receipt(manifest_path, candidate_row)
+
+        if receipt_path.exists():
+            existing_receipt = _load_json(receipt_path)
+            if set(existing_receipt) != RECEIPT_FIELDS or existing_receipt != expected_receipt:
+                raise ContractError(f"approval receipt does not match requested mutation: {receipt_path}")
+            if row != candidate_row:
+                raise ContractError(f"approval receipt does not match owner ledger state: {owner_id}")
+            return "replayed"
+
+        if row["state"] == APPROVED_STATE:
+            if row != candidate_row:
+                raise ContractError(f"owner contract is already approved with different inputs: {owner_id}")
+            _write_json(receipt_path, expected_receipt)
+            return "receipt_recovered"
+
+        dag_by_owner = {dag_row["owner_id"]: dag_row for dag_row in _dag_rows_for_manifest(manifest_path)}
+        _validate_required_approval_dependencies(owner_id, owners, dag_by_owner)
+        row.update(candidate_row)
+        _write_json(manifest_path, manifest)
+        _write_json(receipt_path, expected_receipt)
+        return "applied"
 
 
 def check_manifest(
     manifest_path: Path,
     required_owners: Sequence[str],
     required_waves: Sequence[str],
+    approval_receipts: Sequence[str] = (),
 ) -> None:
+    manifest_path = manifest_path.resolve()
     owners = validate_manifest(_load_json(manifest_path), manifest_path)
+    _validate_approval_receipts(manifest_path, owners, approval_receipts)
     for owner_id in required_owners:
         row = owners.get(owner_id)
         if row is None:
@@ -511,11 +712,13 @@ def _parser() -> argparse.ArgumentParser:
     approve.add_argument("--owner", required=True)
     approve.add_argument("--contract-artifact", required=True)
     approve.add_argument("--evidence", action="append", required=True)
+    approve.add_argument("--receipt", required=True)
 
     check = subparsers.add_parser("check", help="Validate the ledger and requested approval gates")
     check.add_argument("--manifest", type=Path, required=True)
     check.add_argument("--require-approved-owner", action="append", default=[])
     check.add_argument("--require-approved-wave", action="append", default=[])
+    check.add_argument("--approval-receipt", action="append", default=[])
     return parser
 
 
@@ -526,10 +729,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_manifest(args.manifest, args.dag)
             print(f"built owner contract manifest: {args.manifest}")
         elif args.command == "approve":
-            approve_owner(args.manifest, args.owner, args.contract_artifact, args.evidence)
-            print(f"approved owner contract: {args.owner}")
+            result = approve_owner(args.manifest, args.owner, args.contract_artifact, args.evidence, args.receipt)
+            print(f"owner contract approval {result}: {args.owner}")
         else:
-            check_manifest(args.manifest, args.require_approved_owner, args.require_approved_wave)
+            check_manifest(
+                args.manifest,
+                args.require_approved_owner,
+                args.require_approved_wave,
+                args.approval_receipt,
+            )
             print(f"owner contract manifest passed: {args.manifest}")
     except ContractError as exc:
         print(f"owner contract check failed: {exc}", file=sys.stderr)

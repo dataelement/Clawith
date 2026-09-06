@@ -73,7 +73,7 @@ Status: accepted — Phase 0 recorded endpoint-level disposition, consumer evide
 | AgentRun plus Checkpoint/Command/Event/Ledger | Run/Snapshot/History/Context Projection |
 | Tool/AgentTool/Skill tables | Tool Definition/Grant, Capability Market, Workspace Skill package |
 | AgentCredential and Secret JSON columns | unified Credential and binding matrix |
-| AgentPermission/relationships | minimal RBAC, visibility grants, authorization generation |
+| AgentPermission/relationships | minimal RBAC, visibility grants, login-scoped human authorization |
 | Experience/SessionContextState | Workspace Memory and Context Projection |
 | AgentSchedule | Trigger configuration |
 | Approval/quotas/fallback | deleted |

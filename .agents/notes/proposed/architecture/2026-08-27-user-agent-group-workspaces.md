@@ -106,7 +106,7 @@ files/
 
 Directories such as `projects/`, `reports/`, `source-code/`, `datasets/`, and `images/` are examples only. The platform does not pre-create them, treat them as product objects, or move files automatically based on type.
 
-Generation, authorized import, and delivery are ways a file enters or leaves a Workspace, not separate persistent namespaces. Human-uploaded or externally received content remains Product Input or temporary content until an Agent explicitly writes it into the current Membership or Group Workspace. User-private files belong to a User Workspace, Group-shared files belong to a Group Workspace, and Agent-shared files belong to an Agent Workspace.
+Generation, authorized import, and delivery are ways a file enters or leaves a Workspace, not separate persistent namespaces. Human-uploaded or externally received attachments are usable as Product Input without being written to Workspace. The initiating product owner retains their input association and availability through execution and Waiting; temporary staging is not the sole source of a committed input. An Agent explicitly writes an attachment to its authorized Membership or Group Workspace only when the task requires it. User-private files belong to a User Workspace, Group-shared files belong to a Group Workspace, and Agent-shared files belong to an Agent Workspace.
 
 The first release permits file publication only from Agent Workspace into the current Membership or Group Workspace. It uses revision-checked Copy, never Move, and does not mutate the Agent source. Direct and Group Runs cannot copy Membership or Group files into Agent Workspace and cannot write Agent `files/`; their outputs go directly to the Membership or Group Workspace. Agent-owned Main Runs may write Agent `files/`. Memory distillation is the only Direct or Group exception for writing the executing Agent Workspace and is not generic cross-Workspace copy.
 
@@ -185,7 +185,7 @@ Subagent Runs inherit the parent Main Run's resolved Workspace access exactly. A
 
 Workspace does not own or duplicate Agent visibility rules. [Minimal RBAC and Agent Visibility](2026-08-31-minimal-rbac-and-agent-visibility.md) supplies one visibility decision used consistently by Agent discovery, Session creation, A2A target discovery, and Agent Workspace preview.
 
-Newly granted Workspace authorization affects only new Runs. When User, Agent, Group, or Tenant authorization required by a Running or Waiting Run is revoked, the permission owner cancels that Run through Agent Runner, which also cancels its active Child Runs. Workspace does not attempt to remove already-observed Index content from model Context or rewrite Run History.
+Human Workspace access follows the captured login scope. New Runs resolve current Agent-owned Workspace configuration within that scope; existing Runs keep their Snapshot and do not poll later permission changes. Explicit cancellation remains Runner-owned, and an actually missing file returns an owned resource error. Workspace does not rewrite prior Context or Run History.
 
 The initial product exposes no human Workspace create, edit, delete, move, or rename operation. A human changes Workspace content by instructing an Agent, which performs the authorized mutation through Workspace Tools. Concurrent Agent mutation uses revision checks and Agent-managed merge without introducing another permission layer.
 
@@ -237,7 +237,7 @@ Automatic summarization can persist incorrect conclusions or move private inform
 - Multi-file Skill installation and update publish one complete package atomically.
 - Soul, Heartbeat, Announcement, product state, Runtime state, and operational metadata remain outside Workspace with their owning modules.
 - Workspace authorization uses Tenant isolation, User ownership, resolved Agent visibility for Agent Workspace preview, and active Group membership; these relations grant humans preview access and authorized Runs scoped mutation access without a relationship Workspace or fine-grained file policy.
-- Workspace permission grants affect only new Runs; revocation cancels affected non-terminal Runs and their Child Runs rather than dynamically editing Context.
+- Workspace consumes pre-resolved login/Run scope without live permission polling or revocation-driven cancellation.
 - Permission detail beyond the accepted minimal Tenant/RBAC model, Context precedence, and concrete file APIs remain later product or implementation decisions.
 
 ## Risks and open questions

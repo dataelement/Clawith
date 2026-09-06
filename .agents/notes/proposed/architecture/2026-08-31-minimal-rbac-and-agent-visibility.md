@@ -2,11 +2,13 @@
 
 Status: proposed — the first-release Permission owner and Agent visibility contract is agreed but not implemented
 
+Authorization timing is owned by [Login-Session Authorization](2026-09-06-login-session-authorization.md): human access is fixed for a login session, while Agent-owned execution configuration is resolved at each new Run. Login expiry is required; twenty-four hours remains a candidate.
+
 ## Problem
 
-Agent discovery, Session creation, A2A targeting, Agent Workspace preview, Capability installation, protected execution, and authorization revocation all require one current permission decision. Deferring the entire Permission domain would force each caller to invent its own Tenant and visibility checks and could allow a known Agent or Workspace identity to bypass discovery restrictions.
+Agent discovery, Session creation, A2A targeting, Agent Workspace preview, Capability installation, protected execution, all require one consistent permission boundary. Deferring the entire Permission domain would force each caller to invent its own Tenant and visibility checks and could allow a known Agent or Workspace identity to bypass discovery restrictions.
 
-The first release needs only basic Tenant roles, Agent visibility, explicit Agent audience relations, one resolver, and an index from authorization dependencies to non-terminal Runs. It does not need custom roles, Department ACL, ABAC, Approval, per-file policy, or a generic policy engine.
+The first release needs only basic Tenant roles, Agent visibility, explicit Agent audience relations, one resolver and login-scoped human authorization. It does not need custom roles, Department ACL, ABAC, Approval, per-file policy, or a generic policy engine.
 
 ## Proposal
 
@@ -24,23 +26,19 @@ Agent visibility is `tenant` or `restricted`. An enabled `tenant` Agent is visib
 
 ### Permission Resolver
 
-One Permission Resolver returns `none`, `use`, or `manage` for a current Tenant Principal or Agent subject and target Agent. Platform Principal cannot enter this ordinary Agent authorization path. Cross-Tenant, disabled subject, disabled target, missing restricted grant, and revoked relation return `none`. Tenant administrator returns `manage`; the first release has no Agent-specific manage grant. Visible active Membership or Agent returns `use`.
+One Permission Resolver returns `none`, `use`, or `manage` for a Tenant Principal or Agent subject and target Agent. At authorization resolution it checks the subject, Tenant and applicable visibility grants. Platform Principal is excluded from ordinary Agent use. Tenant administrators retain management access; execution of disabled Agents and other administrator exceptions are product rules to settle during Permission implementation. The first release has no Agent-specific manage grant.
 
-Agent list and search, Session creation, A2A target discovery, Agent Workspace preview, Run start, and Capability installation consume the same result and recheck it at the protected operation. Frontend hiding, Tool omission, known identifiers, Prompt text, and ordinary call ordering never authorize access. Workspace does not store another visibility ACL.
+Agent list/search, Session creation, A2A target discovery, Agent Workspace preview, Run start and Capability installation consume the resolved scope. Backend entrypoints validate login-session validity and enforce its Tenant and admitted Agent scope without refreshing human permissions during that login. The owning intake resolves Agent configuration once per new Run. Caller-supplied identifiers, UI visibility and Prompt text cannot expand scope. Workspace does not store another visibility ACL.
 
 ### Capability installation
 
 Agent may install a Market item only when its immutable Available Tool Set contains the explicitly granted `install_capability` Builtin. Installation may create or reuse Tenant Catalog data and may create only the executing Agent's connection and grants. It cannot grant another Agent, expose another Agent's Credential, disable shared Tenant items, or perform Tenant-admin mutations. Approval remains deferred; the first release evaluates basic allow or deny only.
 
-### Revocation and Run dependencies
+### Authorization lifetime
 
-Every revocable authorization dependency exposes a positive monotonic `authorization_generation`. Run Snapshot records each complete resolved dependency identity and generation plus their count and digest. `run_authorization_dependencies` is its indexed projection from active Run to the Membership, Agent visibility grant, Agent Tool Grant, Credential, Group membership, Workspace, and other revocable facts on which that Run depends. Run, Snapshot, and every dependency row commit in the same start transaction; an incomplete projection rejects Run creation and never reaches admission. The projection grants no permission and cannot expand Snapshot.
+Human identity, roles and admitted Agent access are fixed at login and refreshed on a subsequent login. Agent-owned Model, Tool/MCP bindings, Workspace scope and Skill indexes are resolved at each new Run under that human scope, then fixed for the Run. Autonomous inputs resolve receiver authorization at their own intake. Runner consumes the resolved scope without live permission revalidation.
 
-When a dependency is revoked, disabled, deleted, transferred, or narrowed, its owner commits that authoritative fact and increments `authorization_generation` in one short transaction. Re-enablement or a later grant never restores or reuses an earlier generation. Credential Secret rotation that preserves the same authorization does not increment generation; revocation or owner/scope change does. Every protected operation and Agent Runner's pre-Model-Step dependency check requires the owner to remain active and its current generation to equal the Run Snapshot generation. A mismatch fails closed permanently for that Run, so cancellation cleanup latency or rapid re-enablement cannot authorize more execution. Newly granted permission affects only new Runs. Historical Context and Run History are not rewritten.
-
-After an invalidating generation change commits, Permission finds dependent Running and Waiting Runs whose projected generation differs from the current dependency generation, or whose dependency no longer exists or is inactive, in bounded stable-order batches and requests idempotent cancellation from Agent Runner, which propagates to Child Runs. Each batch uses its own transaction and never locks all Tenant Runs at once. No durable cancellation job or generic queue is required: a restart repeats the mismatch query, and already terminal Runs fall out of it. Cleanup completes when no mismatched non-terminal Run remains, even if the owner has since been re-enabled.
-
-The projection is rebuildable from non-Secret Run Snapshot facts but is operationally required for every non-terminal Run. It is never deleted or partially rebuilt while those Runs continue. Startup first applies the normal interruption sweep to inherited Running Runs, then validates every preserved Waiting Run and rebuilds missing projection rows before Runner readiness; a coverage cursor plus count and digest verification proves completion. Rebuild failure keeps Runner unready. If incomplete coverage is detected online, Runner stops admission and further Model Steps while revocation may still commit; execution resumes only after rebuild and required cancellations complete.
+The first release has no authorization-generation columns, Run authorization-dependency projection, revocation sweep or automatic Run cancellation on permission changes. Explicit Run cancellation and parent-child terminal cancellation remain Runner behavior. Missing resources and external credential rejection return their ordinary owned errors. Auth owns login-session expiry; its exact policy remains implementation work.
 
 ## Alternatives considered
 
@@ -66,14 +64,12 @@ Some Agents must be restricted within a Tenant. Tenant equality is necessary but
 - Agent visibility is only `tenant` or `restricted`, with same-Tenant Membership or Agent grants for restricted visibility.
 - Permission Resolver returns `none`, `use`, or `manage` and is the common decision for discovery, Session, A2A, Workspace preview, Run start, and Capability installation.
 - Tenant administrator is the only Agent manager in the first release; Agent creator is audit only and no Agent manage grant exists.
-- A known Agent or Workspace identity cannot bypass visibility, and every protected operation rechecks current Tenant and authorization.
+- A known Agent or Workspace identity cannot expand the resolved scope; Backend boundaries preserve Tenant isolation and valid login-session identity.
 - `install_capability` permits one Agent to install only for itself and never grants Tenant administration or another Agent's Credential.
-- Run authorization dependency projection grants no access and supports complete cancellation after revocation without scanning arbitrary Snapshot JSON.
-- Run start atomically commits the complete dependency projection; Runner readiness, revocation, and every next Model Step fail closed when its Snapshot count or digest does not match.
-- Revocation commits before cancellation fan-out and is immediately authoritative; dependent Runs are cancelled in bounded idempotent batches that can resume after process loss without a generic job table.
-- Every revocable dependency uses a monotonic authorization generation; invalidation increments it, later re-enablement never revives an old generation, and old Runs remain permanently ineligible.
+- Human permissions remain fixed during the login session; Agent execution configuration is refreshed only for a new Run.
+- No live revalidation, authorization-generation projection or revocation-triggered Run cancellation is required.
 - Approval, custom roles, Department ACL, ABAC, per-file ACL, policy engine, and complex permission inheritance remain deferred.
 
 ## Risks and open questions
 
-Exact Permission Resolver API, dependency types and indexing, visibility grant foreign keys, list-query pagination, disabled-state cancellation transaction, permission-cache invalidation, and later migration to richer Permission policy remain implementation decisions under this minimal contract.
+Exact permission interfaces, bounded scope representation, visibility storage, administrator exceptions and login expiry integration are settled during implementation under the login-scoped contract.

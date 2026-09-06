@@ -2,6 +2,8 @@
 
 Status: proposed — the clean-break identity and Tenant boundary required by the first Backend implementation is agreed but not implemented
 
+Authorization timing follows [Login-Session Authorization](2026-09-06-login-session-authorization.md). Auth owns login expiry, with twenty-four hours as a candidate; Account, Membership, Tenant and Principal ownership remains unchanged.
+
 ## Problem
 
 The current Backend approximates one global natural person plus one Tenant-specific User row, but nullable Tenant membership, global and Tenant roles, authentication data, quotas, compatibility proxies, and product profile are mixed across `Identity` and `User`. The target needs one unambiguous identity for login, one unambiguous identity for Tenant product participation, and one request contract consumed by product and Runtime code without completing the later Auth, SSO, and organization-sync redesign first.
@@ -59,7 +61,7 @@ Platform Principal
   - target_tenant_id
 ```
 
-Ordinary product authentication selects one current Membership, loads current Account, Membership, and Tenant enabled state and roles, then constructs Tenant Principal. Platform administration loads current Account and platform role, requires one explicit target Tenant for the operation, and constructs Platform Principal without a Membership or Tenant role. A token may carry stable identities but does not remain the authority for a stale role or enabled state. Product capability and permission owners resolve authorization before Agent Runner receives an authorization snapshot.
+At login, Auth selects one Membership, reads current Account, Membership and Tenant enabled state and roles, and resolves the human authorization scope through Permission. Subsequent requests derive Tenant Principal from the valid login session without refreshing those permissions. Platform operations use their authenticated platform identity and explicit target Tenant without fabricating a Membership. Product intake resolves Agent-owned execution configuration before Runner receives its fixed Run scope.
 
 Platform Principal is accepted only by explicit platform-administration application services and cannot create an ordinary Session, enter an Agent Run, read a Membership or Group Workspace, or become model-visible Context. Platform administration uses its audited target Tenant without gaining ordinary Tenant product identity. Ordinary Agent use always requires Tenant Principal for a Membership in the target Tenant.
 
@@ -83,7 +85,7 @@ Same-Tenant relations use `(tenant_id, membership_id)` foreign keys where approp
 
 Audit records always carry a non-null target Tenant and one closed actor kind: `membership`, `platform_account`, `agent`, or `system`. A Membership actor identifies an ordinary human Tenant operation and must belong to the target Tenant. A Platform Account actor is valid only for an explicit platform-administration operation against the recorded target Tenant; it does not require or create a Membership. An Agent actor belongs to the target Tenant and may carry its same-Tenant Run reference so the initiating product input remains traceable. A System actor carries a bounded internal component identity and is used only for non-human platform operations such as bootstrap or lifecycle cleanup.
 
-The audit row contains exactly the identity required by its actor kind: Membership, Account, Agent, or no database identity for System. A database `CHECK` rejects mixed or missing actor fields, and composite foreign keys enforce same-Tenant Membership, Agent, and Run references. Current authorization is verified before the audited mutation; the immutable audit actor remains historical attribution after a role, Membership, Agent, or Account is disabled or changed.
+The audit row contains exactly the identity required by its actor kind: Membership, Account, Agent, or no database identity for System. A database `CHECK` rejects mixed or missing actor fields, and composite foreign keys enforce same-Tenant Membership, Agent, and Run references. The applicable resolved authorization scope is enforced before the audited mutation; the immutable audit actor remains historical attribution after a role, Membership, Agent, or Account is disabled or changed.
 
 An Agent Run is audited as the Agent actor with its Run reference rather than as System or as a fabricated Membership. Direct and Group Run origin remains discoverable through the Run Snapshot and product input relation. Platform administration is audited as the global Account against an explicit Tenant and never borrows a Tenant Membership merely to satisfy the audit schema. Audit metadata is versioned, bounded, and Secret-free; it does not duplicate product or Run History payloads.
 
@@ -93,7 +95,7 @@ The product term User Workspace means Membership Workspace. Each Membership owns
 
 ### Disablement
 
-Disabling Account prevents authentication through every Membership and cancels affected non-terminal Runs without deleting history. Disabling Membership affects only its Tenant, prevents new Tenant product access, and cancels Runs that depend on that Membership. Disabling Tenant prevents new Tenant work and cancels all of its non-terminal Runs. Other Memberships of the same Account remain unaffected by one Membership disablement.
+Account disablement is considered on subsequent login across its Memberships; Membership disablement applies only to its Tenant, and Tenant disablement prevents subsequent login into that Tenant. Existing login scopes and Runs are not cancelled by permission changes. Historical references remain intact. Auth expiry and explicit logout have their own login-session semantics.
 
 ## Alternatives considered
 
@@ -111,7 +113,7 @@ A global Workspace would allow an Agent authorized in one Tenant to observe the 
 
 ### Store Principal
 
-Principal is a current authenticated union assembled from Account and either Membership/Tenant role facts or platform role plus an explicit target Tenant. Persisting it would duplicate those authorities and create stale security state.
+Principal is an authenticated union derived from the login session and assembled from Account and either Membership/Tenant role facts or platform role plus an explicit target Tenant. Persisting it would duplicate those authorities and duplicate login-session ownership.
 
 ## Acceptance criteria
 
@@ -125,7 +127,7 @@ Principal is a current authenticated union assembled from Account and either Mem
 - User Workspace is one Membership Workspace keyed by Tenant and Membership; the same Account never shares it across Tenants.
 - Direct Session, Group membership, Agent creation audit, personal Credential, and User Workspace reference Membership.
 - Audit records always name a target Tenant and exactly one Membership, Platform Account, Agent, or System actor; platform administration never requires a fabricated Membership, and Agent actions retain their Run relation.
-- Disablement cancels affected non-terminal Runs while retaining historical identity and has the documented Account, Membership, or Tenant scope.
+- Disablement affects subsequent authentication within its documented scope; existing login permissions and Runs follow the login-session authorization decision.
 - Auth method, SSO, external identity, token, recovery, and organization-sync details remain outside this first identity boundary.
 
 ## Risks and open questions

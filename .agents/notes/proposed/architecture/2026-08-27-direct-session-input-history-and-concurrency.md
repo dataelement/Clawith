@@ -20,7 +20,7 @@ Direct channel message ----+----> Session Input
 Explicit reply to a wait --+
 ```
 
-Session Input may contain human-authored text, references to files already stored in the User Workspace, and an explicit reply relation. Uploading a file without submitting a message does not create Session Input.
+Session Input may contain human-authored text, ordinary uploaded message attachments, references to authorized Workspace files, and an explicit reply relation. Attachments need not enter Workspace before Agent Loop can use them. Session owns their input association and availability; an Agent explicitly saves them to an authorized Workspace only when the work requires it. Uploading a file without submitting a message does not create Session Input.
 
 Web, Feishu, or another Channel Adapter authenticates and normalizes the external event and resolves its User and direct Session. The Adapter does not own Session Input or decide Agent behavior. A channel group message belongs to Group rather than direct Session.
 

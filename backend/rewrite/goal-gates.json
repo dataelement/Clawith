@@ -135,9 +135,9 @@
       "phase_crosswalk": [2],
       "carries_forward": ["G000", "G001", "G002"],
       "e2e_level": "unavailable",
-      "implementation_owners": ["identity_tenant", "credential", "model", "agent", "permission", "audit"],
-      "schema_owners": ["identity_tenant", "credential", "model", "agent", "permission", "audit", "run", "context"],
-      "contract_approval_owners": ["identity_tenant", "credential", "model", "agent", "permission", "audit", "workspace", "tool", "capability_market", "run", "context"],
+      "implementation_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit"],
+      "schema_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "run", "context"],
+      "contract_approval_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "workspace", "tool", "capability_market", "run", "context"],
       "required_paths": [
         "backend/rewrite/owner-contracts.json",
         "backend/tests/database/test_schema_wave_S0.py",
@@ -147,79 +147,85 @@
       "validations": [
         {
           "id": "foundation-contract-prerequisites",
-          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1",
+          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1 --approval-receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
           "artifacts": ["backend/artifacts/rewrite/G003/owner-contract-check.txt"]
         },
         {
           "id": "foundation-schema-and-integration",
-          "command": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/audit",
+          "command": "uv run --extra dev pytest tests/database/test_schema_wave_S0.py tests/database/test_schema_wave_S1.py tests/modules/identity_tenant tests/modules/credential tests/modules/model/test_configuration.py tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
           "artifacts": ["backend/artifacts/rewrite/G003/foundation-tests.txt"]
         }
       ],
       "mutations": [
         {
           "id": "approve-identity-tenant-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner identity_tenant --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner identity_tenant --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-credential-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner credential --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner credential --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-model-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner model --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner model --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/model-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-agent-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner agent --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner agent --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-permission-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner permission --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner permission --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
+          "id": "approve-auth-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner auth --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
           "id": "approve-audit-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner audit --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner audit --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-workspace-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner workspace --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner workspace --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-tool-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner tool --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner tool --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-capability-market-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner capability_market --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner capability_market --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-run-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner run --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner run --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/run-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-context-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner context --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner context --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         }
@@ -244,7 +250,7 @@
       "validations": [
         {
           "id": "product-input-contract-prerequisites",
-          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2",
+          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2 --approval-receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/session-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/group-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
           "artifacts": ["backend/artifacts/rewrite/G004/owner-contract-check.txt"]
         },
         {
@@ -256,37 +262,37 @@
       "mutations": [
         {
           "id": "approve-session-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner session --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner session --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/session-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/session-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-a2a-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner a2a --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner a2a --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-group-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner group --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner group --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/group-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/group-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-trigger-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner trigger --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner trigger --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-heartbeat-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner heartbeat --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner heartbeat --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
         {
           "id": "approve-channel-contract-only",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner channel --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner channel --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         }
@@ -363,7 +369,7 @@
       "phase_crosswalk": [6],
       "carries_forward": ["G000", "G001", "G002", "G003", "G004", "G005", "G006"],
       "e2e_level": "module_cumulative",
-      "implementation_owners": ["S3-approved-owner"],
+      "implementation_owners": ["auth", "S3-approved-owner"],
       "contract_approval_owners": [],
       "required_paths": [
         "backend/rewrite/coverage.json",
@@ -372,6 +378,11 @@
         "backend/tests/e2e"
       ],
       "validations": [
+        {
+          "id": "auth-product-contract",
+          "command": "uv run python scripts/check_product_contracts.py --manifest rewrite/product-contracts.json --module auth",
+          "artifacts": ["backend/artifacts/rewrite/G007/auth-product-contract.txt"]
+        },
         {
           "id": "all-implemented-module-e2e",
           "command": "uv run --extra dev pytest tests/e2e",
@@ -386,7 +397,7 @@
       "mutations": [
         {
           "id": "approve-s3-owner-contract",
-          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner <owner> --contract-artifact <path> --evidence <path>",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner <owner> --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G007/receipts/<owner>-contract-approval.json",
           "receipt": "backend/artifacts/rewrite/G007/receipts/<owner>-contract-approval.json",
           "replay_policy": "verify_receipt_before_execute"
         },
