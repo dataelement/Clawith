@@ -27,6 +27,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "boto3>=1.35.69",
     "aioboto3>=13.0.0",
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,9 @@ line-length = 120
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.pyright]
+pythonVersion = "3.11"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
