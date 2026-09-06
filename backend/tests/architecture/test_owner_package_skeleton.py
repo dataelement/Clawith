@@ -12,6 +12,9 @@ OWNER_CONTRACTS = BACKEND_ROOT / "rewrite" / "owner-contracts.json"
 EXPECTED_OWNER_COUNT = 34
 
 OwnerContract = tuple[str, str, int]
+PHASE_TWO_FILES = {"__init__.py", "models.py", "public.py", "repository.py", "AGENTS.md"}
+CRYPTO_OWNERS = frozenset({"credential", "auth"})
+SCHEMA_ONLY_OWNERS = frozenset({"run", "context"})
 
 
 class SkeletonError(AssertionError):
@@ -45,10 +48,12 @@ def _owner_contract_map(owner_contracts: Iterable[OwnerContract]) -> dict[str, t
 def _validate_owner_package_skeleton(
     modules_root: Path,
     owner_contracts: Iterable[OwnerContract],
+    *,
+    approved_owners: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[str, int]]:
     expected_contracts = _owner_contract_map(owner_contracts)
     expected_owner_ids = set(expected_contracts)
-    actual_owner_ids = {path.name for path in modules_root.iterdir() if path.is_dir()}
+    actual_owner_ids = {path.name for path in modules_root.iterdir() if path.is_dir() and path.name != "__pycache__"}
 
     missing_owner_ids = sorted(expected_owner_ids - actual_owner_ids)
     if missing_owner_ids:
@@ -65,8 +70,16 @@ def _validate_owner_package_skeleton(
 
     for owner_id, (schema_wave, implementation_phase) in expected_contracts.items():
         package_root = modules_root / owner_id
-        entries = sorted(path.name for path in package_root.iterdir())
-        if entries != ["__init__.py"]:
+        entries = {path.name for path in package_root.iterdir() if path.name != "__pycache__"}
+        allowed = {"__init__.py"}
+        if owner_id in approved_owners:
+            if implementation_phase == 2:
+                allowed |= PHASE_TWO_FILES
+                if owner_id in CRYPTO_OWNERS:
+                    allowed.add("crypto.py")
+            elif owner_id in SCHEMA_ONLY_OWNERS and schema_wave == "S1":
+                allowed |= {"models.py", "AGENTS.md"}
+        if "__init__.py" not in entries or not entries <= allowed:
             raise SkeletonError(
                 f"{owner_id} ({schema_wave}/phase-{implementation_phase}) has unexpected implementation: {entries}"
             )
@@ -87,8 +100,9 @@ def _write_skeleton(root: Path, owner_ids: Iterable[str]) -> None:
 
 def test_owner_package_skeleton_matches_the_canonical_contract_ledger() -> None:
     owner_contracts = _canonical_owner_contracts()
-
-    actual_contracts = _validate_owner_package_skeleton(MODULES_ROOT, owner_contracts)
+    manifest = json.loads(OWNER_CONTRACTS.read_text(encoding="utf-8"))
+    approved = frozenset(row["owner_id"] for row in manifest["owners"] if row["state"] == "contract_approved")
+    actual_contracts = _validate_owner_package_skeleton(MODULES_ROOT, owner_contracts, approved_owners=approved)
 
     assert len(owner_contracts) == EXPECTED_OWNER_COUNT
     assert len(actual_contracts) == EXPECTED_OWNER_COUNT
@@ -123,3 +137,47 @@ def test_owner_package_skeleton_rejects_duplicate_ledger_owners(tmp_path: Path) 
 
     with pytest.raises(SkeletonError, match="duplicate owners"):
         _validate_owner_package_skeleton(tmp_path, [*owner_contracts, owner_contracts[0]])
+
+
+def test_approved_g003_owners_can_implement_but_later_owners_cannot(tmp_path: Path) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / "identity_tenant/public.py").write_text("class IdentityService: pass\n", encoding="utf-8")
+    (tmp_path / "run/models.py").write_text("# schema only\n", encoding="utf-8")
+    approved = frozenset({"identity_tenant", "run", "workspace"})
+    _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+    with pytest.raises(SkeletonError, match="identity_tenant"):
+        _validate_owner_package_skeleton(tmp_path, owners)
+    (tmp_path / "workspace/public.py").write_text("class Workspace: pass\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="workspace"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+
+
+def test_run_schema_approval_does_not_allow_runtime_service(tmp_path: Path) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / "run/public.py").write_text("class Runner: pass\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="run"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=frozenset({"run"}))
+
+
+def test_only_credential_and_auth_may_add_g003_crypto_modules(tmp_path: Path) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / "credential/crypto.py").write_text("# credential envelope\n", encoding="utf-8")
+    (tmp_path / "auth/crypto.py").write_text("# password and token hashes\n", encoding="utf-8")
+    approved = frozenset({"credential", "auth", "agent"})
+    _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+
+    (tmp_path / "agent/crypto.py").write_text("# misplaced crypto\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="agent"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+
+
+def test_g003_owner_packages_cannot_add_transport_api_modules(tmp_path: Path) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / "auth/api.py").write_text("# premature HTTP adapter\n", encoding="utf-8")
+
+    with pytest.raises(SkeletonError, match="auth"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=frozenset({"auth"}))
