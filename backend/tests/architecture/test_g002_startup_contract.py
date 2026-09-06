@@ -76,6 +76,7 @@ SETUP_ALLOWED_EXECUTABLE_EXPANSIONS = {
     'ROOT="$(cd "$(dirname "$0")" && pwd)"',
     'TEMP_ENV="$(mktemp "$BACKEND_DIR/.env.tmp.XXXXXX")"',
     'existing="$(grep -m 1 "^${key}=" "$BACKEND_ENV" || true)"',
+    'existing_database_url_line="$(grep -m 1 \'^DATABASE_URL=\' "$BACKEND_ENV" || true)"',
 }
 
 RESTART_ALLOWED_EXECUTABLE_EXPANSIONS = {
@@ -359,6 +360,7 @@ def _validate_setup_source(source: str) -> None:
         'BACKEND_ENV="$BACKEND_DIR/.env"',
         'BACKEND_ENV_EXAMPLE="$BACKEND_DIR/.env.example"',
         'TARGET_DATABASE="clawith_target"',
+        'TARGET_ROLE="clawith_target"',
         "uv lock --check",
         "uv sync --extra dev --frozen",
         "uv sync --frozen",
@@ -372,10 +374,23 @@ def _validate_setup_source(source: str) -> None:
     forbidden = sorted(_shell_execution_facts(source))
     forbidden.extend(
         value
-        for value in ("$ROOT/.env", "create_all", "seed.py", "AGENT_RUNTIME")
+        for value in (
+            "$ROOT/.env",
+            "ALTER ROLE",
+            "create_all",
+            "seed.py",
+            "AGENT_RUNTIME",
+        )
         if value in source
     )
-    if missing or forbidden or unsafe_substitutions or dynamic_sinks or "/clawith?" in source:
+    if (
+        missing
+        or forbidden
+        or unsafe_substitutions
+        or dynamic_sinks
+        or "/clawith?" in source
+        or 'TARGET_ROLE="clawith"' in source
+    ):
         raise StartupContractError(
             "invalid setup contract "
             f"missing={missing} forbidden={forbidden} substitutions={sorted(unsafe_substitutions)} "
@@ -722,6 +737,9 @@ def test_backend_environment_template_is_target_only() -> None:
     assert assignments["DATABASE_URL"].endswith(
         f"/{TARGET_DATABASE}?ssl=disable"
     )
+    assert assignments["DATABASE_URL"].startswith(
+        "postgresql+asyncpg://clawith_target:clawith_target@"
+    )
     assert "DATABASE_URL=" not in ROOT_ENV_EXAMPLE.read_text(encoding="utf-8")
 
 
@@ -845,7 +863,8 @@ def test_setup_synchronizes_backend_env_and_prepares_target_database(
     )
     original_backend_env = (
         "DEBUG=true\nLEGACY_RUNTIME=true\n"
-        "DATABASE_URL=postgresql+asyncpg://clawith:clawith@localhost:5432/clawith\n"
+        "DATABASE_URL=postgresql+asyncpg://clawith_target:clawith_target@"
+        "localhost:5432/clawith_target?ssl=disable\n"
     )
     (backend / ".env").write_text(original_backend_env, encoding="utf-8")
     command_log = tmp_path / "commands.log"
@@ -853,11 +872,10 @@ def test_setup_synchronizes_backend_env_and_prepares_target_database(
         fake_bin / "psql",
         '#!/bin/sh\nprintf "psql %s\\n" "$*" >> "$COMMAND_LOG"\n',
     )
-    for command in ("createuser", "createdb"):
-        _write_executable(
-            fake_bin / command,
-            f'#!/bin/sh\nprintf "{command} %s\\n" "$*" >> "$COMMAND_LOG"\n',
-        )
+    _write_executable(
+        fake_bin / "createdb",
+        '#!/bin/sh\nprintf "createdb %s\\n" "$*" >> "$COMMAND_LOG"\n',
+    )
     _write_executable(
         fake_bin / "uv",
         """#!/bin/sh
@@ -901,9 +919,171 @@ exit 0
     assert "LEGACY_RUNTIME" not in backend_env
     assert f"/{TARGET_DATABASE}?ssl=disable" in backend_env
     assert not (repository / ".env").exists()
-    assert f"createdb --host localhost --port 5432 --username test-admin --owner clawith {TARGET_DATABASE}" in commands
+    assert "CREATE ROLE clawith_target LOGIN PASSWORD 'clawith_target'" in commands
+    assert "ALTER ROLE" not in commands
+    assert f"createdb --host localhost --port 5432 --username test-admin --owner clawith_target {TARGET_DATABASE}" in commands
     assert "uv lock --check" in commands
     assert "uv sync --extra dev --frozen" in commands
+
+
+def test_setup_preserves_explicit_target_database_url_without_database_mutation(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    backend = repository / "backend"
+    fake_bin = tmp_path / "bin"
+    backend.mkdir(parents=True)
+    fake_bin.mkdir()
+    (repository / "setup.sh").write_text(
+        SETUP.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (backend / ".env.example").write_text(
+        BACKEND_ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    explicit_url = (
+        "postgresql+asyncpg://operator:encoded-secret@"
+        "db.internal:6432/clawith_target?ssl=require"
+    )
+    (backend / ".env").write_text(
+        f"DEBUG=true\nDATABASE_URL={explicit_url}\n", encoding="utf-8"
+    )
+    command_log = tmp_path / "commands.log"
+    for command in ("psql", "createdb"):
+        _write_executable(
+            fake_bin / command,
+            f'#!/bin/sh\nprintf "{command} %s\\n" "$*" >> "$COMMAND_LOG"\n',
+        )
+    _write_executable(
+        fake_bin / "uv",
+        '#!/bin/sh\nprintf "uv %s\\n" "$*" >> "$COMMAND_LOG"\n',
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "USER": "test-admin",
+        }
+    )
+
+    completed = subprocess.run(
+        ["bash", str(repository / "setup.sh")],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"DATABASE_URL={explicit_url}" in (backend / ".env").read_text(
+        encoding="utf-8"
+    )
+    commands = command_log.read_text(encoding="utf-8")
+    assert commands == "uv lock --check\nuv sync --frozen\n"
+    assert "encoded-secret" not in completed.stdout
+    assert "encoded-secret" not in completed.stderr
+
+
+def test_setup_rejects_non_target_database_url_before_mutation(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    backend = repository / "backend"
+    fake_bin = tmp_path / "bin"
+    backend.mkdir(parents=True)
+    fake_bin.mkdir()
+    (repository / "setup.sh").write_text(
+        SETUP.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (backend / ".env.example").write_text(
+        BACKEND_ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    original = (
+        "DATABASE_URL=postgresql+asyncpg://legacy:secret@localhost:5432/clawith\n"
+    )
+    (backend / ".env").write_text(original, encoding="utf-8")
+    command_log = tmp_path / "commands.log"
+    for command in ("uv", "psql", "createdb"):
+        _write_executable(
+            fake_bin / command,
+            f'#!/bin/sh\nprintf "{command} %s\\n" "$*" >> "$COMMAND_LOG"\n',
+        )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "USER": "test-admin",
+        }
+    )
+
+    completed = subprocess.run(
+        ["bash", str(repository / "setup.sh")],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert (backend / ".env").read_text(encoding="utf-8") == original
+    assert not command_log.exists()
+    assert "Set DATABASE_URL to an existing clawith_target connection" in completed.stderr
+    assert "secret" not in completed.stderr
+
+
+def test_setup_never_changes_credentials_for_an_existing_target_role(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    backend = repository / "backend"
+    fake_bin = tmp_path / "bin"
+    backend.mkdir(parents=True)
+    fake_bin.mkdir()
+    (repository / "setup.sh").write_text(
+        SETUP.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (backend / ".env.example").write_text(
+        BACKEND_ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    command_log = tmp_path / "commands.log"
+    _write_executable(
+        fake_bin / "psql",
+        "#!/bin/sh\n"
+        'printf "psql %s\\n" "$*" >> "$COMMAND_LOG"\n'
+        'case "$*" in *"FROM pg_roles"*|*"FROM pg_database"*) '
+        'printf "1\\n" ;; esac\n',
+    )
+    for command in ("createdb", "uv"):
+        _write_executable(
+            fake_bin / command,
+            f'#!/bin/sh\nprintf "{command} %s\\n" "$*" >> "$COMMAND_LOG"\n',
+        )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "USER": "test-admin",
+        }
+    )
+
+    completed = subprocess.run(
+        ["bash", str(repository / "setup.sh")],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    commands = command_log.read_text(encoding="utf-8")
+    assert "FROM pg_roles" in commands
+    assert "FROM pg_database" in commands
+    assert "ALTER ROLE" not in commands
+    assert "CREATE ROLE" not in commands
+    assert "createdb " not in commands
 
 
 def test_restart_fails_before_start_when_backend_env_is_missing(tmp_path: Path) -> None:

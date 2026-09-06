@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     )
     DATABASE_URL: SecretStr = Field(
         default=SecretStr(
-            "postgresql+asyncpg://clawith:clawith@localhost:5432/clawith_target"
+            "postgresql+asyncpg://clawith_target:clawith_target@localhost:5432/clawith_target"
         ),
     )
     CONTROL_DATABASE_POOL_SIZE: int = Field(default=20, gt=0)
