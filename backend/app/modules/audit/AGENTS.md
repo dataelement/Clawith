@@ -2,6 +2,8 @@
 
 This module is the sole owner of append-only Audit records and their actor attribution.
 
+The rules below describe current G003 code. The agreed [asynchronous Audit boundary](../../../../.agents/notes/proposed/architecture/2026-09-06-asynchronous-audit-observation.md) is pending implementation and contract rebinding; do not extend the current transaction coupling into new consumers or mistake it for the target design.
+
 - Other owners use `AuditService` and actor/view types from `public.py`; `models.py` and `repository.py` are private.
 - Required Audit writes use the authoritative mutation's `TransactionContext`. Audit never commits independently, so mutation and attribution succeed or roll back together.
 - Every record names one explicit Tenant and exactly one Membership, Platform Account, Agent, or System actor. Agent actors may identify a corresponding same-Tenant Run.

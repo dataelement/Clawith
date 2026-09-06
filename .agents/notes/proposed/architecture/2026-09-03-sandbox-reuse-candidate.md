@@ -23,6 +23,8 @@ There is no current product, Tool, API, Runner, or application-composition entry
 
 The legacy implemented venue-ownership Note is archived because its `agent_tools` workspace entry, configuration store, and result formatter no longer exist. This proposed Note is the current decision boundary for evaluating reuse; it does not authorize activation.
 
+The agreed [Workspace temporary-content publication](2026-08-27-user-agent-group-workspaces.md#agent-only-mutation-and-concurrency) applies to non-Sandbox operations. Sandbox file mapping, in-sandbox editing and write-back remain for this capability's later review. The Workspace decision neither activates Sandbox nor settles its publication, synchronization or isolation mechanisms.
+
 ## Alternatives considered
 
 **Delete every Sandbox backend now.** Rejected because the isolation, lifecycle, provider normalization, and output-safety mechanics remain bounded and behaviorally tested.

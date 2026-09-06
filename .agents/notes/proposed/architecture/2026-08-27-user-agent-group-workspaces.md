@@ -77,7 +77,7 @@ Multiple authorized Memory Indexes remain separate. Context does not merge them 
 
 Every Memory creation, edit, deletion, and Index update is explicit. Agent Final Output, Run completion, delegated-work judgment, Context compaction, search, and reads do not mutate Memory implicitly.
 
-Direct and Group Main Runs may update the executing Agent's own Memory only through a dedicated distillation Tool. Distillation creates new Agent-owned generalized knowledge rather than copying a Membership or Group file or Memory entry. Memory owner defines first-release privacy and Secret filtering during implementation and records source Run, source Workspace type, and content hash in non-model-visible Audit. Subagent Run cannot distill; it returns a proposed reusable insight to Main for judgment. The current Run observes a successful write only through Tool Result, while the updated Agent Memory Index becomes a source only for later Runs.
+Direct and Group Main Runs may update the executing Agent's own Memory only through a dedicated distillation Tool. Distillation creates new Agent-owned generalized knowledge rather than copying a Membership or Group file or Memory entry. Memory owner defines first-release privacy and Secret filtering during implementation and emits source Run, source Workspace type, and content hash for non-model-visible asynchronous Audit. Audit delivery or persistence does not govern the Memory write outcome, and missing Audit cannot be used to infer that no write occurred. Subagent Run cannot distill; it returns a proposed reusable insight to Main for judgment. The current Run observes a successful write only through Tool Result, while the updated Agent Memory Index becomes a source only for later Runs.
 
 ### Skills
 
@@ -91,7 +91,7 @@ When a Run receives more than one Workspace, each Skill Index retains its User, 
 
 Installed Workspace Skill files are the only authority for that subject's Skill package. [Tenant Capability Market and Agent Installation](2026-08-31-tenant-capability-market-and-agent-installation.md) owns shared package discovery, deduplication, source, and version metadata. An authorized Agent may install a Market Skill into its Workspace, but another Agent receives no files or Context until it installs the item separately. Market source does not replace the installed Workspace content authority, and installation affects only new Runs.
 
-The first release prohibits Agent Runs from creating, editing, deleting, or publishing Skill content. Agent may install an existing Market Skill only through Capability Management, which validates and atomically materializes the package but does not let the model rewrite it. Tenant management and later Frontend editing may update installed Skill through the same Workspace Service, Permission, package validation, atomic commit, cache invalidation, and Audit boundary.
+The first release prohibits Agent Runs from creating, editing, deleting, or publishing Skill content. Agent may install an existing Market Skill only through Capability Management, which validates and atomically materializes the package but does not let the model rewrite it. Tenant management and later Frontend editing may update installed Skill through the same Workspace Service, Permission, package validation, atomic commit and cache invalidation boundary. Audit observes the outcome asynchronously and does not participate in publication success.
 
 Skill uses mainstream load-time freshness rather than immutable per-Run package revisions. The Run fixes only the Skill Index visible at start, so a newly installed, removed, or renamed Skill changes discovery from the next Run. Full `SKILL.md` and auxiliary files are read from the current installed package on explicit load; an update never retroactively changes content already placed in a model request or Run History, but the next load after Workspace Service invalidates the Skill cache reads the new content. Process restart is not required, and the first release has no Skill revision table, retained package history, or file-system watcher outside controlled Workspace mutations.
 
@@ -116,7 +116,7 @@ Run Output and Child Result content may reference Workspace files without creati
 
 Workspace Tools are the only mutation boundary for `memory/`, `skills/`, and `files/`; Agent Runs do not bypass them to modify underlying storage, and first-release human product surfaces expose no direct mutation operation. Every readable mutable resource has a logical current revision. An Agent mutation supplies the revision it was based on, and Workspace commits only when that revision is still current.
 
-Later Frontend editing may let an authorized human mutate Workspace content, but it must call the same Workspace mutation contract with Permission, Revision/CAS, atomic commit, and Audit. It cannot write storage directly or introduce a second mutation authority.
+Later Frontend editing may let an authorized human mutate Workspace content, but it must call the same Workspace mutation contract with Permission, Revision/CAS and atomic commit, followed by independent asynchronous Audit observation. It cannot write storage directly or introduce a second mutation authority.
 
 ```text
 read content + revision
@@ -134,11 +134,19 @@ atomic commit if revision still matches
 
 Workspace uses only a short resource-scoped write lock while validating and atomically committing one mutation. No lock extends beyond that storage commit into model execution, the surrounding Tool operation, a Run, or another external operation. Readers observe either the complete earlier revision or the complete committed revision and never a partial write.
 
+For non-Sandbox ordinary file writes, prepare complete content in a temporary file before replacing the current file. Preparation failure leaves the current file unchanged. The existing revision check and short commit lock still prevent concurrent overwrite; temporary-file replacement alone is not a stale-write guard. A successful replacement remains successful if Audit later fails or its notification is lost. Receiving no Tool response is not proof that the file was not changed and does not authorize blind replay.
+
 A revision conflict means another Agent committed first. It is a model-visible Workspace Tool Result, not human Need Input. The executing Agent reads the latest content, semantically combines the concurrent Agent change with its intended change, and retries against the new revision. Workspace does not apply silent last-write-wins, discard either accepted change, or guess a generic text merge. The Agent must not persist unresolved conflict markers as a successful merge.
 
 Automatic resolution is bounded so sustained contention cannot create an infinite retry loop. If repeated conflicts prevent convergence, the Agent chooses a non-destructive resolution that preserves the competing content, such as producing a separate candidate for a non-mergeable resource, and reports the resulting file relation in its normal Run Result. Conflict handling never pauses for a human merge decision and never overwrites a newer revision silently.
 
-Create, delete, move, and rename operations apply equivalent revision checks to the affected resource and namespace. A multi-file Skill installation or update is staged and published atomically as one package so another Run cannot observe a partially updated Skill. Current revision is a compare-and-swap concurrency token, not a Git commit, retained version history, branch, snapshot, recycle bin, or recovery guarantee. The concrete revision representation, storage lock, retry bound, and merge prompt remain implementation decisions; version retention, backup, and accidental-deletion recovery are deferred product decisions.
+Create, delete, move, and rename operations apply equivalent revision checks to the affected resource and namespace. Controlled non-Sandbox Skill installation or update prepares the complete package in a temporary directory, validates the contents, and only then switches the active package. Preparation failure preserves the old installed package; temporary content is not a discoverable Skill. Readers must not receive a partially prepared package. Temporary preparation and switch-recovery material do not introduce retained Skill versions or Git history. Actual installation bindings remain authoritative business facts, not Audit records.
+
+Current revision is a compare-and-swap concurrency token, not a Git commit, retained version history, branch, snapshot, recycle bin, or recovery guarantee. The concrete revision representation, storage lock, replacement/activation primitive, failure cleanup, retry bound and merge prompt remain implementation decisions. A storage adapter must provide the agreed publication semantics; this decision does not assume that S3 offers filesystem rename or promise a transaction across arbitrary files and PostgreSQL. Version retention, backup and accidental-deletion recovery remain deferred product decisions.
+
+[Asynchronous Audit](2026-09-06-asynchronous-audit-observation.md) is decoupled from Workspace success and is never consulted to determine current content, permission, revision, installation state or whether to resume/repeat an operation. This replaces the earlier requirement to make file publication and Audit persistence succeed together; it does not weaken the authoritative Workspace state or Run History contracts.
+
+Sandbox file mapping, in-sandbox editing and write-back remain for the [Sandbox review](2026-09-03-sandbox-reuse-candidate.md). The non-Sandbox publication decision does not activate Sandbox or add mechanisms in anticipation of its integration.
 
 ### Product configuration stays outside Workspace
 
@@ -211,6 +219,10 @@ These facts drive identity, product behavior, scheduling, or lifecycle and have 
 
 Automatic summarization can persist incorrect conclusions or move private information into shared Workspaces. Memory changes remain explicit Tool or product actions.
 
+### Update an installed Skill in place, one file at a time
+
+Rejected for controlled package updates because a reader could combine new instructions with old scripts or resources. Preparing the complete package before activation preserves the agreed package boundary without requiring a retained version history. Source comparisons found this pattern in Codex package installation and versioned OpenCode Skill refresh, but not as a universal guarantee across every local editing, cache repair or failure path.
+
 ## Acceptance criteria
 
 - Every User, Agent, and Group has exactly one persistent Workspace.
@@ -235,6 +247,10 @@ Automatic summarization can persist incorrect conclusions or move private inform
 - Agent-Agent Workspace conflicts are resolved automatically by the executing Agent through latest-content semantic merge and bounded retry, never by silent last-write-wins or human conflict handling.
 - Repeated contention preserves competing content through a non-destructive Agent-selected result rather than overwriting a newer revision or persisting unresolved conflict markers.
 - Multi-file Skill installation and update publish one complete package atomically.
+- Non-Sandbox ordinary writes prepare a complete temporary file before replacement; controlled Skill updates prepare and validate a complete temporary directory before activation, keeping unfinished content outside discovery.
+- Preparation failure leaves the existing file or Skill package unchanged; revision checks remain effective against competing writers.
+- Audit failure or delay does not alter Workspace results, cause replay or supply authoritative business state.
+- Sandbox file mapping, editing and write-back remain deferred rather than being inferred from non-Sandbox publication.
 - Soul, Heartbeat, Announcement, product state, Runtime state, and operational metadata remain outside Workspace with their owning modules.
 - Workspace authorization uses Tenant isolation, User ownership, resolved Agent visibility for Agent Workspace preview, and active Group membership; these relations grant humans preview access and authorized Runs scoped mutation access without a relationship Workspace or fine-grained file policy.
 - Workspace consumes pre-resolved login/Run scope without live permission polling or revocation-driven cancellation.
@@ -248,4 +264,4 @@ Context must preserve source identity when same-named Skills or conflicting Memo
 
 Agent Memory distillation is an accepted first-release privacy risk. It may transform facts observed in a Membership or Group Run into Memory shared with every Membership that can see the Agent. The first release relies on the Memory owner's bounded content, source audit, and implementation-time privacy and Secret filtering, but it does not provide deterministic data-owner consent, PII classification, preview approval, or revocable publication. Those controls belong to the later Memory security version; this capability must not be represented as safe for untrusted private data merely because the model calls it generalized knowledge.
 
-The implementation must choose current-revision, atomic-commit, bounded-retry, and package-publication mechanisms that preserve these semantics across every Agent process that may mutate the same Workspace. This choice must not turn model latency into lock duration or require human conflict resolution. Retained version history and accidental-deletion recovery are not part of the initial Workspace contract.
+The implementation must choose current-revision, temporary-content publication, bounded-retry and failure-cleanup mechanisms that preserve these semantics across every Agent process that may mutate the same non-Sandbox Workspace. This choice must not turn model latency into lock duration or require human conflict resolution. Retained version history and accidental-deletion recovery are not part of the initial Workspace contract.

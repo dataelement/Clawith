@@ -2,6 +2,8 @@
 
 Status: implemented — Audit supports append and bounded Tenant reads through the caller's transaction.
 
+The agreed [asynchronous Audit replacement](../../proposed/architecture/2026-09-06-asynchronous-audit-observation.md) supersedes this coupling as the target design. This Note continues to describe the unchanged G003 code and tests until that replacement is implemented.
+
 ## Problem
 
 A required Audit record must not disappear independently of the change it describes. Actor attribution must distinguish a human Membership, platform Account, Agent/Run or named System component without accepting contradictory identities.
