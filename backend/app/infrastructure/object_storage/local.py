@@ -36,6 +36,9 @@ class LocalStorageBackend(StorageBackend):
     def __init__(self, root: str):
         self.root = Path(root)
 
+    async def aclose(self) -> None:
+        """Local handles belong to individual operations; no persistent client remains to close."""
+
     def _full_path(self, key: str) -> Path:
         normalized = normalize_storage_key(key)
         full = (self.root / normalized).resolve()

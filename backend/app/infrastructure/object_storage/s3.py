@@ -60,6 +60,31 @@ class S3StorageBackend(StorageBackend):
         self._lock_provider = lock_provider
         self._client: Any | None = None
         self._aioboto3_session: Any | None = None
+        self._close_task: asyncio.Task[None] | None = None
+
+    async def aclose(self) -> None:
+        """Close the cached sync client once; cancellation waits for actual cleanup."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_cached_client())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            while not self._close_task.done():
+                try:
+                    await asyncio.shield(self._close_task)
+                except asyncio.CancelledError:
+                    continue
+            self._close_task.result()
+            raise
+
+    async def _close_cached_client(self) -> None:
+        client, self._client = self._client, None
+        self._aioboto3_session = None
+        if client is not None:
+            try:
+                await asyncio.to_thread(client.close)
+            except (ClientError, BotoCoreError) as exc:
+                raise StorageError("Object storage client close failed") from exc
 
     def _object_key(self, key: str) -> str:
         normalized = normalize_storage_key(key)
@@ -95,6 +120,8 @@ class S3StorageBackend(StorageBackend):
         )
 
     def _client_or_raise(self):
+        if self._close_task is not None:
+            raise StorageError("Object storage backend is closed")
         if self._client is None:
             try:
                 import boto3
@@ -111,7 +138,9 @@ class S3StorageBackend(StorageBackend):
 
     @asynccontextmanager
     async def _async_client(self):
-        """Shared aioboto3 session with aiohttp connection pool — reuses connections but detects stale ones correctly."""
+        """Each operation owns and closes its asynchronous S3 client context."""
+        if self._close_task is not None:
+            raise StorageError("Object storage backend is closed")
         try:
             import aioboto3
         except ImportError as exc:

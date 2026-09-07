@@ -105,6 +105,10 @@ class StorageBackend:
     async def delete_tree(self, key: str) -> None:
         raise NotImplementedError
 
+    async def aclose(self) -> None:
+        """Release backend-owned clients after admitted operations have drained; repeatable."""
+        raise NotImplementedError
+
     async def rmdir_if_empty(self, key: str) -> bool:
         """Remove only an empty directory; missing is success, new children are retained."""
         raise NotImplementedError

@@ -24,6 +24,8 @@ One connection per nested lock was rejected because bounded pools could deadlock
 
 Storage owns bytes, revisions and mechanical locks, not Workspace authorization or package state. Adapter operation bounds are not file quotas. File and prefix operations do not imply atomic multi-file transactions. Session advisory locks do not work through transaction-pooling proxies.
 
+The application drains admitted operations before calling `aclose`. Local storage has no persistent client handles. S3 closes its cached synchronous SDK client once, off the event loop, and rejects new clients once closure starts. Concurrent/repeated close calls observe the same completion or failure; cancellation waits for actual cleanup before propagating. Each asynchronous S3 operation still owns its own client context, so this contract does not claim a shared long-lived asynchronous connection pool.
+
 ## Verification
 
-Storage tests exercise versioned reads, pagination, native conditional writes, cancellation, cross-process local exclusion, nested PostgreSQL leases, sibling progress, parent deletion and empty-directory cleanup. Independent Workspace/storage review found no remaining blocker. Controlled S3 responses and local PostgreSQL tests do not establish live S3 behavior, application pool composition or 50-Agent performance.
+Storage tests exercise versioned reads, pagination, native conditional writes, cancellation, cross-process local exclusion, nested PostgreSQL leases, sibling progress, parent deletion and empty-directory cleanup. Disposal tests observe native SDK pool entries being released, cancellation waiting for cleanup, repeated close/failure behavior and retained Local files. Independent Workspace/storage review found no remaining blocker. Controlled S3 responses and local PostgreSQL tests do not establish live S3 behavior, application pool composition or 50-Agent performance.
