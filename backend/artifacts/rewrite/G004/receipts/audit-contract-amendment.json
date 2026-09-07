@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json",
+  "previous_receipt_hash": "34b0486d6a68cc8cb0c28bf4e86f0496f1539cb0a0dff50ee5e6956dec8fd840",
+  "owner_row": {
+    "implementation_phase": 2,
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G004/audit-contract-review.md",
+        "sha256": "fe7280f00ffb25b6efc193ef3de8f396169c82f871ea167b2c1e103224e8ada5"
+      }
+    ],
+    "owner_id": "audit",
+    "contract_hash": "3adabe77efb83b0481d3e49459fb296d1a0305fd55344f8b095f179954c7dca4",
+    "schema_wave": "S1",
+    "contract_artifact": "specs/backend-audit-observation.md",
+    "state": "contract_approved"
+  }
+}
