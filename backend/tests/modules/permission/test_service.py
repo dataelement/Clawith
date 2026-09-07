@@ -16,61 +16,66 @@ from app.modules.permission.models import AgentVisibilityGrantRecord, AgentVisib
 from app.modules.permission.public import MAX_CAPTURED_AGENT_IDS, PermissionService
 
 
-async def _tenant(transaction, name: str):
-    identities = IdentityService(transaction)
-    admin_account = await identities.create_account()
-    member_account = await identities.create_account()
-    tenant = await identities.create_tenant(name=name)
-    admin = await identities.create_membership(
-        tenant_id=tenant.id,
-        account_id=admin_account.id,
-        display_name=f"{name} admin",
-        role="tenant_admin",
-    )
-    member = await identities.create_membership(
-        tenant_id=tenant.id,
-        account_id=member_account.id,
-        display_name=f"{name} member",
-        role="member",
-    )
-    admin_principal = TenantPrincipal(admin_account.id, admin.id, tenant.id, "tenant_admin")
-    member_principal = TenantPrincipal(member_account.id, member.id, tenant.id, "member")
-    keyring = CredentialKeyring(active_key_version="v1", keys={"v1": os.urandom(32)})
-    credential = await CredentialService(transaction, keyring).create(
-        admin_principal,
-        kind="api_key",
-        provider="openai",
-        label="Credential",
-        secret=Secret("test-only-secret"),
-        owner_kind="tenant",
-    )
-    model = await ModelService(transaction).create(
-        admin_principal,
-        credential_id=credential.id,
-        provider="openai",
-        model_name="model",
-        endpoint="https://provider.invalid/v1",
-        context_limit=8192,
-        output_limit=2048,
-        capability_source="administrator",
-        capabilities={"supports_tool_calling": True},
-        settings_version=1,
-        settings={},
-    )
-    agent = await AgentService(transaction).create(
-        admin_principal,
-        name=f"{name} Agent",
-        soul="Be useful",
-        timezone="UTC",
-        model_id=model.id,
-    )
-    return admin_principal, member_principal, member, agent
+async def _tenant(transaction_factory, model_acceptance, name: str):
+    async with transaction_factory() as transaction:
+        identities = IdentityService(transaction)
+        admin_account = await identities.create_account()
+        member_account = await identities.create_account()
+        tenant = await identities.create_tenant(name=name)
+        admin = await identities.create_membership(
+            tenant_id=tenant.id,
+            account_id=admin_account.id,
+            display_name=f"{name} admin",
+            role="tenant_admin",
+        )
+        member = await identities.create_membership(
+            tenant_id=tenant.id,
+            account_id=member_account.id,
+            display_name=f"{name} member",
+            role="member",
+        )
+        admin_principal = TenantPrincipal(admin_account.id, admin.id, tenant.id, "tenant_admin")
+        member_principal = TenantPrincipal(member_account.id, member.id, tenant.id, "member")
+        keyring = CredentialKeyring(active_key_version="v1", keys={"v1": os.urandom(32)})
+        credential = await CredentialService(transaction, keyring).create(
+            admin_principal,
+            kind="api_key",
+            provider="openai",
+            label="Credential",
+            secret=Secret("test-only-secret"),
+            owner_kind="tenant",
+        )
+        model = await ModelService(transaction).create(
+            admin_principal,
+            credential_id=credential.id,
+            provider="openai",
+            model_name="model",
+            endpoint="https://provider.invalid/v1",
+            context_limit=8192,
+            output_limit=2048,
+            capability_source="administrator",
+            capabilities={"supports_tool_calling": True},
+            settings_version=1,
+            settings={"protocol": "openai_chat"},
+            enabled=False,
+        )
+    accepted = await model_acceptance(admin_principal, model, keyring)
+    async with transaction_factory() as transaction:
+        await ModelService(transaction).set_enabled(admin_principal, model_id=model.id, enabled=True, acceptance=accepted)
+        agent = await AgentService(transaction).create(
+            admin_principal,
+            name=f"{name} Agent",
+            soul="Be useful",
+            timezone="UTC",
+            model_id=model.id,
+        )
+        return admin_principal, member_principal, member, agent
 
 
 @pytest.mark.asyncio
-async def test_frozen_principal_does_not_change_after_grant_edits(transaction_factory) -> None:
+async def test_frozen_principal_does_not_change_after_grant_edits(transaction_factory, model_acceptance) -> None:
+    admin, member_principal, member, agent = await _tenant(transaction_factory, model_acceptance, "Tenant")
     async with transaction_factory() as transaction:
-        admin, member_principal, member, agent = await _tenant(transaction, "Tenant")
         permissions = PermissionService(transaction)
         await permissions.set_visibility(admin, agent_id=agent.id, visibility="restricted")
         await permissions.grant_membership(admin, agent_id=agent.id, membership_id=member.id)
@@ -89,9 +94,9 @@ async def test_frozen_principal_does_not_change_after_grant_edits(transaction_fa
 
 
 @pytest.mark.asyncio
-async def test_admin_scope_is_role_derived_without_agent_enumeration(transaction_factory) -> None:
+async def test_admin_scope_is_role_derived_without_agent_enumeration(transaction_factory, model_acceptance) -> None:
+    admin, _, _, agent = await _tenant(transaction_factory, model_acceptance, "Tenant")
     async with transaction_factory() as transaction:
-        admin, _, _, agent = await _tenant(transaction, "Tenant")
         frozen = await PermissionService(transaction).freeze_principal(admin)
         assert frozen.allowed_agent_ids == frozenset()
         assert await PermissionService(transaction).resolve_principal(frozen, agent_id=agent.id) == "manage"
@@ -99,11 +104,11 @@ async def test_admin_scope_is_role_derived_without_agent_enumeration(transaction
 
 @pytest.mark.asyncio
 async def test_visibility_grants_and_autonomous_intake_cannot_cross_tenants(
-    transaction_factory,
+    transaction_factory, model_acceptance,
 ) -> None:
+    first_admin, _, _, first_agent = await _tenant(transaction_factory, model_acceptance, "First")
+    _, _, second_member, second_agent = await _tenant(transaction_factory, model_acceptance, "Second")
     async with transaction_factory() as transaction:
-        first_admin, _, _, first_agent = await _tenant(transaction, "First")
-        _, _, second_member, second_agent = await _tenant(transaction, "Second")
         permissions = PermissionService(transaction)
         await permissions.set_visibility(first_admin, agent_id=first_agent.id, visibility="restricted")
         with pytest.raises(NotFound):
@@ -127,9 +132,9 @@ async def test_visibility_grants_and_autonomous_intake_cannot_cross_tenants(
 
 
 @pytest.mark.asyncio
-async def test_agent_grant_controls_autonomous_intake(transaction_factory) -> None:
+async def test_agent_grant_controls_autonomous_intake(transaction_factory, model_acceptance) -> None:
+    admin, _, _, target = await _tenant(transaction_factory, model_acceptance, "Tenant")
     async with transaction_factory() as transaction:
-        admin, _, _, target = await _tenant(transaction, "Tenant")
         source = await AgentService(transaction).create(
             admin,
             name="Source",
@@ -160,10 +165,10 @@ async def test_agent_grant_controls_autonomous_intake(transaction_factory) -> No
 
 @pytest.mark.asyncio
 async def test_member_visibility_above_capture_bound_fails_without_truncation(
-    transaction_factory,
+    transaction_factory, model_acceptance,
 ) -> None:
+    admin, member_principal, _, seed = await _tenant(transaction_factory, model_acceptance, "Bounded")
     async with transaction_factory() as transaction:
-        admin, member_principal, _, seed = await _tenant(transaction, "Bounded")
         now = datetime.now(UTC)
         agents = [
             AgentRecord(

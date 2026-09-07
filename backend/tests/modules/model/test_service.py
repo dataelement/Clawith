@@ -53,7 +53,7 @@ async def _create_model(
     model_name: str = "gpt-test",
 ):
     return await service.create(
-        principal,
+        principal, enabled=False,
         credential_id=credential_id,
         provider="openai",
         model_name=model_name,
@@ -111,7 +111,7 @@ async def test_model_requires_explicit_hard_capabilities_and_secret_free_setting
             await service.create(principal, **common, capabilities={}, settings={})
         with pytest.raises(InvalidInput):
             await service.create(
-                principal,
+                principal, enabled=False,
                 **common,
                 capabilities={"supports_tool_calling": True},
                 settings={"api_key": "must-not-enter-model-settings"},
@@ -125,7 +125,6 @@ async def test_model_archive_retains_record_and_prevents_selection(transaction_f
         credential_id = await _credential(transaction, principal)
         service = ModelService(transaction)
         model = await _create_model(service, principal, credential_id)
-        await service.set_default(principal, model_id=model.id)
         archived = await service.archive(principal, model_id=model.id)
         assert archived.archived_at is not None
         assert not archived.enabled
@@ -171,21 +170,21 @@ async def test_model_json_bounds_accept_at_limit_and_reject_above(transaction_fa
         }
 
         at_depth = await service.create(
-            principal,
+            principal, enabled=False,
             **common,
             model_name="at-depth",
             settings=_nested_object(MAX_CONFIG_DEPTH),
         )
         assert at_depth.settings == _nested_object(MAX_CONFIG_DEPTH)
         at_items = await service.create(
-            principal,
+            principal, enabled=False,
             **common,
             model_name="at-items",
             settings={f"key_{index}": index for index in range(MAX_CONFIG_ITEMS)},
         )
         assert len(at_items.settings) == MAX_CONFIG_ITEMS
         at_bytes = await service.create(
-            principal,
+            principal, enabled=False,
             **common,
             model_name="at-bytes",
             settings=_object_with_exact_encoded_size(MAX_CONFIG_BYTES),
@@ -205,14 +204,14 @@ async def test_model_json_bounds_accept_at_limit_and_reject_above(transaction_fa
 
         with pytest.raises(InvalidInput, match="levels"):
             await service.create(
-                principal,
+                principal, enabled=False,
                 **common,
                 model_name="above-depth",
                 settings=_nested_object(MAX_CONFIG_DEPTH + 1),
             )
         with pytest.raises(InvalidInput, match="items"):
             await service.create(
-                principal,
+                principal, enabled=False,
                 **common,
                 model_name="above-items",
                 settings={f"key_{index}": index for index in range(MAX_CONFIG_ITEMS + 1)},
@@ -221,7 +220,7 @@ async def test_model_json_bounds_accept_at_limit_and_reject_above(transaction_fa
         oversized["value"] += "界"
         with pytest.raises(InvalidInput, match="UTF-8 bytes"):
             await service.create(
-                principal,
+                principal, enabled=False,
                 **common,
                 model_name="above-bytes",
                 settings=oversized,
@@ -263,7 +262,7 @@ async def test_model_json_is_deep_copied_at_input_and_view_boundaries(transactio
         settings = {"sampling": {"temperature": 0.2}}
         service = ModelService(transaction)
         created = await service.create(
-            principal,
+            principal, enabled=False,
             credential_id=credential_id,
             provider="openai",
             model_name="copied",
@@ -329,12 +328,12 @@ async def test_model_capabilities_reject_secret_fields_on_create_and_update(tran
         }
         with pytest.raises(InvalidInput, match="capabilities.*Secret fields"):
             await service.create(
-                principal,
+                principal, enabled=False,
                 **common,
                 capabilities={"supports_tool_calling": True, "nested": {"Access.Token": "secret"}},
             )
         model = await service.create(
-            principal,
+            principal, enabled=False,
             **common,
             capabilities={"supports_tool_calling": True},
         )
@@ -364,7 +363,7 @@ async def test_model_endpoint_rejects_explicit_secret_formats_only(transaction_f
             "settings": {},
         }
         safe = await service.create(
-            principal,
+            principal, enabled=False,
             **common,
             endpoint="https://provider.invalid/v1?api-version=2026-09-06&organization=tenant",
         )
@@ -379,4 +378,4 @@ async def test_model_endpoint_rejects_explicit_secret_formats_only(transaction_f
             "https:///v1",
         ):
             with pytest.raises(InvalidInput, match="user information|Secret query|HTTP"):
-                await service.create(principal, **common, endpoint=endpoint)
+                await service.create(principal, enabled=False, **common, endpoint=endpoint)

@@ -61,6 +61,7 @@ def sink_for(test_database, *, capacity=10, shutdown_timeout=2):
 async def test_real_persistence_scoped_copied_reads_and_all_actor_kinds(
     transaction_factory,
     test_database,
+    model_acceptance,
 ):
     from app.modules.agent.public import AgentService
     from app.modules.credential.public import CredentialKeyring, CredentialService, Secret
@@ -69,13 +70,11 @@ async def test_real_persistence_scoped_copied_reads_and_all_actor_kinds(
 
     principal = await provision(transaction_factory)
     other = await provision(transaction_factory)
+    keyring = CredentialKeyring(active_key_version="test", keys={"test": b"0" * 32})
     async with transaction_factory() as tx:
         credential = await CredentialService(
             tx,
-            CredentialKeyring(
-                active_key_version="test",
-                keys={"test": b"0" * 32},
-            ),
+            keyring,
         ).create(
             principal, kind="api_key", provider="test", label="test", secret=Secret("test-only"), owner_kind="tenant"
         )
@@ -90,8 +89,12 @@ async def test_real_persistence_scoped_copied_reads_and_all_actor_kinds(
             capability_source="administrator",
             capabilities={"supports_tool_calling": True},
             settings_version=1,
-            settings={},
+            settings={"protocol": "openai_chat"},
+            enabled=False,
         )
+    accepted = await model_acceptance(principal, model, keyring)
+    async with transaction_factory() as tx:
+        await ModelService(tx).set_enabled(principal, model_id=model.id, enabled=True, acceptance=accepted)
         agent = await AgentService(tx).create(
             principal,
             name="test",

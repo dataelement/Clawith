@@ -144,3 +144,13 @@ async def db_session(test_database: TestDatabase) -> AsyncIterator[AsyncSession]
 @pytest.fixture
 def transaction_factory(test_database: TestDatabase) -> Callable[[], AbstractAsyncContextManager[TransactionContext]]:
     return lambda: transaction(test_database.sessions)
+
+
+@pytest.fixture
+def model_acceptance(test_database):
+    from model_support import validate_draft_model
+
+    async def accept(principal, model, keyring):
+        return await validate_draft_model(test_database.sessions, principal, model, keyring)
+
+    return accept

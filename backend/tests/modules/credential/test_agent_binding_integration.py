@@ -9,7 +9,7 @@ from app.modules.model.public import ModelService
 
 
 @pytest.mark.asyncio
-async def test_agent_use_scope_cannot_read_or_manage_agent_credential(transaction_factory) -> None:
+async def test_agent_use_scope_cannot_read_or_manage_agent_credential(transaction_factory, model_acceptance) -> None:
     async with transaction_factory() as tx:
         identity = IdentityService(tx)
         admin_account = await identity.create_account()
@@ -53,8 +53,13 @@ async def test_agent_use_scope_cannot_read_or_manage_agent_credential(transactio
             capability_source="administrator",
             capabilities={"supports_tool_calling": True},
             settings_version=1,
-            settings={},
+            settings={"protocol": "openai_chat"},
+            enabled=False,
         )
+    accepted = await model_acceptance(admin, model, keyring)
+    async with transaction_factory() as tx:
+        credentials = CredentialService(tx, keyring)
+        await ModelService(tx).set_enabled(admin, model_id=model.id, enabled=True, acceptance=accepted)
         agent = await AgentService(tx).create(
             admin,
             name="agent",

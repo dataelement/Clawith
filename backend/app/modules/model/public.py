@@ -17,10 +17,55 @@ from app.infrastructure.errors import Conflict, InvalidInput, NotFound
 from app.infrastructure.transactions import TransactionContext
 from app.modules.credential.public import CredentialService
 from app.modules.identity_tenant.public import TenantPrincipal, require_admin
+from app.modules.model.execution import (
+    ModelAcceptance,
+    ModelCatalogEntry,
+    ModelContent,
+    ModelContextProfile,
+    ModelExecutionService,
+    ModelFailure,
+    ModelHardLimits,
+    ModelLimits,
+    ModelMessage,
+    ModelProtocol,
+    ModelStepOutcome,
+    ModelStepRequest,
+    ModelStepResult,
+    ModelStreamEvent,
+    ModelToolCall,
+    ModelToolDefinition,
+    ModelUsage,
+    PrivateModelPolicy,
+    ResolvedModel,
+)
 from app.modules.model.models import ModelRecord, TenantModelDefaultRecord
 from app.modules.model.repository import ModelRepository
 
 CapabilitySource = Literal["provider_metadata", "builtin_catalog", "administrator"]
+__all__ = [
+    "CapabilitySource",
+    "ModelAcceptance",
+    "ModelCatalogEntry",
+    "ModelContent",
+    "ModelContextProfile",
+    "ModelExecutionService",
+    "ModelFailure",
+    "ModelHardLimits",
+    "ModelLimits",
+    "ModelMessage",
+    "ModelProtocol",
+    "ModelService",
+    "ModelStepOutcome",
+    "ModelStepRequest",
+    "ModelStepResult",
+    "ModelStreamEvent",
+    "ModelToolCall",
+    "ModelToolDefinition",
+    "ModelUsage",
+    "ModelView",
+    "PrivateModelPolicy",
+    "ResolvedModel",
+]
 MAX_PAGE_SIZE = 100
 MODEL_CONFIG_VERSION = 1
 MAX_CONFIG_BYTES = 16_384
@@ -93,6 +138,7 @@ class ModelService:
         settings: Mapping[str, Any],
         model_id: UUID | None = None,
         enabled: bool = True,
+        acceptance: ModelAcceptance | None = None,
     ) -> ModelView:
         require_admin(principal)
         credential = await self._credentials.require_tenant_owned_metadata(principal, credential_id=credential_id)
@@ -130,6 +176,8 @@ class ModelService:
             created_at=now,
             updated_at=now,
         )
+        if enabled:
+            _require_acceptance(record, acceptance)
         self._repository.add_model(record)
         await self._flush_or_conflict("Model conflicts with existing data")
         return _view(record)
@@ -161,6 +209,7 @@ class ModelService:
         capabilities: Mapping[str, Any] | None = None,
         settings_version: int | None = None,
         settings: Mapping[str, Any] | None = None,
+        acceptance: ModelAcceptance | None = None,
     ) -> ModelView:
         require_admin(principal)
         if all(
@@ -218,6 +267,16 @@ class ModelService:
             settings=next_settings,
             enabled=record.enabled,
         )
+        if record.enabled:
+            _require_acceptance(ModelRecord(
+                tenant_id=record.tenant_id, credential_id=credential_id or record.credential_id,
+                provider=next_provider, model_name=next_model_name, endpoint=next_endpoint,
+                context_limit=context_limit if context_limit is not None else record.context_limit,
+                output_limit=output_limit if output_limit is not None else record.output_limit,
+                capability_source=capability_source or record.capability_source, capabilities=next_capabilities,
+                settings_version=settings_version if settings_version is not None else record.settings_version,
+                settings=next_settings,
+            ), acceptance)
         record.provider = next_provider
         if credential_id is not None:
             record.credential_id = credential_id
@@ -237,7 +296,9 @@ class ModelService:
         await self._flush_or_conflict("Model update conflicts with existing data")
         return _view(record)
 
-    async def set_enabled(self, principal: TenantPrincipal, *, model_id: UUID, enabled: bool) -> ModelView:
+    async def set_enabled(
+        self, principal: TenantPrincipal, *, model_id: UUID, enabled: bool, acceptance: ModelAcceptance | None = None,
+    ) -> ModelView:
         require_admin(principal)
         record = await self._require(principal.tenant_id, model_id)
         if record.archived_at is not None and enabled:
@@ -251,6 +312,8 @@ class ModelService:
             settings=record.settings,
             enabled=enabled,
         )
+        if enabled:
+            _require_acceptance(record, acceptance)
         record.enabled = enabled
         record.updated_at = datetime.now(UTC)
         await self._repository.flush()
@@ -325,6 +388,16 @@ class ModelService:
             raise Conflict(message) from None
 
 
+def _require_acceptance(record: ModelRecord, acceptance: ModelAcceptance | None) -> None:
+    if acceptance is None or not acceptance.matches(
+        tenant_id=record.tenant_id, credential_id=record.credential_id, provider=record.provider,
+        model_name=record.model_name, endpoint=record.endpoint, context_limit=record.context_limit,
+        output_limit=record.output_limit, capability_source=record.capability_source,
+        capabilities=record.capabilities, settings_version=record.settings_version, settings=record.settings,
+    ):
+        raise InvalidInput("Enabled Model configuration requires matching Provider-validated acceptance")
+
+
 def _validate_configuration(
     *,
     context_limit: int,
@@ -345,6 +418,8 @@ def _validate_configuration(
         raise InvalidInput(f"unsupported Model configuration version: {settings_version}")
     if enabled and capabilities.get("supports_tool_calling") is not True:
         raise InvalidInput("enabled Agent Models must explicitly support tool calling")
+    if enabled and settings.get("protocol") not in {"openai_chat", "openai_responses", "anthropic", "gemini"}:
+        raise InvalidInput("enabled Model requires an explicit execution protocol")
 
 
 def _validate_json_object(value: Mapping[str, Any], *, field_name: str, reject_secrets: bool) -> dict[str, Any]:
