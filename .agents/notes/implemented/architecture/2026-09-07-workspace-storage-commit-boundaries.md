@@ -1,6 +1,6 @@
 # Agent Note: Workspace storage commit boundaries
 
-Status: implemented — Workspace conditional mutation and Skill publication have local tests and independent review; application composition remains incomplete.
+Status: implemented — Workspace conditional mutation, Skill publication and application resource composition are implemented; Run consumers remain G005 work.
 
 ## Problem
 
@@ -28,4 +28,4 @@ File and package preparation never holds a business database transaction. Audit 
 
 Tests cover file CAS, reader-safe package publication, shared/private behavior, member denial, source disappearance after destination publication, bounded directory manifests, concurrent changed/new files, partial copy, nested locks, cancellation and unrelated-resource progress. Local tests and controlled S3 responses do not establish live S3 behavior or a deployment-shaped connection-pool configuration.
 
-The [G004 contract](../../../../specs/backend-execution-dependencies.md) remains authoritative. Sandbox materialization/write-back, application lock-pool composition and full-platform concurrency acceptance remain unimplemented or unverified. This Note does not declare G004 complete.
+The [G004 contract](../../../../specs/backend-execution-dependencies.md) remains authoritative. [Application lock-pool composition](2026-09-07-application-execution-resources.md) has separate integration tests. Sandbox materialization/write-back, hosted storage verification and full-platform concurrency acceptance remain later work. This Note does not by itself declare G004 complete.

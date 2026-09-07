@@ -1,6 +1,6 @@
 # Agent Note: Workspace Builtin composition
 
-Status: implemented — 15 code-owned Workspace Builtins execute through public services; application and Runner assembly remain incomplete.
+Status: implemented — 15 code-owned Workspace Builtins, persisted provisioning and application resources are implemented; per-Run assembly remains G005 work.
 
 ## Problem
 
@@ -22,4 +22,4 @@ Registry bindings do not automatically grant or expose these Tools to an Agent. 
 
 ## Verification and gaps
 
-Nine focused tests run the real scheduler, adapter, Workspace service and Local storage with PostgreSQL metadata. They cover actual file effects, conflicts, denied scopes, Main-only distillation, all 128 Skill member names and bounded results. The combined Workspace/Tool/Market/Builtin suite passed 89 tests; independent code and architecture reviews found no remaining slice blocker. Explicit persisted Builtin provisioning, complete application resource assembly, source installers, Runner consumption, Sandbox and platform load remain separate work; this Note does not claim G004 completion.
+Nine focused tests run the real scheduler, adapter, Workspace service and Local storage with PostgreSQL metadata. They cover actual file effects, conflicts, denied scopes, Main-only distillation, all 128 Skill member names and bounded results. The combined Workspace/Tool/Market/Builtin suite passed 89 tests; independent code and architecture reviews found no remaining slice blocker. [Persisted provisioning](2026-09-07-explicit-builtin-provisioning.md) and [application resources](2026-09-07-application-execution-resources.md) have separate integration evidence. Source importers remain deferred; Runner consumption, Sandbox and platform load remain later work. This Note does not by itself claim G004 completion.

@@ -1,6 +1,6 @@
 # Agent Note: Fixed Tool bindings and account-scoped MCP
 
-Status: implemented — Tool configuration, resolution, scheduling and MCP adapters are available; Builtin and Runner assembly remain separate.
+Status: implemented — Tool configuration, resolution, scheduling, MCP adapters and Workspace/search Builtins are available; per-Run assembly remains G005 work.
 
 ## Problem
 
@@ -26,7 +26,7 @@ Requiring identical schemas for the same MCP identity was rejected because diffe
 
 ## Consequences
 
-`ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. Other concrete Builtins, Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
+`ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. [Workspace Builtins](2026-09-07-workspace-builtin-composition.md) and persisted provisioning are implemented. Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
 
 ## Verification
 
