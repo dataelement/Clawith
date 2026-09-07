@@ -1,8 +1,8 @@
 goal: G002
 validation: full-test-collection-disposition
 command: uv run --extra dev pytest --collect-only
-verified_source_head: c18acd6cc409b11ef7b6ebb9f3fbb037e64f88bd
-verified_at: 2026-09-06T07:29:21Z
+verified_source_head: 085a40b79e936baaddb20683a14f15f06ff4df6f
+verified_at: 2026-09-07T03:10:04Z
 exit_code: 0
-result: 1888 tests collected in 2.06s; zero collection errors
-supporting_full_backend: 1888 passed, 4 warnings in 86.71s
+result: 1927 tests collected in 1.86s; zero collection errors
+supporting_full_backend: 1927 passed, 4 warnings in 89.80s

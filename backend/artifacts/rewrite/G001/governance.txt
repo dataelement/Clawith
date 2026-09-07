@@ -1,7 +1,7 @@
 goal: G001
 validation: governance
 command: uv run --extra dev pytest tests/architecture/test_governance.py tests/architecture/test_module_boundaries.py
-verified_source_head: c18acd6cc409b11ef7b6ebb9f3fbb037e64f88bd
-verified_at: 2026-09-06T07:29:21Z
+verified_source_head: 085a40b79e936baaddb20683a14f15f06ff4df6f
+verified_at: 2026-09-07T03:10:04Z
 exit_code: 0
-result: 34 passed in 0.04s
+result: 38 passed in 0.03s
