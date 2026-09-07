@@ -8,6 +8,10 @@ from fastapi import FastAPI
 
 from app.infrastructure import database
 from app.infrastructure.config import Settings, get_settings
+from app.modules.audit.public import AsyncAuditSink
+
+AUDIT_QUEUE_CAPACITY = 256
+AUDIT_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -17,14 +21,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         resources = await database.create_database_resources(application_settings)
-        application.state.database = resources
         try:
-            yield
+            audit = AsyncAuditSink(
+                resources.execution_sessions,
+                capacity=AUDIT_QUEUE_CAPACITY,
+                shutdown_timeout=AUDIT_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+            try:
+                audit.start()
+                application.state.database = resources
+                application.state.audit = audit
+                yield
+            finally:
+                await audit.close()
         finally:
             try:
                 await resources.aclose()
             finally:
-                del application.state.database
+                for name in ("audit", "database"):
+                    if hasattr(application.state, name):
+                        delattr(application.state, name)
 
     application = FastAPI(
         title=application_settings.APP_NAME,

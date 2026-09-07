@@ -67,6 +67,8 @@ The target is one modular monolith under `app/modules/<owner>/`, with narrow exe
 
 Cross-owner atomic operations use the infrastructure `TransactionContext` and typed application orchestration ports. The orchestrator selects one transaction and invokes owner services; it never writes owner tables directly. Define consumer-facing ports such as `OutcomeConsumer` before their callers depend on them. Login-scoped authorization supersedes the former authorization-dependency writer; no live generation projection or cancellation sweep is part of the target.
 
+Audit is an independent non-blocking public interface. Emit committed observations without passing the business TransactionContext; its application-owned asynchronous consumer uses independent transactions. Audit loss or failure must not alter business outcomes or supply their authoritative state. Composition closes Audit before database resources; the [Audit Note](../.agents/notes/implemented/architecture/2026-09-06-asynchronous-audit-observation.md) defines its bounded best-effort behavior.
+
 Object storage is infrastructure mechanics, not an alternate Workspace owner. Infrastructure and application composition may construct concrete local or S3 backends. The Workspace owner may depend only on `app.infrastructure.object_storage.base`; every other product owner and `app.runtime` must use the approved Workspace public service rather than importing object-storage contracts or implementations directly. The empty `object_storage` package initializer does not re-export implementations.
 
 The public service/import DAG is:

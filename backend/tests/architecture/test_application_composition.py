@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -11,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
 from app import application
@@ -43,6 +44,7 @@ class FakeEngine:
 @dataclass
 class FakeDatabaseResources:
     close_calls: int = 0
+    execution_sessions: async_sessionmaker[AsyncSession] = field(default_factory=async_sessionmaker)
 
     async def aclose(self) -> None:
         self.close_calls += 1
@@ -129,6 +131,52 @@ def test_create_app_owns_database_resources_for_its_complete_lifespan(
     assert observed_settings == [settings]
     assert resources.close_calls == 1
     assert not hasattr(app.state, "database")
+    assert not hasattr(app.state, "audit")
+
+
+@pytest.mark.asyncio
+async def test_audit_consumer_stops_before_database_disposal(monkeypatch: pytest.MonkeyPatch) -> None:
+    resources = FakeDatabaseResources()
+    observed: list[asyncio.Task[object]] = []
+
+    async def create_resources(_settings: Settings) -> DatabaseResources:
+        return cast(DatabaseResources, resources)
+
+    async def close_resources() -> None:
+        assert observed and all(task.done() for task in observed)
+        resources.close_calls += 1
+
+    monkeypatch.setattr(database, "create_database_resources", create_resources)
+    monkeypatch.setattr(resources, "aclose", close_resources)
+    app = application.create_app(_settings())
+    with pytest.raises(ValueError, match="application failure"):
+        async with app.router.lifespan_context(app):
+            observed.extend(task for task in asyncio.all_tasks() if task.get_name() == "audit-observation-consumer")
+            assert len(observed) == 1
+            assert app.state.audit.statistics.persisted == 0
+            raise ValueError("application failure")
+    assert resources.close_calls == 1
+    assert not hasattr(app.state, "audit")
+    assert not hasattr(app.state, "database")
+
+
+def test_database_disposed_if_audit_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    resources = FakeDatabaseResources()
+
+    async def create_resources(_settings: Settings) -> DatabaseResources:
+        return cast(DatabaseResources, resources)
+
+    def invalid_sink(*args: object, **kwargs: object) -> None:
+        raise ValueError("invalid Audit configuration")
+
+    monkeypatch.setattr(database, "create_database_resources", create_resources)
+    monkeypatch.setattr(application, "AsyncAuditSink", invalid_sink)
+    app = application.create_app(_settings())
+    with pytest.raises(ValueError, match="invalid Audit configuration"), TestClient(app):
+        pass
+    assert resources.close_calls == 1
+    assert not hasattr(app.state, "database")
+    assert not hasattr(app.state, "audit")
 
 
 @pytest.mark.parametrize(
