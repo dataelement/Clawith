@@ -193,6 +193,21 @@ class CredentialService:
             key_version=record.key_version,
         )
 
+    async def require_owner_metadata(
+        self,
+        *,
+        tenant_id: UUID,
+        credential_id: UUID,
+        owner_kind: CredentialOwnerKind,
+        owner_id: UUID,
+    ) -> CredentialMetadataView:
+        """Validate an already authorized capability binding without exposing its Secret."""
+        record = await self._repository.get(tenant_id, credential_id)
+        if record is None or record.owner_kind != owner_kind or record.owner_id != owner_id:
+            raise NotFound("Credential is unavailable for this owner")
+        _require_available(record)
+        return _metadata(record)
+
     async def _require_record(self, principal: TenantPrincipal, credential_id: UUID) -> CredentialRecord:
         record = await self._repository.get(principal.tenant_id, credential_id)
         if record is None:
