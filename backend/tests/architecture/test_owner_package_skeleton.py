@@ -15,11 +15,13 @@ OwnerContract = tuple[str, str, int]
 SERVICE_FILES = {"__init__.py", "models.py", "public.py", "repository.py", "AGENTS.md"}
 CRYPTO_OWNERS = frozenset({"credential", "auth"})
 EXECUTION_DEPENDENCY_OWNERS = frozenset({"workspace", "tool", "capability_market"})
+CORE_RUNTIME_OWNERS = frozenset({"run", "context"})
 SCHEMA_ONLY_OWNERS = frozenset({"run", "context", "session", "a2a", "group", "trigger", "heartbeat", "channel"})
 OWNER_IMPLEMENTATION_FILES = {
     "model": {"execution.py", "adapters.py", "continuation.py"},
     "tool": {"contracts.py", "execution.py", "mcp.py"},
     "workspace": {"files.py", "skills.py"},
+    "run": {"contracts.py"},
 }
 
 
@@ -56,6 +58,7 @@ def _validate_owner_package_skeleton(
     owner_contracts: Iterable[OwnerContract],
     *,
     approved_owners: frozenset[str] = frozenset(),
+    runtime_implementation_owners: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[str, int]]:
     expected_contracts = _owner_contract_map(owner_contracts)
     expected_owner_ids = set(expected_contracts)
@@ -79,7 +82,11 @@ def _validate_owner_package_skeleton(
         entries = {path.name for path in package_root.iterdir() if path.name != "__pycache__"}
         allowed = {"__init__.py"}
         if owner_id in approved_owners:
-            if implementation_phase == 2 or (implementation_phase == 3 and owner_id in EXECUTION_DEPENDENCY_OWNERS):
+            if (
+                implementation_phase == 2
+                or (implementation_phase == 3 and owner_id in EXECUTION_DEPENDENCY_OWNERS)
+                or (implementation_phase == 4 and owner_id in CORE_RUNTIME_OWNERS & runtime_implementation_owners)
+            ):
                 allowed |= SERVICE_FILES
                 allowed |= OWNER_IMPLEMENTATION_FILES.get(owner_id, set())
                 if owner_id in CRYPTO_OWNERS:
@@ -109,7 +116,13 @@ def test_owner_package_skeleton_matches_the_canonical_contract_ledger() -> None:
     owner_contracts = _canonical_owner_contracts()
     manifest = json.loads(OWNER_CONTRACTS.read_text(encoding="utf-8"))
     approved = frozenset(row["owner_id"] for row in manifest["owners"] if row["state"] == "contract_approved")
-    actual_contracts = _validate_owner_package_skeleton(MODULES_ROOT, owner_contracts, approved_owners=approved)
+    runtime_approved = frozenset(
+        row["owner_id"] for row in manifest["owners"]
+        if row["state"] == "contract_approved" and row["contract_artifact"] == "specs/backend-core-runtime.md"
+    )
+    actual_contracts = _validate_owner_package_skeleton(
+        MODULES_ROOT, owner_contracts, approved_owners=approved, runtime_implementation_owners=runtime_approved,
+    )
 
     assert len(owner_contracts) == EXPECTED_OWNER_COUNT
     assert len(actual_contracts) == EXPECTED_OWNER_COUNT
@@ -179,6 +192,20 @@ def test_run_schema_approval_does_not_allow_runtime_service(tmp_path: Path) -> N
     (tmp_path / "run/public.py").write_text("class Runner: pass\n", encoding="utf-8")
     with pytest.raises(SkeletonError, match="run"):
         _validate_owner_package_skeleton(tmp_path, owners, approved_owners=frozenset({"run"}))
+
+
+@pytest.mark.parametrize("owner", ["run", "context"])
+def test_g005_contract_approval_allows_only_runtime_owner_implementation(tmp_path: Path, owner: str) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / owner / "public.py").write_text("class Service: pass\n", encoding="utf-8")
+    approved = frozenset({owner, "session"})
+    _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved,
+                                    runtime_implementation_owners=frozenset({owner}))
+    (tmp_path / "session/public.py").write_text("class Session: pass\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="session"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved,
+                                        runtime_implementation_owners=frozenset({owner}))
 
 
 @pytest.mark.parametrize("owner,filename", [("model", "adapters.py"), ("tool", "mcp.py"), ("workspace", "skills.py")])
