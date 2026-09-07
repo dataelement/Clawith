@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
+  "previous_receipt_hash": "b5b9f3bb345fcfcd22952466d06515da35a01b85d54161b3596a7eecb2b12ce9",
+  "owner_row": {
+    "schema_wave": "S1",
+    "contract_hash": "b52860d7106d9465b63056be0ce5d0e09e1d7d258779139a94d01c45231ac701",
+    "state": "contract_approved",
+    "owner_id": "context",
+    "implementation_phase": 4,
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G005/core-runtime-contract-review.md",
+        "sha256": "1f0385b418f21099b530b8fe3589654fcfb8f5b81ceee9ff789a51651076e1e1"
+      }
+    ],
+    "contract_artifact": "specs/backend-core-runtime.md"
+  }
+}
