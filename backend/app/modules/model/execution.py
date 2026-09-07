@@ -287,7 +287,7 @@ class ModelExecutionService:
                 ModelMessage("user", (ModelContent("text", "Call capability_probe with value ok. Do not answer in text."),)),
             ), (ModelToolDefinition("capability_probe", "Return the requested test value; no side effects.",
                 '{"type":"object","properties":{"value":{"type":"string","const":"ok"}},"required":["value"]}'),),
-                0, min(hard.output_limit, 256), False)
+                0, hard.output_limit, False)
             result, _ = await execute(self._http, policy, probe, secret.value, {}, self._limits, None)
             if (result.finish_reason != "tool_calls" or len(result.calls) != 1
                     or result.calls[0].name != "capability_probe"

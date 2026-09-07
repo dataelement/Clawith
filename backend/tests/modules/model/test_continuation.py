@@ -39,6 +39,67 @@ from app.modules.run.models import RunRecord
 KEY = b"k" * 32
 
 
+def successful_probe(protocol):
+    if protocol == "openai_chat":
+        return {"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [
+            {"id": "probe", "function": {"name": "capability_probe", "arguments": '{"value":"ok"}'}},
+        ]}}]}
+    if protocol == "openai_responses":
+        return {"status": "completed", "output": [{"type": "function_call", "call_id": "probe",
+            "name": "capability_probe", "arguments": '{"value":"ok"}'}]}
+    if protocol == "gemini":
+        return {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+            {"functionCall": {"name": "capability_probe", "args": {"value": "ok"}}},
+        ]}}]}
+    return {"stop_reason": "tool_use", "content": [
+        {"type": "tool_use", "id": "probe", "name": "capability_probe", "input": {"value": "ok"}}]}
+
+
+@pytest.mark.parametrize("protocol,options,output_limit", [
+    ("anthropic", {"thinking": {"type": "enabled", "budget_tokens": 1024}}, 2048),
+    ("openai_chat", {"reasoning_effort": "high"}, 2048),
+    ("openai_responses", {"reasoning": {"effort": "high"}}, 2048),
+    ("gemini", {}, 2048),
+    ("anthropic", {}, 128), ("openai_chat", {}, 128),
+    ("openai_responses", {}, 128), ("gemini", {}, 128),
+])
+async def test_configuration_probe_preserves_output_and_reasoning_configuration(
+    test_database, protocol, options, output_limit,
+):
+    principal, model_id, _, keyring = await seed(test_database, protocol)
+    async with test_database.sessions.begin() as session:
+        model = await ModelService(TransactionContext(session)).get(principal, model_id=model_id)
+    settings = {"protocol": protocol, **options}
+    captured = []
+
+    def respond(request):
+        assert test_database.engine.pool.checkedout() == 0
+        if request.method == "GET":
+            return httpx.Response(404)
+        body = json.loads(request.content)
+        budget = (body["generationConfig"]["maxOutputTokens"] if protocol == "gemini"
+                  else body["max_output_tokens"] if protocol == "openai_responses" else body["max_tokens"])
+        assert budget == output_limit
+        for name, value in options.items():
+            assert body[name] == value
+        if "thinking" in options:
+            assert budget > body["thinking"]["budget_tokens"]
+        captured.append(body)
+        return httpx.Response(200, json=successful_probe(protocol))
+
+    async with create_stateless_http_client(transport=httpx.MockTransport(respond)) as client:
+        accepted = await service(test_database, client, keyring).validate_configuration(
+            tenant_id=principal.tenant_id, credential_id=model.credential_id, provider=model.provider,
+            protocol=protocol, model_name=model.model_name, endpoint=model.endpoint,
+            administrator_limits=ModelHardLimits(8192, output_limit), settings=settings, capabilities=model.capabilities,
+        )
+    assert len(captured) == 1 and json.loads(accepted.settings_json) == settings
+    async with test_database.sessions.begin() as session:
+        updated = await ModelService(TransactionContext(session)).update(principal, model_id=model_id,
+            settings=settings, output_limit=output_limit, acceptance=accepted)
+        assert updated.settings == settings and updated.output_limit == output_limit
+
+
 @pytest.mark.parametrize("case", [
     "metadata_error", "metadata_invalid", "metadata_identity", "metadata_partial",
     "probe_text", "probe_tool", "probe_arguments", "catalog_mismatch", "no_limits",
@@ -198,21 +259,7 @@ async def seed(database, protocol="anthropic"):
     def probe_handler(request):
         if request.method == "GET":
             return httpx.Response(404)
-        if protocol == "openai_chat":
-            body = {"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [
-                {"id": "probe", "function": {"name": "capability_probe", "arguments": '{"value":"ok"}'}},
-            ]}}]}
-        elif protocol == "openai_responses":
-            body = {"status": "completed", "output": [{"type": "function_call", "call_id": "probe",
-                "name": "capability_probe", "arguments": '{"value":"ok"}'}]}
-        elif protocol == "gemini":
-            body = {"candidates": [{"finishReason": "STOP", "content": {"parts": [
-                {"functionCall": {"name": "capability_probe", "args": {"value": "ok"}}},
-            ]}}]}
-        else:
-            body = {"stop_reason": "tool_use", "content": [
-                {"type": "tool_use", "id": "probe", "name": "capability_probe", "input": {"value": "ok"}}]}
-        return httpx.Response(200, json=body)
+        return httpx.Response(200, json=successful_probe(protocol))
     async with create_stateless_http_client(transport=httpx.MockTransport(probe_handler)) as client:
         accepted = await service(database, client, keyring).validate_configuration(
             tenant_id=tenant.id, credential_id=credential.id, provider="anthropic", protocol=protocol,
