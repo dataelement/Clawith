@@ -12,9 +12,15 @@ OWNER_CONTRACTS = BACKEND_ROOT / "rewrite" / "owner-contracts.json"
 EXPECTED_OWNER_COUNT = 34
 
 OwnerContract = tuple[str, str, int]
-PHASE_TWO_FILES = {"__init__.py", "models.py", "public.py", "repository.py", "AGENTS.md"}
+SERVICE_FILES = {"__init__.py", "models.py", "public.py", "repository.py", "AGENTS.md"}
 CRYPTO_OWNERS = frozenset({"credential", "auth"})
-SCHEMA_ONLY_OWNERS = frozenset({"run", "context"})
+EXECUTION_DEPENDENCY_OWNERS = frozenset({"workspace", "tool", "capability_market"})
+SCHEMA_ONLY_OWNERS = frozenset({"run", "context", "session", "a2a", "group", "trigger", "heartbeat", "channel"})
+OWNER_IMPLEMENTATION_FILES = {
+    "model": {"execution.py", "adapters.py", "continuation.py"},
+    "tool": {"contracts.py", "execution.py", "mcp.py"},
+    "workspace": {"files.py", "skills.py"},
+}
 
 
 class SkeletonError(AssertionError):
@@ -73,11 +79,12 @@ def _validate_owner_package_skeleton(
         entries = {path.name for path in package_root.iterdir() if path.name != "__pycache__"}
         allowed = {"__init__.py"}
         if owner_id in approved_owners:
-            if implementation_phase == 2:
-                allowed |= PHASE_TWO_FILES
+            if implementation_phase == 2 or (implementation_phase == 3 and owner_id in EXECUTION_DEPENDENCY_OWNERS):
+                allowed |= SERVICE_FILES
+                allowed |= OWNER_IMPLEMENTATION_FILES.get(owner_id, set())
                 if owner_id in CRYPTO_OWNERS:
                     allowed.add("crypto.py")
-            elif owner_id in SCHEMA_ONLY_OWNERS and schema_wave == "S1":
+            elif owner_id in SCHEMA_ONLY_OWNERS and schema_wave in {"S1", "S2"}:
                 allowed |= {"models.py", "AGENTS.md"}
         if "__init__.py" not in entries or not entries <= allowed:
             raise SkeletonError(
@@ -139,17 +146,30 @@ def test_owner_package_skeleton_rejects_duplicate_ledger_owners(tmp_path: Path) 
         _validate_owner_package_skeleton(tmp_path, [*owner_contracts, owner_contracts[0]])
 
 
-def test_approved_g003_owners_can_implement_but_later_owners_cannot(tmp_path: Path) -> None:
+def test_approved_foundation_and_execution_dependencies_can_implement(tmp_path: Path) -> None:
     owners = _canonical_owner_contracts()
     _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
     (tmp_path / "identity_tenant/public.py").write_text("class IdentityService: pass\n", encoding="utf-8")
     (tmp_path / "run/models.py").write_text("# schema only\n", encoding="utf-8")
+    (tmp_path / "workspace/public.py").write_text("class Workspace: pass\n", encoding="utf-8")
     approved = frozenset({"identity_tenant", "run", "workspace"})
     _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
     with pytest.raises(SkeletonError, match="identity_tenant"):
         _validate_owner_package_skeleton(tmp_path, owners)
-    (tmp_path / "workspace/public.py").write_text("class Workspace: pass\n", encoding="utf-8")
-    with pytest.raises(SkeletonError, match="workspace"):
+    (tmp_path / "session/public.py").write_text("class Session: pass\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="session"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+
+
+@pytest.mark.parametrize("owner", ["session", "a2a", "group", "trigger", "heartbeat", "channel"])
+def test_s2_product_approval_permits_schema_but_not_services(tmp_path: Path, owner: str) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / owner / "models.py").write_text("# schema only\n", encoding="utf-8")
+    approved = frozenset({owner})
+    _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+    (tmp_path / owner / "public.py").write_text("class ProductService: pass\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match=owner):
         _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
 
 
@@ -159,6 +179,18 @@ def test_run_schema_approval_does_not_allow_runtime_service(tmp_path: Path) -> N
     (tmp_path / "run/public.py").write_text("class Runner: pass\n", encoding="utf-8")
     with pytest.raises(SkeletonError, match="run"):
         _validate_owner_package_skeleton(tmp_path, owners, approved_owners=frozenset({"run"}))
+
+
+@pytest.mark.parametrize("owner,filename", [("model", "adapters.py"), ("tool", "mcp.py"), ("workspace", "skills.py")])
+def test_execution_files_stay_with_their_approved_owner(tmp_path: Path, owner: str, filename: str) -> None:
+    owners = _canonical_owner_contracts()
+    _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
+    (tmp_path / owner / filename).write_text("# owner implementation\n", encoding="utf-8")
+    approved = frozenset({owner, "agent"})
+    _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
+    (tmp_path / "agent" / filename).write_text("# misplaced implementation\n", encoding="utf-8")
+    with pytest.raises(SkeletonError, match="agent"):
+        _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
 
 
 def test_only_credential_and_auth_may_add_g003_crypto_modules(tmp_path: Path) -> None:

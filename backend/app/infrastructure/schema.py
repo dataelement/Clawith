@@ -8,11 +8,12 @@ from app.infrastructure.database import Base
 
 SCHEMA_OWNERS = (
     "identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "run", "context",
+    "workspace", "tool", "capability_market", "session", "a2a", "group", "trigger", "heartbeat", "channel",
 )
 
 
 def register_schema() -> MetaData:
-    """Register the complete S0/S1 graph on the existing Base; perform no DDL."""
+    """Register the complete approved S0/S1/S2 graph; perform no DDL."""
     for owner in SCHEMA_OWNERS:
         import_module(f"app.modules.{owner}.models")
     return Base.metadata

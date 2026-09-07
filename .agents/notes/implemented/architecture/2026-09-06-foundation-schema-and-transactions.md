@@ -1,6 +1,6 @@
 # Agent Note: Foundation schema and shared transactions
 
-Status: implemented — S0/S1 metadata and caller-owned transactions are available to foundation services; application startup does not create tables.
+Status: implemented — S0/S1/S2 metadata uses one registry and caller-owned transactions; application startup does not create tables.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Foundation owners need relational constraints across module boundaries without i
 
 ## Decision
 
-[`register_schema`](../../../../backend/app/infrastructure/schema.py) explicitly loads the nine approved S0/S1 schema owners into the existing Base. The graph contains 17 tables. Composite foreign keys constrain Tenant ownership, login Account/Membership correspondence, Agent-owned parent Runs, and Run-related records. Closed alternatives use CHECK constraints. Run, Context and Provider continuation are schema-only; registration performs no DDL and adds no execution behavior.
+[`register_schema`](../../../../backend/app/infrastructure/schema.py) explicitly loads the 18 approved S0/S1/S2 schema owners into the existing Base. The graph contains 40 tables. Composite foreign keys constrain Tenant ownership, login Account/Membership correspondence, Agent-owned parent Runs, and Run-related records. Closed alternatives use CHECK constraints. Registration performs no DDL and adds no execution behavior. Run, Context, Session, A2A, Group, Trigger, Heartbeat and Channel services remain outside this schema integration; the [S2 Note](2026-09-07-execution-dependency-schema.md) describes the additional relationships.
 
 [`transaction`](../../../../backend/app/infrastructure/transactions.py) provides one AsyncSession through a typed TransactionContext. Public services share that context; private repositories flush but do not commit. The enclosing operation commits once on success and rolls back on failure or cancellation before releasing its connection. External Model/Tool work must run outside this transaction.
 
@@ -18,7 +18,7 @@ The PostgreSQL fixture creates a unique schema for each test. It uses either an 
 
 **Separate registries per module.** Rejected because cross-owner foreign keys require one integrated schema authority.
 
-**Repository-local commits.** Rejected because they can leave a successful mutation without its required Audit record or other participating owner changes.
+**Repository-local commits.** Rejected because they can leave participating authoritative owner changes partially committed. Audit observations are independent and asynchronous under the [Audit contract](2026-09-06-asynchronous-audit-observation.md); their loss does not invalidate a business commit.
 
 **SQLite-only constraint tests.** Rejected because PostgreSQL generated columns, composite constraints and transaction behavior are part of this contract.
 
@@ -28,4 +28,4 @@ Schema integration remains serialized even when public services are implemented 
 
 ## Verification
 
-Real PostgreSQL tests create and drop the complete S0/S1 graph and exercise valid and invalid Tenant and identity relationships. Transaction tests observe pre-commit invisibility, committed rows, failure/cancellation rollback and zero checked-out connections after completion. This is local database evidence, not application routing, migration, Provider, Runtime, browser or 50-execution load acceptance.
+Real PostgreSQL tests create and drop the complete registered graph and exercise valid and invalid Tenant and identity relationships. Transaction tests observe pre-commit invisibility, committed rows, failure/cancellation rollback and zero checked-out connections after completion. This is local database evidence, not application routing, migration, Provider, Runtime, browser or 50-execution load acceptance.
