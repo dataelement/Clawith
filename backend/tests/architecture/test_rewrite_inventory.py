@@ -97,6 +97,7 @@ def _canonical_owner_manifest() -> dict[str, object]:
     path = Path(__file__).parents[2] / "rewrite/owner-contracts.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     for owner in manifest["owners"]:
+        owner.pop("amendment_receipts", None)
         owner.update(
             {
                 "state": "unreviewed",
@@ -106,6 +107,16 @@ def _canonical_owner_manifest() -> dict[str, object]:
             }
         )
     return manifest
+
+
+def test_fresh_owner_fixture_excludes_existing_approval_history() -> None:
+    manifest = _canonical_owner_manifest()
+    for owner in manifest["owners"]:
+        assert owner["state"] == "unreviewed"
+        assert owner["contract_artifact"] is None
+        assert owner["contract_hash"] is None
+        assert owner["evidence"] == []
+        assert "amendment_receipts" not in owner
 
 
 def _write_owner_contract_fixture(rewrite_dir: Path, owner_manifest: dict[str, object]) -> None:

@@ -21,3 +21,5 @@ Amendment uses the same manifest lock as approval and build. Exact replay is a n
 ## Consequences and verification
 
 Reviewed replacement contracts and evidence use new stable paths; original G003 bindings remain inspectable. Focused tests cover chain validation, altered historic content, owner changes, duplicate/cyclic paths, output collisions, concurrent replay and interrupted receipt recovery. This is repository-governance verification, not database migration or runtime behavior.
+
+Test fixtures that construct a fresh unreviewed roster remove approval and amendment metadata together; otherwise they fail on a stale receipt chain before reaching their intended coverage-link validation. The real build operation continues to preserve and validate existing approval history.
