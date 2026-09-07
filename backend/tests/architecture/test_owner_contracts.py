@@ -88,6 +88,183 @@ def _approve_declared_owner(manifest_path: Path, owner_id: str) -> str:
     )
 
 
+def _amendment_case(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    manifest = _canonical_built_manifest(tmp_path)
+    _approve_declared_owner(manifest, "identity_tenant")
+    artifact = tmp_path / "new-contract.md"
+    evidence = tmp_path / "new-review.md"
+    artifact.write_text("new approved contract", encoding="utf-8")
+    evidence.write_text("independent review passed", encoding="utf-8")
+    return manifest, artifact, evidence, tmp_path / "amendment.json"
+
+
+def test_amend_preserves_history_replays_and_survives_build(tmp_path: Path) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    initial = contracts._resolve_output_path(
+        contracts._declared_approval_receipts(manifest, {"identity_tenant"})["identity_tenant"], manifest
+    )
+    original = initial.read_bytes()
+    args = (manifest, "identity_tenant", str(artifact), [str(evidence)], str(receipt))
+    assert contracts.amend_owner(*args) == "applied"
+    after = manifest.read_bytes()
+    assert contracts.amend_owner(*args) == "replayed"
+    contracts.check_manifest(manifest, [], [])
+    contracts.build_manifest(manifest, manifest.with_name("owner-dag.json"))
+    assert manifest.read_bytes() == after
+    assert initial.read_bytes() == original
+    second = tmp_path / "second-contract.md"
+    second.write_text("second reviewed contract", encoding="utf-8")
+    second_receipt = tmp_path / "second-amendment.json"
+    assert contracts.amend_owner(manifest, "identity_tenant", str(second), [str(evidence)], str(second_receipt)) == "applied"
+    contracts.check_manifest(manifest, [], [])
+    assert _read(second_receipt)["previous_receipt_hash"] == hashlib.sha256(receipt.read_bytes()).hexdigest()
+    with pytest.raises(contracts.ContractError, match="must use amend"):
+        contracts.approve_owner(manifest, "identity_tenant", str(second), [str(evidence)], str(tmp_path / "bypass.json"))
+
+
+def test_amend_recovers_only_exact_interrupted_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    write = contracts._write_json
+
+    def fail_receipt(path: Path, value: dict) -> None:
+        if path == receipt:
+            raise OSError("interrupted receipt publication")
+        write(path, value)
+
+    args = (manifest, "identity_tenant", str(artifact), [str(evidence)], str(receipt))
+    with monkeypatch.context() as patch:
+        patch.setattr(contracts, "_write_json", fail_receipt)
+        with pytest.raises(OSError, match="interrupted"):
+            contracts.amend_owner(*args)
+    with pytest.raises(contracts.ContractError, match="does not exist"):
+        contracts.check_manifest(manifest, [], [])
+    changed = tmp_path / "different.md"
+    changed.write_text("not requested", encoding="utf-8")
+    with pytest.raises(contracts.ContractError, match="recovery inputs"):
+        contracts.amend_owner(manifest, "identity_tenant", str(changed), [str(evidence)], str(receipt))
+    with pytest.raises(contracts.ContractError, match="does not exist"):
+        contracts.amend_owner(manifest, "identity_tenant", str(artifact), [str(evidence)], str(tmp_path / "other.json"))
+    assert not receipt.exists()
+    assert contracts.amend_owner(*args) == "receipt_recovered"
+    contracts.check_manifest(manifest, [], [])
+
+
+@pytest.mark.parametrize("tamper", ["hash", "path", "owner", "state", "missing", "cycle", "duplicate", "old_contract", "old_evidence"])
+def test_amendment_chain_rejects_corruption(tmp_path: Path, tamper: str) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    old = _read(manifest)["owners"][0]
+    contracts.amend_owner(manifest, "identity_tenant", str(artifact), [str(evidence)], str(receipt))
+    value = _read(receipt)
+    if tamper == "hash":
+        value["previous_receipt_hash"] = "0" * 64
+    elif tamper == "path":
+        value["previous_receipt"] = str(tmp_path / "unrelated.json")
+    elif tamper in {"owner", "state"}:
+        value["owner_row"]["owner_id" if tamper == "owner" else "state"] = "wrong"
+    elif tamper in {"cycle", "duplicate"}:
+        ledger = _read(manifest)
+        ledger["owners"][0]["amendment_receipts"].append(
+            value["previous_receipt"] if tamper == "cycle" else str(receipt)
+        )
+        manifest.write_text(json.dumps(ledger), encoding="utf-8")
+    elif tamper in {"old_contract", "old_evidence"}:
+        source = old["contract_artifact"] if tamper == "old_contract" else old["evidence"][0]["path"]
+        contracts._resolve_artifact(source, manifest).write_text("tampered", encoding="utf-8")
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    if tamper == "missing":
+        receipt.unlink()
+    with pytest.raises(contracts.ContractError):
+        contracts.check_manifest(manifest, [], [])
+    with pytest.raises(contracts.ContractError):
+        contracts.build_manifest(manifest, manifest.with_name("owner-dag.json"))
+
+
+@pytest.mark.parametrize("target", ["manifest", "dag", "gates", "lock", "contract", "evidence", "initial", "existing"])
+def test_amendment_cannot_overwrite_inputs(tmp_path: Path, target: str) -> None:
+    manifest, artifact, evidence, _ = _amendment_case(tmp_path)
+    initial = contracts._resolve_output_path(
+        contracts._declared_approval_receipts(manifest, {"identity_tenant"})["identity_tenant"], manifest
+    )
+    existing = tmp_path / "existing.json"
+    existing.write_text("{}", encoding="utf-8")
+    output = {"manifest": manifest, "dag": manifest.with_name("owner-dag.json"),
+              "gates": manifest.with_name("goal-gates.json"),
+              "lock": manifest.with_name(f".{manifest.name}.lock"),
+              "contract": artifact, "evidence": evidence, "initial": initial, "existing": existing}[target]
+    before = output.read_bytes()
+    ledger_before = manifest.read_bytes()
+    with pytest.raises(contracts.ContractError):
+        contracts.amend_owner(manifest, "identity_tenant", str(artifact), [str(evidence)], str(output))
+    assert output.read_bytes() == before
+    assert manifest.read_bytes() == ledger_before
+
+
+def test_amendment_requires_approved_owner_distinct_evidence_and_changed_binding(tmp_path: Path) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    with pytest.raises(contracts.ContractError, match="already approved"):
+        contracts.amend_owner(manifest, "run", str(artifact), [str(evidence)], str(receipt))
+    for paths in ([], [str(evidence), str(evidence)]):
+        with pytest.raises(contracts.ContractError, match="distinct evidence"):
+            contracts.amend_owner(manifest, "identity_tenant", str(artifact), paths, str(receipt))
+    old = _read(manifest)["owners"][0]
+    with pytest.raises(contracts.ContractError, match="must change"):
+        contracts.amend_owner(manifest, "identity_tenant", old["contract_artifact"],
+                              [e["path"] for e in old["evidence"]], str(receipt))
+
+
+def test_concurrent_amendments_serialize_and_tampered_replay_fails(tmp_path: Path) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    args = (manifest, "identity_tenant", str(artifact), [str(evidence)], str(receipt))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: contracts.amend_owner(*args), range(2)))
+    assert sorted(results) == ["applied", "replayed"]
+    assert len(_read(manifest)["owners"][0]["amendment_receipts"]) == 1
+    value = _read(receipt)
+    value["owner_row"]["contract_hash"] = "0" * 64
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    before = manifest.read_bytes()
+    with pytest.raises(contracts.ContractError, match="requested mutation"):
+        contracts.amend_owner(*args)
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize("metadata", [[], "receipt.json", [1], [""], ["a", "./a"]])
+def test_amendment_metadata_is_closed_and_nonempty(tmp_path: Path, metadata: object) -> None:
+    manifest, _, _, _ = _amendment_case(tmp_path)
+    value = _read(manifest)
+    value["owners"][0]["amendment_receipts"] = metadata
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(contracts.ContractError):
+        contracts.check_manifest(manifest, [], [])
+
+
+def test_amend_cli_and_other_owner_receipt_validation(tmp_path: Path) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    _approve_declared_owner(manifest, "audit")
+    args = ["amend", "--manifest", str(manifest), "--owner", "identity_tenant",
+            "--contract-artifact", str(artifact), "--evidence", str(evidence), "--receipt", str(receipt)]
+    assert contracts.main(args) == 0
+    audit_receipt = contracts._resolve_output_path(
+        contracts._declared_approval_receipts(manifest, {"audit"})["audit"], manifest
+    )
+    audit_receipt.unlink()
+    before = manifest.read_bytes()
+    assert contracts.main(args) == 1
+    assert manifest.read_bytes() == before
+
+
+def test_amend_rejects_s3_without_writing_and_keeps_s1_available(tmp_path: Path) -> None:
+    manifest, artifact, evidence, receipt = _amendment_case(tmp_path)
+    _approve_declared_owner(manifest, "audit")
+    before = manifest.read_bytes()
+    with pytest.raises(contracts.ContractError, match="S3 amendments require a joint product/owner contract update"):
+        contracts.amend_owner(manifest, "organization", str(artifact), [str(evidence)], str(receipt))
+    assert manifest.read_bytes() == before
+    assert not receipt.exists()
+    assert contracts.amend_owner(manifest, "audit", str(artifact), [str(evidence)], str(receipt)) == "applied"
+    contracts.check_manifest(manifest, [], [])
+
+
 def _approve_declared_s3_owner(manifest_path: Path, module_id: str) -> str:
     repository_root = manifest_path.parents[2]
     artifact = repository_root / "specs" / "backend-products" / f"{module_id}.md"

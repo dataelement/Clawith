@@ -54,6 +54,7 @@ RECEIPT_FIELDS = {
 }
 APPROVED_STATE = "contract_approved"
 UNREVIEWED_STATE = "unreviewed"
+AMENDMENT_FIELDS = {"version", "operation", "previous_receipt", "previous_receipt_hash", "owner_row"}
 
 
 def _owners(*owner_ids: str, wave: str, phase: int) -> list[tuple[str, str, int]]:
@@ -403,8 +404,15 @@ def validate_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ContractError(f"owner contract row {index} must be an object")
-        if set(row) != OWNER_FIELDS:
+        if set(row) not in (OWNER_FIELDS, OWNER_FIELDS | {"amendment_receipts"}):
             raise ContractError(f"owner contract row {index} has unexpected or missing fields")
+        amendments = row.get("amendment_receipts", [])
+        if not isinstance(amendments, list) or any(not isinstance(p, str) or not p for p in amendments):
+            raise ContractError("amendment_receipts must contain non-empty paths")
+        if "amendment_receipts" in row and (not amendments or row.get("state") != APPROVED_STATE):
+            raise ContractError("only approved owners may have non-empty amendment receipts")
+        if len({_resolve_output_path(p, manifest_path) for p in amendments}) != len(amendments):
+            raise ContractError("duplicate amendment receipt path")
         owner_id = row.get("owner_id")
         if not isinstance(owner_id, str) or not owner_id:
             raise ContractError(f"owner contract row {index} has an invalid owner_id")
@@ -467,6 +475,8 @@ def build_manifest(manifest_path: Path, dag_path: Path) -> None:
         if manifest_path.exists():
             existing = _load_json(manifest_path)
             preserved = validate_manifest(existing, manifest_path)
+            if any(row.get("amendment_receipts") for row in preserved.values()):
+                _validate_approval_receipts(manifest_path, preserved, ())
 
         owners: list[dict[str, Any]] = []
         for dag_row in dag_rows:
@@ -587,7 +597,8 @@ def _validate_approval_receipts(
         ):
             raise ContractError(f"approval receipt path is not canonical for owner: {owner_id}")
         row = owners[owner_id]
-        if row["state"] != APPROVED_STATE or receipt != _expected_receipt(manifest_path, row):
+        active_row = _validate_amendment_chain(manifest_path, row, receipt_path)
+        if row["state"] != APPROVED_STATE or active_row != {k: row[k] for k in OWNER_FIELDS}:
             raise ContractError(f"approval receipt does not match owner ledger state: {owner_id}")
         receipts_by_owner[owner_id] = receipt_path
 
@@ -603,6 +614,121 @@ def _validate_approval_receipts(
     extra = sorted(set(receipts_by_owner) - approved_owners)
     if extra:
         raise ContractError(f"approval receipts exist for unapproved owners: {', '.join(extra)}")
+
+
+def _validate_amendment_chain(
+    manifest_path: Path, row: dict[str, Any], initial_path: Path
+) -> dict[str, Any]:
+    initial = _load_json(initial_path)
+    active = {key: row[key] for key in OWNER_FIELDS}
+    for key in ("contract_artifact", "contract_hash", "evidence"):
+        active[key] = initial.get(key)
+    if initial != _expected_receipt(manifest_path, active):
+        raise ContractError("initial approval receipt does not match owner ledger state")
+    previous = initial_path
+    seen = {initial_path}
+    for raw_path in row.get("amendment_receipts", []):
+        path = _resolve_output_path(raw_path, manifest_path)
+        if path in seen:
+            raise ContractError("cyclic amendment receipt path")
+        seen.add(path)
+        amendment = _load_json(path)
+        candidate = amendment.get("owner_row")
+        if set(amendment) != AMENDMENT_FIELDS or not isinstance(candidate, dict) or set(candidate) != OWNER_FIELDS:
+            raise ContractError("invalid amendment receipt fields")
+        expected = _amendment_receipt(previous, candidate)
+        if amendment != expected:
+            raise ContractError("amendment predecessor hash or path mismatch")
+        if any(candidate[k] != active[k] for k in OWNER_FIELDS - {"contract_artifact", "contract_hash", "evidence"}):
+            raise ContractError("amendment cannot change owner identity, phase, wave, or state")
+        _validate_historical_binding(active, manifest_path)
+        active, previous = candidate, path
+    _validate_historical_binding(active, manifest_path)
+    return active
+
+
+def _validate_historical_binding(row: dict[str, Any], manifest_path: Path) -> None:
+    artifact = row["contract_artifact"]
+    if not isinstance(artifact, str) or not artifact:
+        raise ContractError("historical contract artifact path is invalid")
+    if _sha256(_resolve_artifact(artifact, manifest_path)) != row["contract_hash"]:
+        raise ContractError("historical contract artifact hash mismatch")
+    _validate_evidence(row["evidence"], row["owner_id"], manifest_path)
+
+
+def _amendment_receipt(previous: Path, row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "operation": "amend_owner_contract",
+        "previous_receipt": _stored_path(previous),
+        "previous_receipt_hash": _sha256(previous),
+        "owner_row": row,
+    }
+
+
+def amend_owner(
+    manifest_path: Path, owner_id: str, contract_artifact: str, evidence: Sequence[str], receipt: str
+) -> str:
+    """Append an S0-S2 binding while retaining all earlier approval artifacts."""
+    if owner_id in EXPECTED_OWNER_MAP and EXPECTED_OWNER_MAP[owner_id][0] == "S3":
+        raise ContractError("S3 amendments require a joint product/owner contract update")
+    manifest_path = manifest_path.resolve()
+    output = _resolve_output_path(receipt, manifest_path)
+    with _manifest_lock(manifest_path):
+        manifest = _load_json(manifest_path)
+        owners = validate_manifest(manifest, manifest_path)
+        if owner_id not in owners or owners[owner_id]["state"] != APPROVED_STATE:
+            raise ContractError("amend requires an already approved owner")
+        row = owners[owner_id]
+        artifact = _resolve_artifact(contract_artifact, manifest_path)
+        evidence_paths = [_resolve_artifact(p, manifest_path) for p in evidence]
+        if not evidence_paths or len(set(evidence_paths)) != len(evidence_paths):
+            raise ContractError("amend requires non-empty distinct evidence")
+        candidate = {key: row[key] for key in OWNER_FIELDS}
+        candidate.update(contract_artifact=_stored_path(artifact), contract_hash=_sha256(artifact),
+                         evidence=[{"path": _stored_path(p), "sha256": _sha256(p)} for p in evidence_paths])
+        approved = {key for key, value in owners.items() if value["state"] == APPROVED_STATE}
+        declared = _declared_approval_receipts(manifest_path, approved)
+        initial = _resolve_output_path(declared[owner_id], manifest_path)
+        paths = [_resolve_output_path(p, manifest_path) for p in row.get("amendment_receipts", [])]
+        replay = bool(paths and paths[-1] == output)
+        prefix = {**row, "amendment_receipts": row.get("amendment_receipts", [])[:-1]} if replay else row
+        prior = _validate_amendment_chain(manifest_path, prefix, initial)
+        if not replay and prior != {key: row[key] for key in OWNER_FIELDS}:
+            raise ContractError("amendment chain does not match active ledger")
+        if replay and candidate != {key: row[key] for key in OWNER_FIELDS}:
+            raise ContractError("amendment recovery inputs do not match ledger")
+        # Validate every other owner's receipts before touching either output.
+        others = {key: value for key, value in owners.items() if key != owner_id}
+        _validate_approval_receipts(manifest_path, others, ())
+        previous = paths[-2] if replay and len(paths) > 1 else (paths[-1] if paths and not replay else initial)
+        protected = {manifest_path, manifest_path.with_name(f".{manifest_path.name}.lock"),
+                     manifest_path.with_name("owner-dag.json"),
+                     manifest_path.with_name("goal-gates.json"), artifact, *evidence_paths}
+        for value in owners.values():
+            if value["state"] == APPROVED_STATE:
+                protected.add(_resolve_artifact(value["contract_artifact"], manifest_path))
+                protected.update(_resolve_artifact(e["path"], manifest_path) for e in value["evidence"])
+                protected.add(_resolve_output_path(declared[value["owner_id"]], manifest_path))
+                protected.update(_resolve_output_path(p, manifest_path) for p in value.get("amendment_receipts", [])
+                                 if not (replay and value is row and _resolve_output_path(p, manifest_path) == output))
+        if output in protected:
+            raise ContractError("amendment receipt collides with authoritative input or receipt")
+        expected = _amendment_receipt(previous, candidate)
+        if output.exists():
+            if not replay or _load_json(output) != expected:
+                raise ContractError("amendment receipt does not match requested mutation")
+            return "replayed"
+        if replay:
+            _write_json(output, expected)
+            return "receipt_recovered"
+        if candidate == prior:
+            raise ContractError("amendment must change the approved binding")
+        row.update(candidate)
+        row["amendment_receipts"] = [*row.get("amendment_receipts", []), _stored_path(output)]
+        _write_json(manifest_path, manifest)
+        _write_json(output, expected)
+        return "applied"
 
 
 def approve_owner(
@@ -623,6 +749,9 @@ def approve_owner(
         if owner_id not in owners:
             raise ContractError(f"unknown owner: {owner_id}")
         row = owners[owner_id]
+
+        if row.get("amendment_receipts"):
+            raise ContractError("amended owner must use amend, not approve")
 
         artifact_path = _resolve_artifact(contract_artifact, manifest_path)
         evidence_rows: list[dict[str, str]] = []
@@ -714,6 +843,13 @@ def _parser() -> argparse.ArgumentParser:
     approve.add_argument("--evidence", action="append", required=True)
     approve.add_argument("--receipt", required=True)
 
+    amend = subparsers.add_parser("amend", help="Append a reviewed S0-S2 amendment without replacing prior receipts")
+    amend.add_argument("--manifest", type=Path, required=True)
+    amend.add_argument("--owner", required=True)
+    amend.add_argument("--contract-artifact", required=True)
+    amend.add_argument("--evidence", action="append", required=True)
+    amend.add_argument("--receipt", required=True)
+
     check = subparsers.add_parser("check", help="Validate the ledger and requested approval gates")
     check.add_argument("--manifest", type=Path, required=True)
     check.add_argument("--require-approved-owner", action="append", default=[])
@@ -731,6 +867,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "approve":
             result = approve_owner(args.manifest, args.owner, args.contract_artifact, args.evidence, args.receipt)
             print(f"owner contract approval {result}: {args.owner}")
+        elif args.command == "amend":
+            result = amend_owner(args.manifest, args.owner, args.contract_artifact, args.evidence, args.receipt)
+            print(f"owner contract amendment {result}: {args.owner}")
         else:
             check_manifest(
                 args.manifest,
