@@ -2,13 +2,15 @@
 
 import json
 import math
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.infrastructure.errors import InvalidInput
-from app.modules.model.public import ModelStepResult, ModelToolCall, ModelUsage
+from app.modules.model.public import ModelContent, ModelMessage, ModelStepResult, ModelToolCall, ModelUsage
 from app.modules.tool.public import ToolResult
 
 HISTORY_VERSION = 1
@@ -16,7 +18,7 @@ MAX_RECORD_BYTES = 16 * 1024 * 1024
 MAX_INPUT_BYTES = 256 * 1024
 MAX_DEPTH = 32
 MAX_NODES = 100000
-HistoryKind = Literal["initial_input", "related_input", "model_step", "tool_result", "waiting", "terminal_outcome"]
+HistoryKind = Literal["initial_input", "related_input", "model_step", "tool_result", "waiting", "terminal_outcome", "context_base", "model_input"]
 TerminalStatus = Literal["Completed", "Failed", "Cancelled", "Interrupted"]
 
 
@@ -76,7 +78,23 @@ class TerminalOutcomePayload:
     reason: str | None = None
 
 
-HistoryPayload: TypeAlias = InitialInputPayload | RelatedInputPayload | ModelStepPayload | ToolResultPayload | WaitingPayload | TerminalOutcomePayload
+@dataclass(frozen=True, slots=True)
+class ContextBasePayload:
+    messages: tuple[ModelMessage, ...]
+    coverage_sequence: int
+    through_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class ModelInputPayload:
+    step_id: str
+    base_sequence: int | None
+    read_through_sequence: int
+    visible_tool_names: tuple[str, ...]
+    minute_time: str | None
+
+
+HistoryPayload: TypeAlias = InitialInputPayload | RelatedInputPayload | ModelStepPayload | ToolResultPayload | WaitingPayload | TerminalOutcomePayload | ContextBasePayload | ModelInputPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +182,75 @@ class _TerminalPayload(_Record):
     reason: Annotated[str, Field(max_length=65536)] | None
 
 
+class _Content(_Record):
+    kind: Literal["text", "image"]
+    value: str
+
+
+class _Message(_Record):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: Annotated[list[_Content], Field(max_length=MAX_NODES)]
+    calls: Annotated[list[_Call], Field(max_length=128)]
+    call_id: Identifier | None
+    is_error: bool
+    interaction_id: Identifier | None
+    requires_continuation: bool
+    cache_boundary: bool
+
+
+class _ContextBase(_Record):
+    messages: Annotated[list[_Message], Field(max_length=2048)]
+    coverage_sequence: Sequence
+    through_sequence: Sequence
+
+
+class _ModelInput(_Record):
+    step_id: Identifier
+    base_sequence: Annotated[int, Field(ge=1, le=2**63 - 1)] | None
+    read_through_sequence: Sequence
+    visible_tool_names: Annotated[list[Annotated[str, Field(min_length=1, max_length=64)]], Field(max_length=128)]
+    minute_time: Annotated[str, Field(max_length=22)] | None
+
+
+def _minute_time(value: str | None) -> None:
+    if value is None:
+        return
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-5][0-9])", value):
+        raise InvalidHistory("History request time must have minute precision and timezone")
+    parsed = datetime.fromisoformat(value)
+    if parsed.utcoffset() is None:
+        raise InvalidHistory("History request time requires a timezone")
+
+
+def _message(value: _Message) -> ModelMessage:
+    for call in value.calls:
+        _json_object(call.arguments_json)
+    if len({call.call_id for call in value.calls}) != len(value.calls):
+        raise InvalidHistory("History Context calls contain duplicate identities")
+    return ModelMessage(value.role, tuple(ModelContent(part.kind, part.value) for part in value.content),
+        tuple(ModelToolCall(call.call_id, call.name, call.arguments_json) for call in value.calls),
+        value.call_id, value.is_error, value.interaction_id, value.requires_continuation, value.cache_boundary)
+
+
+def _context_messages(messages: tuple[ModelMessage, ...]) -> list[dict[str, object]]:
+    if len(messages) > 2048:
+        raise InvalidHistory("History Context message count exceeds its bound")
+    # Reserve the complete envelope and message/member nodes before transforming collections.
+    nodes = 13 + 17 * len(messages)
+    for message in messages:
+        if len(message.calls) > 128:
+            raise InvalidHistory("History Context call count exceeds its bound")
+        nodes += 5 * len(message.content) + 7 * len(message.calls)
+        if nodes > MAX_NODES:
+            raise InvalidHistory("History JSON exceeds structural bounds")
+    return [{"role": message.role,
+        "content": [{"kind": part.kind, "value": part.value} for part in message.content],
+        "calls": [{"call_id": call.call_id, "name": call.name, "arguments_json": call.arguments_json} for call in message.calls],
+        "call_id": message.call_id, "is_error": message.is_error, "interaction_id": message.interaction_id,
+        "requires_continuation": message.requires_continuation, "cache_boundary": message.cache_boundary}
+        for message in messages]
+
+
 def _check_tree(value: object, *, maximum: int | None = None) -> None:
     byte_limit = MAX_RECORD_BYTES if maximum is None else min(maximum, MAX_RECORD_BYTES)
     pending = [(value, 0)]
@@ -230,7 +317,7 @@ def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
     try:
         if type(version) is not int or version != HISTORY_VERSION:
             raise InvalidHistory("Unsupported History version")
-        if kind not in ("initial_input", "related_input", "model_step", "tool_result", "waiting", "terminal_outcome"):
+        if kind not in ("initial_input", "related_input", "model_step", "tool_result", "waiting", "terminal_outcome", "context_base", "model_input"):
             raise InvalidHistory("Unsupported History kind")
         _json({"kind": kind, "version": version, "payload": payload})
         if kind in ("initial_input", "related_input"):
@@ -256,6 +343,19 @@ def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
         if kind == "waiting":
             waiting = _WaitingPayload.model_validate(payload)
             return WaitingPayload(waiting.step_id, waiting.reference, waiting.question, waiting.read_through_sequence)
+        if kind == "context_base":
+            base = _ContextBase.model_validate(payload)
+            if base.through_sequence < base.coverage_sequence:
+                raise InvalidHistory("History Context coverage exceeds its source boundary")
+            return ContextBasePayload(tuple(_message(message) for message in base.messages),
+                base.coverage_sequence, base.through_sequence)
+        if kind == "model_input":
+            request = _ModelInput.model_validate(payload)
+            if len(set(request.visible_tool_names)) != len(request.visible_tool_names):
+                raise InvalidHistory("History visible Tool names must be unique")
+            _minute_time(request.minute_time)
+            return ModelInputPayload(request.step_id, request.base_sequence, request.read_through_sequence,
+                tuple(request.visible_tool_names), request.minute_time)
         terminal = _TerminalPayload.model_validate(payload)
         return TerminalOutcomePayload(terminal.status, terminal.output, terminal.reason)
     except InvalidHistory:
@@ -296,6 +396,17 @@ def encode_history(payload: HistoryPayload) -> EncodedHistory:
         elif isinstance(payload, TerminalOutcomePayload):
             kind = "terminal_outcome"
             data = {"status": payload.status, "output": payload.output, "reason": payload.reason}
+        elif isinstance(payload, ContextBasePayload):
+            kind = "context_base"
+            data = {"messages": _context_messages(payload.messages), "coverage_sequence": payload.coverage_sequence,
+                "through_sequence": payload.through_sequence}
+        elif isinstance(payload, ModelInputPayload):
+            if len(payload.visible_tool_names) > 128:
+                raise InvalidHistory("History visible Tool name count exceeds its bound")
+            kind = "model_input"
+            data = {"step_id": payload.step_id, "base_sequence": payload.base_sequence,
+                "read_through_sequence": payload.read_through_sequence,
+                "visible_tool_names": list(payload.visible_tool_names), "minute_time": payload.minute_time}
         else:
             raise InvalidHistory("Unsupported History payload type")
         decode_history(kind, HISTORY_VERSION, data)

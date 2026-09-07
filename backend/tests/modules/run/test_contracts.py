@@ -3,15 +3,17 @@ from dataclasses import replace
 
 import pytest
 
-from app.modules.model.public import ModelStepResult, ModelToolCall, ModelUsage
+from app.modules.model.public import ModelContent, ModelMessage, ModelStepResult, ModelToolCall, ModelUsage
 from app.modules.run import contracts
 from app.modules.run.contracts import (
     MAX_INPUT_BYTES,
     MAX_RECORD_BYTES,
+    ContextBasePayload,
     InitialInputPayload,
     InputContent,
     InputReference,
     InvalidHistory,
+    ModelInputPayload,
     ModelStepPayload,
     RelatedInputPayload,
     TerminalOutcomePayload,
@@ -205,3 +207,137 @@ def test_model_call_count_at_existing_limit_is_accepted():
         calls=tuple(ModelToolCall(str(index), "read", '{}') for index in range(128))))
     record = encode_history(payload)
     assert decode_history(record.kind, record.version, record.payload) == payload
+
+
+def context_base():
+    return ContextBasePayload((
+        ModelMessage("system", (ModelContent("text", "固定规则"),), cache_boundary=True),
+        ModelMessage("user", (ModelContent("text", "说明"), ModelContent("image", "attachment:image"))),
+        ModelMessage("assistant", (ModelContent("text", "摘要 ✓"),),
+            (ModelToolCall("call", "read_file", '{ "path": "文件" }'),),
+            interaction_id="interaction", requires_continuation=True),
+        ModelMessage("tool", (ModelContent("text", "清理后的结果"),), call_id="call", is_error=True),
+    ), 17, 23)
+
+
+@pytest.mark.parametrize("value", [
+    context_base(), ContextBasePayload((), 0, 0),
+    ModelInputPayload("step", None, 0, (), None),
+    ModelInputPayload("step", 18, 23, ("read_file", "search_tools"), "2026-09-07T12:34+08:00"),
+    ModelInputPayload("step", 18, 23, ("read_file",), "2026-09-07T04:34Z"),
+])
+def test_context_base_and_model_input_exact_storage_roundtrip(value):
+    record = encode_history(value)
+    restored = decode_history(record.kind, record.version, json.loads(json.dumps(record.payload)))
+    assert restored == value
+    assert record.version == 1
+
+
+def test_context_base_detaches_nested_messages_and_retains_exact_json():
+    value = context_base()
+    encoded = encode_history(value)
+    assert encoded.payload["messages"][2]["calls"][0]["arguments_json"] == '{ "path": "文件" }'
+    encoded.payload["messages"][1]["content"][0]["value"] = "changed"
+    assert value.messages[1].content[0].value == "说明"
+    assert encode_history(value).payload["messages"][1]["content"][0]["value"] == "说明"
+
+
+@pytest.mark.parametrize("mutation", ["role", "content_kind", "extra", "boolean", "arguments", "duplicate", "coverage"])
+def test_context_base_rejects_malformed_message_fields(mutation):
+    record = encode_history(context_base())
+    message = record.payload["messages"][2]
+    if mutation == "role":
+        message["role"] = "developer"
+    elif mutation == "content_kind":
+        message["content"][0]["kind"] = "unknown"
+    elif mutation == "extra":
+        message["credential"] = "private-value"
+    elif mutation == "boolean":
+        message["requires_continuation"] = 1
+    elif mutation == "arguments":
+        message["calls"][0]["arguments_json"] = '{"value":NaN}'
+    elif mutation == "duplicate":
+        message["calls"].append(dict(message["calls"][0]))
+    else:
+        record.payload["coverage_sequence"] = -1
+    with pytest.raises(InvalidHistory) as error:
+        decode_history(record.kind, record.version, record.payload)
+    assert "private-value" not in str(error.value)
+
+
+@pytest.mark.parametrize("minute", [
+    "2026-09-07T12:34:00+08:00", "2026-09-07T12:34:01Z", "2026-09-07T12:34",
+    "2026-09-07T12:34.1Z", "2026-02-30T12:34Z", "2026-09-07T24:00Z",
+    "2026-09-07T12:34+01:60", "2026-09-07T12:34+24:00", "private-value", "",
+])
+def test_model_input_time_requires_valid_minute_and_timezone(minute):
+    with pytest.raises(InvalidHistory):
+        encode_history(ModelInputPayload("step", None, 0, (), minute))
+
+
+@pytest.mark.parametrize("changes", [
+    {"step_id": ""}, {"base_sequence": 0}, {"base_sequence": True}, {"base_sequence": 2**63},
+    {"read_through_sequence": -1}, {"read_through_sequence": True},
+    {"visible_tool_names": ("tool", "tool")}, {"visible_tool_names": ("x" * 65,)},
+    {"visible_tool_names": ("",)},
+])
+def test_model_input_validates_closed_request_references(changes):
+    with pytest.raises(InvalidHistory):
+        encode_history(replace(ModelInputPayload("step", None, 0, (), None), **changes))
+
+
+@pytest.mark.parametrize("value", [context_base(), ModelInputPayload("step", None, 0, (), None)])
+def test_new_history_records_reject_unknown_versions_and_extra_fields(value):
+    record = encode_history(value)
+    with pytest.raises(InvalidHistory):
+        decode_history(record.kind, 2, record.payload)
+    record.payload["invented"] = "private-value"
+    with pytest.raises(InvalidHistory):
+        decode_history(record.kind, 1, record.payload)
+
+
+@pytest.mark.parametrize("kind", ["messages", "content", "calls", "tools"])
+def test_context_request_collection_bounds_precede_transformation(kind):
+    class UniterableTuple(tuple):
+        def __iter__(self):
+            pytest.fail("oversized collection must not be transformed")
+    if kind == "messages":
+        value = ContextBasePayload(UniterableTuple((ModelMessage("user"),) * 2049), 0, 0)
+    elif kind == "content":
+        value = ContextBasePayload((ModelMessage("user", UniterableTuple((ModelContent("text", ""),) * 20000)),), 0, 0)
+    elif kind == "calls":
+        value = ContextBasePayload((ModelMessage("assistant", calls=UniterableTuple((ModelToolCall("c", "t", '{}'),) * 129)),), 0, 0)
+    else:
+        value = ModelInputPayload("step", None, 0, UniterableTuple(("tool",) * 129), None)
+    with pytest.raises(InvalidHistory):
+        encode_history(value)
+
+
+def test_context_base_whole_record_byte_bound_and_visible_tool_limit():
+    empty = encode_history(ContextBasePayload((ModelMessage("user", (ModelContent("text", ""),)),), 0, 0))
+    overhead = len(json.dumps({"kind": empty.kind, "version": 1, "payload": empty.payload},
+        ensure_ascii=False, separators=(",", ":")).encode())
+    for size in (MAX_RECORD_BYTES - overhead, MAX_RECORD_BYTES - overhead + 1):
+        value = ContextBasePayload((ModelMessage("user", (ModelContent("text", "x" * size),)),), 0, 0)
+        if size + overhead > MAX_RECORD_BYTES:
+            with pytest.raises(InvalidHistory):
+                encode_history(value)
+        else:
+            assert encode_history(value).kind == "context_base"
+    names = tuple(f"tool_{index}" for index in range(128))
+    value = ModelInputPayload("step", 1, 2, names, "2026-09-07T01:02-05:30")
+    record = encode_history(value)
+    assert decode_history(record.kind, 1, record.payload) == value
+
+
+@pytest.mark.parametrize("coverage,through", [(0, 0), (0, 10), (4, 4), (4, 10)])
+def test_context_base_distinguishes_summary_coverage_from_full_source_boundary(coverage, through):
+    value = replace(context_base(), coverage_sequence=coverage, through_sequence=through)
+    record = encode_history(value)
+    assert decode_history(record.kind, 1, record.payload) == value
+
+
+@pytest.mark.parametrize("through", [-1, True, 1.5, 2**63, 16])
+def test_context_base_rejects_invalid_or_earlier_full_source_boundary(through):
+    with pytest.raises(InvalidHistory):
+        encode_history(replace(context_base(), through_sequence=through))

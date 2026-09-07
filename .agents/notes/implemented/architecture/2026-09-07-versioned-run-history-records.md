@@ -8,11 +8,13 @@ Execution records must remain inspectable across upgrades without interpreting a
 
 ## Decision
 
-Run owns closed payload forms for initial/related input, Model Step, Tool Result, Waiting and terminal outcome. Encoding returns detached JSON with an explicit kind and version. Decoding rejects unknown kinds/versions, extra fields, invalid primitives, duplicate Model-call identities and non-finite or structurally oversized content; diagnostics never embed raw source values.
+Run owns closed payload forms for initial/related input, Model Step, Tool Result, Waiting, terminal outcome, observed Context base and Model input references. Encoding returns detached JSON with an explicit kind and version. Decoding rejects unknown kinds/versions, extra fields, invalid primitives, duplicate Model-call identities and non-finite or structurally oversized content; diagnostics never embed raw source values.
 
 Input content is normalized text plus bounded opaque references. References do not grant access or determine how a product or Child input is admitted. Tenant, Run and owner-issued source identity remain separate History columns. No Task ID or lifecycle is added.
 
 Model records retain every normalized result field, including Tool Calls, optional usage counters, interaction identity and required-continuation markers. Opaque continuation itself remains Model-owned. Embedded Model arguments and Tool Result JSON strings round-trip without rewriting. Waiting permits an empty question when the Run waits for Child results rather than human information.
+
+An observed Context base preserves exact ordered logical Model messages after summary or Tool-result clearing. Its `coverage_sequence` identifies summary coverage; `through_sequence` identifies all History represented by that base, including retained recent interactions. Model input records reference the base and History read boundary, the ordered exposed Tool names and optional timezone-qualified minute. Preparing this input is not evidence of a successful Model Step. This representation allows projection deletion without re-generating a summary or duplicating retained History, and avoids storing the complete repeated request on every step.
 
 The full encoded record is bounded to 16 MiB; input content to 256 KiB with 64 references. Structural validation bounds nesting to 32 and total nodes to 100,000, including pending traversal work before expanding it. Numbers, literals, punctuation and escaped UTF-8 strings count toward the byte budget before whole-record serialization. Reference and Model Call cardinality are checked before conversion. These are record-operation limits, not Run step or Token quotas.
 
@@ -35,3 +37,5 @@ Tests exercise exact Model/Tool round trips, zero versus missing counters, inval
 Real PostgreSQL repository tests exercise source deduplication, concurrent contiguous sequence allocation, independent Run progress, cancellation, transaction rollback, Tenant isolation, fixed-cutoff pagination, prefetch byte rejection, corrupt records and the related-input predicate. These fixtures seed Run rows directly and do not prove Run admission, Snapshot atomicity, lifecycle execution or G005 E2E.
 
 The combined Run and package/import guard suite passed 172 tests, including 16 repository tests. Scoped Ruff and Pyright passed. Independent code and architecture review approved the private persistence slice.
+
+The extended codec suite passed 94 tests, including complete logical Model message round trips, strict observed-base boundaries, minute-only time, Tool exposure bounds and unsupported fields. Codec validation alone does not prove that Runner persists an observation before making its corresponding Model call.
