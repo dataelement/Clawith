@@ -79,11 +79,18 @@ def _validate_owner_private_imports(root: Path) -> None:
                 continue
             imported_owner = parts[2]
             private_surface = parts[3] in {
+                "adapters",
+                "continuation",
+                "contracts",
                 "crypto",
+                "execution",
+                "files",
+                "mcp",
                 "model",
                 "models",
                 "repository",
                 "repositories",
+                "skills",
             }
             if imported_owner != importing_owner and private_surface:
                 raise BoundaryViolation(
@@ -158,7 +165,10 @@ def test_owner_can_import_another_owners_public_service_contract(tmp_path: Path)
     _validate_owner_private_imports(tmp_path)
 
 
-@pytest.mark.parametrize("private_module", ["crypto", "models", "repositories"])
+@pytest.mark.parametrize("private_module", [
+    "adapters", "continuation", "contracts", "crypto", "execution", "files",
+    "mcp", "models", "repositories", "skills",
+])
 def test_owner_cannot_import_another_owners_private_surface(
     tmp_path: Path, private_module: str
 ) -> None:
@@ -172,11 +182,12 @@ def test_owner_cannot_import_another_owners_private_surface(
         _validate_owner_private_imports(tmp_path)
 
 
-def test_owner_can_import_its_own_private_crypto(tmp_path: Path) -> None:
+@pytest.mark.parametrize("private_module", ["crypto", "execution", "contracts", "skills"])
+def test_owner_can_import_its_own_private_implementation(tmp_path: Path, private_module: str) -> None:
     _write(
         tmp_path,
         "app/modules/credential/public.py",
-        "from app.modules.credential.crypto import CredentialKeyring\n",
+        f"from app.modules.credential.{private_module} import Implementation\n",
     )
 
     _validate_owner_private_imports(tmp_path)

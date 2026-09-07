@@ -24,11 +24,18 @@ LEGACY_MODULES = {
     "app.database",
 }
 PRIVATE_OWNER_MODULES = {
+    "adapters",
+    "continuation",
+    "contracts",
     "crypto",
+    "execution",
+    "files",
+    "mcp",
     "model",
     "models",
     "repository",
     "repositories",
+    "skills",
 }
 METADATA_FACTORIES = {
     "sqlalchemy.MetaData",
@@ -455,6 +462,21 @@ def test_owner_rejects_another_owners_private_persistence_imports(
     app_root = _materialize_case(tmp_path, case)
 
     assert "cross-owner-private-import" in _violation_rules(app_root)
+
+
+@pytest.mark.parametrize("private_module", sorted(PRIVATE_OWNER_MODULES))
+@pytest.mark.parametrize("same_owner", [False, True])
+def test_execution_implementation_modules_remain_owner_private(
+    tmp_path: Path, private_module: str, same_owner: bool
+) -> None:
+    imported_owner = "tool" if same_owner else "model"
+    app_root = _materialize_case(tmp_path, {
+        "id": "execution-private-boundary",
+        "path": "app/modules/tool/public.py",
+        "source": f"from app.modules.{imported_owner}.{private_module} import Implementation\n",
+    })
+    violations = _violation_rules(app_root)
+    assert ("cross-owner-private-import" in violations) is not same_owner
 
 
 @pytest.mark.parametrize("case", _fixture_cases("runtime_facts.json"), ids=lambda case: case["id"])

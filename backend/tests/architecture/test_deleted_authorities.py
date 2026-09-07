@@ -2572,10 +2572,10 @@ def _assert_application_does_not_restore_trigger_webhook_definitions(
             source_path.read_text(encoding="utf-8"),
             filename=str(source_path),
         )
-        restored_facts = sorted(
-            LEGACY_TRIGGER_WEBHOOK_FORBIDDEN_DEFINITIONS
-            & _source_contract_facts(tree)
-        )
+        facts = LEGACY_TRIGGER_WEBHOOK_FORBIDDEN_DEFINITIONS & _source_contract_facts(tree)
+        if relative_path == Path("app/modules/trigger/models.py"):
+            facts -= {"table:agent_triggers"}
+        restored_facts = sorted(facts)
         if restored_facts:
             raise DeletedAuthorityViolation(
                 "application source restores legacy Trigger/Webhook definitions: "
@@ -4246,9 +4246,10 @@ def _assert_application_does_not_restore_channel_definitions(
             source_path.read_text(encoding="utf-8"),
             filename=str(source_path),
         )
-        restored_facts = sorted(
-            LEGACY_CHANNEL_FORBIDDEN_DEFINITIONS & _source_contract_facts(tree)
-        )
+        facts = LEGACY_CHANNEL_FORBIDDEN_DEFINITIONS & _source_contract_facts(tree)
+        if relative_path == Path("app/modules/channel/models.py"):
+            facts -= {"table:channel_deliveries"}
+        restored_facts = sorted(facts)
         if restored_facts:
             raise DeletedAuthorityViolation(
                 "application source restores legacy Channel definitions: "
@@ -7312,6 +7313,25 @@ def test_backend_tests_do_not_reference_deleted_trigger_webhook_authorities() ->
 
 def test_application_does_not_restore_legacy_trigger_webhook_definitions() -> None:
     _assert_application_does_not_restore_trigger_webhook_definitions(BACKEND_ROOT)
+
+
+@pytest.mark.parametrize("owner,table", [("trigger", "agent_triggers"), ("channel", "channel_deliveries")])
+@pytest.mark.parametrize("correct_owner", [True, False])
+def test_s2_reused_table_names_are_limited_to_their_schema_owner(
+    tmp_path: Path, owner: str, table: str, correct_owner: bool
+) -> None:
+    path = tmp_path / "app/modules" / (owner if correct_owner else "session") / "models.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(f'class Record:\n    __tablename__ = "{table}"\n', encoding="utf-8")
+    guard = (
+        _assert_application_does_not_restore_trigger_webhook_definitions
+        if owner == "trigger" else _assert_application_does_not_restore_channel_definitions
+    )
+    if correct_owner:
+        guard(tmp_path)
+    else:
+        with pytest.raises(DeletedAuthorityViolation, match="restores legacy"):
+            guard(tmp_path)
 
 
 @pytest.mark.parametrize(
