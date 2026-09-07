@@ -122,6 +122,8 @@ def test_builtin_cannot_be_redefined_and_roles_are_enforced():
     assert not role_eligible("task", "sub")
     assert not role_eligible("todo", "main")
     assert role_eligible("todo", "sub")
+    assert role_eligible("distill_memory", "main")
+    assert not role_eligible("distill_memory", "sub")
 
 
 def test_call_and_result_byte_bounds_and_invalid_json():

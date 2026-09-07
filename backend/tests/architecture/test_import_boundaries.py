@@ -85,7 +85,7 @@ def _target_files(app_root: Path) -> list[Path]:
         )
         if path.is_file()
     ]
-    for directory in ("infrastructure", "modules", "runtime"):
+    for directory in ("infrastructure", "modules", "runtime", "execution_dependencies"):
         root = app_root / directory
         if root.is_dir():
             files.extend(root.rglob("*.py"))
@@ -231,8 +231,10 @@ def _scan_target_tree(
                     for imported in sorted(object_storage_imports)
                 )
 
-        if len(relative_parts) >= 3 and relative_parts[0] == "modules":
-            importing_owner = relative_parts[1]
+        if relative_parts[0] == "execution_dependencies" or (
+            len(relative_parts) >= 3 and relative_parts[0] == "modules"
+        ):
+            importing_owner = relative_parts[1] if relative_parts[0] == "modules" else None
             for imported in imports:
                 parts = imported.split(".")
                 if len(parts) < 4 or parts[:2] != ["app", "modules"]:
@@ -246,6 +248,11 @@ def _scan_target_tree(
                     violations.append(
                         Violation("cross-owner-private-import", relative, imported)
                     )
+
+        if relative_parts[0] in {"modules", "runtime", "infrastructure"}:
+            for imported in imports:
+                if _is_module_or_child(imported, "app.execution_dependencies"):
+                    violations.append(Violation("composition-reverse-import", relative, imported))
 
         if relative_parts and relative_parts[0] == "runtime":
             for imported in imports:
@@ -477,6 +484,26 @@ def test_execution_implementation_modules_remain_owner_private(
     })
     violations = _violation_rules(app_root)
     assert ("cross-owner-private-import" in violations) is not same_owner
+
+
+@pytest.mark.parametrize("surface", ["public", "models", "repository", "contracts", "execution"])
+def test_execution_composition_consumes_only_public_owner_contracts(tmp_path: Path, surface: str) -> None:
+    app_root = _materialize_case(tmp_path, {
+        "id": "execution-composition",
+        "path": "app/execution_dependencies/workspace_tools.py",
+        "source": f"from app.modules.tool.{surface} import Contract\n",
+    })
+    assert ("cross-owner-private-import" in _violation_rules(app_root)) is (surface != "public")
+
+
+@pytest.mark.parametrize("path", ["modules/tool/execution.py", "runtime/loop.py", "infrastructure/config.py"])
+def test_owners_cannot_depend_on_execution_composition(tmp_path: Path, path: str) -> None:
+    app_root = _materialize_case(tmp_path, {
+        "id": "composition-reverse",
+        "path": f"app/{path}",
+        "source": "from app.execution_dependencies.workspace_tools import workspace_bindings\n",
+    })
+    assert "composition-reverse-import" in _violation_rules(app_root)
 
 
 @pytest.mark.parametrize("case", _fixture_cases("runtime_facts.json"), ids=lambda case: case["id"])

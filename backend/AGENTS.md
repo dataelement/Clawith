@@ -45,6 +45,9 @@ app/infrastructure/database.py
 app/infrastructure/object_storage/
                Low-level object-storage contract plus local and S3 mechanics.
 app/modules/   Target modular-monolith owners.
+app/execution_dependencies/
+               Application-side Tool adapters between typed owner services.
+               No business fact ownership, ORM access, or application factory.
 app/runtime/   Run-owned Runner and Loop execution mechanics only.
 app/api/       HTTP and WebSocket transport adapters.
 app/schemas/   Request, response, and transport validation models.

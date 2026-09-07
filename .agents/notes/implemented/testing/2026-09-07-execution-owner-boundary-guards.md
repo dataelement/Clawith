@@ -12,6 +12,8 @@ The deletion guard permits `agent_triggers` only in `app/modules/trigger/models.
 
 Both module-boundary checks reject cross-owner imports of adapters, continuation, contracts, execution, files, MCP and Skill implementation modules as well as the existing persistence and crypto modules. Same-owner imports remain valid; consumers use `public.py` exports.
 
+The target-tree scanner includes application-side `execution_dependencies` adapters. They may consume only public owner contracts. Owners, infrastructure and Runtime cannot import this composition package, so implementing a Tool bridge cannot introduce a reverse dependency or another business authority. The same legacy-import and singleton checks apply to this package.
+
 ## Alternatives considered
 
 Removing the reused names from the global forbidden sets would permit them under unrelated owners. Exact owning-file exceptions retain that protection without renaming tables already specified by the approved contract.
@@ -22,4 +24,4 @@ New private implementation filenames must be covered by the architecture guards 
 
 ## Verification
 
-Positive and negative fixtures cover each private module, same-owner access and both approved and misplaced S2 table names. These are static ownership checks, not execution or database evidence; the separate S2 test suite exercises actual PostgreSQL constraints.
+Positive and negative fixtures cover each private module, same-owner access, composition public/private imports, reverse dependencies and both approved and misplaced S2 table names. These are static ownership checks, not execution or database evidence; the separate S2 test suite exercises actual PostgreSQL constraints.
