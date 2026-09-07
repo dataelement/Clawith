@@ -14,6 +14,8 @@ Resolution captures an immutable authorized Tool set, selected account-local MCP
 
 MCP definitions reuse stable Catalog, canonical name, upstream name and executor identity. Different accounts retain their discovered descriptions and schemas without overwriting shared metadata. Non-MCP definition conflicts remain explicit. Builtin definitions must match their code-owned executor binding; database rows cannot redefine them.
 
+Concurrent registration of the same canonical name or Agent grant reads and validates the committed winner after an insert-if-absent operation. It does not overwrite metadata or Credential bindings, restore revoked grants, or retry an external effect. Incompatible definitions/bindings and unsupported persisted grant configurations still fail at Tool's owning boundary. [Explicit Builtin provisioning](2026-09-07-explicit-builtin-provisioning.md) uses these operations in the caller's creation transaction.
+
 The scheduler preserves call/result order and serial barriers. Only explicitly safe executors run in bounded parallel groups. Ordinary capability failures return bounded Tool Results; uncertain external effects are not replayed. Cancellation cancels and awaits active work. Programming defects remain defects.
 
 MCP supports explicitly selected Streamable HTTP and legacy SSE, initialization, bounded discovery and calls through the application-owned stateless HTTP pool. Neither transport guessing nor default client authentication supplies account policy. Context closure releases streams and attempts server-session cleanup without undoing a completed Tool effect.

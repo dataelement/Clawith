@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.tool.models import (
@@ -31,6 +32,19 @@ class ToolRepository:
             )
         )
 
+    async def insert_definition_if_absent(self, row: ToolDefinitionRecord) -> ToolDefinitionRecord:
+        await self.session.execute(insert(ToolDefinitionRecord).values(
+            id=row.id, tenant_id=row.tenant_id, created_at=row.created_at, updated_at=row.updated_at,
+            catalog_item_id=row.catalog_item_id, source=row.source, name=row.name, upstream_name=row.upstream_name,
+            description=row.description, input_schema=row.input_schema, schema_version=row.schema_version,
+            executor_key=row.executor_key, configuration_version=row.configuration_version,
+            non_secret_config=row.non_secret_config, enabled=row.enabled,
+        ).on_conflict_do_nothing(index_elements=["tenant_id", "name"]))
+        current = await self.definition_named(row.tenant_id, row.name)
+        if current is None:
+            raise RuntimeError("Registered Tool definition disappeared")
+        return current
+
     async def connection(self, tenant_id: UUID, connection_id: UUID) -> AgentMCPConnectionRecord | None:
         return await self.session.scalar(
             select(AgentMCPConnectionRecord).where(
@@ -57,6 +71,21 @@ class ToolRepository:
                 AgentToolGrantRecord.tool_definition_id == definition_id,
             )
         )
+
+    async def insert_grant_if_absent(self, row: AgentToolGrantRecord) -> AgentToolGrantRecord:
+        await self.session.execute(insert(AgentToolGrantRecord).values(
+            id=row.id, tenant_id=row.tenant_id, created_at=row.created_at, updated_at=row.updated_at,
+            agent_id=row.agent_id, tool_definition_id=row.tool_definition_id, tool_source=row.tool_source,
+            catalog_item_id=row.catalog_item_id, mcp_connection_id=row.mcp_connection_id,
+            credential_id=row.credential_id, credential_owner_kind=row.credential_owner_kind,
+            credential_owner_id=row.credential_owner_id, configuration_version=row.configuration_version,
+            non_secret_config=row.non_secret_config, granted_by_membership_id=row.granted_by_membership_id,
+            revoked_at=row.revoked_at,
+        ).on_conflict_do_nothing(index_elements=["tenant_id", "agent_id", "tool_definition_id"]))
+        current = await self.grant_for_tool(row.tenant_id, row.agent_id, row.tool_definition_id)
+        if current is None:
+            raise RuntimeError("Registered Tool grant disappeared")
+        return current
 
     async def personal_connections(
         self, tenant_id: UUID, ids: tuple[UUID, ...]

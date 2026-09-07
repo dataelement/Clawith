@@ -137,38 +137,39 @@ class ToolService:
 
     async def _register_definition(self, tenant_id: UUID, definition: DefinitionSpec) -> ToolDefinition:
         existing = await self._repo.definition_named(tenant_id, definition.name)
-        if existing is not None:
-            current = _definition(existing)
-            matching_mcp_identity = (
-                current.spec.source == definition.source == "mcp"
-                and current.spec.catalog_item_id == definition.catalog_item_id
-                and current.spec.upstream_name == definition.upstream_name
-                and current.spec.executor_key == definition.executor_key
+        if existing is None:
+            now = datetime.now(UTC)
+            row = ToolDefinitionRecord(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                created_at=now,
+                updated_at=now,
+                catalog_item_id=definition.catalog_item_id,
+                source=definition.source,
+                name=definition.name,
+                upstream_name=definition.upstream_name,
+                description=definition.description,
+                input_schema=json_object(definition.input_schema_json),
+                schema_version=1,
+                executor_key=definition.executor_key,
+                configuration_version=1,
+                non_secret_config={},
+                enabled=True,
             )
-            if current.spec != definition and not matching_mcp_identity:
-                raise Conflict("Existing Tool identity has an incompatible definition")
-            return current
-        now = datetime.now(UTC)
-        row = ToolDefinitionRecord(
-            id=uuid4(),
-            tenant_id=tenant_id,
-            created_at=now,
-            updated_at=now,
-            catalog_item_id=definition.catalog_item_id,
-            source=definition.source,
-            name=definition.name,
-            upstream_name=definition.upstream_name,
-            description=definition.description,
-            input_schema=json_object(definition.input_schema_json),
-            schema_version=1,
-            executor_key=definition.executor_key,
-            configuration_version=1,
-            non_secret_config={},
-            enabled=True,
+            try:
+                existing = await self._repo.insert_definition_if_absent(row)
+            except IntegrityError:
+                raise Conflict("Tool configuration conflicts with existing data") from None
+        current = _definition(existing)
+        matching_mcp_identity = (
+            current.spec.source == definition.source == "mcp"
+            and current.spec.catalog_item_id == definition.catalog_item_id
+            and current.spec.upstream_name == definition.upstream_name
+            and current.spec.executor_key == definition.executor_key
         )
-        self._repo.add(row)
-        await self._flush()
-        return _definition(row)
+        if current.spec != definition and not matching_mcp_identity:
+            raise Conflict("Existing Tool identity has an incompatible definition")
+        return current
 
     async def connect_mcp(
         self,
@@ -278,13 +279,7 @@ class ToolService:
         definition = await self._require_definition(tenant_id, definition_id)
         existing = await self._repo.grant_for_tool(tenant_id, agent_id, definition_id)
         if existing:
-            if (
-                existing.mcp_connection_id != mcp_connection_id
-                or existing.credential_id != credential_id
-                or existing.revoked_at is not None
-            ):
-                raise Conflict("Tool grant already exists with different settings")
-            return existing.id
+            return _matching_grant_id(existing, mcp_connection_id, credential_id)
         if definition.source == "mcp":
             connection = await self._repo.connection(tenant_id, mcp_connection_id) if mcp_connection_id else None
             if (
@@ -315,9 +310,11 @@ class ToolService:
             granted_by_membership_id=membership_id,
             revoked_at=None,
         )
-        self._repo.add(row)
-        await self._flush()
-        return row.id
+        try:
+            current = await self._repo.insert_grant_if_absent(row)
+        except IntegrityError:
+            raise Conflict("Tool configuration conflicts with existing data") from None
+        return _matching_grant_id(current, mcp_connection_id, credential_id)
 
     async def revoke_grant(self, principal: TenantPrincipal, *, agent_id: UUID, definition_id: UUID) -> None:
         require_admin(principal)
@@ -561,6 +558,14 @@ class ToolService:
             await self._repo.flush()
         except IntegrityError:
             raise Conflict("Tool configuration conflicts with existing data") from None
+
+
+def _matching_grant_id(row: AgentToolGrantRecord, connection_id: UUID | None, credential_id: UUID | None) -> UUID:
+    if row.configuration_version != 1 or row.non_secret_config != {}:
+        raise InvalidInput("Tool grant configuration version or settings are unsupported")
+    if row.mcp_connection_id != connection_id or row.credential_id != credential_id or row.revoked_at is not None:
+        raise Conflict("Tool grant already exists with different settings")
+    return row.id
 
 
 def _definition(row: ToolDefinitionRecord) -> ToolDefinition:
