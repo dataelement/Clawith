@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -333,15 +333,38 @@ class ModelExecutionService:
             )
             return ResolvedModel(policy, profile)
 
+    @property
+    def operation_limits(self) -> ModelLimits:
+        """Physical request limits consumed by Context, not a Run execution quota."""
+        return self._limits
+
     async def execute_step(
         self, policy: PrivateModelPolicy, request: ModelStepRequest, *, on_event: StreamObserver | None = None,
     ) -> ModelStepOutcome:
+        return await self._execute_request(policy, request, on_event=on_event, summary=False)
+
+    async def execute_summary(self, policy: PrivateModelPolicy, request: ModelStepRequest) -> ModelStepOutcome:
+        """One-shot text utility; never reads, replaces or promises Run continuation."""
+        if request.stream or request.tools or any(
+                message.role not in ("system", "user") or message.calls or message.call_id
+                or message.interaction_id or message.requires_continuation
+                or any(content.kind != "text" for content in message.content) for message in request.messages):
+            return ModelFailure("invalid_summary_request", "Summary requests require only non-streaming text input")
+        result = await self._execute_request(policy, request, on_event=None, summary=True)
+        if isinstance(result, ModelFailure):
+            return result
+        if result.calls or result.finish_reason != "stop":
+            return ModelFailure("invalid_summary_result", "Summary did not produce a complete text result")
+        return replace(result, requires_continuation=False)
+
+    async def _execute_request(self, policy: PrivateModelPolicy, request: ModelStepRequest, *,
+            on_event: StreamObserver | None, summary: bool) -> ModelStepOutcome:
         from app.modules.model.adapters import execute
 
         try:
             self._validate_request(policy, request)
             async with asyncio.timeout(self._limits.timeout_seconds):
-                state = await self._continuation.load(
+                state = {} if summary else await self._continuation.load(
                     policy.tenant_id, request.run_id, policy.model_id, policy.protocol,
                 )
                 for message in request.messages:
@@ -356,7 +379,7 @@ class ModelExecutionService:
                         owner_kind="tenant", owner_id=policy.tenant_id,
                     )
                 result, replay = await execute(self._http, policy, request, secret.value, state, self._limits, on_event)
-                if replay:
+                if replay and not summary:
                     retained = {m.interaction_id for m in request.messages if m.interaction_id}
                     state = {key: value for key, value in state.items() if key in retained}
                     state[request.step_id] = replay

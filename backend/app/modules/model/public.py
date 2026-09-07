@@ -65,6 +65,7 @@ __all__ = [
     "ModelView",
     "PrivateModelPolicy",
     "ResolvedModel",
+    "validate_resolved_model",
 ]
 MAX_PAGE_SIZE = 100
 MODEL_CONFIG_VERSION = 1
@@ -93,6 +94,31 @@ _SECRET_KEYS = frozenset(
         "token",
     }
 )
+
+
+def validate_resolved_model(resolved: ResolvedModel) -> None:
+    """Validate captured execution facts without refreshing current configuration."""
+    policy, profile = resolved.policy, resolved.profile
+    try:
+        if any(len(value) > MAX_CONFIG_BYTES or len(value.encode()) > MAX_CONFIG_BYTES
+               for value in (policy.capabilities_json, policy.settings_json)):
+            raise InvalidInput("Captured Model JSON exceeds its byte bound")
+        capabilities = _validate_json_object(json.loads(policy.capabilities_json), field_name="capabilities", reject_secrets=True)
+        settings = _validate_json_object(json.loads(policy.settings_json), field_name="settings", reject_secrets=True)
+    except (ValueError, TypeError, RecursionError):
+        raise InvalidInput("Captured Model JSON is invalid") from None
+    if (policy.protocol not in ("openai_chat", "openai_responses", "anthropic", "gemini")
+            or settings.get("protocol") != policy.protocol or capabilities.get("supports_tool_calling") is not True):
+        raise InvalidInput("Captured Model protocol or Tool capability is inconsistent")
+    _endpoint(policy.endpoint)
+    if (type(policy.context_limit) is not int or type(policy.output_limit) is not int
+            or not 0 < policy.output_limit < policy.context_limit
+            or (policy.model_id, policy.provider, policy.model_name, policy.context_limit, policy.output_limit) !=
+                (profile.model_id, profile.provider, profile.model_name, profile.context_limit, profile.output_limit)
+            or (profile.supports_images, profile.supports_streaming, profile.supports_prompt_cache) !=
+                (capabilities.get("supports_images") is True, capabilities.get("supports_streaming") is True,
+                 capabilities.get("supports_prompt_cache") is True)):
+        raise InvalidInput("Captured Model Context profile is inconsistent")
 
 
 @dataclass(frozen=True, slots=True)

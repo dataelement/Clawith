@@ -16,9 +16,15 @@ The probe retains the resolved output allowance and reasoning/thinking settings.
 
 Model persists encrypted required continuation before returning the complete step result. Waiting retains it; a committed terminal fact supplied by Runner authorizes cleanup. Missing, malformed or unreadable required state fails explicitly. Model imports no Run-private persistence. Provider requests use the stateless HTTP contract and release database connections before network work.
 
+Captured policies are validated without consulting current configuration. The public validator checks bounded JSON before parsing, protocol agreement, required Tool Calling and Context profile capability/limit agreement. Model exposes its immutable operation limits to Context rather than requiring Context to invent request cardinalities.
+
+One-shot summary requests share the fixed Model, Credential, request validation and error normalization, but never read or modify the Run's encrypted continuation. Their input is non-streaming text without Tool execution or continuation references; only a complete text result is accepted. Returned summary results do not promise continuation. This prevents a summary call from pruning opaque state still needed by a recent execution interaction.
+
 ## Alternatives considered
 
 An optional capability helper without enforcement at configuration activation was rejected because ordinary `create`, `update` and `set_enabled` callers could bypass validation. Guessing limits from model names, switching Model accounts, reconstructing missing signatures and silently trimming Context were excluded by the approved architecture.
+
+Using ordinary continuation-aware execution for summary generation would replace the active Run's retained state. Allocating a fictitious Run for this utility would invent an execution identity without its owning lifecycle. The explicit one-shot summary port avoids both.
 
 ## Consequences
 
@@ -29,3 +35,5 @@ Enabled configuration requires external validation before the write transaction.
 Controlled tests exercise the four adapters, streaming failure, credential isolation, continuation persistence/replay/cleanup and metadata/Catalog/administrator precedence. Dependent module fixtures provision disabled drafts, validate through a controlled peer and enable through the real public service instead of forging acceptance or setting database flags directly.
 
 Independent review and controlled tests cover continuation, configuration acceptance and exact probe output/reasoning fields across all four adapters. [Application resource composition](2026-09-07-application-execution-resources.md), Workspace Builtins and explicit provisioning are implemented; G005 supplies the actual Runner/Context consumer. Hosted Provider behavior, target migrations, deployment and 50-Agent performance are not established by local tests. The [G004 contract](../../../../specs/backend-execution-dependencies.md) remains the approved authority.
+
+Thirteen summary tests exercise actual PostgreSQL continuation and controlled HTTP: success, transport failure and cancellation leave the complete existing continuation row unchanged, and a subsequent ordinary step replays the original signature. Text-only restrictions and incomplete/Tool-producing summaries fail explicitly. Captured-policy tests cover agreement and pre-parse limits. Independent review approved the Model-side behavior; Context separately validates whether the resulting summary fits its view.
