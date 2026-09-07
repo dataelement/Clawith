@@ -14,6 +14,8 @@ Local writes prepare and synchronize a temporary file before the commit lock. Mu
 
 S3 reads retain the GET revision and bound bytes before materialization. Pagination consumes one bounded service page. Conditional writes and deletes use native object conditions. Empty-directory removal deletes only an empty marker, never concurrent children. Recursive deletion is reserved for owner-controlled cleanup and checks every page and provider deletion error.
 
+The cached synchronous S3 client has one thread-safe initialization and disposal boundary. Concurrent first reads cannot create clients that are then overwritten and leaked. Async entry points offload initialization rather than blocking the event loop. Every cached-client SDK operation drains its worker before propagating cancellation, so caller task completion is sufficient to exclude active HEAD, listing, read or presigning workers from subsequent client disposal. A byte read owns GET, body consumption and body closure in one worker; cancellation cannot discard a returned body before cleanup. Failed initialization publishes no cached client and releases the lock, allowing a later explicit operation to try again.
+
 PostgreSQL resource locks use a task-owned connection for nested acquisitions. An inherited child Task cannot share an active lease. Cancellation balances unlocks and releases or invalidates the connection. The injecting composition must own a separate bounded lock-only pool using session-pinned PostgreSQL connections; business transaction capacity cannot be consumed by lock waiters. S3 resource locking fails explicitly without a configured provider.
 
 ## Alternatives considered
@@ -28,4 +30,4 @@ The application drains admitted operations before calling `aclose`. Local storag
 
 ## Verification
 
-Storage tests exercise versioned reads, pagination, native conditional writes, cancellation, cross-process local exclusion, nested PostgreSQL leases, sibling progress, parent deletion and empty-directory cleanup. Disposal tests observe native SDK pool entries being released, cancellation waiting for cleanup, repeated close/failure behavior and retained Local files. Independent Workspace/storage review found no remaining blocker. Controlled S3 responses and local PostgreSQL tests do not establish live S3 behavior, application pool composition or 50-Agent performance.
+Storage tests exercise versioned reads, pagination, native conditional writes, cancellation, cross-process local exclusion, nested PostgreSQL leases, sibling progress, parent deletion and empty-directory cleanup. Disposal tests observe native SDK pool entries being released, concurrent first-read initialization, event-loop progress during initialization, cancellation waiting for cleanup, initialization and close failures, repeated close behavior and retained Local files. Controlled S3 responses and local PostgreSQL tests do not establish live S3 behavior, application pool composition or 50-Agent performance.

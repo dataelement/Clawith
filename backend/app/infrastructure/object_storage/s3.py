@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import wraps
@@ -23,6 +24,21 @@ from app.infrastructure.object_storage.utils import normalize_storage_key
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+async def _run_sync(function: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Cancellation drains initialization/read threads before application resource disposal."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
+        raise
 
 
 def _storage_errors(function: Callable[P, Awaitable[T]]) -> Callable[P, CoroutineType[object, object, T]]:
@@ -61,6 +77,7 @@ class S3StorageBackend(StorageBackend):
         self._client: Any | None = None
         self._aioboto3_session: Any | None = None
         self._close_task: asyncio.Task[None] | None = None
+        self._client_lock = threading.Lock()
 
     async def aclose(self) -> None:
         """Close the cached sync client once; cancellation waits for actual cleanup."""
@@ -78,13 +95,16 @@ class S3StorageBackend(StorageBackend):
             raise
 
     async def _close_cached_client(self) -> None:
-        client, self._client = self._client, None
         self._aioboto3_session = None
-        if client is not None:
-            try:
-                await asyncio.to_thread(client.close)
-            except (ClientError, BotoCoreError) as exc:
-                raise StorageError("Object storage client close failed") from exc
+        def close() -> None:
+            with self._client_lock:
+                client, self._client = self._client, None
+            if client is not None:
+                client.close()
+        try:
+            await asyncio.to_thread(close)
+        except (ClientError, BotoCoreError) as exc:
+            raise StorageError("Object storage client close failed") from exc
 
     def _object_key(self, key: str) -> str:
         normalized = normalize_storage_key(key)
@@ -120,21 +140,29 @@ class S3StorageBackend(StorageBackend):
         )
 
     def _client_or_raise(self):
+        with self._client_lock:
+            if self._close_task is not None:
+                raise StorageError("Object storage backend is closed")
+            if self._client is None:
+                try:
+                    import boto3
+                except ImportError as exc:
+                    raise RuntimeError("boto3 is required for S3 storage backend") from exc
+                self._client = boto3.client(
+                    "s3",
+                    endpoint_url=self.endpoint_url,
+                    aws_access_key_id=self.access_key_id,
+                    aws_secret_access_key=self.secret_access_key,
+                    config=self._boto_config(),
+                )
+            return self._client
+
+    async def _get_client(self):
         if self._close_task is not None:
             raise StorageError("Object storage backend is closed")
-        if self._client is None:
-            try:
-                import boto3
-            except ImportError as exc:
-                raise RuntimeError("boto3 is required for S3 storage backend") from exc
-            self._client = boto3.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key_id,
-                aws_secret_access_key=self.secret_access_key,
-                config=self._boto_config(),
-            )
-        return self._client
+        if self._client is not None:
+            return self._client
+        return await _run_sync(self._client_or_raise)
 
     @asynccontextmanager
     async def _async_client(self):
@@ -197,7 +225,7 @@ class S3StorageBackend(StorageBackend):
                 return data, StorageVersion(key=normalize_storage_key(key), exists=True, is_dir=False, size=size, etag=etag, version_id=str(response.get("VersionId") or ""), modified_at=str(response.get("LastModified") or ""))
             finally:
                 body.close()
-        return await asyncio.to_thread(read)
+        return await _run_sync(read)
 
     @_storage_errors
     async def list_dir_page(self, key: str, *, limit: int, cursor: str | None = None) -> tuple[list[StorageEntry], str | None]:
@@ -208,7 +236,8 @@ class S3StorageBackend(StorageBackend):
         request: dict[str, Any] = {"Bucket": self.bucket, "Prefix": prefix, "Delimiter": "/", "MaxKeys": limit}
         if cursor is not None:
             request["ContinuationToken"] = cursor
-        response = await asyncio.to_thread(self._client_or_raise().list_objects_v2, **request)
+        client = await self._get_client()
+        response = await _run_sync(client.list_objects_v2, **request)
         entries: list[StorageEntry] = []
         for item in response.get("CommonPrefixes", []):
             rel = _strip_prefix(item["Prefix"].rstrip("/"), self.prefix)
@@ -231,8 +260,8 @@ class S3StorageBackend(StorageBackend):
 
     async def _object_exists(self, key: str) -> bool:
         object_key = self._object_key(key)
-        client = self._client_or_raise()
-        response = await asyncio.to_thread(
+        client = await self._get_client()
+        response = await _run_sync(
             client.list_objects_v2,
             Bucket=self.bucket,
             Prefix=object_key,
@@ -243,8 +272,8 @@ class S3StorageBackend(StorageBackend):
     @_storage_errors
     async def is_dir(self, key: str) -> bool:
         prefix = self._object_key(key).rstrip("/") + "/"
-        client = self._client_or_raise()
-        response = await asyncio.to_thread(
+        client = await self._get_client()
+        response = await _run_sync(
             client.list_objects_v2,
             Bucket=self.bucket,
             Prefix=prefix,
@@ -258,7 +287,7 @@ class S3StorageBackend(StorageBackend):
         prefix = self._object_key(key).rstrip("/")
         if prefix:
             prefix += "/"
-        client = self._client_or_raise()
+        client = await self._get_client()
         entries: list[StorageEntry] = []
         continuation_token: str | None = None
         while True:
@@ -269,7 +298,7 @@ class S3StorageBackend(StorageBackend):
             }
             if continuation_token:
                 request["ContinuationToken"] = continuation_token
-            response = await asyncio.to_thread(client.list_objects_v2, **request)
+            response = await _run_sync(client.list_objects_v2, **request)
             for item in response.get("CommonPrefixes", []):
                 raw = item.get("Prefix", "").rstrip("/")
                 rel = _strip_prefix(raw, self.prefix)
@@ -300,19 +329,19 @@ class S3StorageBackend(StorageBackend):
 
     @_storage_errors
     async def read_bytes(self, key: str) -> bytes:
-        client = self._client_or_raise()
-        try:
-            response = await asyncio.to_thread(
-                client.get_object,
-                Bucket=self.bucket,
-                Key=self._object_key(key),
-            )
-        except Exception as exc:
-            if _is_missing_object_error(exc):
-                raise FileNotFoundError(key) from exc
-            raise
-        body = response["Body"]
-        return await asyncio.to_thread(body.read)
+        def read() -> bytes:
+            try:
+                response = self._client_or_raise().get_object(Bucket=self.bucket, Key=self._object_key(key))
+            except ClientError as exc:
+                if _is_missing_object_error(exc):
+                    raise FileNotFoundError(key) from exc
+                raise
+            body = response["Body"]
+            try:
+                return body.read()
+            finally:
+                body.close()
+        return await _run_sync(read)
 
     @_storage_errors
     async def write_bytes(self, key: str, data: bytes, content_type: str | None = None) -> None:
@@ -356,14 +385,14 @@ class S3StorageBackend(StorageBackend):
 
     @_storage_errors
     async def delete_tree(self, key: str) -> None:
-        client = self._client_or_raise()
+        client = await self._get_client()
         prefix = self._object_key(key).rstrip("/") + "/"
         cursor: str | None = None
         while True:
             request: dict[str, Any] = {"Bucket": self.bucket, "Prefix": prefix, "MaxKeys": 1000}
             if cursor is not None:
                 request["ContinuationToken"] = cursor
-            response = await asyncio.to_thread(client.list_objects_v2, **request)
+            response = await _run_sync(client.list_objects_v2, **request)
             contents = response.get("Contents", [])
             if len(contents) > 1000:
                 raise StorageError("S3 listing exceeded requested page size")
@@ -396,10 +425,10 @@ class S3StorageBackend(StorageBackend):
 
     @_storage_errors
     async def get_version(self, key: str) -> StorageVersion:
-        client = self._client_or_raise()
+        client = await self._get_client()
         object_key = self._object_key(key)
         try:
-            response = await asyncio.to_thread(
+            response = await _run_sync(
                 client.head_object,
                 Bucket=self.bucket,
                 Key=object_key,
@@ -521,12 +550,12 @@ class S3StorageBackend(StorageBackend):
 
     @_storage_errors
     async def presign_download_url(self, key: str, filename: str | None = None, inline: bool = False) -> str | None:
-        client = self._client_or_raise()
+        client = await self._get_client()
         params: dict[str, Any] = {"Bucket": self.bucket, "Key": self._object_key(key)}
         if filename:
             disposition = "inline" if inline else "attachment"
             params["ResponseContentDisposition"] = f'{disposition}; filename="{filename}"'
-        url = await asyncio.to_thread(
+        url = await _run_sync(
             client.generate_presigned_url,
             "get_object",
             Params=params,
