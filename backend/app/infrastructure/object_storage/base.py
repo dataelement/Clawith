@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+
+
+class StorageError(OSError):
+    """Storage I/O or provider-protocol failure with a bounded safe message."""
 
 
 @dataclass
@@ -48,6 +53,27 @@ class ConditionalWriteResult:
 
 
 class StorageBackend:
+    def resource_lock(self, key: str) -> AbstractAsyncContextManager[None]:
+        """Exclude cooperating processes for this backend/key; not reentrant."""
+        raise NotImplementedError
+
+    async def mkdir(self, key: str) -> None:
+        raise NotImplementedError
+
+    async def read_versioned(self, key: str, *, max_bytes: int) -> tuple[bytes, StorageVersion]:
+        """Read one coherent revision; reject oversized content with ValueError."""
+        raise NotImplementedError
+
+    async def list_dir_page(
+        self, key: str, *, limit: int, cursor: str | None = None,
+    ) -> tuple[list[StorageEntry], str | None]:
+        """Return at most limit entries; cursors are opaque and not snapshots.
+
+        Backend scan budgets may reject a directory with ValueError. An empty
+        page with a cursor is not the end of a listing.
+        """
+        raise NotImplementedError
+
     async def exists(self, key: str) -> bool:
         raise NotImplementedError
 
@@ -77,6 +103,10 @@ class StorageBackend:
         raise NotImplementedError
 
     async def delete_tree(self, key: str) -> None:
+        raise NotImplementedError
+
+    async def rmdir_if_empty(self, key: str) -> bool:
+        """Remove only an empty directory; missing is success, new children are retained."""
         raise NotImplementedError
 
     async def stat(self, key: str) -> StorageEntry:

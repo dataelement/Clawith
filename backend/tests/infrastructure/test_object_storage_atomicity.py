@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 from app.infrastructure.object_storage import local as local_runtime
-from app.infrastructure.object_storage.base import StorageBackend, WriteCondition
+from app.infrastructure.object_storage.base import StorageBackend, StorageError, WriteCondition
 from app.infrastructure.object_storage.local import LocalStorageBackend
 from app.infrastructure.object_storage.s3 import S3StorageBackend
 from app.infrastructure.object_storage.utils import normalize_storage_key
@@ -280,13 +281,13 @@ async def test_local_mutation_waits_for_lock_held_by_another_process(tmp_path) -
                 await mutation_task
 
 
-class _S3Error(Exception):
+class _S3Error(ClientError):
     def __init__(self, status: int, code: str) -> None:
-        super().__init__(code)
-        self.response = {
+        response = {
             "ResponseMetadata": {"HTTPStatusCode": status},
             "Error": {"Code": code},
         }
+        super().__init__(response, "StorageOperation")
 
 
 class _HeadClient:
@@ -519,7 +520,7 @@ async def test_s3_head_operational_failures_propagate(error: Exception) -> None:
     backend = S3StorageBackend(bucket="bucket")
     backend._client = _HeadClient(error=error)
 
-    with pytest.raises(type(error)):
+    with pytest.raises(StorageError if isinstance(error, ClientError) else type(error)):
         await backend.get_version("workspace/report.md")
 
 
@@ -532,7 +533,7 @@ async def test_s3_head_non_object_404_failures_propagate(error: Exception) -> No
     backend = S3StorageBackend(bucket="bucket")
     backend._client = _HeadClient(error=error)
 
-    with pytest.raises(_S3Error):
+    with pytest.raises(StorageError, match="Object storage request failed"):
         await backend.get_version("workspace/report.md")
 
 
@@ -572,7 +573,7 @@ async def test_s3_read_operational_failures_propagate(error: Exception) -> None:
     backend = S3StorageBackend(bucket="bucket")
     backend._client = _GetClient(error=error)
 
-    with pytest.raises(type(error)):
+    with pytest.raises(StorageError if isinstance(error, ClientError) else type(error)):
         await backend.read_bytes("runtime/tool-results/unavailable.json")
 
 
@@ -583,7 +584,7 @@ async def test_s3_missing_etag_fails_closed_before_conditional_mutation(monkeypa
     mutation = _MutationClient()
     _install_async_client(monkeypatch, backend, mutation)
 
-    with pytest.raises(RuntimeError, match="ETag"):
+    with pytest.raises(StorageError, match="ETag"):
         await backend.write_bytes_if_match(
             "workspace/report.md",
             b"v2",
@@ -617,7 +618,7 @@ async def test_s3_conditional_write_without_stable_response_version_is_unknown(
     mutation = _MutationClient(put_response={"ResponseMetadata": {"HTTPStatusCode": 200}})
     _install_async_client(monkeypatch, backend, mutation)
 
-    with pytest.raises(RuntimeError, match="ETag or VersionId"):
+    with pytest.raises(StorageError, match="ETag or VersionId"):
         await backend.write_bytes_if_match(
             "workspace/new.md",
             b"new",
