@@ -9,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
+from app.infrastructure.execution_config import ExecutionSettings
+
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 VERSION_PATH = BACKEND_ROOT / "VERSION"
 ENV_FILE_PATH = BACKEND_ROOT / ".env"
@@ -48,6 +50,7 @@ class Settings(BaseSettings):
     CONTROL_DATABASE_POOL_SIZE: int = Field(default=20, gt=0)
     EXECUTION_DATABASE_POOL_SIZE: int = Field(default=20, gt=0)
     DATABASE_POOL_MAX_OVERFLOW: int = Field(default=0, ge=0)
+    EXECUTION: ExecutionSettings | None = None
 
     @field_validator("DATABASE_URL")
     @classmethod

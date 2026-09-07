@@ -2,10 +2,11 @@
 
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.execution_dependencies.resources import open_execution_resources
 from app.infrastructure import database
 from app.infrastructure.config import Settings, get_settings
 from app.modules.audit.public import AsyncAuditSink
@@ -20,25 +21,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        resources = await database.create_database_resources(application_settings)
-        try:
+        if application_settings.EXECUTION is None:
+            raise ValueError("EXECUTION configuration with explicit encryption keys and storage is required for startup")
+        async with AsyncExitStack() as cleanup:
+            resources = await database.create_database_resources(application_settings)
+            cleanup.push_async_callback(resources.aclose)
             audit = AsyncAuditSink(
                 resources.execution_sessions,
                 capacity=AUDIT_QUEUE_CAPACITY,
                 shutdown_timeout=AUDIT_SHUTDOWN_TIMEOUT_SECONDS,
             )
+            cleanup.push_async_callback(audit.close)
+            audit.start()
+            execution = await cleanup.enter_async_context(open_execution_resources(application_settings.EXECUTION, resources, audit))
             try:
-                audit.start()
                 application.state.database = resources
                 application.state.audit = audit
+                application.state.execution = execution
                 yield
             finally:
-                await audit.close()
-        finally:
-            try:
-                await resources.aclose()
-            finally:
-                for name in ("audit", "database"):
+                for name in ("execution", "audit", "database"):
                     if hasattr(application.state, name):
                         delattr(application.state, name)
 

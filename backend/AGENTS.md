@@ -22,6 +22,8 @@ Run Backend commands from `backend/`:
 
 Use focused Pytest targets during development. Use the repository testing policy as the authority for when the complete Backend suite is required.
 
+Application startup requires explicit `EXECUTION` deployment configuration for Credential/continuation keyrings and storage. Importing the ASGI application does not create keys or resources. Missing execution configuration fails before database resources are created; there is no health-only fallback startup mode.
+
 Read [`alembic/AGENTS.md`](alembic/AGENTS.md) before creating or editing a database migration.
 
 G002 has no target schema baseline. Alembic execution commands, including current, upgrade, downgrade, stamp, and offline SQL generation, are unavailable until G008. Only structural `heads` and `history` inspection is supported; startup and CI never apply revisions.

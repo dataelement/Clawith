@@ -218,6 +218,7 @@ def _scan_target_tree(
             )
             infrastructure_or_composition = (
                 relative == Path("application.py")
+                or relative == Path("execution_dependencies/resources.py")
                 or relative_parts[0] == "infrastructure"
             )
             workspace_public_contract = (
@@ -494,6 +495,16 @@ def test_execution_composition_consumes_only_public_owner_contracts(tmp_path: Pa
         "source": f"from app.modules.tool.{surface} import Contract\n",
     })
     assert ("cross-owner-private-import" in _violation_rules(app_root)) is (surface != "public")
+
+
+@pytest.mark.parametrize("filename,allowed", [("resources.py", True), ("workspace_tools.py", False)])
+def test_only_resource_composition_may_construct_storage(tmp_path: Path, filename: str, allowed: bool) -> None:
+    app_root = _materialize_case(tmp_path, {
+        "id": "storage-composition-boundary",
+        "path": f"app/execution_dependencies/{filename}",
+        "source": "from app.infrastructure.object_storage.s3 import S3StorageBackend\n",
+    })
+    assert ("object-storage-bypass" in _violation_rules(app_root)) is not allowed
 
 
 @pytest.mark.parametrize("path", ["modules/tool/execution.py", "runtime/loop.py", "infrastructure/config.py"])

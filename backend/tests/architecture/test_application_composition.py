@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,11 @@ def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "APP_VERSION": "test-version",
         "DATABASE_URL": COMPLETE_DATABASE_URL,
+        "EXECUTION": {
+            "credential_keys": {"active_version": "test", "keys": {"test": base64.b64encode(b"k" * 32).decode()}},
+            "continuation_keys": {"active_version": "test", "keys": {"test": base64.b64encode(b"c" * 32).decode()}},
+            "storage": {"kind": "local", "root": "/tmp/clawith-application-contract-tests"},
+        },
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -79,28 +85,23 @@ def _qualified_name(node: ast.expr) -> str | None:
     return None
 
 
-def test_main_exposes_only_the_minimal_health_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    resources = FakeDatabaseResources()
-    async def create_resources(_settings: Settings) -> DatabaseResources:
-        return cast(DatabaseResources, resources)
-
-    monkeypatch.setattr(database, "create_database_resources", create_resources)
-
-    with TestClient(asgi_app) as client:
-        response = client.get("/api/health")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["version"] == asgi_app.version
-    assert body["process_pid"] == os.getpid()
-    assert len(body["startup_id"]) == 32
-    assert set(body["startup_id"]) <= set("0123456789abcdef")
+def test_main_exports_the_single_factory_application_without_product_routes() -> None:
+    assert isinstance(asgi_app, FastAPI)
     route_paths = [cast(RouteWithPath, route).path for route in asgi_app.routes]
     assert {path for path in route_paths if path.startswith("/api/")} == {
         "/api/health"
     }
-    assert resources.close_calls == 1
+
+
+def test_missing_execution_configuration_fails_before_database_creation(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unexpected_database(_settings: Settings) -> DatabaseResources:
+        pytest.fail("Missing execution configuration reached database creation")
+
+    monkeypatch.setattr(database, "create_database_resources", unexpected_database)
+    app = application.create_app(_settings(EXECUTION=None))
+    with pytest.raises(ValueError, match="EXECUTION configuration"), TestClient(app):
+        pass
+    assert not hasattr(app.state, "execution")
 
 
 def test_create_app_owns_database_resources_for_its_complete_lifespan(
