@@ -1,6 +1,6 @@
 # Agent Note: Frontend shadcn/ui Foundation
 
-Status: proposed — the clean Frontend UI rewrite on Tailwind CSS v4 and shadcn/ui is agreed but not implemented
+Status: proposed — the isolated shadcn/ui foundation is initialized; the application rewrite and clean cutover remain unimplemented
 
 ## Problem
 
@@ -32,9 +32,21 @@ Each target page is rebuilt directly on the new foundation. The rewrite does not
 
 Business-specific visualizations may remain custom when shadcn/ui has no equivalent responsibility. Recharts remains the charting boundary. Atlas may retain its distinct visual language and specialized components, but any common control or overlay inside those experiences uses the shared shadcn/ui or Radix interaction and accessibility behavior where applicable. Custom visuals must still tolerate global Preflight and meet the same theme, keyboard, focus, responsive, and performance acceptance contract.
 
+### Initialize and inspect components independently
+
+`frontend/components.json` selects the New York style, neutral CSS variables, Radix components, and Tabler icons. `frontend/src/styles/ui.css` contains the shared theme and global Tailwind Preflight for the new UI. Tailwind source detection is restricted to `src/components/ui/` and `src/ui-preview/`; legacy pages and standalone HTML prototypes are not scanned for utilities. Source-owned components live in `frontend/src/components/ui/`; `frontend/src/lib/utils.ts` owns class merging. The initial Button is copied from the verified official source snapshot recorded in `frontend/THIRD_PARTY_NOTICES.md`; the registry download failed with a TLS error. Future additions use `npm run ui:add -- <component>` when the registry is reachable. Button labels use `font-normal` (400), and button corners use `rounded-sm` (6 px with the current theme). These local presentation choices retain the upstream variants, sizing, disabled state, focus behavior, and Slot composition.
+
+`frontend/ui.html` and `frontend/src/ui-preview/main.tsx` are a separate document entry for component inspection. This document imports the new stylesheet and does not import legacy application CSS, authentication, stores, or API services. `npm run dev:ui` opens the preview; `npm run build:ui` builds it into `frontend/dist-ui/`. The default application build retains `frontend/index.html` and does not ship the component preview. This is a development surface, not an application UI mode or a compatibility layer; remove it when a replacement component development surface owns the same responsibility.
+
+### Input and field composition
+
+`Input`, `Field`, `Label`, and `Separator` are source-owned shadcn components from the same verified snapshot. Input and Label use regular weight; Input uses `rounded-sm` to match the 6 px Button radius. Input retains its 36 px default height and upstream responsive type sizing. Field keeps labels, descriptions, and errors composable rather than introducing a second form API. Consumers explicitly connect `htmlFor`, `id`, `aria-describedby`, and `aria-invalid`; field presentation does not decide business validity.
+
+`src/ui-preview/InputPreview.tsx` demonstrates empty, populated, invalid, disabled, and read-only fields plus a local name/email form. Validation runs on submit and focuses the first invalid input; editing clears that field's displayed error, and reset clears feedback. The example stores no server data and makes no request.
+
 ### Sequence Backend and Frontend evidence
 
-The Backend API contracts consumed by a page stabilize before that page is rebuilt. Stabilization means the owning Backend contract and its Backend verification are complete enough for the Frontend service boundary to consume; it does not mean the Frontend behavior is accepted.
+Component implementation and mock-driven design previews may precede Backend API work. A business page integrates real services only after the Backend API contracts it consumes stabilize. Stabilization means the owning Backend contract and its Backend verification are complete enough for the Frontend service boundary to consume; it does not mean the Frontend behavior is accepted.
 
 Frontend acceptance is collected separately. Type checking and a production build prove compilation and bundling. Browser tests prove rendered behavior and user journeys. Accessibility tests prove semantics, keyboard operation, focus management, and assistive-technology-relevant states. Visual tests prove the supported themes and viewport layouts. Performance measurements prove the applicable responsiveness targets in [Capacity, Performance, and Responsiveness](2026-08-28-capacity-performance-and-responsiveness.md). Backend, source, build, browser, deployment, and live-system evidence remain distinct.
 
@@ -68,6 +80,16 @@ Changing React, Router, React Query, Zustand, the icon set, or the charting libr
 - Bundle size, browser long tasks, render behavior, route usability, and interaction latency meet the declared Frontend performance budget and the applicable responsiveness contract.
 - Backend API stability, Frontend compilation and bundling, browser behavior, accessibility, visual fidelity, performance, deployment, and live acceptance are reported as separate evidence.
 
+## Initialization verification
+
+- `npm run lint`, `npm run format:check`, and `npx tsc --noEmit` pass.
+- `npm test`: 204 tests pass.
+- `npm run build` and `npm run build:ui` pass with separate application and preview output directories.
+- `shadcn info` recognizes Vite, Tailwind v4, the Radix base, Tabler icons, configured aliases, and the installed Button.
+- Browser checks at 1280 × 900 and 390 × 844 verify Button rendering, a 36 px default height, click handling, disabled state, keyboard Tab order, light/dark theme switching, and no horizontal overflow.
+- Input/Field browser checks at 1280 × 1000 and 390 × 844 verify 36 px height, 6 px radius, 400 weight, label focus, disabled/read-only behavior, error associations, first-invalid focus, valid submission, reset, theme rendering, and no horizontal overflow. Lint, formatting, TypeScript, and the UI build pass after adding these components.
+- Registry download, remaining components, rewritten business pages, full accessibility acceptance, production deployment, and live integrations are not verified.
+
 ## Risks
 
 Global Preflight can change headings, lists, media, borders, form controls, embedded content, and Atlas surfaces. Enabling it only at the clean cutover avoids mixed reset behavior, but every retained custom surface still needs browser and visual verification.
@@ -76,6 +98,6 @@ Source ownership makes shadcn/ui components intentionally editable, which also m
 
 The clean rewrite has a larger integration boundary than an adapter migration and can omit subtle business behavior. Reuse is limited to verified business logic, and critical journeys must be locked with browser acceptance before the old presentation is removed. Rollback uses the previous deployable Frontend artifact; it does not keep a runtime legacy UI switch.
 
-Backend contract changes can invalidate page work even after visual completion. Page rebuilding starts only after its consumed Backend contract stabilizes, while Frontend and live-browser acceptance remain independently required.
+Backend contract changes can invalidate integration work even after visual completion. Real service wiring starts only after its consumed Backend contract stabilizes; component previews do not establish API or live-browser business acceptance.
 
 Tailwind utilities, source-owned primitives, charts, and retained custom visuals can increase CSS, JavaScript, render, or main-thread cost. The rewrite must measure bundle composition and browser responsiveness rather than treating framework adoption or a successful build as performance evidence.

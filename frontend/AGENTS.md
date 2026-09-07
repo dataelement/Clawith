@@ -21,6 +21,9 @@ Run Frontend commands from `frontend/`:
 | Check formatting                     | `npm run format:check`                   |
 | Format supported files               | `npm run format`                         |
 | Build the production bundle          | `npm run build`                          |
+| Preview shadcn components            | `npm run dev:ui`                         |
+| Build the isolated component preview | `npm run build:ui`                       |
+| Add a shadcn component               | `npm run ui:add -- <component>`          |
 
 Use focused tests during development. Use the repository testing policy as the authority for when the complete Frontend suite and production build are required.
 
@@ -50,6 +53,12 @@ src/assets/        Source-controlled assets imported by the application.
 ```
 
 Detailed feature structure belongs to the nearest path-specific instruction or owning architecture document, not this file.
+
+## UI foundation
+
+`components.json` configures source-owned shadcn/ui components in `src/components/ui/`, the `cn()` helper in `src/lib/utils.ts`, and the neutral light/dark theme in `src/styles/ui.css`. Keep the configured Radix foundation and Tabler icon library when adding components. `ui.css` scans only the new component and preview directories; register another new-UI source directory there when it gains a consumer.
+
+`ui.html` and `src/ui-preview/main.tsx` provide an isolated preview for component work. They load Tailwind Preflight and the new theme; the legacy application entry does not. `build:ui` writes `dist-ui/`, while the default build continues to produce only the application in `dist/`. Do not import the new global stylesheet into legacy pages before the clean UI cutover. The [UI foundation Note](../.agents/notes/proposed/architecture/2026-09-01-frontend-shadcn-ui-foundation.md) owns the rewrite boundary and verification requirements.
 
 ## State ownership
 

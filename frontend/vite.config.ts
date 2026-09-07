@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import fs from "fs";
 
@@ -21,8 +22,8 @@ const version = `${majorVersion}+${buildTimestamp}`;
 
 const backendPort = process.env.BACKEND_PORT || "8000";
 
-export default defineConfig({
-  plugins: [react()],
+export default defineConfig(({ mode }) => ({
+  plugins: [react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
@@ -32,7 +33,9 @@ export default defineConfig({
     },
   },
   build: {
+    outDir: mode === "ui" ? "dist-ui" : "dist",
     rollupOptions: {
+      ...(mode === "ui" ? { input: path.resolve(__dirname, "ui.html") } : {}),
       output: {
         manualChunks: {
           "vendor-react": ["react", "react-dom", "react-router-dom"],
@@ -61,4 +64,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
