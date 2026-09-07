@@ -185,7 +185,7 @@ Caching and concurrency can move or hide latency while introducing stale state a
 - With 50 non-terminating Tenant-A Runs and one ready Tenant-B Run, Tenant B starts its next quantum by the second post-ready scheduler allocation; Run completion is not used as fairness evidence.
 - One non-overlapping Agent Runner instance sustains the initial 50-execution load with bounded in-memory admission and execution, while its startup interruption sweep completes before readiness.
 - Workspace locks cover only revision validation and atomic commit; Agent merge and retry happen outside the lock and remain bounded.
-- Cancellation removes scheduler eligibility, signals bounded in-flight work, and prevents a terminal Run from re-entering; Runner shutdown interrupts rather than replays remaining Running Runs.
+- Cancellation removes scheduler eligibility, signals bounded in-flight work, and prevents a terminal Run from re-entering; Runner shutdown interrupts rather than replays all remaining Running and Waiting Main/Subagent Runs.
 - No accepted durable or Stream event is silently lost.
 - Performance optimization is supported by segmented Backend, Runtime, Provider, Workspace, and Frontend evidence.
 

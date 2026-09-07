@@ -151,7 +151,7 @@ Run Completion means one Agent Loop execution ended. Main Agent's judgment that 
 
 Todo is a Subagent Run planning aid, not another lifecycle owner or completion gate. It creates no Task or Run, grants no permission, survives only within the current Subagent Run, and does not prevent Final Output. If Todo items remain unresolved, the Subagent reports them in Run Result for Main Agent judgment.
 
-If a responsible Main Run becomes Completed, Failed, Cancelled, or Interrupted, Agent Runner cancels the still-active Subagent Runs created by that Main Run. Main Completion does not wait for Child completion; a premature Final Output is accepted as an execution mistake rather than introducing a completion gate. A late Subagent outcome may remain in Run History but cannot revive the parent Run or continue the ended work.
+During ordinary per-Run settlement, if a responsible Main Run becomes Completed, Failed, Cancelled, or Interrupted, Agent Runner cancels the still-active Subagent Runs created by that Main Run. Service-wide shutdown/startup cleanup instead marks every non-terminal Main/Subagent Run Interrupted, including Waiting, without waking a Parent. Main Completion does not wait for Child completion; a premature Final Output is accepted as an execution mistake rather than introducing a completion gate. A late Subagent outcome may remain in Run History but cannot revive the parent Run or continue the ended work.
 
 The Agent Loop has no mandatory generic Verify stage. Agents verify through ordinary test, inspection, review, query, or other Tools before Final Output. Trust-boundary validation remains with its owning module.
 
@@ -180,7 +180,7 @@ Goal `wait` is not Run Status Waiting. Need Input preserves and later resumes th
 
 Each later Main Run relates to the original `/goal` Session Input and receives bounded Product Input containing the original objective, committed progress, the preceding disposition or execution outcome, and the satisfied wake condition when applicable. It reuses the original Session-history cutoff and does not resume or implicitly read the complete History of an earlier Main Run. Durable files, Memory, and other committed artifacts remain available through their normal Context sources.
 
-A Failed or Interrupted Goal-mode Main Run remains terminal and cancels its active Subagent Runs. Session Goal mode may start a new ordinary Main Run from committed facts and the failure outcome, but it cannot restore the failed Run or recover uncommitted execution. Repeated failures must stop automatic continuation rather than create an unbounded retry loop; stopping produces an ordinary final Agent Reply related to the original `/goal` input. The concrete bound remains implementation policy.
+A Failed or Interrupted Goal-mode Main Run remains terminal. Ordinary per-Run termination cancels its active Subagent Runs; service-wide cleanup interrupts all non-terminal members instead. Session Goal mode may start a new ordinary Main Run from committed facts and the failure outcome, but it cannot restore the failed Run or recover uncommitted execution. Repeated failures must stop automatic continuation rather than create an unbounded retry loop; stopping produces an ordinary final Agent Reply related to the original `/goal` input. The concrete bound remains implementation policy.
 
 Cancelling Goal mode disables the Session configuration, stops further continuation, and cancels the active Main Run and its descendants. Goal continuation facts remain Session-owned product facts rather than Workspace Memory or Runner lifecycle state.
 
@@ -254,7 +254,7 @@ These mechanisms are not required for responsive conversation or reconstructable
 - A2A Tool Calls settle immediately; correlated A2A Result Input enters the exact non-terminal source Main Run for `consult` and `task_delegate`, while `notify` never waits for output.
 - An A2A target Main Run survives source termination, and its late result cannot revive a terminal source Run.
 - A waiting Main Run does not block new Session input, other Main Runs, or unrelated delegated work.
-- Every terminal Parent Main Run outcome, including Completed, cancels its active Subagent Runs without a completion gate or revival.
+- Ordinary per-Run Parent termination, including Completed, cancels its active Subagent Runs without a completion gate or revival. Service-wide shutdown/startup cleanup interrupts all non-terminal Main/Subagent Runs, including Waiting, without automatic resume.
 - A Subagent missing required input atomically enters Waiting with a correlated Child Need Input to Main; Main answers or waits for human input and then resumes the exact same Child Run, while a terminal Main causes immediate Child cancellation.
 - A Session has at most one active Goal mode and stores its objective, committed progress, wait condition, and original `/goal` Session Input relation without a separate Goal table or ID.
 - Goal mode repeatedly invokes the same Main Agent through ordinary Main Runs and adds no Goal object, status state machine, Agent role, Run type, Runner, or Agent Loop.

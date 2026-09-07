@@ -11,3 +11,5 @@ An amendment requires review and explicit updates to the affected owner binding 
 The [Audit observation contract](backend-audit-observation.md) replaces the foundation's coupled Audit transactions through an appended approval amendment. Its [implemented Note](../.agents/notes/implemented/architecture/2026-09-06-asynchronous-audit-observation.md) owns current behavior; original contracts, receipts and G003 evidence remain historical bindings.
 
 [Execution Dependencies](backend-execution-dependencies.md) defines the reviewed G004 implementation scope, Agent-only shared/private Skills, MCP account selection and S2 schema-only product boundaries. It does not claim completed Workspace, Tool, Market, Provider or Runtime implementation.
+
+[Core Runtime](backend-core-runtime.md) records G005 implementation boundaries and the user-confirmed first-release interruption rule: stopping the service ends both Running and Waiting Runs without automatic restart recovery. Its owner bindings require independent preflight review before Run/Context lifecycle service implementation.
