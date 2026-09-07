@@ -100,13 +100,13 @@ A2A Main Run -------> receiver Agent Workspace + explicit A2A Input
 Subagent Run -------> exact Parent Main Run Workspace authorization
 ```
 
-Context injects the separately labeled Guide and Index entry section from each authorized Workspace's `memory/MEMORY.md` plus that Workspace's Skill Index. User, Agent, and Group sources remain distinct, and same-named Memory topics or Skills do not silently overwrite or merge.
+Context injects the separately labeled Guide and Index entry section from each authorized Workspace's `memory/MEMORY.md`, plus only the executing Agent's Skill Index. User, Agent, and Group Memory sources remain distinct, and same-named Memory topics do not silently overwrite or merge. User and Group Skill sources are absent in the first release.
 
 `files/` has no automatically injected directory tree, listing, metadata summary, or content. A file enters model-visible input only when Product Input or delegated Child Run Input explicitly references it or the Agent uses an authorized Workspace Tool to list, search, or read it. Full Memory documents and Skill packages likewise require explicit retrieval.
 
 Workspace Discovery includes only a compact model-facing usage rule that an authorized `files/` area exists and must be inspected through list, search, and read Tools when current work may depend on files. The rule does not claim that any particular file exists and does not enumerate paths. Actual file information enters the next model call only through the resulting Workspace Tool Result.
 
-The authorized Workspace set, Memory entry sections, and Skill Indexes are fixed in the Run-scoped source snapshot. Subagent Runs inherit the parent snapshot. Explicit writes become visible through Tool Results when relevant, but entry sections and Indexes do not refresh silently; new Runs resolve the current Workspace versions. A full Skill package is retrieved explicitly from the current controlled Workspace installation and the resulting content enters History; later file updates cannot rewrite content already observed, but a later explicit load may read updated content because the first release keeps no immutable Skill revision archive. Newly granted authorization does not expand the active Run snapshot. Permission changes follow the login-scoped policy and never erase already-observed Context, rewrite History or trigger a Context-owned reauthorization loop.
+The authorized Workspace set, Memory entry sections, and executing Agent's Skill Index are fixed in the Run-scoped source snapshot. Subagent Runs inherit the parent snapshot. Explicit writes become visible through Tool Results when relevant, but entry sections and Indexes do not refresh silently; new Runs resolve the current Workspace versions. A full Skill package is retrieved explicitly from the current controlled Workspace installation and the resulting content enters History; later file updates cannot rewrite content already observed, but a later explicit load may read updated content because the first release keeps no immutable Skill revision archive. Shared package updates affect Agents still bound to that package, while private package updates affect only their owning Agent; Context does not copy packages or own their bindings. Newly granted authorization does not expand the active Run snapshot. Permission changes follow the login-scoped policy and never erase already-observed Context, rewrite History or trigger a Context-owned reauthorization loop.
 
 Workspace Index presence is discovery context, not authorization enforcement. Every real Workspace read or mutation still enforces the resolved scope at the Tool execution boundary.
 
@@ -166,7 +166,7 @@ Stable Prefix
   - Agent Identity and Soul version
   - immutable Product Input
   - fixed Session or product history cutoff
-  - labeled Workspace Memory and Skill Index snapshots
+  - labeled Workspace Memory snapshots and the executing Agent's Skill Index snapshot
   - initial directly exposed Tool Definitions
   - fixed model-capability guidance
 
@@ -258,10 +258,10 @@ Second-level timestamps invalidate otherwise identical request prefixes without 
 - Each Main Run receives bounded immutable Product Input from its initiating product capability.
 - Subagent Runs receive delegated Task work description rather than external Product Input.
 - Run histories remain isolated; parent, sibling, and concurrent Session history do not enter implicitly.
-- Authorized Workspace `MEMORY.md` entry sections and Skill Indexes retain User, Agent, and Group labels; full content requires explicit Tool retrieval.
+- Authorized Workspace `MEMORY.md` entry sections retain User, Agent, and Group labels; only the executing Agent supplies a Skill Index, and full content requires explicit Tool retrieval.
 - `files/` contributes no automatic listing or summary; files enter Context only through explicit Product or delegated Child Run references and Workspace Tool Results.
 - Authorized Runs receive only a generic prompt-level instruction to inspect `files/` on demand; the instruction contains no file inventory or inferred content.
-- The authorized Workspace set and its Memory and Skill Indexes are fixed per Run, and Subagent Runs inherit the parent Main Run's Workspace snapshot.
+- The authorized Workspace set, its Memory entry sections and the executing Agent's Skill Index are fixed per Run, and Subagent Runs inherit the parent Main Run's Workspace snapshot.
 - Human permission changes follow login-session lifetime; Context consumes the fixed Run scope without live reauthorization or rewriting previously observed History.
 - Tool System supplies only directly exposed Tool Definitions, never the complete Registry by default.
 - Run-role eligibility is explicit: Main Runs directly receive Task Tool, while Subagent Runs cannot expose, search, or dispatch it recursively.

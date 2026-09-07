@@ -12,12 +12,11 @@ The current Agent file root and its nested `workspace/` use Workspace to mean tw
 
 ### One Workspace per subject
 
-Every User, Agent, and Group has exactly one persistent Workspace. In this product vocabulary, User means one Tenant Membership defined by [Account, Membership, Tenant, and Principal](2026-08-31-account-membership-tenant-principal.md), not the global Account. All three use the same fixed top-level areas:
+Every User, Agent, and Group has exactly one persistent Workspace. In this product vocabulary, User means one Tenant Membership defined by [Account, Membership, Tenant, and Principal](2026-08-31-account-membership-tenant-principal.md), not the global Account. Memory and ordinary files exist in all three; the first release binds Skills only to Agents:
 
 ```text
 User Workspace
   ├── memory/
-  ├── skills/
   └── files/
 
 Agent Workspace
@@ -27,7 +26,6 @@ Agent Workspace
 
 Group Workspace
   ├── memory/
-  ├── skills/
   └── files/
 ```
 
@@ -83,13 +81,15 @@ Direct and Group Main Runs may update the executing Agent's own Memory only thro
 
 Skills are authoritative file packages under `skills/`. A Skill may contain instructions, workflows, scripts, templates, examples, references, and static resources. Skills describe how an Agent should perform work; they do not grant permissions, own product state, create another Agent role, or replace executable Tools.
 
-Each Workspace exposes a compact Skill Index to authorized Runs. Complete `SKILL.md` instructions and auxiliary files are read on demand through the same Workspace file capability. A Skill activation is a current-Run fact, not another persistent copy of the Skill.
+Only the executing Agent exposes a compact Skill Index to its authorized Runs. Complete `SKILL.md` instructions and auxiliary files are read on demand through the same Workspace file capability. A Skill activation is a current-Run fact, not another persistent copy of the Skill.
 
-User Skills provide methods reusable across the User's authorized Agents. Agent Skills provide methods shared across that Agent's authorized Users and Runs. Group Skills provide flexible collaboration methods and shared working conventions without creating a Group Soul, hidden Group prompt, or collaboration state machine.
+Agent Skills provide methods shared across that Agent's authorized Users and Runs. User and Group Workspaces have no Skill binding, discovery source or empty `skills/` area in the first release. Collaboration methods use the participating Agent's Skills without creating a Group Soul, hidden Group prompt, or collaboration state machine.
 
-When a Run receives more than one Workspace, each Skill Index retains its User, Agent, or Group source. Same-named Skills from different Workspaces do not silently overwrite or merge. Context selection and precedence are defined later.
+An Agent binding resolves one canonical Skill name to one authorized package. Context does not merge User, Group and Agent Skill indexes or infer a binding from another Agent's installation.
 
-Installed Workspace Skill files are the only authority for that subject's Skill package. [Tenant Capability Market and Agent Installation](2026-08-31-tenant-capability-market-and-agent-installation.md) owns shared package discovery, deduplication, source, and version metadata. An authorized Agent may install a Market Skill into its Workspace, but another Agent receives no files or Context until it installs the item separately. Market source does not replace the installed Workspace content authority, and installation affects only new Runs.
+Workspace owns current Skill package contents and Agent installation bindings. [Tenant Capability Market and Agent Installation](2026-08-31-tenant-capability-market-and-agent-installation.md) owns shared package discovery, deduplication, source, and version metadata. An authorized Agent may install a Market Skill into its Workspace, but another Agent receives no binding or Context until it installs the item separately. Market source does not replace the installed Workspace content authority, and new installation affects discovery only in new Runs.
+
+A Skill package is Tenant-shared or private to one same-Tenant Agent. Shared storage is internal to Workspace and does not create a fourth Workspace type. Agent `skills/` paths resolve through their explicit bindings. Updating a shared package changes the current package for every Agent still bound to it; updating a private package affects only its owning Agent. A private update of a shared installation first creates a private package and rebinds only that Agent. These are controlled installation/update operations, not permission for a Run to author Skill content. Workspace keeps current package state and bindings, without retained version history.
 
 The first release prohibits Agent Runs from creating, editing, deleting, or publishing Skill content. Agent may install an existing Market Skill only through Capability Management, which validates and atomically materializes the package but does not let the model rewrite it. Tenant management and later Frontend editing may update installed Skill through the same Workspace Service, Permission, package validation, atomic commit and cache invalidation boundary. Audit observes the outcome asynchronously and does not participate in publication success.
 
@@ -144,7 +144,7 @@ Create, delete, move, and rename operations apply equivalent revision checks to 
 
 Current revision is a compare-and-swap concurrency token, not a Git commit, retained version history, branch, snapshot, recycle bin, or recovery guarantee. The concrete revision representation, storage lock, replacement/activation primitive, failure cleanup, retry bound and merge prompt remain implementation decisions. A storage adapter must provide the agreed publication semantics; this decision does not assume that S3 offers filesystem rename or promise a transaction across arbitrary files and PostgreSQL. Version retention, backup and accidental-deletion recovery remain deferred product decisions.
 
-[Asynchronous Audit](2026-09-06-asynchronous-audit-observation.md) is decoupled from Workspace success and is never consulted to determine current content, permission, revision, installation state or whether to resume/repeat an operation. This replaces the earlier requirement to make file publication and Audit persistence succeed together; it does not weaken the authoritative Workspace state or Run History contracts.
+[Asynchronous Audit](2026-09-06-asynchronous-audit-observation.md) receives observed outcomes through an independent non-blocking interface without a business TransactionContext. Its implementation owns asynchronous processing and its own storage transaction. Audit is never consulted to determine current content, permission, revision, installation state or whether to resume/repeat an operation. This replaces the earlier requirement to make file publication and Audit persistence succeed together; it does not weaken the authoritative Workspace state or Run History contracts.
 
 Sandbox file mapping, in-sandbox editing and write-back remain for the [Sandbox review](2026-09-03-sandbox-reuse-candidate.md). The non-Sandbox publication decision does not activate Sandbox or add mechanisms in anticipation of its integration.
 
@@ -161,7 +161,7 @@ Heartbeat module --------> Heartbeat policy and scheduling
 
 Soul is mandatory Agent identity and behavior configuration. It is loaded by Context for every Agent model call, cannot be modified by the Agent, and is edited only through an authorized Agent-management operation. It may use Markdown internally but is not exposed through Workspace file operations.
 
-Group Announcement is public Group product content, not Group Soul, Memory, or Skill. Long-term Group knowledge belongs in Group Memory, and flexible collaboration behavior belongs in Group Skills.
+Group Announcement is public Group product content, not Group Soul, Memory, or Skill. Long-term Group knowledge belongs in Group Memory; flexible collaboration behavior may use the participating Agent's Skills.
 
 Session and its Goal-mode configuration, Task Tool Calls, Child Run facts, Run History, Focus, Trigger, Schedule, messages, credentials, permissions, model configuration, file revisions, locks, and audit metadata remain outside Workspace even when their implementations use persistence.
 
@@ -227,7 +227,7 @@ Rejected for controlled package updates because a reader could combine new instr
 
 - Every User, Agent, and Group has exactly one persistent Workspace.
 - No Workspace is created for a User-Agent or other relationship pair.
-- Every Workspace has fixed `memory/`, `skills/`, and `files/` areas and no nested second Workspace boundary.
+- Every Workspace has fixed `memory/` and `files/` areas; only Agent Workspace has `skills/`, and no Workspace has a nested second Workspace boundary.
 - User Workspaces are isolated from other Users and remain continuous across authorized Agents.
 - User Workspace means Membership Workspace and is keyed by Tenant and Membership, never by global Account alone.
 - Agent Workspaces are shared across the Agent's authorized Users and Runs.
@@ -235,7 +235,8 @@ Rejected for controlled package updates because a reader could combine new instr
 - Group Workspaces are shared within the Group without importing members' User Workspaces.
 - Memory initially consists of one `memory/MEMORY.md` per Workspace; only its labeled Guide and Index entry section is injected automatically and all other content requires scoped search and read.
 - Skills are authoritative Workspace file packages; only their labeled Index is injected automatically and full instructions and resources are read on demand.
-- User, Agent, and Group Memory and Skill Indexes remain separate and retain source identity.
+- User, Agent, and Group Memory Indexes remain separate and retain source identity; Skill discovery comes only from the executing Agent's bindings.
+- Shared Skill updates affect every Agent still bound to the shared package; private updates affect only their owning Agent, without changing shared content or adding retained history.
 - `files/` is an arbitrary durable file tree; uploads and outputs do not create additional persistent namespaces or a separate Artifact store.
 - Direct and Group Runs write ordinary files only to their Membership or Group Workspace; Agent-owned Main Runs may write Agent files, and Agent-to-Membership/Group file publication is one-way Copy.
 - Membership and Group files cannot be copied or moved into Agent Workspace in the first release.
@@ -260,7 +261,7 @@ Rejected for controlled package updates because a reader could combine new instr
 
 Subagent Runs inherit their parent Main Run's resolved Workspace authorization but not Main-only Agent Memory distillation eligibility. Concrete authorization queries must implement the accepted Tenant, User-owner, Agent-visibility, and Group-member rules without adding relationship Workspaces or finer ACLs.
 
-Context must preserve source identity when same-named Skills or conflicting Memory appear in multiple authorized Workspaces. Any permission model beyond the minimal Tenant, owner, and membership rules requires a later product decision.
+Context must preserve source identity when conflicting Memory appears in multiple authorized Workspaces. Agent Skill bindings resolve canonical names without User or Group Skill precedence. Any permission model beyond the minimal Tenant, owner, and membership rules requires a later product decision.
 
 Agent Memory distillation is an accepted first-release privacy risk. It may transform facts observed in a Membership or Group Run into Memory shared with every Membership that can see the Agent. The first release relies on the Memory owner's bounded content, source audit, and implementation-time privacy and Secret filtering, but it does not provide deterministic data-owner consent, PII classification, preview approval, or revocable publication. Those controls belong to the later Memory security version; this capability must not be represented as safe for untrusted private data merely because the model calls it generalized knowledge.
 

@@ -53,9 +53,9 @@ EXPECTED_DEPENDENCIES = {
     "agent": ["identity_tenant", "credential", "model"],
     "permission": ["identity_tenant", "agent"],
     "audit": ["identity_tenant"],
-    "workspace": ["identity_tenant", "agent", "permission"],
-    "tool": ["identity_tenant", "credential", "agent", "permission"],
-    "capability_market": ["identity_tenant", "credential", "agent", "permission", "tool"],
+    "workspace": ["identity_tenant", "agent", "permission", "audit"],
+    "tool": ["identity_tenant", "credential", "agent", "permission", "audit"],
+    "capability_market": ["identity_tenant", "credential", "agent", "permission", "audit", "workspace", "tool"],
     "run": [
         "identity_tenant",
         "agent",
@@ -283,6 +283,18 @@ def test_owner_dag_rejects_dependency_drift_fixture() -> None:
     dag = json.loads(_text(DAG_PATH))
     dag["owners"][1]["depends_on"] = []
 
+    with pytest.raises(GovernanceViolation, match="exact governance DAG"):
+        _validate_owner_dag(dag, EXPECTED_WAVES)
+
+
+@pytest.mark.parametrize("owner,dependency", [
+    ("workspace", "audit"), ("tool", "audit"),
+    ("capability_market", "audit"), ("capability_market", "workspace"),
+])
+def test_g004_dag_requires_public_installation_and_observation_dependencies(owner: str, dependency: str) -> None:
+    dag = json.loads(_text(DAG_PATH))
+    row = next(row for row in dag["owners"] if row["owner_id"] == owner)
+    row["depends_on"].remove(dependency)
     with pytest.raises(GovernanceViolation, match="exact governance DAG"):
         _validate_owner_dag(dag, EXPECTED_WAVES)
 

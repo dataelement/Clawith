@@ -20,13 +20,16 @@
       "schema_wave": "S1",
       "implementation_phase": 2,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-foundation.md",
-      "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G003/contract-review.md",
-          "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
         }
+      ],
+      "amendment_receipts": [
+        "backend/artifacts/rewrite/G004/receipts/credential-contract-amendment.json"
       ]
     },
     {
@@ -34,13 +37,16 @@
       "schema_wave": "S1",
       "implementation_phase": 2,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-foundation.md",
-      "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G003/contract-review.md",
-          "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
         }
+      ],
+      "amendment_receipts": [
+        "backend/artifacts/rewrite/G004/receipts/model-contract-amendment.json"
       ]
     },
     {
@@ -107,13 +113,16 @@
       "schema_wave": "S2",
       "implementation_phase": 3,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-foundation.md",
-      "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G003/contract-review.md",
-          "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
         }
+      ],
+      "amendment_receipts": [
+        "backend/artifacts/rewrite/G004/receipts/workspace-contract-amendment.json"
       ]
     },
     {
@@ -121,13 +130,16 @@
       "schema_wave": "S2",
       "implementation_phase": 3,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-foundation.md",
-      "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G003/contract-review.md",
-          "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
         }
+      ],
+      "amendment_receipts": [
+        "backend/artifacts/rewrite/G004/receipts/tool-contract-amendment.json"
       ]
     },
     {
@@ -135,13 +147,16 @@
       "schema_wave": "S2",
       "implementation_phase": 3,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-foundation.md",
-      "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G003/contract-review.md",
-          "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
         }
+      ],
+      "amendment_receipts": [
+        "backend/artifacts/rewrite/G004/receipts/capability-market-contract-amendment.json"
       ]
     },
     {
@@ -176,55 +191,85 @@
       "owner_id": "session",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "a2a",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "group",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "trigger",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "heartbeat",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "channel",
       "schema_wave": "S2",
       "implementation_phase": 5,
-      "state": "unreviewed",
-      "contract_artifact": null,
-      "contract_hash": null,
-      "evidence": []
+      "state": "contract_approved",
+      "contract_artifact": "specs/backend-execution-dependencies.md",
+      "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+      "evidence": [
+        {
+          "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+          "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+        }
+      ]
     },
     {
       "owner_id": "sso",

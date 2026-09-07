@@ -39,7 +39,7 @@ A null Tenant identifies a platform discovery template. It is searchable but is 
 
 PostgreSQL uses two partial unique indexes: `(kind, source, source_key)` where `tenant_id IS NULL`, and `(tenant_id, kind, source, source_key)` where `tenant_id IS NOT NULL`. This prevents nullable uniqueness from admitting duplicate platform templates while keeping Platform and Tenant namespaces independent. Concurrent first installs of a platform template converge on one Tenant materialization through the Tenant unique index. MCP uses a normalized registry identity or URL, Skill uses its stable package identity and version, and Tool uses its stable code or product key. Installer identity is audit only and never changes Tenant ownership.
 
-Market owns search, deduplication, display metadata, source, version, enablement, and installation origin. It does not become the execution or file authority. Tool Definition remains with Tool System, MCP-discovered Tool Definitions remain related to the MCP item, and installed Skill files remain authoritative in Workspace. The typed versioned Market manifest contains only bounded discovery metadata and owner references rather than replacing those records with arbitrary JSON.
+Market owns search, deduplication, display metadata, source, version, enablement, and installation origin. It does not become the execution or file authority. Tool Definition remains with Tool System, MCP-discovered Tool Definitions remain related to the MCP item, and current Skill packages and Agent bindings remain authoritative in Workspace. The typed versioned Market manifest contains only bounded discovery metadata and owner references rather than replacing those records with arbitrary JSON.
 
 ### Shared registration and separate Agent installation
 
@@ -74,19 +74,25 @@ Agent MCP Connection
   - updated_at
 ```
 
-`(agent_id, capability_catalog_item_id)` is unique. Credential is Agent-owned in the same Tenant and is stored once on the connection rather than repeated for every MCP Tool Grant. A connection without valid Credential remains visible as requiring authentication, but its MCP Tools do not enter the Agent's Available Tool Set. Human API-key entry or OAuth completes Credential binding without exposing Token to Agent Context.
+`(agent_id, capability_catalog_item_id)` is unique. Default Credential is Agent-owned in the same Tenant and is stored once on the connection rather than repeated for every MCP Tool Grant. Authentication requirement is explicit: a service that does not require authentication needs no Credential; a service that requires authentication remains unavailable until valid credentials are bound. Human API-key entry or OAuth completes Credential binding without exposing Token to Agent Context. Platform Agent grants remain required in both cases.
+
+MCP uses the Agent account by default. A personal account is selected only when the user explicitly requests it, the Membership has authorized its connection, and the resolved task scope allows it. The existing Membership-Agent-Tool connection supplies that invocation's same-Membership Credential without changing the Agent default. Missing or rejected credentials never switch accounts implicitly; autonomous and delegated use follows the product-scoped rules in [Credential and Secret Boundary](2026-08-31-credential-and-secret-boundary.md).
+
+Shared source registration does not make one account's discovery result another account's authorization. Tool availability is resolved for the selected account and explicit Agent grants. A connection-scoped refresh must not silently overwrite incompatible shared definitions or treat undiscovered tools as authorized. Current Runs retain their fixed resolved definitions and bindings.
 
 `agent_tool_grants` relates an Agent to an actual Tool Definition. A Builtin or ordinary Tool Grant has no MCP connection. An MCP Tool Grant references the same Agent's MCP connection, and the connection's Catalog Item must own that Tool Definition. Only explicit Grants exist; listing the Market or viewing a Tool does not backfill disabled assignments.
 
 ### First and later installation
 
-`install_capability` first searches the current-Tenant Catalog and then platform templates by stable source identity. A Tenant match creates only the current Agent relations. A platform-template match materializes or reuses one Tenant item from the validated template without external rediscovery, then creates Agent relations against that Tenant item. If neither exists, Tool Management validates the source, registers one Tenant Catalog Item, discovers and validates its definitions or package, and then creates the Agent relations.
+`install_capability` first searches the current-Tenant Catalog and then platform templates by stable source identity. A Tenant match reuses its registration and creates only the current Agent relations. A platform-template match materializes or reuses one Tenant item from the validated template without repeating source registration, then creates Agent relations against that Tenant item. MCP connection validation and account-scoped discovery remain necessary and are not replaced by a catalog match. If neither exists, Tool Management validates the source, registers one Tenant Catalog Item, discovers and validates its definitions or package, and then creates the Agent relations.
 
 Direct MCP sources in the first functional release require a valid HTTPS URL plus bounded connection, response size, Tool count, and schema size. Registry-backed sources retain their package identity. Failure before shared registration commits creates no partial item; failure after item registration but before Agent binding leaves a valid shared item and reports that the Agent installation did not complete.
 
 Complete MCP egress hardening is explicitly deferred to the next security release. The first release does not guarantee DNS rebinding defense, resolved-IP private or metadata-network denial, per-redirect revalidation, or SSE-provided endpoint revalidation on every discovery, refresh, test, and Tool request. This is an accepted deployment and security risk and not evidence that arbitrary MCP endpoints are safe for untrusted production use.
 
 ### Run visibility and updates
+
+Skill installation binds only an Agent; User and Group Skill installations are absent in the first release. Workspace owns the Tenant-shared or same-Agent private package behind that binding. Shared refresh prepares and validates one complete temporary package before activation and affects every Agent still bound to it. A private update prepares the owning Agent's private package and affects only that Agent; privately updating a shared installation first creates a private package and rebinds that Agent. Neither operation permits model-authored Skill changes. Shared registration does not imply automatic installation for another Agent, and no retained package history is introduced.
 
 Installation never expands a current Run. Available Tools and Workspace Skill Indexes remain fixed in Run Snapshot. A newly installed Tool, MCP connection, or Skill becomes discoverable only in a new Run.
 
@@ -121,11 +127,15 @@ These facts have different owners and consumers. Market indexes them but does no
 - One source identity creates at most one Catalog Item per Tenant scope and kind; installer identity is audit only.
 - Market existence never grants an Agent access, and Agent A installation does not load the item for Agent B.
 - Later Agent installation reuses existing Catalog and definitions and creates only that Agent's installation, connection, grants, and Credential relation.
-- Each Agent has at most one connection to one MCP item and uses its own same-Tenant Agent-owned Credential stored once on that connection.
+- Each Agent has at most one default connection to one MCP item; when that default requires credentials, its same-Tenant Agent-owned Credential is stored once on the connection.
+- Unauthenticated MCP services require no fabricated Credential; authenticated services require a valid binding, and both require explicit platform Agent grants.
+- Agent credentials are the MCP default; personal credentials require explicit user selection, Membership authorization and eligible task scope without modifying that default or falling back between accounts.
+- MCP discovery is account-scoped and cannot grant another account access or silently overwrite an incompatible shared definition.
 - Agent Tool Grants reference explicit Tool Definitions and, for MCP, the same Agent's matching MCP connection; no listing-time assignment backfill exists.
 - Agent installation is available in the first release only through explicitly granted Capability Management Tools and never through direct table mutation.
 - Unknown MCP sources pass the first-release HTTPS, connection, response, Tool-count, and schema-size checks before registration.
 - Current Runs never discover newly installed capabilities; Tool Definition snapshots remain fixed, while controlled Skill updates use load-time freshness without immutable Skill revisions.
+- Skill bindings belong only to Agents; Workspace publishes shared updates to all still-bound Agents and private updates only to the owning Agent.
 - Tool Definition, MCP connection and route, Credential, and Workspace Skill files retain their existing owners; Market is the discovery and installation catalog.
 - Tenant administrators manage shared items and Agent installations without exposing Agent-specific Tokens.
 

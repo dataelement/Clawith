@@ -8,4 +8,6 @@ Before approval, reviewers check ownership, current consumers, authorization lif
 
 An amendment requires review and explicit updates to the affected owner binding and linked coverage hashes. Later Auth registration/recovery workflows keep their separate product contract even though minimal Auth is implemented under the same owner in G003. An earlier foundation approval never approves those later workflows.
 
-The agreed [asynchronous Audit decision](../.agents/notes/proposed/architecture/2026-09-06-asynchronous-audit-observation.md) changes the target from the foundation contract's coupled Audit transactions. The original contract, receipts and G003 evidence remain unchanged historical bindings. The replacement is not implemented; its contract amendment and affected service/caller/test changes must be reviewed together before execution continues on that boundary.
+The [Audit observation contract](backend-audit-observation.md) replaces the foundation's coupled Audit transactions through an appended approval amendment. Its [implemented Note](../.agents/notes/implemented/architecture/2026-09-06-asynchronous-audit-observation.md) owns current behavior; original contracts, receipts and G003 evidence remain historical bindings.
+
+[Execution Dependencies](backend-execution-dependencies.md) defines the reviewed G004 implementation scope, Agent-only shared/private Skills, MCP account selection and S2 schema-only product boundaries. It does not claim completed Workspace, Tool, Market, Provider or Runtime implementation.

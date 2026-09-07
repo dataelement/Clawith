@@ -87,15 +87,17 @@ Tool Call and Tool Result require no execution table. The committed normalized m
 
 ### Skills remain separate
 
-Installed Skills are authoritative file packages in User, Agent, and Group Workspaces. A logical Skill catalog indexes the authorized Workspace packages and provides instructions, workflows, examples, and static resources to Context. It is not a second persistence authority, and Skills do not enter the Tool Registry.
+Installed Skills are authoritative Workspace packages bound only to Agents in the first release. User and Group Workspaces contain no Skill installations or discovery indexes. A logical Skill catalog indexes the executing Agent's authorized bindings and provides instructions, workflows, examples, and static resources to Context. Workspace owns current shared/private package content and bindings; the catalog is not a second persistence authority, and Skills do not enter the Tool Registry.
 
 ```text
-Workspace skills/ ----> Skill catalog ----> Context
+Agent Workspace skills/ ----> Skill catalog ----> Context
 
 Tool Sources -----> Tool Registry -----> Tool Definitions and execution
 ```
 
 A reusable script that authenticates to or calls an external system API is an executable capability and should become a Tool. The Skill explains when and why to use that Tool. A Skill may ship instructions and a separate Tool registration, but those artifacts retain separate identities and owners. Skill instructions and resources load on demand through the authorized Workspace file capability; individual Skills do not masquerade as Tools.
+
+Capability Management invokes Workspace's controlled complete-package publication. Shared updates affect every Agent still bound to the shared package; private updates affect only the owning Agent. Skill installation or content never grants the Tools it mentions. Existing discovered Skills retain load-time freshness, without immutable per-Run package revisions.
 
 ### Authorization and the available Tool set
 
@@ -124,6 +126,8 @@ Executor keys are versioned code contracts. Deployment validation must retain ev
 Human permission is resolved at login. Each new Run resolves current Agent-owned Tool/MCP configuration within that scope and freezes its Available Tool Set. A newly installed capability can become usable in a subsequent Run without another login. Permission changes do not expand existing Runs or trigger cancellation sweeps; actual Secret or resource failure remains an owned execution error.
 
 Tools with no permission never enter the direct or searchable candidate set. Approval policy, approval persistence, approver selection, and approval-driven Run behavior are deferred to the future Permission architecture and do not add fields or states to the first-release Tool contract.
+
+MCP authentication is required only when the server requires it; an unauthenticated service still requires explicit platform Agent grants. MCP selects the Agent account by default. Personal use requires an explicit user request, an authorized Membership-Agent-Tool connection and eligible resolved task scope; it does not replace the Agent default connection or permit account fallback. Discovery is account-scoped and cannot silently overwrite an incompatible shared definition or authorize another account. These facts are resolved before the immutable Available Tool Set is supplied to execution.
 
 Workspace Tool eligibility also applies the accepted directional contract. Direct and Group Main Runs receive one dedicated Agent Memory distillation Tool but no Agent Skill mutation, Agent-file write, or private-to-Agent copy capability. Subagent Runs do not receive Memory distillation and return candidate reusable knowledge to Main. Agent-owned Main Runs may receive ordinary Agent Workspace file mutation but no Skill mutation. Controlled Capability Management installs Market Skills outside model-authored Workspace editing. These role rules do not change the inherited Workspace authorization set.
 
@@ -175,6 +179,8 @@ Tool Call ----> Executor.execute(input, narrow context) ----> Tool Result
 ```
 
 Workspace, Memory, Task, messaging, or another capability remains responsible for its own facts and operations. Tool execution calls that owned interface instead of reading or mutating shared Agent Runner state.
+
+Audit receives already-observed outcomes through its independent non-blocking interface. Its implementation owns asynchronous processing and its own storage transaction; Executors do not pass a business TransactionContext to Audit, wait for audit persistence or query audit logs to determine execution success. Tool Call and Result durability remains Run History's separate authoritative contract.
 
 ### Scheduling
 
@@ -345,6 +351,8 @@ The three intents have different product meaning, but only `notify` is one-way; 
 - Canonical Tool names are stable Provider-compatible identifiers, while upstream MCP names and explicit Executor bindings remain separate and no behavior is inferred from a name prefix.
 - Duplicate canonical names fail registration; no downstream behavior is inferred from name prefixes, aliases, source types, or Executor classes.
 - Skills remain authoritative Workspace file packages behind a logical catalog and do not enter the Tool Registry; reusable external API scripts become Tools.
+- Skill bindings belong only to Agents; User/Group Skill sources are absent, and shared/private package updates follow Workspace ownership rather than granting Tool access.
+- MCP uses explicit server authentication requirements and Agent-default account selection; personal use requires explicit user selection, authorized connection and task scope, without account fallback or cross-account discovery assumptions.
 - Authorization produces one immutable Available Tool Set used by both Context and dispatch; Run Snapshot persists every Definition, versioned executor binding, complete resolved non-Secret executor configuration, and authorized connection descriptor required for Waiting resume.
 - Deployment retains every executor binding referenced by a non-terminal Run and blocks an incompatible upgrade rather than dispatching that Run through new Tool semantics.
 - Human permission follows login-session lifetime; new Runs resolve current Agent capability configuration, and active Runs retain their frozen bindings without revocation sweeps.
@@ -370,6 +378,7 @@ The three intents have different product meaning, but only `notify` is one-way; 
 - Subagent Need Input emits a non-terminal correlated event to Main; Task Tool later resumes the exact Waiting Child with Main- or human-supplied input.
 - Todo Tool is directly exposed only to Subagent Runs; it is a current-Run planning aid and never a Task, lifecycle state machine, descendant-Run creator, or completion gate.
 - Tool Call and Tool Result are recorded in Run history without a generic Tool Ledger, Lease, takeover, replay, or reconciliation protocol.
+- Audit uses an independent non-blocking interface and owns asynchronous persistence outside business transactions; it never determines Tool or Run outcomes.
 - Frontend presentation is registered separately and has a generic fallback for unknown Tools.
 - The base Tool protocol contains no generic Progress event.
 - Backend and frontend Tool code is split into capability-owned modules, Tool code leaves `AgentDetailPage.tsx`, and the original giant Tool aggregation files are deleted rather than retained as compatibility authorities.

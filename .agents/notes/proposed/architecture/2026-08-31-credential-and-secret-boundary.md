@@ -45,7 +45,7 @@ Credential stores authentication material, not Tool, Model, Channel, SSO, or bro
 ```text
 LLM Model ------------> Credential
 Agent Tool Grant -----> Credential, optional for non-MCP Tool
-Agent MCP Connection -> Agent-owned Credential, optional until authenticated
+Agent MCP Connection -> Agent-owned default Credential, optional for unauthenticated services
 Channel Config -------> Credential
 Identity Provider ----> Credential
 Agent browser account -> Agent-owned Credential
@@ -58,7 +58,7 @@ The first release uses a closed Credential-owner compatibility matrix:
 ```text
 Tenant LLM Model -----------------> Tenant Credential
 Agent non-MCP Tool Grant ---------> Tenant Credential or same-Agent Credential
-Agent MCP Connection -------------> same-Agent Credential
+Agent MCP default Connection -----> same-Agent Credential when authentication is required
 Agent browser account ------------> same-Agent Credential
 Membership-Agent-Tool Connection -> same-Membership Credential
 Agent Channel Config -------------> Tenant Credential or same-Agent Credential
@@ -67,7 +67,9 @@ Tenant Identity Provider ---------> Tenant Credential
 
 Same Tenant alone never satisfies an incompatible owner kind. Each capability binding persists the expected Credential owner kind and identity and enforces it with a binding-specific database check and composite foreign key to the Credential ownership key. Membership Credential cannot be placed on a shared Model, Agent Tool Grant, MCP connection, browser account, Channel, or Identity Provider. A Channel related to one Agent may use a Tenant Credential or that same Agent's Credential. A Tenant Identity Provider may use only a Tenant Credential.
 
-Membership-owned Credential is supported through an explicit `membership_agent_tool_connections` relation containing Tenant, Membership, Agent, Tool Definition, Credential, non-Secret label and capability metadata, enabled state, and timestamps. It means that Membership authorizes that Agent to use that personal account for that Tool under an eligible Run; it never becomes an Agent's shared Credential. The model receives only stable non-Secret connection references, owner kind, label, and capabilities and must select one explicitly. Credential failure never falls back to an Agent, Tenant, or another Membership account.
+Membership-owned Credential is supported through an explicit `membership_agent_tool_connections` relation containing Tenant, Membership, Agent, Tool Definition, Credential, non-Secret label and capability metadata, enabled state, and timestamps. It means that Membership authorizes that Agent to use that personal account for that Tool under an eligible Run; it never becomes an Agent's shared Credential. This relation also supports personal MCP invocation without storing Membership Credential on the Agent's shared MCP connection. MCP uses the Agent account by default; selecting a personal account requires an explicit user request, an authorized Membership connection and an eligible resolved task scope. The model receives only stable non-Secret connection references, owner kind, label, and capabilities. Credential failure never falls back to an Agent, Tenant, or another Membership account.
+
+An MCP service that does not require authentication needs no Credential. Platform Agent grants still apply. Account-specific Tool discovery is resolved using the selected connection; one account's discovery is not authorization for another account and cannot silently redefine its Tools.
 
 ### Run and execution boundary
 
@@ -114,6 +116,8 @@ Fallback makes corruption, key mismatch, and unencrypted legacy data indistingui
 - Tenant Model, Agent Tool Grant, Agent MCP, Agent browser, Membership Tool connection, Agent Channel, and Tenant Identity Provider enforce the closed owner compatibility matrix; same-Tenant Membership Credential cannot enter a shared Agent or Tenant binding.
 - Agents receive capability-owned bindings rather than a generic right to use a raw Credential.
 - Membership Credential is available through an explicit Membership-Agent-Tool connection and only in the current Direct Run unless Heartbeat, Trigger, or A2A owner records a narrower authenticated Membership delegation.
+- MCP defaults to the Agent account; personal MCP use additionally requires explicit user selection, Membership connection authorization and eligible task scope, without changing the Agent default binding.
+- MCP authentication is optional only when the service does not require it; platform Agent grants remain necessary and account-specific discovery cannot broaden them.
 - Run Snapshot and History contain only authorized references and never contain plaintext Secret, ciphertext, token, encryption key, or Secret-store location.
 - Executors consume the pre-resolved Tenant and binding scope, decrypt only at the external boundary, and report actual Credential unavailability without live permission revalidation.
 - Subagents inherit Parent grants; Group and autonomous work never gain Membership Credential implicitly; Heartbeat, Trigger, and A2A may carry only explicitly selected, product-scoped Membership connection references.

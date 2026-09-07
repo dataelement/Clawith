@@ -60,7 +60,7 @@ The first release is one modular Backend deployment, not a collection of microse
 
 Modules may participate in one same-database transaction when the architecture requires atomic handoff. The orchestrating application service controls transaction scope, while each owner writes only its own records; atomicity does not transfer fact ownership. Read-only projections may join owner-produced database shapes for bounded product queries, but they cannot mutate source tables or become another authority.
 
-Audit follows the agreed [asynchronous observation boundary](2026-09-06-asynchronous-audit-observation.md): it does not block business commits, change their outcome or supply facts for main-flow decisions. Run History and other authoritative owner records remain outside Audit. This target decision replaces G003's Audit coupling, which remains in code pending the documented amendment.
+Audit follows the agreed [asynchronous observation boundary](2026-09-06-asynchronous-audit-observation.md): business owners submit observed outcomes through an independent non-blocking interface, without passing their TransactionContext. Audit owns asynchronous processing and its own storage transactions; it does not block business commits, change their outcome or supply facts for main-flow decisions. Run History and other authoritative owner records remain outside Audit. This target decision replaces G003's Audit coupling, which remains in code pending the documented amendment.
 
 The target introduces no internal HTTP or RPC hop, per-module deployment, shared event bus, distributed transaction, service discovery, or duplicated cross-service DTO merely to imitate microservices. In-process typed calls are the default. External Provider, Tool, MCP, Channel, Sandbox, and object-storage adapters remain narrow infrastructure boundaries. A module may be extracted into another service later only after it has an independent scaling, availability, security, or deployment requirement and a durable handoff contract.
 
@@ -114,21 +114,24 @@ Goal mode is lightweight direct Session configuration and continuation policy. O
 
 Context is a per-model-call sourced view with eight owner categories: Platform Instructions, Agent Identity, Product Input, Run Context, Workspace Discovery, Tool Exposure, Retrieved Content, and Model Context Profile.
 
-Platform Instructions and executing Agent Soul are mandatory fixed instruction sources. Product owners supply bounded Product Input. Agent Runner supplies isolated Run History. Authorized Workspaces supply labeled Memory entry sections and Skill Indexes. Tool System supplies only directly exposed Tool Definitions. Retrieved content enters only through Tool Results. Model System supplies an immutable secret-free Model Context Profile; credentials and secret-bearing Provider configuration never enter Context.
+Platform Instructions and executing Agent Soul are mandatory fixed instruction sources. Product owners supply bounded Product Input. Agent Runner supplies isolated Run History. Authorized Workspaces supply labeled Memory entry sections; only the executing Agent supplies a Skill Index. Tool System supplies only directly exposed Tool Definitions. Retrieved content enters only through Tool Results. Model System supplies an immutable secret-free Model Context Profile; credentials and secret-bearing Provider configuration never enter Context.
 
 Context uses a Run-scoped immutable source snapshot, current Compaction Base, and incremental event Delta. Logical segments remain Provider-neutral; Model System chooses physical order and cache controls. Compaction first removes stale high-volume Tool Results, then uses a structured derived summary, recent complete interaction tail, and coverage cursor without deleting source facts.
 
 ### Workspaces
 
-Every User, Agent, and Group has exactly one Workspace:
+Every User, Agent, and Group has exactly one Workspace. Only Agents have Skills in the first release:
 
 ```text
-memory/MEMORY.md
-skills/
-files/
+User/Group Workspace       Agent Workspace
+  memory/MEMORY.md           memory/MEMORY.md
+  files/                     skills/
+                             files/
 ```
 
-`MEMORY.md` begins with a compact Guide and Index entry section injected into Context; remaining content is searched and read by line range. Skill Indexes are injected and full Skill packages load on demand. `files/` has no automatic directory summary and is inspected through Workspace Tools when current work requires it.
+`MEMORY.md` begins with a compact Guide and Index entry section injected into Context; remaining content is searched and read by line range. The executing Agent's Skill Index is injected and full Skill packages load on demand. `files/` has no automatic directory summary and is inspected through Workspace Tools when current work requires it.
+
+Workspace owns current Skill packages and Agent bindings; Market owns discovery metadata. Updating a Tenant-shared package affects every Agent still bound to it. Updating a same-Agent private package affects only its owner; a private update of a shared installation first creates a private package and rebinds only that Agent. Shared storage is not a fourth Workspace type, and User/Group Skill bindings or empty Skill areas are absent.
 
 Humans may inspect and preview authorized Workspace content but cannot mutate it directly. Authorized Agent Runs perform every Workspace create, edit, delete, move, rename, import, and cross-Workspace publication through Workspace Tools. Mutations are current-revision checked and atomic. A write lock is resource-scoped and held only for storage commit, never across model, Run, or surrounding Tool latency. Agent-Agent conflicts use semantic merge and bounded retry. Current revision is a concurrency token rather than Git history or a recovery guarantee; version retention and accidental-deletion recovery are deferred.
 
@@ -141,6 +144,8 @@ Soul, Heartbeat policy, Group Announcement, Session and its Goal-mode configurat
 ### Tool System
 
 Every Builtin, MCP, product, and external Tool enters one Registry through one Definition and Executor registration. Authorization, Run-role eligibility, direct exposure, searchable exposure, scheduling, execution, and presentation remain separate concerns.
+
+MCP requires credentials only when its service requires authentication; platform Agent grants always apply. The Agent account is the default. A personal account requires explicit user selection, an authorized Membership connection and eligible resolved task scope, without changing the Agent default or falling back to another account. Account-scoped discovery cannot authorize a different account or silently overwrite its incompatible Tool definitions.
 
 The model receives a small directly exposed Tool set plus authorized search, not the complete Registry. Main Runs directly receive Task Tool and not Todo Tool; Subagent Runs directly receive Todo Tool and cannot discover or invoke Task Tool. A2A preserves `notify`, `consult`, and `task_delegate` product intent over two technical execution semantics: one-way send and asynchronous request-result. Exact model-facing Tool shape remains implementation design.
 
@@ -270,7 +275,8 @@ OpenClaw requires remote authentication, polling, delivery, availability, and ex
 - Direct Session accepts only human input and supports concurrent Main Runs with fixed history cutoffs.
 - Product capabilities retain independent input, result, projection, and delivery ownership without a shared event bus.
 - Context retains source ownership, builds incrementally, preserves stable cacheable segments, and never deletes source facts during Compaction.
-- User, Agent, and Group each own one Workspace with `memory/MEMORY.md`, `skills/`, and `files/`.
+- User, Agent, and Group each own one Workspace with `memory/MEMORY.md` and `files/`; only Agent Workspace has `skills/` and Skill bindings.
+- Shared Skill updates affect all still-bound Agents, private updates affect only their owning Agent, and explicit loads retain current-package freshness without historical revisions.
 - Humans receive Workspace preview but no direct mutation surface; authorized Agent Runs mutate through revision-checked atomic Workspace Tools and automatically resolve Agent-Agent conflicts.
 - Tool System separates registration, authorization, role eligibility, exposure, scheduling, execution, and presentation.
 - Main has Task Tool, Subagent has Todo Tool, and Subagent cannot recursively delegate.
