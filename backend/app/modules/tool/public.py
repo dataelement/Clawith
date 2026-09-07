@@ -38,10 +38,12 @@ from app.modules.tool.contracts import (
     validate_endpoint,
 )
 from app.modules.tool.execution import (
+    SEARCH_TOOLS_DEFINITION,
     ExecutorBinding,
     ToolExecutor,
     ToolRegistry,
     ToolScheduler,
+    ToolSearchExecutor,
 )
 from app.modules.tool.mcp import MCPClient, MCPExecutor, MCPFailure
 from app.modules.tool.models import (
@@ -56,6 +58,7 @@ __all__ = [
     "MAX_DISCOVERY_BYTES",
     "MAX_SCHEMA_BYTES",
     "MAX_TOOLS",
+    "SEARCH_TOOLS_DEFINITION",
     "AgentInstallScope",
     "AgentToolResolutionScope",
     "AvailableToolSet",
@@ -79,6 +82,7 @@ __all__ = [
     "ToolResolutionScope",
     "ToolResult",
     "ToolScheduler",
+    "ToolSearchExecutor",
     "ToolService",
     "ToolSource",
     "canonical_json",

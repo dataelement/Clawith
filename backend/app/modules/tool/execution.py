@@ -15,6 +15,7 @@ from app.modules.tool.contracts import (
     ToolCall,
     ToolResult,
     canonical_json,
+    json_object,
 )
 
 __all__ = ["CallScope", "ToolCall", "ToolResult"]
@@ -31,6 +32,49 @@ class ExecutorBinding:
     safe_parallel: bool = False
     # Builtin metadata is code-owned and cannot be overwritten by database data.
     builtin: DefinitionSpec | None = None
+
+
+SEARCH_TOOLS_DEFINITION = DefinitionSpec(
+    "search_tools",
+    "Find authorized tools by task or name. Matching tools become available for subsequent calls.",
+    '{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":256},'
+    '"limit":{"type":"integer","minimum":1,"maximum":20}},"required":["query"],"additionalProperties":false}',
+    "search_tools.v1", "builtin",
+)
+
+
+class ToolSearchExecutor:
+    """Run-local exposure over fixed authorized bindings; never a live Catalog lookup."""
+
+    def __init__(self, available: AvailableToolSet, scope: CallScope) -> None:
+        if (available.tenant_id, available.agent_id) != (scope.tenant_id, scope.agent_id):
+            raise InvalidInput("Tool exposure scope does not match its authorized bindings")
+        self._available = available
+        self._scope = scope
+
+    @property
+    def available(self) -> AvailableToolSet:
+        """The caller supplies this view to subsequent requests and Tool batches."""
+        return self._available
+
+    def binding(self) -> ExecutorBinding:
+        return ExecutorBinding(SEARCH_TOOLS_DEFINITION.executor_key, self, builtin=SEARCH_TOOLS_DEFINITION)
+
+    async def execute(self, tool: ResolvedTool, call: ToolCall, scope: CallScope) -> ToolResult:
+        if (
+            scope != self._scope or tool not in self._available.tools
+            or tool.definition.spec != SEARCH_TOOLS_DEFINITION or call.name != "search_tools"
+        ):
+            raise InvalidInput("Tool search does not match the resolved Run scope")
+        arguments = json_object(call.arguments_json)
+        query, limit = arguments.get("query"), arguments.get("limit", 10)
+        if set(arguments) - {"query", "limit"} or not isinstance(query, str) or type(limit) is not int:
+            raise InvalidInput("Tool search requires a query and integer limit")
+        matches = self._available.search(query, limit=limit)
+        # The next request obtains schemas through available.visible(); the result need not duplicate them.
+        result = ToolResult(call.id, "success", canonical_json({"tools": [item.spec.name for item in matches]}))
+        self._available = self._available.expose(frozenset(item.spec.name for item in matches))
+        return result
 
 
 class ToolRegistry:

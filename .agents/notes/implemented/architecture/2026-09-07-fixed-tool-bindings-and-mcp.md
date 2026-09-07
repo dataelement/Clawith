@@ -24,7 +24,7 @@ Requiring identical schemas for the same MCP identity was rejected because diffe
 
 ## Consequences
 
-Registry and exposure values do not by themselves implement model-callable Builtins. Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
+`ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. Other concrete Builtins, Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
 
 ## Verification
 
