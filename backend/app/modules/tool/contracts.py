@@ -170,6 +170,25 @@ class EnabledSources(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class AuthorizedToolSet:
+    """Captured bindings before role filtering; never an executable Tool view."""
+
+    tenant_id: UUID
+    agent_id: UUID
+    tools: tuple[ResolvedTool, ...]
+
+    def __post_init__(self) -> None:
+        AvailableToolSet(self.tenant_id, self.agent_id, self.tools, frozenset())
+
+    def for_role(self, role: RunRole, *, direct_names: frozenset[str] = frozenset()) -> "AvailableToolSet":
+        """Derive exposure without resolving live grants, accounts or Catalog state."""
+        role_eligible("", role)
+        tools = tuple(tool for tool in self.tools if role_eligible(tool.definition.spec.name, role))
+        names = frozenset(tool.definition.spec.name for tool in tools)
+        return AvailableToolSet(self.tenant_id, self.agent_id, tools, direct_names & names)
+
+
+@dataclass(frozen=True, slots=True)
 class AvailableToolSet:
     tenant_id: UUID
     agent_id: UUID

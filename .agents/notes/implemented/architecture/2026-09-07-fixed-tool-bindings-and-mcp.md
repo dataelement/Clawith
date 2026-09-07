@@ -12,6 +12,8 @@ Tool keeps Definitions, grants and MCP connections private and exposes typed ope
 
 Resolution captures an immutable authorized Tool set, selected account-local MCP schemas and explicit Credential bindings. The Agent account is the default. A personal account requires an explicitly selected, authorized connection; unavailable selection does not switch accounts. Source availability is an injected bounded query over the same transaction. Source disablement affects new resolution, not a captured set. Search and exposure operate only within that captured set.
 
+`capture_authorized` retains all eligible grants before Run-role filtering, including Subagent-only Todo. `AuthorizedToolSet.for_role` derives executable Main/Subagent views entirely in memory and intersects direct exposure with the remaining names. Main excludes Todo; Subagent excludes Task, A2A and Memory distillation. The existing `resolve` entry composes capture and role derivation rather than defining another policy. The capture has no direct exposure or execution methods; it cannot add ungranted core Tools.
+
 MCP definitions reuse stable Catalog, canonical name, upstream name and executor identity. Different accounts retain their discovered descriptions and schemas without overwriting shared metadata. Non-MCP definition conflicts remain explicit. Builtin definitions must match their code-owned executor binding; database rows cannot redefine them.
 
 Concurrent registration of the same canonical name or Agent grant reads and validates the committed winner after an insert-if-absent operation. It does not overwrite metadata or Credential bindings, restore revoked grants, or retry an external effect. Incompatible definitions/bindings and unsupported persisted grant configurations still fail at Tool's owning boundary. [Explicit Builtin provisioning](2026-09-07-explicit-builtin-provisioning.md) uses these operations in the caller's creation transaction.
@@ -24,6 +26,8 @@ MCP supports explicitly selected Streamable HTTP and legacy SSE, initialization,
 
 Requiring identical schemas for the same MCP identity was rejected because different credentials can expose different capabilities. Sharing account discovery or silently switching credentials would violate the selected account boundary. A Tool execution ledger was excluded by the approved architecture.
 
+Deriving Child authorization from a filtered Main view loses Todo. Resolving live grants when a Child starts would admit authorization changes after Parent capture. One role-independent capture avoids both without storing duplicate Main/Subagent catalogs.
+
 ## Consequences
 
 `ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. [Workspace Builtins](2026-09-07-workspace-builtin-composition.md) and persisted provisioning are implemented. Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
@@ -31,3 +35,7 @@ Requiring identical schemas for the same MCP identity was rejected because diffe
 ## Verification
 
 The joint storage, Workspace, Tool and Market suite passed 144 tests. Tests exercise account selection, cross-Agent denial, stable MCP identity, shared HTTP isolation, SSE transport, fixed source views, scheduling and normalized outcomes. Independent code and architecture reviews found no remaining service-slice blocker. Real HTTP peers are controlled transports; no deployment or 50-Agent acceptance is claimed.
+
+Capture tests compare Main/Subagent views, revoke and add grants after capture, and verify that only a fresh capture changes. They exercise role-ineligible calls through the real scheduler, cross-Tenant capture rejection, duplicate/count limits and invalid roles. This verifies the Tool-side inheritance prerequisite, not persisted Run Snapshot or Child creation.
+
+The Tool suite passed 38 tests on an isolated export of the staged source, excluding deferred MCP import drafts. Package/import guards passed 110 tests; scoped Ruff and Pyright passed. Independent code and architecture reviewers approved the capture slice.

@@ -17,6 +17,7 @@ from app.modules.tool.contracts import (
     MAX_TOOLS,
     AgentInstallScope,
     AgentToolResolutionScope,
+    AuthorizedToolSet,
     AvailableToolSet,
     CallScope,
     CredentialBinding,
@@ -61,6 +62,7 @@ __all__ = [
     "SEARCH_TOOLS_DEFINITION",
     "AgentInstallScope",
     "AgentToolResolutionScope",
+    "AuthorizedToolSet",
     "AvailableToolSet",
     "CallScope",
     "CredentialBinding",
@@ -403,6 +405,11 @@ class ToolService:
     async def resolve(
         self, scope: ToolResolutionScope | AgentToolResolutionScope, *, direct_names: frozenset[str] = frozenset()
     ) -> AvailableToolSet:
+        captured = await self.capture_authorized(scope)
+        return captured.for_role(scope.role, direct_names=direct_names)
+
+    async def capture_authorized(self, scope: ToolResolutionScope | AgentToolResolutionScope) -> AuthorizedToolSet:
+        """Capture once for Main/Child derivation; the scope role does not filter bindings."""
         if isinstance(scope, ToolResolutionScope):
             await self._agents.get(scope.principal, agent_id=scope.agent_id)
             tenant_id = scope.principal.tenant_id
@@ -461,7 +468,6 @@ class ToolService:
             if (
                 row is None
                 or not row.enabled
-                or not role_eligible(row.name, scope.role)
                 or (row.catalog_item_id is not None and row.catalog_item_id not in enabled_ids)
             ):
                 continue
@@ -535,8 +541,7 @@ class ToolService:
                     cast(Literal["streamable_http", "sse"], transport),
                 )
             )
-        all_names = {tool.definition.spec.name for tool in resolved}
-        return AvailableToolSet(tenant_id, scope.agent_id, tuple(resolved), direct_names & all_names)
+        return AuthorizedToolSet(tenant_id, scope.agent_id, tuple(resolved))
 
     async def _credential(
         self, principal: TenantPrincipal, credential_id: UUID, kind: CredentialOwnerKind, owner_id: UUID
