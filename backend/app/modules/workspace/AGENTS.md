@@ -12,4 +12,4 @@ Only Agent Workspaces expose Skills, through controlled publication rather than 
 
 Catalog-backed discovery requires the injected `enabled_skill_sources` read port. It reuses the discovery transaction and filters only new discovery; explicit loads of an existing Run's Skill identities do not poll Catalog enablement. Shared refresh changes package content without rebinding Agent-private forks.
 
-The controlling contract is [execution dependencies](../../../../specs/backend-execution-dependencies.md). Sandbox materialization and write-back are not implemented here.
+The controlling contract is the [Workspace Memory amendment](../../../../specs/backend-workspace-memory-scope.md), which retains the execution-dependencies baseline outside its explicit distillation restriction. Sandbox materialization and write-back are not implemented here.
