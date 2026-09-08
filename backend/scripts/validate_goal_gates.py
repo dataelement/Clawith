@@ -69,8 +69,8 @@ EXPECTED_APPROVALS = {
         "workspace",
         "tool",
         "capability_market",
-        "run",
         "context",
+        "run",
     ],
     "G004": ["session", "a2a", "group", "trigger", "heartbeat", "channel"],
 }
@@ -101,8 +101,8 @@ EXPECTED_MUTATIONS = {
         "approve-workspace-contract-only",
         "approve-tool-contract-only",
         "approve-capability-market-contract-only",
-        "approve-run-contract-only",
         "approve-context-contract-only",
+        "approve-run-contract-only",
     ],
     "G004": [
         "approve-session-contract-only",

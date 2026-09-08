@@ -49,8 +49,8 @@ G003_APPROVAL_OWNERS = [
     "workspace",
     "tool",
     "capability_market",
-    "run",
     "context",
+    "run",
 ]
 G004_APPROVAL_OWNERS = ["session", "a2a", "group", "trigger", "heartbeat", "channel"]
 

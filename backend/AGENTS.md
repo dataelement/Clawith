@@ -87,11 +87,11 @@ Infrastructure database/transactions/config
        |              /       |       \
        +------ Model      Workspace   Capability/Tool
                     \        |        /
-                     Run Snapshot inputs
-                              |
-                     Run + Runner + Loop
-                              |
-                         Context view
+                     Run Snapshot inputs       Model public values
+                              |                        |
+                              |                   Context view
+                              |                        |
+                     Run + Runner + Loop <-------------+
                               |
                 Session / Task / A2A / Goal
                               |
@@ -101,6 +101,8 @@ Infrastructure database/transactions/config
 ```
 
 `identity_tenant` is one owner. `run` owns Run persistence and Runner/Loop mechanics; `app/runtime/` is only its implementation package. `session` owns Goal configuration and continuation; neither `runtime` nor `goal` is an owner. `tool` and `capability_market` are separate owners.
+
+Context accepts explicit sourced messages and Model limits, not Run services or live authorization. Run translates its own History into Context inputs and consumes Context's public view/projection port. This import direction is distinct from the source-data flow and Context's schema foreign key to Run.
 
 The owner roster and schema-registration waves are exact:
 
