@@ -3,6 +3,7 @@
 import base64
 import json
 import re
+from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -28,6 +29,25 @@ from app.modules.model.execution import (
 
 def _bad(message: str = "Model returned an invalid protocol response") -> ProviderFailure:
     return ProviderFailure("protocol_error", message)
+
+
+def _reported_error(data: dict[str, Any]) -> ProviderFailure:
+    """Classify explicit Provider codes, never message text or private payload values."""
+    candidates = [data]
+    if isinstance(data.get("error"), dict):
+        candidates.append(data["error"])
+    response = data.get("response")
+    if isinstance(response, dict) and isinstance(response.get("error"), dict):
+        candidates.append(response["error"])
+    types = {value for item in candidates for key in ("type", "code")
+             if isinstance(value := item.get(key), str)}
+    statuses = [value for item in candidates for key in ("status", "status_code", "code")
+                if type(value := item.get(key)) is int]
+    if types & {"rate_limit_error", "rate_limit_exceeded"} or 429 in statuses:
+        return ProviderFailure("rate_limited", "Model provider reported a rate limit")
+    if types & {"overloaded_error", "server_error", "internal_server_error"} or any(500 <= value <= 599 for value in statuses):
+        return ProviderFailure("provider_unavailable", "Model provider reported a service failure")
+    return ProviderFailure("provider_error", "Model provider rejected the request")
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -106,6 +126,37 @@ def _anthropic_message(message: ModelMessage) -> dict[str, Any]:
     return {"role": message.role, "content": blocks}
 
 
+def _tool_image_messages(messages: tuple[ModelMessage, ...], protocol: str) -> tuple[ModelMessage, ...]:
+    """Map media after complete exchanges where Tool-result images are not portable.
+
+    These are Provider messages derived from a Tool result, not new human inputs.
+    The original logical messages, call correlation and persisted History remain unchanged.
+    """
+    if protocol not in {"openai_chat", "gemini"}:
+        return messages
+    result: list[ModelMessage] = []
+    pending: set[str] = set()
+    images: list[ModelContent] = []
+    for message in messages:
+        pending.update(call.call_id for call in message.calls)
+        media = tuple(part for part in message.content if part.kind == "image")
+        if message.role == "tool":
+            if media:
+                if message.call_id is None or message.call_id not in pending:
+                    raise ProviderFailure("invalid_input", "Tool image requires a matching call")
+                images.extend((ModelContent("text", f"Image output from tool call {message.call_id}:"), *media))
+                text = tuple(part for part in message.content if part.kind != "image")
+                message = replace(message, content=text + (ModelContent("text", "Image output is attached after this Tool exchange."),))
+            pending.discard(message.call_id or "")
+        result.append(message)
+        if not pending and images:
+            result.append(ModelMessage("user", tuple(images)))
+            images.clear()
+    if images:
+        raise ProviderFailure("invalid_input", "Tool image exchange has unsettled calls")
+    return tuple(result)
+
+
 async def metadata_limits(
     client: httpx.AsyncClient, protocol: str, endpoint: str, model_name: str, secret: str, limits: ModelLimits,
 ) -> tuple[int, int] | None:
@@ -137,6 +188,8 @@ async def metadata_limits(
             data = _object(json.loads(body))
         except (ValueError, RecursionError):
             raise _bad("Model metadata is invalid") from None
+        if data.get("error") is not None:
+            raise _reported_error(data)
         returned_name = data.get("name") if protocol == "gemini" else data.get("id")
         if returned_name not in {name, "models/" + name}:
             raise _bad("Model metadata identity does not match the requested Model")
@@ -157,6 +210,7 @@ def build_request(
     policy: PrivateModelPolicy, request: ModelStepRequest, state: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     protocol = policy.protocol
+    request = replace(request, messages=_tool_image_messages(request.messages, protocol))
     settings = json_object(policy.settings_json)
     if settings.pop("protocol", protocol) != protocol:
         raise ProviderFailure("invalid_input", "Model Policy protocol differs from its configuration")
@@ -222,7 +276,7 @@ def build_request(
             encoded = _anthropic_message(message)
             replay = state.get(message.interaction_id or "")
             if replay:
-                encoded["content"] = replay
+                encoded["content"] = [dict(_object(block)) for block in replay]
             if message.cache_boundary and encoded["content"]:
                 encoded["content"][-1]["cache_control"] = {"type": "ephemeral"}
             payload["messages"].append(encoded)
@@ -282,6 +336,85 @@ def build_request(
                        urlencode(query), endpoint.fragment)), payload
 
 
+def _count_request(
+    policy: PrivateModelPolicy, request: ModelStepRequest, state: dict[str, Any],
+) -> tuple[str, dict[str, Any], str]:
+    protocol = policy.protocol
+    counted_policy, counted_request = policy, replace(request, stream=False)
+    if protocol == "openai_chat":
+        if json_object(policy.capabilities_json).get("image_token_counting") != "openai_responses":
+            raise ProviderFailure("image_budget_unavailable", "This Model has no explicit image token counter")
+        if any(state.get(message.interaction_id or "") for message in request.messages):
+            raise ProviderFailure("image_budget_unavailable", "The configured counter cannot represent Chat continuation")
+        # This adapter is explicitly selected, never inferred from endpoint or model name.
+        counted_policy = replace(policy, protocol="openai_responses", settings_json='{"protocol":"openai_responses"}')
+        counted_request = replace(counted_request, messages=_tool_image_messages(request.messages, protocol))
+    _, generated = build_request(counted_policy, counted_request, state)
+    if protocol == "anthropic":
+        route = "/messages/count_tokens"
+        payload = {key: value for key, value in generated.items() if key in {"model", "messages", "system", "tools", "thinking"}}
+        field = "input_tokens"
+    elif protocol == "gemini":
+        name = policy.model_name.removeprefix("models/")
+        route = f"/models/{quote(name, safe='')}:countTokens"
+        payload = {"generateContentRequest": {"model": "models/" + name, **generated}}
+        field = "totalTokens"
+    else:
+        route = "/responses/input_tokens"
+        payload = {key: value for key, value in generated.items() if key in {"model", "input", "tools", "reasoning"}}
+        field = "input_tokens"
+    endpoint = urlsplit(policy.endpoint)
+    url = urlunsplit((endpoint.scheme, endpoint.netloc, endpoint.path.rstrip("/") + route, endpoint.query, ""))
+    return url, payload, field
+
+
+async def count_input_tokens(
+    client: httpx.AsyncClient, policy: PrivateModelPolicy, request: ModelStepRequest,
+    secret: str, state: dict[str, Any], limits: ModelLimits,
+) -> int:
+    """Read Provider token estimates without generation, continuation writes or a fallback counter."""
+    url, payload, field = _count_request(policy, request, state)
+    encoded = _dump(payload).encode()
+    if len(encoded) > limits.request_bytes:
+        raise ProviderFailure("input_too_large", "Encoded token-count request exceeds byte bound")
+    headers = {"content-type": "application/json"}
+    if policy.protocol == "anthropic":
+        headers.update({"x-api-key": secret, "anthropic-version": "2023-06-01"})
+    elif policy.protocol == "gemini":
+        headers["x-goog-api-key"] = secret
+    else:
+        headers["authorization"] = f"Bearer {secret}"
+    outbound = httpx.Request("POST", url, headers=headers, content=encoded,
+        extensions={"timeout": httpx.Timeout(min(10.0, limits.timeout_seconds)).as_dict()})
+    require_stateless_http_client(client)
+    response = await client.send(outbound, auth=None, follow_redirects=False, stream=True)
+    try:
+        if response.status_code in {404, 405, 501}:
+            raise ProviderFailure("image_budget_unavailable", "Configured Model token counting is unavailable")
+        if response.status_code >= 300:
+            code = ("rate_limited" if response.status_code == 429 else
+                    "provider_unavailable" if response.status_code >= 500 else "provider_rejected")
+            raise ProviderFailure(code, f"Model token counter returned HTTP {response.status_code}")
+        body = bytearray()
+        maximum = min(limits.event_bytes, limits.response_bytes)
+        async for chunk in response.aiter_bytes():
+            if len(body) + len(chunk) > maximum:
+                raise ProviderFailure("output_too_large", "Token-count response exceeds byte bound")
+            body.extend(chunk)
+        try:
+            data = _object(json.loads(body))
+        except (ValueError, RecursionError):
+            raise _bad("Model returned invalid token-count data") from None
+        if data.get("error") is not None:
+            raise _reported_error(data)
+        tokens = data.get(field)
+        if type(tokens) is not int or not 0 <= tokens <= 2**63 - 1:
+            raise _bad("Model returned an invalid input token count")
+        return tokens
+    finally:
+        await response.aclose()
+
+
 def _usage(data: dict[str, Any], protocol: str) -> ModelUsage:
     def number(key: str, source: dict[str, Any] = data) -> int | None:
         value = source.get(key)
@@ -333,8 +466,8 @@ def parse_result(
     texts: list[str] = []
     replay: list[dict[str, Any]] = []
     protocol = policy.protocol
-    if data.get("error"):
-        raise ProviderFailure("provider_error", "Model provider rejected the request")
+    if data.get("error") is not None:
+        raise _reported_error(data)
     if protocol == "openai_chat":
         choices = _array(data.get("choices"))
         if len(choices) != 1:
@@ -458,7 +591,9 @@ async def execute(
     response = await client.send(outbound, auth=None, follow_redirects=False, stream=True)
     try:
         if response.status_code >= 300:
-            raise ProviderFailure("provider_error", f"Model provider returned HTTP {response.status_code}")
+            code = ("rate_limited" if response.status_code == 429 else
+                    "provider_unavailable" if response.status_code >= 500 else "provider_rejected")
+            raise ProviderFailure(code, f"Model provider returned HTTP {response.status_code}")
         if request.stream:
             data = await read_stream(response, policy.protocol, limits, observer)
         else:
@@ -561,8 +696,8 @@ class StreamAccumulator:
         return events
 
     def add(self, data: dict[str, Any]) -> list[ModelStreamEvent]:
-        if data.get("error") or data.get("type") in {"error", "response.failed"}:
-            raise ProviderFailure("provider_error", "Model stream reported a provider failure")
+        if data.get("error") is not None or data.get("type") in {"error", "response.failed"}:
+            raise _reported_error(data)
         events: list[ModelStreamEvent] = []
         if self.protocol == "openai_chat":
             if data.get("usage"):

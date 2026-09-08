@@ -394,11 +394,50 @@ class ModelExecutionService:
         except SQLAlchemyError:
             return ModelFailure("persistence_failed", "Model persistence failed", True)
         except ProviderFailure as error:
-            return ModelFailure(error.code, str(error))
+            return ModelFailure(error.code, str(error), error.code not in {"rate_limited", "provider_unavailable"})
         except DomainError:
-            return ModelFailure("credential_unavailable", "Configured Model Credential is unavailable")
+            return ModelFailure("credential_unavailable", "Configured Model Credential is unavailable", True)
         except (httpx.HTTPError, TimeoutError):
             return ModelFailure("transport_failed", "Model transport failed; partial output is not a complete result")
+
+    async def count_input_tokens(self, policy: PrivateModelPolicy, request: ModelStepRequest) -> int | ModelFailure:
+        """Count the fixed request through its Provider; never generate or mutate replay state.
+
+        Callers may pass zero estimated input tokens while measuring. The returned
+        Provider estimate still needs Context's normal fixed-window check.
+        """
+        from app.modules.model.adapters import count_input_tokens
+
+        try:
+            self._validate_request(policy, request)
+            if (policy.protocol == "openai_chat"
+                    and json_object(policy.capabilities_json).get("image_token_counting") != "openai_responses"):
+                return ModelFailure("image_budget_unavailable", "This Model has no explicit image token counter", True)
+            async with asyncio.timeout(min(10.0, self._limits.timeout_seconds)):
+                state = await self._continuation.load(policy.tenant_id, request.run_id, policy.model_id, policy.protocol)
+                for message in request.messages:
+                    if message.requires_continuation and (
+                        message.role != "assistant" or not message.interaction_id or not state.get(message.interaction_id)
+                    ):
+                        raise ContinuationError("required Model continuation is missing")
+                async with self._sessions() as session:
+                    secret = await CredentialService(TransactionContext(session), self._credentials).reveal_secret_for_owner(
+                        tenant_id=policy.tenant_id, credential_id=policy.credential_id,
+                        owner_kind="tenant", owner_id=policy.tenant_id,
+                    )
+                return await count_input_tokens(self._http, policy, request, secret.value, state, self._limits)
+        except asyncio.CancelledError:
+            raise
+        except ContinuationError:
+            return ModelFailure("continuation_unavailable", "Required Model continuation is unavailable", True)
+        except SQLAlchemyError:
+            return ModelFailure("persistence_failed", "Model persistence failed", True)
+        except ProviderFailure as error:
+            return ModelFailure(error.code, str(error), error.code not in {"rate_limited", "provider_unavailable"})
+        except DomainError:
+            return ModelFailure("credential_unavailable", "Configured Model Credential is unavailable", True)
+        except (httpx.HTTPError, TimeoutError):
+            return ModelFailure("transport_failed", "Model token counting transport failed")
 
     async def release_continuation(
         self, *, tenant_id: UUID, run_id: UUID, model_id: UUID,
