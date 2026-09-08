@@ -79,6 +79,22 @@ async def test_projection_bound_rejects_before_serialization(transaction_factory
             await ContextProjectionService(tx).save(tenant_id=tenant, run_id=run, state=oversized)
 
 
+async def test_projection_system_message_is_cache_miss(transaction_factory):
+    import json
+
+    from pydantic import TypeAdapter
+    tenant, run = await seed(transaction_factory)
+    async with transaction_factory() as tx:
+        service = ContextProjectionService(tx)
+        await service.save(tenant_id=tenant, run_id=run, state=state(1))
+        forged = json.loads(TypeAdapter(ContextState).dump_json(state(1)))
+        forged["units"][0]["messages"][0]["role"] = "system"
+        await tx.session.execute(update(ContextProjectionRecord).values(payload=forged))
+        assert await service.load(tenant_id=tenant, run_id=run) is None
+        await service.save(tenant_id=tenant, run_id=run, state=state(1))
+        assert await service.load(tenant_id=tenant, run_id=run) == state(1)
+
+
 @pytest.mark.parametrize("version", [1, 99])
 async def test_invalid_high_cursor_does_not_block_rebuilt_projection(transaction_factory, version):
     tenant, run = await seed(transaction_factory)

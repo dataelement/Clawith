@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
+from hashlib import sha256
 from time import perf_counter
 from typing import Literal, Protocol
 from uuid import UUID
@@ -345,13 +346,32 @@ def restore_base(*, messages: tuple[ModelMessage, ...], coverage_sequence: int,
     return state
 
 
+def _state_bytes(state: ContextState) -> bytes:
+    _validate_state(state)
+    payload = TypeAdapter(ContextState).dump_json(state)
+    if len(payload) > MAX_VIEW_BYTES:
+        raise ContextBudgetExceeded("Context projection exceeds its physical storage bound")
+    return payload
+
+
+def context_state_hash(state: ContextState) -> str:
+    """Run History may bind a disposable view to the exact state observed before a Model call."""
+    return _state_digest(_state_bytes(state))
+
+
+def _state_digest(payload: bytes) -> str:
+    digest = sha256(b"context_view:v1:")
+    digest.update(payload)
+    return digest.hexdigest()
+
+
 class ContextProjectionService:
     """A malformed/version-incompatible projection is a cache miss, never lost History."""
 
     def __init__(self, transaction: TransactionContext) -> None:
         self._repository = ContextProjectionRepository(transaction)
 
-    async def load(self, *, tenant_id: UUID, run_id: UUID) -> ContextState | None:
+    async def load(self, *, tenant_id: UUID, run_id: UUID, expected_hash: str | None = None) -> ContextState | None:
         payload = await self._repository.load(tenant_id=tenant_id, run_id=run_id)
         if payload is None:
             return None
@@ -361,10 +381,13 @@ class ContextProjectionService:
         except (ValidationError, ValueError):
             await self._repository.discard_observed(tenant_id=tenant_id, run_id=run_id, payload=payload)
             return None
+        if expected_hash is not None and context_state_hash(state) != expected_hash:
+            await self._repository.discard_observed(tenant_id=tenant_id, run_id=run_id, payload=payload)
+            return None
         return state
 
-    async def save(self, *, tenant_id: UUID, run_id: UUID, state: ContextState) -> None:
-        _validate_state(state)
-        payload = TypeAdapter(ContextState).dump_json(state)
+    async def save(self, *, tenant_id: UUID, run_id: UUID, state: ContextState) -> str:
+        payload = _state_bytes(state)
         await self._repository.save(tenant_id=tenant_id, run_id=run_id,
             payload=payload, coverage=state.coverage_sequence, through=state.through_sequence)
+        return _state_digest(payload)

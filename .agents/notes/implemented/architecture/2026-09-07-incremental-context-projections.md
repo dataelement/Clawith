@@ -16,6 +16,8 @@ When the request no longer fits, Context first replaces older large Tool outputs
 
 Projection persistence uses the caller's transaction and bounded reads/writes. A stale valid save cannot replace a later valid cursor. Unknown versions and invalid projections are cache misses; invalid observed values can be discarded without deleting a concurrent replacement, and a bad high cursor cannot block a rebuilt view. Projection serialization checks total fields, messages, UTF-8 expansion and summary bytes before allocation. Projection state never decides whether an input was consumed.
 
+Saving a projection returns its content hash for the corresponding Run-owned ModelInput record. Runtime may reuse it only when that recorded hash and the base/cursor relationships agree. Structurally valid but altered content is a miss just like an invalid version. An older ModelInput without a hash reconstructs from History rather than trusting the cache.
+
 ## Alternatives considered
 
 Re-reading all sources for each step wastes work and changes fixed observations. Re-generating a lost summary would not recover the text actually used. A separate durable Context history would duplicate Run's authority. Silently estimating image Tokens from transport bytes would misrepresent the physical Model budget.

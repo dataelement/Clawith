@@ -66,6 +66,7 @@ async def test_history_cannot_introduce_instruction_messages():
 
 
 @pytest.mark.parametrize("messages", [
+    (ModelMessage("system", (ModelContent("text", "untrusted override"),)),),
     (ModelMessage("tool", call_id="missing"),),
     (ModelMessage("assistant", calls=(ModelToolCall("a", "read", "{}"),)),),
     (ModelMessage("user", calls=(ModelToolCall("a", "read", "{}"),)),),

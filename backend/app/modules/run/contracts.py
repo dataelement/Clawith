@@ -92,6 +92,7 @@ class ModelInputPayload:
     read_through_sequence: int
     visible_tool_names: tuple[str, ...]
     minute_time: str | None
+    context_state_hash: str | None = None
 
 
 HistoryPayload: TypeAlias = InitialInputPayload | RelatedInputPayload | ModelStepPayload | ToolResultPayload | WaitingPayload | TerminalOutcomePayload | ContextBasePayload | ModelInputPayload
@@ -212,6 +213,14 @@ class _ModelInput(_Record):
     minute_time: Annotated[str, Field(max_length=22)] | None
 
 
+class _ModelInputV2(_ModelInput):
+    context_state_hash: Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")]
+
+
+def supported_history_version(kind: str, version: int) -> bool:
+    return type(version) is int and (version == HISTORY_VERSION or (kind == "model_input" and version == 2))
+
+
 def _minute_time(value: str | None) -> None:
     if value is None:
         return
@@ -315,7 +324,7 @@ def _input(value: _Input) -> InputContent:
 def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
     """Validate authoritative persisted JSON without exposing invalid source values."""
     try:
-        if type(version) is not int or version != HISTORY_VERSION:
+        if not supported_history_version(kind, version):
             raise InvalidHistory("Unsupported History version")
         if kind not in ("initial_input", "related_input", "model_step", "tool_result", "waiting", "terminal_outcome", "context_base", "model_input"):
             raise InvalidHistory("Unsupported History kind")
@@ -350,12 +359,13 @@ def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
             return ContextBasePayload(tuple(_message(message) for message in base.messages),
                 base.coverage_sequence, base.through_sequence)
         if kind == "model_input":
-            request = _ModelInput.model_validate(payload)
+            request = _ModelInputV2.model_validate(payload) if version == 2 else _ModelInput.model_validate(payload)
             if len(set(request.visible_tool_names)) != len(request.visible_tool_names):
                 raise InvalidHistory("History visible Tool names must be unique")
             _minute_time(request.minute_time)
             return ModelInputPayload(request.step_id, request.base_sequence, request.read_through_sequence,
-                tuple(request.visible_tool_names), request.minute_time)
+                tuple(request.visible_tool_names), request.minute_time,
+                request.context_state_hash if isinstance(request, _ModelInputV2) else None)
         terminal = _TerminalPayload.model_validate(payload)
         return TerminalOutcomePayload(terminal.status, terminal.output, terminal.reason)
     except InvalidHistory:
@@ -367,6 +377,7 @@ def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
 def encode_history(payload: HistoryPayload) -> EncodedHistory:
     """Return detached JSON; exact embedded Tool JSON strings remain unchanged."""
     try:
+        version = HISTORY_VERSION
         if isinstance(payload, (InitialInputPayload, RelatedInputPayload)):
             if len(payload.input.references) > 64:
                 raise InvalidHistory("History input reference count exceeds its bound")
@@ -407,10 +418,13 @@ def encode_history(payload: HistoryPayload) -> EncodedHistory:
             data = {"step_id": payload.step_id, "base_sequence": payload.base_sequence,
                 "read_through_sequence": payload.read_through_sequence,
                 "visible_tool_names": list(payload.visible_tool_names), "minute_time": payload.minute_time}
+            if payload.context_state_hash is not None:
+                version = 2
+                data["context_state_hash"] = payload.context_state_hash
         else:
             raise InvalidHistory("Unsupported History payload type")
-        decode_history(kind, HISTORY_VERSION, data)
-        return EncodedHistory(kind, HISTORY_VERSION, data)
+        decode_history(kind, version, data)
+        return EncodedHistory(kind, version, data)
     except InvalidHistory:
         raise
     except (ValueError, TypeError, RecursionError, UnicodeError, AttributeError):

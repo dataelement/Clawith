@@ -290,7 +290,7 @@ def test_model_input_validates_closed_request_references(changes):
 def test_new_history_records_reject_unknown_versions_and_extra_fields(value):
     record = encode_history(value)
     with pytest.raises(InvalidHistory):
-        decode_history(record.kind, 2, record.payload)
+        decode_history(record.kind, 3, record.payload)
     record.payload["invented"] = "private-value"
     with pytest.raises(InvalidHistory):
         decode_history(record.kind, 1, record.payload)
@@ -341,3 +341,28 @@ def test_context_base_distinguishes_summary_coverage_from_full_source_boundary(c
 def test_context_base_rejects_invalid_or_earlier_full_source_boundary(through):
     with pytest.raises(InvalidHistory):
         encode_history(replace(context_base(), through_sequence=through))
+
+
+def test_model_input_v1_remains_readable_and_hash_binding_has_explicit_v2_shape():
+    old = ModelInputPayload("step", None, 8, ("read_file",), None)
+    first = encode_history(old)
+    assert first.version == 1 and "context_state_hash" not in first.payload
+    assert decode_history("model_input", 1, first.payload) == old
+    bound = replace(old, context_state_hash="ab" * 32)
+    second = encode_history(bound)
+    assert second.version == 2 and second.payload["context_state_hash"] == "ab" * 32
+    assert decode_history("model_input", 2, second.payload) == bound
+    with pytest.raises(InvalidHistory):
+        decode_history("model_input", 1, second.payload)
+    with pytest.raises(InvalidHistory):
+        decode_history("model_input", 2, first.payload)
+    with pytest.raises(InvalidHistory):
+        decode_history("model_input", 3, second.payload)
+    with pytest.raises(InvalidHistory):
+        decode_history("context_base", 2, encode_history(context_base()).payload)
+
+
+@pytest.mark.parametrize("digest", ["", "x" * 64, "a" * 63, "a" * 65, "A" * 64, "a" * 64 + "\n", 123, True])
+def test_model_input_projection_hash_rejects_invalid_digests(digest):
+    with pytest.raises(InvalidHistory):
+        encode_history(ModelInputPayload("step", None, 1, (), None, digest))
