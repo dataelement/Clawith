@@ -126,6 +126,28 @@ def test_builtin_cannot_be_redefined_and_roles_are_enforced():
     assert not role_eligible("distill_memory", "sub")
 
 
+async def test_separate_schedulers_share_application_execution_capacity():
+    available, scope = setup_tools("read")
+    active = maximum = 0
+    class Executor:
+        async def execute(self, tool, call, scope):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            try:
+                await asyncio.sleep(.01)
+                return ToolResult(call.id, "success", "{}")
+            finally:
+                active -= 1
+    capacity = asyncio.Semaphore(1)
+    schedulers = [ToolScheduler(ToolRegistry((ExecutorBinding("read.v1", Executor(), True),)),
+        max_parallel=1, timeout_seconds=1, shared_semaphore=capacity) for _ in range(2)]
+    results = await asyncio.gather(*(scheduler.execute(available, (ToolCall(str(index), "read", "{}"),), scope)
+        for index, scheduler in enumerate(schedulers)))
+    assert maximum == 1 and active == 0
+    assert all(batch[0].status == "success" for batch in results)
+
+
 def test_call_and_result_byte_bounds_and_invalid_json():
     with pytest.raises(InvalidInput):
         ToolCall("x", "read", '{"x":NaN}')

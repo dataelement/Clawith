@@ -95,11 +95,12 @@ class ToolRegistry:
 
 
 class ToolScheduler:
-    def __init__(self, registry: ToolRegistry, *, max_parallel: int, timeout_seconds: float) -> None:
+    def __init__(self, registry: ToolRegistry, *, max_parallel: int, timeout_seconds: float,
+                 shared_semaphore: asyncio.Semaphore | None = None) -> None:
         if not 1 <= max_parallel <= 32 or not 0 < timeout_seconds <= 600:
             raise InvalidInput("Tool scheduling limits are invalid")
         self._registry = registry
-        self._semaphore = asyncio.Semaphore(max_parallel)
+        self._semaphore = shared_semaphore if shared_semaphore is not None else asyncio.Semaphore(max_parallel)
         self._timeout = timeout_seconds
 
     async def execute(

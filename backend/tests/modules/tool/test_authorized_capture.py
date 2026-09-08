@@ -21,7 +21,7 @@ from app.modules.tool.public import (
 
 async def test_capture_preserves_child_tools_without_live_grant_expansion(transaction_factory, model_acceptance):
     principal, agent, _, _, _ = await setup(transaction_factory, model_acceptance)
-    names = frozenset({"task", "todo", "read", "send_message_to_agent", "distill_memory"})
+    names = frozenset({"task", "todo", "read", "send_message_to_agent", "distill_memory", "wait_for_tasks"})
     async with transaction_factory() as tx:
         service = ToolService(tx, enabled_sources=enabled_sources)
         definitions = {}
@@ -81,7 +81,7 @@ async def test_child_role_view_denies_main_only_calls_at_scheduler():
     tools = tuple(
         ResolvedTool(ToolDefinition(uuid4(), tenant,
             DefinitionSpec(name, name, '{"type":"object"}', name + ".v1", "product")), None)
-        for name in ("task", "send_message_to_agent", "distill_memory")
+        for name in ("task", "send_message_to_agent", "distill_memory", "wait_for_tasks")
     )
     child = AuthorizedToolSet(tenant, agent, tools).for_role(
         "sub", direct_names=frozenset(tool.definition.spec.name for tool in tools)

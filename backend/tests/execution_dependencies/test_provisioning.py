@@ -25,10 +25,15 @@ async def test_explicit_grants_are_idempotent_and_agent_scoped(prepared, transac
         tools = ToolService(tx)
         available = await tools.resolve(ToolResolutionScope(principal, scope.agent_id, "main"),
                                         direct_names=frozenset({"search_tools"}))
-        assert {tool.definition.spec for tool in available.tools} == set(BUILTIN_DEFINITIONS)
+        assert {tool.definition.spec for tool in available.tools} == {
+            definition for definition in BUILTIN_DEFINITIONS if definition.name != "todo"}
+        captured = await tools.capture_authorized(ToolResolutionScope(principal, scope.agent_id, "main"))
+        assert {tool.definition.spec for tool in captured.tools} == set(BUILTIN_DEFINITIONS)
         assert available.direct_names == frozenset({"search_tools"})
         sub = await tools.resolve(ToolResolutionScope(principal, scope.agent_id, "sub"))
         assert "distill_memory" not in {tool.definition.spec.name for tool in sub.tools}
+        assert "todo" in {tool.definition.spec.name for tool in sub.tools}
+        assert not {"task", "wait_for_tasks"} & {tool.definition.spec.name for tool in sub.tools}
         assert (await tools.resolve(ToolResolutionScope(principal, other.id, "main"))).tools == ()
 
 

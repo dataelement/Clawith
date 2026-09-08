@@ -2,13 +2,14 @@
 
 from uuid import UUID
 
+from app.execution_dependencies.run_tools import RUN_TOOL_DEFINITIONS
 from app.execution_dependencies.workspace_tools import WORKSPACE_DEFINITIONS
 from app.infrastructure.transactions import TransactionContext
 from app.modules.agent.public import AgentService
 from app.modules.identity_tenant.public import TenantPrincipal, require_admin
 from app.modules.tool.public import SEARCH_TOOLS_DEFINITION, ToolDefinition, ToolService
 
-BUILTIN_DEFINITIONS = (SEARCH_TOOLS_DEFINITION, *WORKSPACE_DEFINITIONS)
+BUILTIN_DEFINITIONS = (SEARCH_TOOLS_DEFINITION, *WORKSPACE_DEFINITIONS, *RUN_TOOL_DEFINITIONS)
 
 
 async def provision_builtin_tools(
