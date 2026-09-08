@@ -95,6 +95,30 @@ async def test_projection_system_message_is_cache_miss(transaction_factory):
         assert await service.load(tenant_id=tenant, run_id=run) == state(1)
 
 
+async def test_save_prepared_never_revalidates_or_reserializes_state(transaction_factory, monkeypatch):
+    from dataclasses import replace
+
+    from app.modules.context.public import ContextAssembler, ContextSource, context_state_hash
+    from app.modules.model.public import ModelContextProfile
+    tenant, run = await seed(transaction_factory)
+    assembler = ContextAssembler(sources=(ContextSource("Platform", "instructions", "system"),),
+        profile=ModelContextProfile(uuid4(), "test", "test", 100_000, 1000, False, False, False))
+    prepared = await assembler.prepare(state=ContextState(), additions=state(1).units, tools=())
+    expected = context_state_hash(prepared.state)
+    async with transaction_factory() as tx:
+        service = ContextProjectionService(tx)
+        with monkeypatch.context() as checked:
+            def forbidden(*args, **kwargs):
+                pytest.fail("Prepared state was traversed or serialized again")
+            checked.setattr("app.modules.context.public._state_bytes", forbidden)
+            checked.setattr("app.modules.context.public._validate_state", forbidden)
+            checked.setattr("app.modules.context.public.TypeAdapter.dump_json", forbidden)
+            assert await service.save_prepared(tenant_id=tenant, run_id=run, prepared=prepared) == expected
+        assert await service.load(tenant_id=tenant, run_id=run, expected_hash=expected) == prepared.state
+        with pytest.raises(ValueError, match="unchanged"):
+            await service.save_prepared(tenant_id=tenant, run_id=run, prepared=replace(prepared, state=state(2)))
+
+
 @pytest.mark.parametrize("version", [1, 99])
 async def test_invalid_high_cursor_does_not_block_rebuilt_projection(transaction_factory, version):
     tenant, run = await seed(transaction_factory)

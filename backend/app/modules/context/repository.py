@@ -1,11 +1,10 @@
 """Bounded disposable projection storage in the caller's transaction."""
 
-import json
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Numeric, Text, case, cast, delete, func, or_, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import Numeric, Text, case, cast, delete, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONB, insert
 
 from app.infrastructure.transactions import TransactionContext
 from app.modules.context.models import ContextProjectionRecord
@@ -31,7 +30,7 @@ class ContextProjectionRepository:
             raise ValueError("Context projection exceeds its storage bound")
         now = datetime.now(UTC)
         values = {"tenant_id": tenant_id, "run_id": run_id, "payload_kind": "context_view",
-            "payload_schema_version": 1, "payload": json.loads(payload), "coverage_sequence": coverage,
+            "payload_schema_version": 1, "payload": cast(literal(payload.decode("utf-8"), type_=Text), JSONB), "coverage_sequence": coverage,
             "rebuilt_at": now, "updated_at": now}
         row = ContextProjectionRecord
         statement = insert(row).values(**values)
