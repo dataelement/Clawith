@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "scenario": "core",
+  "qualification": "not_qualified",
+  "reasons": [
+    "Local filesystem storage differs from the required object-storage container",
+    "Core fixture does not exercise G006 product API/workload mix or CPU Tools",
+    "Slow Tool-result payload fixture is not exercised by the current read_file Tool",
+    "Backend CPU/RAM do not match the required 8 vCPU/16 GiB envelope",
+    "Docker memory allocation is below the required envelope"
+  ],
+  "durations_seconds": {
+    "warmup": 180.00386070803506,
+    "measurement": 900.0035685419571
+  },
+  "metrics": {
+    "run_control_read": {
+      "count": 442252,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 18,
+      "p95_ms": 36,
+      "p99_ms": 77,
+      "max_ms": 4271.283458045218
+    },
+    "run_input_acceptance": {
+      "count": 11980,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 1799,
+      "p95_ms": 2677,
+      "p99_ms": 5640,
+      "max_ms": 14666.961749957409
+    },
+    "hot_context_assembly": {
+      "count": 8206,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 1,
+      "p95_ms": 1,
+      "p99_ms": 2,
+      "max_ms": 91.9586670352146
+    },
+    "cold_context_assembly": {
+      "count": 8206,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 2,
+      "p95_ms": 2,
+      "p99_ms": 5,
+      "max_ms": 147.20199996372685
+    },
+    "provider_delta_forwarding": {
+      "count": 35935,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 1,
+      "p95_ms": 1,
+      "p99_ms": 1,
+      "max_ms": 22.352166997734457
+    },
+    "bounded_workspace_operation": {
+      "count": 11978,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 77,
+      "p95_ms": 113,
+      "p99_ms": 167,
+      "max_ms": 1065.0457500014454
+    },
+    "run_end_to_end": {
+      "count": 11978,
+      "histogram_resolution_ms": 1,
+      "p50_ms": 3427,
+      "p95_ms": 4585,
+      "p99_ms": 7949,
+      "max_ms": 17492.97924997518
+    }
+  },
+  "accepted_runs": 11978,
+  "completed_runs": 11978,
+  "failed_runs": 0,
+  "platform_error_rate": 0.0,
+  "accepted_durable_event_loss": 0,
+  "stream_event_loss": 0,
+  "max_active_slots_observed": 30,
+  "agent_count": 50,
+  "runtime_capacity": {
+    "run_pool": 50,
+    "admission_queue": 100,
+    "database_pools": {
+      "control": 20,
+      "execution": 20
+    },
+    "tool_concurrency": {
+      "io": 32,
+      "cpu": 4
+    }
+  },
+  "payload_targets": {
+    "session_input": 4096,
+    "hot_context": 32768,
+    "cold_context": 262144,
+    "provider_delta": 1024,
+    "provider_completion": 16384,
+    "ordinary_tool_result": 16384,
+    "slow_tool_result": 65536,
+    "workspace_operation": 65536
+  },
+  "unmeasured": [
+    "non_model_api",
+    "session_input_acceptance",
+    "hostile_fairness_during_load",
+    "cpu_tool_concurrency"
+  ],
+  "scope": "Actual RunRuntime, Model HTTP adapter, Workspace Tool, PostgreSQL. Hot/cold are isolated Context owner calls under the same load, not full Run cold-start timings.",
+  "environment": {
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "backend_cpu_vcpus": 10,
+    "backend_memory_bytes": 17179869184,
+    "postgresql": "disposable_local_container",
+    "redis": "not_used_by_core",
+    "object_storage": "local_filesystem",
+    "docker_cpu_vcpus": 10,
+    "docker_memory_bytes": 8217059328
+  }
+}
