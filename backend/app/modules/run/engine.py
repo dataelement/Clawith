@@ -65,6 +65,7 @@ from app.runtime.scheduler import RunKey
 
 logger = logging.getLogger(__name__)
 _TERMINAL = ("Completed", "Failed", "Cancelled", "Interrupted")
+_MODEL_RETRY_DELAYS = (0.25, 0.5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,7 +438,7 @@ class RunRuntime:
 
     async def _prepare_model(self, key: RunKey, work: _PreparationAttempt) -> bool:
         if work.number > 1:
-            await asyncio.sleep(0.25 * (work.number - 1))
+            await asyncio.sleep(_MODEL_RETRY_DELAYS[work.number - 2])
         cache, definitions, minute = work.cache, work.tools, work.minute
         try:
             prepared = await cache.assembler.prepare(state=work.state, additions=work.additions,
@@ -486,11 +487,13 @@ class RunRuntime:
 
     @staticmethod
     def _retryable(failure: ModelFailure, number: int) -> bool:
-        return not failure.unrecoverable and failure.code in ("transport_failed", "rate_limited", "provider_unavailable") and number < 3
+        return (not failure.unrecoverable
+            and failure.code in ("transport_failed", "rate_limited", "provider_unavailable")
+            and number <= len(_MODEL_RETRY_DELAYS))
 
     async def _model_attempt(self, key: RunKey, attempt: _ModelAttempt) -> bool:
         if attempt.number > 1:
-            await asyncio.sleep(0.25 * (attempt.number - 1))
+            await asyncio.sleep(_MODEL_RETRY_DELAYS[attempt.number - 2])
         observer_enabled = True
         async def emit(event: RunStreamEvent) -> None:
             nonlocal observer_enabled

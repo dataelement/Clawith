@@ -10,6 +10,8 @@ Model distinguished transient Provider failures from unrecoverable failures, but
 
 Model classifies transport failures, rate limits and Provider unavailability as transient. Run owns the retry policy: at most three attempts including the first, with asynchronous delays of 0.25 and 0.5 seconds before attempts two and three. Retry requires both a recognized transient code and `unrecoverable=False`. Authentication, configuration, malformed input, invalid protocols and unrecoverable continuation failures do not retry.
 
+One private Run policy tuple holds the delays for the additional attempts. Both preparation and execution consume it, and the total attempt limit is one plus its length. Later tuning changes this single policy rather than scattered count and delay literals; it is not a model-selected option or a new configuration table.
+
 Each execution retry uses the same captured Model policy, Credential reference, prepared request, step identity and input-consumption boundary. It never selects a fallback Model or replays an already settled Tool. Additional input arriving during a failed request remains unconsumed by that request. Failed streaming attempts are marked discarded through the presentation envelope; only the successful complete result can become an authoritative Model Step.
 
 Summary and Token-count preparation failures use the same finite transient retry policy. A successfully generated summary is retained when a subsequent count fails, so preparation retry does not generate it again. Metadata Token counting is bounded preparation I/O, not a second content-generating execution step.
