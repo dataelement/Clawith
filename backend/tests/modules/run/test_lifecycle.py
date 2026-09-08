@@ -481,3 +481,55 @@ async def test_fragment_scope_bounds_unknown_versions_and_gaps_fail_explicitly(t
         await tx.session.execute(update(RunHistoryRecord).where(RunHistoryRecord.run_id == run.id).values(payload_schema_version=2))
         with pytest.raises(InvalidHistory, match="unsupported"):
             await service.read_history_fragment(tenant_id=tenant, run_id=run.id)
+
+
+async def test_fresh_main_initialization_uses_four_statements_and_admits_only_new_source(test_database, transaction_factory):
+    from sqlalchemy import event
+
+    tenant, agent = await seed(transaction_factory)
+    run, source = uuid4(), SourceIdentity("session", uuid4(), "four-sql")
+    statements, admissions = [], []
+    def observe(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+    event.listen(test_database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        async with transaction_factory() as tx:
+            result = await RunService(tx).start(tenant_id=tenant, agent_id=agent, run_id=run,
+                source=source, input=InputContent("first"), snapshot=snapshot(tenant, agent, run),
+                admit=lambda: admissions.append(True))
+        assert result.created and result.run.latest_history_sequence == 1
+        assert len(statements) == 4 and len(admissions) == 1
+        assert sum(statement.lstrip().upper().startswith("SELECT") for statement in statements) == 1
+        assert sum(statement.lstrip().upper().startswith("INSERT") for statement in statements) == 3
+        assert not any("FOR UPDATE" in statement or statement.lstrip().upper().startswith("UPDATE") for statement in statements)
+        statements.clear()
+        async with transaction_factory() as tx:
+            duplicate = await RunService(tx).start(tenant_id=tenant, agent_id=agent, run_id=run,
+                source=source, input=InputContent("retry changed"), snapshot=snapshot(tenant, agent, run),
+                admit=lambda: admissions.append(True))
+        assert not duplicate.created and duplicate.run == result.run
+        assert len(statements) == 1 and len(admissions) == 1
+    finally:
+        event.remove(test_database.engine.sync_engine, "before_cursor_execute", observe)
+
+
+async def test_fresh_main_snapshot_storage_failure_rolls_back_all_three_records(test_database, transaction_factory):
+    from sqlalchemy import event, func, select
+
+    from app.modules.run.models import RunHistoryRecord, RunRecord, RunSnapshotRecord
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    def fail_snapshot(connection, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("INSERT") and "agent_run_snapshots" in statement:
+            raise RuntimeError("snapshot storage failed")
+    event.listen(test_database.engine.sync_engine, "after_cursor_execute", fail_snapshot)
+    try:
+        with pytest.raises(RuntimeError, match="snapshot storage failed"):
+            await start(transaction_factory, tenant, agent, run=run)
+    finally:
+        event.remove(test_database.engine.sync_engine, "after_cursor_execute", fail_snapshot)
+    async with transaction_factory() as tx:
+        assert await tx.session.scalar(select(func.count()).select_from(RunRecord).where(RunRecord.id == run)) == 0
+        assert await tx.session.scalar(select(func.count()).select_from(RunSnapshotRecord).where(RunSnapshotRecord.run_id == run)) == 0
+        assert await tx.session.scalar(select(func.count()).select_from(RunHistoryRecord).where(RunHistoryRecord.run_id == run)) == 0

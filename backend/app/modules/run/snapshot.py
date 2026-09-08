@@ -380,20 +380,25 @@ def model_visible_prefix(snapshot: RunSnapshot) -> tuple[VisibleSection, ...]:
             f"{section.subject.kind}:{section.subject.id}:{section.reference}", section.content) for section in snapshot.sources))
 
 
+def _prepare_snapshot(snapshot: RunSnapshot) -> tuple[EncodedSnapshot, RunSnapshot]:
+    encoded, dto = _encode_with_dto(snapshot)
+    try:
+        validated = _from_v1(dto)
+        if _to_v1(validated) != dto:
+            raise InvalidSnapshot("Snapshot typed representation is not canonical")
+    except InvalidSnapshot:
+        raise
+    except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError, ValidationError, DomainError):
+        raise InvalidSnapshot("Snapshot is invalid") from None
+    return encoded, validated
+
+
 class SnapshotRepository:
     def __init__(self, transaction: TransactionContext) -> None:
         self._session = transaction.session
 
     async def insert(self, *, run_id: UUID, snapshot: RunSnapshot) -> RunSnapshot:
-        encoded, dto = _encode_with_dto(snapshot)
-        try:
-            validated = _from_v1(dto)
-            if _to_v1(validated) != dto:
-                raise InvalidSnapshot("Snapshot typed representation is not canonical")
-        except InvalidSnapshot:
-            raise
-        except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError, ValidationError, DomainError):
-            raise InvalidSnapshot("Snapshot is invalid") from None
+        encoded, validated = _prepare_snapshot(snapshot)
         run = await self._session.scalar(select(RunRecord).where(RunRecord.tenant_id == snapshot.tenant_id,
             RunRecord.id == run_id).with_for_update().execution_options(populate_existing=True))
         if run is None:

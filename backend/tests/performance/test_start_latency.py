@@ -3,7 +3,8 @@
 import asyncio
 import json
 import math
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from contextvars import ContextVar
 from dataclasses import replace
 from time import perf_counter
@@ -48,6 +49,15 @@ async def test_real_fifty_concurrent_start_latency(test_database, tmp_path, monk
     current = ContextVar("start_latency_request", default=None)
     timings = defaultdict(lambda: defaultdict(float))
     counts = defaultdict(lambda: defaultdict(int))
+    event_counts = defaultdict(Counter)
+    sql_sequences = defaultdict(list)
+
+    def counted_event(name):
+        def observe(*args):
+            label = current.get()
+            if label is not None:
+                event_counts[label][name] += 1
+        return observe
 
     def record(name, started):
         label = current.get()
@@ -104,11 +114,22 @@ async def test_real_fifty_concurrent_start_latency(test_database, tmp_path, monk
         monkeypatch.setattr(pool, "_do_get", sync_wrapper(pool._do_get, "pool_acquire"))
         def before_sql(connection, cursor, statement, parameters, context, executemany):
             context._latency_started = perf_counter()
+            label = current.get()
+            if label is not None:
+                # Record operation and owner table only; never SQL text or bound data.
+                table = re.search(r"\b(agent_run_snapshots|agent_run_history|agent_runs)\b", statement)
+                sql_sequences[label].append((statement.lstrip().split(None, 1)[0].upper(), table.group() if table else "other"))
         def after_sql(connection, cursor, statement, parameters, context, executemany):
             record("sql", context._latency_started)
         engine = app.state.database.control_engine.sync_engine
         event.listen(engine, "before_cursor_execute", before_sql)
         event.listen(engine, "after_cursor_execute", after_sql)
+        begin, commit, rollback, checkout = (counted_event(name) for name in (
+            "transaction_begin", "transaction_commit", "transaction_rollback", "connection_checkout"))
+        event.listen(engine, "begin", begin)
+        event.listen(engine, "commit", commit)
+        event.listen(engine, "rollback", rollback)
+        event.listen(pool, "checkout", checkout)
         rounds = []
         try:
             for round_number in range(3):
@@ -153,11 +174,23 @@ async def test_real_fifty_concurrent_start_latency(test_database, tmp_path, monk
                     names = set().union(*(timings[label] for label in labels))
                     round_result[kind] = {name: {**distribution([timings[label][name] for label in labels]),
                         "total_calls": sum(counts[label][name] for label in labels)} for name in sorted(names)}
+                    round_result[kind]["database_events"] = {name: {
+                        "total": sum(event_counts[label][name] for label in labels),
+                        "per_request_min": min(event_counts[label][name] for label in labels),
+                        "per_request_max": max(event_counts[label][name] for label in labels)}
+                        for name in ("transaction_begin", "transaction_commit", "transaction_rollback", "connection_checkout")}
+                    patterns = Counter(tuple(sql_sequences[label]) for label in labels)
+                    round_result[kind]["sql_sequences"] = [{"requests": count, "operations": sequence}
+                        for sequence, count in patterns.items()]
                 rounds.append(round_result)
             assert len(wakeups) == 150
         finally:
             event.remove(engine, "before_cursor_execute", before_sql)
             event.remove(engine, "after_cursor_execute", after_sql)
+            event.remove(engine, "begin", begin)
+            event.remove(engine, "commit", commit)
+            event.remove(engine, "rollback", rollback)
+            event.remove(pool, "checkout", checkout)
         print("START_LATENCY_DIAGNOSTIC=" + json.dumps({"scope": "intake-only, dispatcher wake disabled; local real PostgreSQL",
             "admission_lock": "instrumented" if admission is not None else "not_applicable_no_global_lock",
             "snapshot_encode_observation": encode_name,

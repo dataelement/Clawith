@@ -1,5 +1,6 @@
 """Private Run lifecycle authority; the caller commits and schedules committed changes."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -25,9 +26,10 @@ from app.modules.run.contracts import (
     TerminalOutcomePayload,
     ToolResultPayload,
     WaitingPayload,
+    encode_history,
     supported_history_version,
 )
-from app.modules.run.models import RunHistoryRecord, RunRecord
+from app.modules.run.models import RunHistoryRecord, RunRecord, RunSnapshotRecord
 from app.modules.run.repository import (
     MAX_STORED_PAYLOAD_BYTES,
     AppendHistoryResult,
@@ -36,7 +38,7 @@ from app.modules.run.repository import (
     RunHistoryRepository,
     SourceIdentity,
 )
-from app.modules.run.snapshot import RunSnapshot, SnapshotRepository, derive_child
+from app.modules.run.snapshot import SNAPSHOT_KIND, RunSnapshot, SnapshotRepository, _prepare_snapshot, derive_child
 
 RunStatus = Literal["Running", "Waiting", "Completed", "Failed", "Cancelled", "Interrupted"]
 _ACTIVE = ("Running", "Waiting")
@@ -202,7 +204,9 @@ class RunService:
             record.sequence if finished else after_sequence, run.latest_history_sequence)
 
     async def start(self, *, tenant_id: UUID, agent_id: UUID, run_id: UUID, source: SourceIdentity,
-            input: InputContent, snapshot: RunSnapshot, parent_run_id: UUID | None = None) -> StartResult:
+            input: InputContent, snapshot: RunSnapshot, parent_run_id: UUID | None = None,
+            admit: Callable[[], None] | None = None) -> StartResult:
+        """Call the synchronous admission port only after deduplication; the caller owns its reservation and commit."""
         if (snapshot.tenant_id, snapshot.agent_id, snapshot.workspace.run_id, snapshot.role) != (
                 tenant_id, agent_id, run_id, "sub" if parent_run_id else "main"):
             raise InvalidInput("Snapshot does not match its Run identity and role")
@@ -213,35 +217,48 @@ class RunService:
                 raise InvalidInput("Only a Main Run can create a Child for the same Agent")
             if source.owner_id != parent_run_id or source.kind != "task":
                 raise InvalidInput("Child source must identify its Parent Task Tool call")
-        existing = await self._session.scalar(select(RunRecord).where(RunRecord.tenant_id == tenant_id,
-            RunRecord.initiator_kind == source.kind, RunRecord.initiator_owner_id == source.owner_id,
-            RunRecord.source_key == source.key))
+        existing = await self.find_by_source(tenant_id=tenant_id, source=source)
         if existing is not None:
             if existing.agent_id != agent_id or existing.parent_run_id != parent_run_id:
                 raise Conflict("Run source already belongs to another execution scope")
-            return StartResult(_view(existing), False)
+            return StartResult(existing, False)
         if parent is not None:
             if parent.status not in _ACTIVE:
                 raise Conflict("Terminal Parent cannot create a Child")
             inherited = derive_child(await self.read_snapshot(tenant_id=tenant_id, run_id=parent.id), run_id=run_id)
             if snapshot != inherited:
                 raise InvalidInput("Child Snapshot must inherit its Parent authorization")
+        if admit is not None:
+            admit()
         now = datetime.now(UTC)
         inserted = await self._session.scalar(insert(RunRecord).values(id=run_id, tenant_id=tenant_id,
             agent_id=agent_id, parent_run_id=parent_run_id, status="Running", initiator_kind=source.kind,
-            initiator_owner_id=source.owner_id, source_key=source.key, latest_history_sequence=0,
+            initiator_owner_id=source.owner_id, source_key=source.key, latest_history_sequence=0 if parent is not None else 1,
             created_at=now, started_at=now, updated_at=now).on_conflict_do_nothing(
-                constraint="uq_agent_runs_source_identity").returning(RunRecord.id))
+                constraint="uq_agent_runs_source_identity").returning(RunRecord))
         if inserted is None:
-            existing = await self._session.scalar(select(RunRecord).where(RunRecord.tenant_id == tenant_id,
-                RunRecord.initiator_kind == source.kind, RunRecord.initiator_owner_id == source.owner_id,
-                RunRecord.source_key == source.key))
+            existing = await self.find_by_source(tenant_id=tenant_id, source=source)
             if existing is None or existing.agent_id != agent_id or existing.parent_run_id != parent_run_id:
                 raise Conflict("Run source already belongs to another execution scope")
-            return StartResult(_view(existing), False)
+            return StartResult(existing, False)
+        if parent is None:
+            await self._initialize_main(inserted, snapshot, input, source)
+            return StartResult(_view(inserted), True)
         await self._snapshots.insert(run_id=run_id, snapshot=snapshot)
         await self._history.append(tenant_id=tenant_id, run_id=run_id, payload=InitialInputPayload(input), source=source)
         return StartResult(await self.get(tenant_id=tenant_id, run_id=run_id), True)
+
+    async def _initialize_main(self, row: RunRecord, snapshot: RunSnapshot, input: InputContent, source: SourceIdentity) -> None:
+        """Only this owner's INSERT winner enters here; no existing Run can be initialized again."""
+        encoded_snapshot, _ = _prepare_snapshot(snapshot)
+        encoded_input = encode_history(InitialInputPayload(input))
+        self._session.add(RunSnapshotRecord(run_id=row.id, tenant_id=row.tenant_id, payload_kind=SNAPSHOT_KIND,
+            schema_version=encoded_snapshot.version, payload=encoded_snapshot.payload,
+            content_hash=encoded_snapshot.content_hash, created_at=row.created_at))
+        self._session.add(RunHistoryRecord(run_id=row.id, tenant_id=row.tenant_id, sequence=1,
+            payload_kind=encoded_input.kind, payload_schema_version=encoded_input.version, payload=encoded_input.payload,
+            source_kind=source.kind, source_owner_id=source.owner_id, source_key=source.key, created_at=row.created_at))
+        await self._session.flush()
 
     async def append_related(self, *, tenant_id: UUID, run_id: UUID, input: InputContent,
             source: SourceIdentity, waiting_reference: str | None = None) -> TransitionResult:

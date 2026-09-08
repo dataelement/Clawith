@@ -218,38 +218,38 @@ class RunRuntime:
 
     async def _start_one(self, *, snapshot: RunSnapshot, input: InputContent, source: SourceIdentity,
             parent_run_id: UUID | None, key: RunKey) -> StartResult:
-        async with transaction(self._control) as tx:
-            existing = await RunService(tx).find_by_source(tenant_id=snapshot.tenant_id, source=source)
-            if existing is not None:
-                if existing.agent_id != snapshot.agent_id or existing.parent_run_id != parent_run_id:
-                    raise Conflict("Run source belongs to another execution scope")
-                return StartResult(existing, False)
-        self._intake()
-        try:
-            reserved = self.dispatcher.reserve(key)
-        except OverflowError:
-            raise Conflict("Run admission is full; retry after existing work finishes") from None
-        if not reserved:
-            raise Conflict("Run identity already belongs to admitted work")
+        reserved = False
+        def admit() -> None:
+            nonlocal reserved
+            self._intake()
+            try:
+                acquired = self.dispatcher.reserve(key)
+            except OverflowError:
+                raise Conflict("Run admission is full; retry after existing work finishes") from None
+            if not acquired:
+                raise Conflict("Run identity already belongs to admitted work")
+            reserved = True
         try:
             async with transaction(self._control) as tx:
                 result = await RunService(tx).start(tenant_id=snapshot.tenant_id, agent_id=snapshot.agent_id,
-                    run_id=key.run_id, snapshot=snapshot, input=input, source=source, parent_run_id=parent_run_id)
+                    run_id=key.run_id, snapshot=snapshot, input=input, source=source, parent_run_id=parent_run_id, admit=admit)
         except BaseException:
-            cleanup = asyncio.create_task(self._reconcile_failed_start(key, source, parent_run_id),
-                name=f"run-start-reconcile-{key.run_id}")
-            cancelled = False
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            if reserved:
+                cleanup = asyncio.create_task(self._reconcile_failed_start(key, source, parent_run_id),
+                    name=f"run-start-reconcile-{key.run_id}")
+                cancelled = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup.result()
+                if cancelled:
+                    raise asyncio.CancelledError
             raise
         if not result.created:
-            self.dispatcher.release(key)
+            if reserved:
+                self.dispatcher.release(key)
             return result
         try:
             self.dispatcher.wake(key)

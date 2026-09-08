@@ -986,10 +986,11 @@ async def test_start_coalesces_fifty_identical_sources_with_one_creation(test_da
     creations = 0
     async def held(self, **kwargs):
         nonlocal creations
+        result = await original(self, **kwargs)
         creations += 1
         entered.set()
         await release.wait()
-        return await original(self, **kwargs)
+        return result
     monkeypatch.setattr(RunService, "start", held)
     engine = runtime(test_database, slots=1, capacity=1)
     await engine.startup()
@@ -1224,11 +1225,11 @@ async def test_start_commit_then_exit_failure_reconciles_before_releasing_admiss
         calls += 1
         current = calls
         async with real_transaction(sessions) as tx:
-            if current == 3:
+            if current == 2:
                 reconciling.set()
                 await reconcile_gate.wait()
             yield tx
-        if current == 2:
+        if current == 1:
             committed.set()
             await exit_gate.wait()
             raise RuntimeError("failure after committed creation")
@@ -1278,11 +1279,11 @@ async def test_failed_start_readback_retains_capacity_until_shutdown_can_reconci
         nonlocal calls
         calls += 1
         current = calls
-        if current == 3:
+        if current == 2:
             raise SQLAlchemyError("reconciliation unavailable")
         async with transaction(sessions) as tx:
             yield tx
-        if current == 2:
+        if current == 1:
             raise asyncio.CancelledError
     monkeypatch.setattr(engine_module, "transaction", broken)
     try:
@@ -1314,7 +1315,7 @@ async def test_rolled_back_start_with_failed_readback_releases_only_after_succes
     async def failed_readback(sessions):
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if calls == 2:
             raise SQLAlchemyError("readback unavailable")
         async with transaction(sessions) as tx:
             yield tx
@@ -1345,3 +1346,35 @@ async def test_rolled_back_start_with_failed_readback_releases_only_after_succes
     else:
         await engine.close()
     assert engine.dispatcher.admitted == 0 and engine._closed
+
+
+async def test_runtime_fresh_main_has_four_sql_one_transaction_and_one_checkout(test_database, transaction_factory):
+    from sqlalchemy import event
+
+    tenant, agent = await seed(transaction_factory)
+    engine = runtime(test_database)
+    await engine.startup()
+    counts = {"sql": 0, "begin": 0, "commit": 0, "checkout": 0}
+    def sql(*args):
+        counts["sql"] += 1
+    def begin(*args):
+        counts["begin"] += 1
+    def commit(*args):
+        counts["commit"] += 1
+    def checkout(*args):
+        counts["checkout"] += 1
+    listeners = ((test_database.engine.sync_engine, "before_cursor_execute", sql),
+        (test_database.engine.sync_engine, "begin", begin), (test_database.engine.sync_engine, "commit", commit),
+        (test_database.engine.sync_engine.pool, "checkout", checkout))
+    try:
+        for target, name, listener in listeners:
+            event.listen(target, name, listener)
+        try:
+            result = await engine.start(snapshot=snapshot(tenant, agent, uuid4()), input=InputContent("four-sql"),
+                source=SourceIdentity("session", uuid4(), "four-sql"))
+        finally:
+            for target, name, listener in listeners:
+                event.remove(target, name, listener)
+        assert result.created and counts == {"sql": 4, "begin": 1, "commit": 1, "checkout": 1}
+    finally:
+        await engine.close()
