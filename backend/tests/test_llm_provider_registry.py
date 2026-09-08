@@ -35,6 +35,10 @@ def test_minimax_registry_contains_target_models_and_endpoints():
         ("https://api.minimaxi.com/v1", "https://api.minimaxi.com/anthropic"),
     }
     assert all(endpoint.anthropic_base_url.endswith("/anthropic") for endpoint in spec.endpoints)
+    assert {endpoint.docs_root for endpoint in spec.endpoints} == {
+        "https://platform.minimax.io/docs/api-reference/api-overview",
+        "https://platform.minimaxi.com/docs/api-reference/api-overview",
+    }
 
 
 def test_minimax_manifest_exposes_model_metadata_and_endpoint_choices():
