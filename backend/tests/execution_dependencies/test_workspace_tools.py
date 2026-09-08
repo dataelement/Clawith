@@ -346,7 +346,11 @@ async def test_directory_move_and_partial_delete_preserve_observed_facts(prepare
 @pytest.mark.asyncio
 async def test_distillation_is_main_only_without_user_selected_target(prepared):
     tools, workspace, scope, _, _, _, _ = prepared
-    status, distilled = await tools.call("distill_memory", content="General knowledge", expected_revision=None)
+    assert (await tools.call("distill_memory", content="Private knowledge", expected_revision=None))[0] == "error"
+    agent_scope = replace(scope, output=WorkspaceSubject("agent", scope.agent_id))
+    discovery = await workspace.discover_skills(tenant_id=scope.tenant_id, agent_id=scope.agent_id)
+    agent_tools = Harness(workspace, agent_scope, discovery)
+    status, distilled = await agent_tools.call("distill_memory", content="General knowledge", expected_revision=None)
     assert status == "success" and distilled["revision"]
     assert (
         await workspace.read(scope, WorkspaceSubject("agent", scope.agent_id), "memory/MEMORY.md")

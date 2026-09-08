@@ -158,7 +158,7 @@ WORKSPACE_DEFINITIONS = (
     ),
     _definition(
         "distill_memory",
-        "Explicitly save generalized memory for this Agent. Do not copy private user or group details into shared memory.",
+        "Save generalized shared memory only from an Agent-owned context. Personal and group contexts cannot use this operation.",
         {"content": _TEXT, "expected_revision": _EXPECTED},
         ("content", "expected_revision"),
     ),
@@ -499,5 +499,6 @@ def workspace_bindings(
     return tuple(
         ExecutorBinding(definition.executor_key, _WorkspaceExecutor(definition, scope, handler), builtin=definition)
         for definition, handler in zip(WORKSPACE_DEFINITIONS, handlers, strict=True)
-        if definition.name != "distill_memory" or (scope.main and not scope.preview_only)
+        if definition.name != "distill_memory" or (
+            scope.main and not scope.preview_only and scope.output == WorkspaceSubject("agent", scope.agent_id))
     )

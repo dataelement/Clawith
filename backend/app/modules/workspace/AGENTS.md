@@ -1,5 +1,7 @@
 # Workspace owner
 
+Shared Memory distillation is restricted to non-preview Agent-owned Main execution. Reject Membership/Group scopes at the service mutation boundary, not only Tool exposure. See [Memory distillation](../../../../.agents/notes/implemented/architecture/2026-09-08-agent-owned-memory-distillation.md) for the superseded private-context exception and provenance limitation.
+
 `public.py` exposes trusted scoped file operations and controlled Skill management. `files.py` owns path and result bounds; `skills.py` owns package validation, publication and loading; repositories and ORM records remain private. Workspace uses only the injected object-storage base contract, never concrete adapters or raw filesystem APIs.
 
 Storage content and revisions commit together. Ordinary writes use explicit expected revisions, and Copy captures the checked source version. Move reports destination publication separately when source removal conflicts or is uncertain. No filesystem I/O holds a business database transaction. Audit observes committed changes and never governs outcomes.

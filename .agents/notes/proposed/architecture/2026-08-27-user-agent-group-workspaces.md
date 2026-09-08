@@ -10,6 +10,8 @@ The current Agent file root and its nested `workspace/` use Workspace to mean tw
 
 ## Proposal
 
+The Direct/Group shared Memory distillation exception below is superseded by [Agent-owned Memory distillation](../../implemented/architecture/2026-09-08-agent-owned-memory-distillation.md). Personal and Group contexts cannot distill into shared Agent Memory in the first release; the original rationale is retained here for the superseded exception.
+
 ### One Workspace per subject
 
 Every User, Agent, and Group has exactly one persistent Workspace. In this product vocabulary, User means one Tenant Membership defined by [Account, Membership, Tenant, and Principal](2026-08-31-account-membership-tenant-principal.md), not the global Account. Memory and ordinary files exist in all three; the first release binds Skills only to Agents:

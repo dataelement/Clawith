@@ -662,13 +662,16 @@ class WorkspaceService(SkillOperations):
         if not scope.main or scope.preview_only:
             raise AccessDenied("only Main may explicitly distill generalized Agent memory")
         agent = WorkspaceSubject("agent", scope.agent_id)
+        if scope.output != agent:
+            raise AccessDenied("shared Agent memory requires an Agent-owned execution context")
         revision = await self.write(
-            replace(scope, output=agent), agent, "memory/MEMORY.md", content, expected_revision=expected_revision
+            scope, agent, "memory/MEMORY.md", content, expected_revision=expected_revision
         )
-        self._observe(scope, "workspace.distill", agent, "memory/MEMORY.md")
+        self._observe(scope, "workspace.distill", agent, "memory/MEMORY.md", content_hash=hashlib.sha256(content).hexdigest())
         return revision
 
-    def _observe(self, scope: WorkspaceScope, action: str, subject: WorkspaceSubject, path: str) -> None:
+    def _observe(self, scope: WorkspaceScope, action: str, subject: WorkspaceSubject, path: str,
+                 *, content_hash: str | None = None) -> None:
         self._audit.emit(
             AuditObservation(
                 scope.tenant_id,
@@ -678,7 +681,8 @@ class WorkspaceService(SkillOperations):
                 str(subject.id),
                 "succeeded",
                 1,
-                {"path": path, "source_kind": scope.output.kind, "source_id": str(scope.output.id)},
+                {"path": path, "source_kind": scope.output.kind, "source_id": str(scope.output.id),
+                 **({"content_hash": content_hash} if content_hash is not None else {})},
                 datetime.now(UTC),
             )
         )

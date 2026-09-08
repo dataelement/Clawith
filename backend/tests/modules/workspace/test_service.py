@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from dataclasses import replace
 from uuid import uuid4
@@ -110,17 +111,34 @@ async def test_conditional_files_and_direction(setup_workspace):
 
 @pytest.mark.asyncio
 async def test_memory_explicit_distillation_and_subagent_denial(setup_workspace):
-    service, scope, _, _, _, _ = setup_workspace
+    service, scope, _, _, _, audit = setup_workspace
     assert await service.memory_index(scope, scope.output) is None
     await service.write(scope, scope.output, "memory/MEMORY.md", b"Guide\n" + b"x" * 9000, expected_revision=None)
     index = await service.memory_index(scope, scope.output)
     assert index.truncated and len(index.guide.encode()) == 8192
     assert index.source == scope.output
-    await service.distill_memory(scope, b"General knowledge", expected_revision=None)
+    with pytest.raises(AccessDenied, match="Agent-owned"):
+        await service.distill_memory(scope, b"Private knowledge", expected_revision=None)
+    agent_scope = replace(scope, output=WorkspaceSubject("agent", scope.agent_id))
+    await service.distill_memory(agent_scope, b"General knowledge", expected_revision=None)
+    observation = next(item for item in audit.items if item.action == "workspace.distill")
+    assert observation.metadata["content_hash"] == hashlib.sha256(b"General knowledge").hexdigest()
     with pytest.raises(AccessDenied):
         await service.distill_memory(scope.for_subagent(uuid4()), b"no", expected_revision=None)
     found = await service.search_content(scope, scope.output, "memory/MEMORY.md", query="Guide")
     assert found.matches == ((0, "Guide"),)
+
+
+@pytest.mark.parametrize("kind", ["membership", "group"])
+async def test_private_scope_distillation_rejected_before_storage(setup_workspace, monkeypatch, kind):
+    service, scope, _, _, _, audit = setup_workspace
+    private = replace(scope, output=WorkspaceSubject(kind, uuid4()))
+    async def must_not_write(*args, **kwargs):
+        pytest.fail("Private context reached shared Memory write")
+    monkeypatch.setattr(service, "write", must_not_write)
+    with pytest.raises(AccessDenied, match="Agent-owned"):
+        await service.distill_memory(private, b"private data", expected_revision=None)
+    assert not audit.items
 
 
 @pytest.mark.asyncio
