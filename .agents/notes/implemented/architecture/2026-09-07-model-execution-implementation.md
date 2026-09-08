@@ -1,6 +1,6 @@
 # Agent Note: Model execution and validated configuration
 
-Status: implemented — Model execution, configuration acceptance and application resource assembly have controlled tests; Runner integration remains G005 work.
+Status: implemented — Model execution, configuration acceptance and Runner/Context integration have controlled service and application tests.
 
 ## Problem
 
@@ -48,6 +48,6 @@ Independent review and controlled tests cover continuation, configuration accept
 
 Thirteen summary tests exercise actual PostgreSQL continuation and controlled HTTP: success, transport failure and cancellation leave the complete existing continuation row unchanged, and a subsequent ordinary step replays the original signature. Text-only restrictions and incomplete/Tool-producing summaries fail explicitly. Captured-policy tests cover agreement and pre-parse limits. Independent review approved the Model-side behavior; Context separately validates whether the resulting summary fits its view.
 
-The Model suite passed 174 tests after the media/counting and structured-error changes; scoped Ruff and Pyright passed. `test_media_budget.py` exercises the four media encodings, actual count-request bodies with controlled HTTP, real Credential access, unchanged encrypted replay, explicit Chat counter selection, token/byte limits, cancellation and response closure, deadline selection and error classification. These results do not establish hosted counter availability, exact billing, completed Runtime media integration or G006 user attachment APIs.
+The Model suite passed 174 tests after the media/counting and structured-error changes; scoped Ruff and Pyright passed. `test_media_budget.py` exercises the four media encodings, actual count-request bodies with controlled HTTP, real Credential access, unchanged encrypted replay, explicit Chat counter selection, token/byte limits, cancellation and response closure, deadline selection and error classification. [Run application composition](2026-09-08-run-tool-and-application-composition.md) separately records the MCP-image integration fixture through actual Runtime, Context and Model services. Neither evidence establishes hosted counter availability, exact billing, G006 user attachment APIs or formal platform performance.
 
 Counter wire references: [OpenAI token counting](https://developers.openai.com/api/docs/guides/token-counting), [Anthropic token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting), [Gemini countTokens](https://ai.google.dev/api/tokens). Provider counts remain estimates, not a universal image-cost formula.
