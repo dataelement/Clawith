@@ -25,6 +25,10 @@ class RunRecord(Base):
         ),
         CheckConstraint("latest_history_sequence >= 0", name="ck_agent_runs_latest_history_sequence"),
         CheckConstraint("parent_run_id IS NULL OR parent_run_id <> id", name="ck_agent_runs_not_own_parent"),
+        Index("ix_agent_runs_active_parent", "tenant_id", "parent_run_id", "id",
+              postgresql_where=text("status IN ('Running', 'Waiting')")),
+        Index("ix_agent_runs_active_roots", "id",
+              postgresql_where=text("parent_run_id IS NULL AND status IN ('Running', 'Waiting')")),
         CheckConstraint(
             "(status = 'Waiting' AND active_waiting_reference IS NOT NULL) OR "
             "(status <> 'Waiting' AND active_waiting_reference IS NULL)",
@@ -87,6 +91,7 @@ class RunSnapshotRecord(Base):
 class RunHistoryRecord(Base):
     __tablename__ = "agent_run_history"
     __table_args__ = (
+        Index("ix_agent_run_history_kind_sequence", "tenant_id", "run_id", "payload_kind", "sequence"),
         UniqueConstraint("tenant_id", "run_id", "sequence", name="uq_agent_run_history_tenant_sequence"),
         CheckConstraint("sequence > 0", name="ck_agent_run_history_sequence"),
         CheckConstraint("payload_schema_version > 0", name="ck_agent_run_history_payload_version"),
