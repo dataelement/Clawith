@@ -51,6 +51,27 @@ class FakeDatabaseResources:
         self.close_calls += 1
 
 
+@dataclass
+class RuntimeResourceFixture:
+    """Exercise composition cleanup; real Run/SQL behavior belongs to the E2E fixture."""
+    worker: asyncio.Task[bool] | None = None
+
+    async def startup(self) -> None:
+        self.worker = asyncio.create_task(asyncio.Event().wait())
+
+    async def close(self) -> None:
+        if self.worker is not None:
+            self.worker.cancel()
+            await asyncio.gather(self.worker, return_exceptions=True)
+
+
+@pytest.fixture
+def runtime_resource(monkeypatch: pytest.MonkeyPatch) -> RuntimeResourceFixture:
+    runtime = RuntimeResourceFixture()
+    monkeypatch.setattr(application, "compose_runtime", lambda *args, **kwargs: runtime)
+    return runtime
+
+
 class RouteWithPath(Protocol):
     path: str
 
@@ -106,6 +127,7 @@ def test_missing_execution_configuration_fails_before_database_creation(monkeypa
 
 def test_create_app_owns_database_resources_for_its_complete_lifespan(
     monkeypatch: pytest.MonkeyPatch,
+    runtime_resource: RuntimeResourceFixture,
 ) -> None:
     resources = FakeDatabaseResources()
     observed_settings: list[Settings] = []
@@ -131,12 +153,15 @@ def test_create_app_owns_database_resources_for_its_complete_lifespan(
 
     assert observed_settings == [settings]
     assert resources.close_calls == 1
+    assert runtime_resource.worker is not None and runtime_resource.worker.done()
+    assert not hasattr(app.state, "runtime")
     assert not hasattr(app.state, "database")
     assert not hasattr(app.state, "audit")
 
 
 @pytest.mark.asyncio
-async def test_audit_consumer_stops_before_database_disposal(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_audit_consumer_stops_before_database_disposal(
+        monkeypatch: pytest.MonkeyPatch, runtime_resource: RuntimeResourceFixture) -> None:
     resources = FakeDatabaseResources()
     observed: list[asyncio.Task[object]] = []
 
@@ -145,6 +170,7 @@ async def test_audit_consumer_stops_before_database_disposal(monkeypatch: pytest
 
     async def close_resources() -> None:
         assert observed and all(task.done() for task in observed)
+        assert runtime_resource.worker is not None and runtime_resource.worker.done()
         resources.close_calls += 1
 
     monkeypatch.setattr(database, "create_database_resources", create_resources)

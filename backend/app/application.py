@@ -7,16 +7,18 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 
 from app.execution_dependencies.resources import open_execution_resources
+from app.execution_dependencies.runtime import compose_runtime
 from app.infrastructure import database
 from app.infrastructure.config import Settings, get_settings
 from app.modules.audit.public import AsyncAuditSink
+from app.modules.run.public import OutcomeConsumer
 
 AUDIT_QUEUE_CAPACITY = 256
 AUDIT_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Compose the target application without legacy routes or lifecycle work."""
+def create_app(settings: Settings | None = None, *, outcome_consumer: OutcomeConsumer | None = None) -> FastAPI:
+    """Compose target owner services and their application-owned lifecycles."""
     application_settings = settings or get_settings()
 
     @asynccontextmanager
@@ -34,13 +36,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup.push_async_callback(audit.close)
             audit.start()
             execution = await cleanup.enter_async_context(open_execution_resources(application_settings.EXECUTION, resources, audit))
+            runtime = compose_runtime(resources, execution, outcome_consumer=outcome_consumer)
+            cleanup.push_async_callback(runtime.close)
+            await runtime.startup()
             try:
                 application.state.database = resources
                 application.state.audit = audit
                 application.state.execution = execution
+                application.state.runtime = runtime
                 yield
             finally:
-                for name in ("execution", "audit", "database"):
+                for name in ("runtime", "execution", "audit", "database"):
                     if hasattr(application.state, name):
                         delattr(application.state, name)
 
