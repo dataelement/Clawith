@@ -1,6 +1,6 @@
 # Agent Note: Model, Agent and Permission public services
 
-Status: implemented — typed foundation services operate on caller-owned transactions; product HTTP and Run composition remain unavailable.
+Status: implemented — typed foundation services operate on caller-owned transactions; Run composition uses these services and product HTTP remains later-stage work.
 
 ## Problem
 
@@ -25,6 +25,8 @@ Permission owns `tenant` and `restricted` Agent visibility plus retained, revoca
 **Provider-specific settings choices in G003.** Rejected because Provider adapters and their exact request options remain G004 work. Model configuration instead accepts one bounded, versioned, finite, non-Secret JSON object without claiming support for unimplemented Provider options.
 
 ## Consequences
+
+`AgentService.get_for_execution` supplies Agent configuration to an already authorized human execution path. It checks the captured Principal's Agent IDs or administrator scope, Tenant identity and Agent availability without granting management access or refreshing login permissions. Tool capture and personal-account binding use this execution read, while administrative `get` remains administrator-only. Ordinary members can execute a visible Agent without acquiring its management API.
 
 Public provisioning and configuration methods are trusted application ports, not unauthenticated product endpoints. Transport must authenticate callers before constructing Principal values. G003 service verification does not authorize HTTP exposure, registration, SSO, Workspace/Tool provisioning, Provider execution or Run execution.
 

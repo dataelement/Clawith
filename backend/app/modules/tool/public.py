@@ -376,7 +376,7 @@ class ToolService:
     ) -> UUID:
         if transport not in ("streamable_http", "sse"):
             raise InvalidInput("MCP transport is invalid")
-        await self._agents.get(principal, agent_id=agent_id)
+        await self._agents.get_for_execution(principal, agent_id=agent_id)
         definition = await self._require_definition(principal.tenant_id, definition_id)
         if definition.source != "mcp":
             raise InvalidInput("Personal MCP connection requires an MCP definition")
@@ -415,7 +415,7 @@ class ToolService:
     async def capture_authorized(self, scope: ToolResolutionScope | AgentToolResolutionScope) -> AuthorizedToolSet:
         """Capture once for Main/Child derivation; the scope role does not filter bindings."""
         if isinstance(scope, ToolResolutionScope):
-            await self._agents.get(scope.principal, agent_id=scope.agent_id)
+            await self._agents.get_for_execution(scope.principal, agent_id=scope.agent_id)
             tenant_id = scope.principal.tenant_id
             membership_id = scope.principal.membership_id
         else:

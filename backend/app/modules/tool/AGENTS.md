@@ -8,6 +8,8 @@ Agent installation uses `AgentInstallScope` produced by an authorized installati
 
 `capture_authorized` captures role-independent bindings in `AuthorizedToolSet`; it has no execution or direct-exposure interface. Its pure `for_role` derives Main/Subagent `AvailableToolSet` views, excluding ineligible Tools from search as well as execution. `resolve` composes those same operations. Child derivation must use the Parent's captured bindings without resolving live grants or reconstructing the capture from an already filtered Main view.
 
+Human capture and personal-connection binding use Agent's captured-principal execution read, not its administrator management read. They retain the original Membership identity; selecting another Membership's personal connection remains denied even when the caller can use the Agent.
+
 MCP canonical identity is its name, Catalog, upstream name and executor version. Accounts can expose different descriptions or input schemas for that identity; registration retains the existing shared Definition while each connection supplies its own discovery view. Non-MCP redefinition remains a conflict.
 
 The scheduler preserves call order and serial barriers. Only explicitly safe executors run concurrently, within its shared semaphore. Caller cancellation cancels and awaits active work; an external effect may remain uncertain. Never replay an unconfirmed call or change its account automatically. Executor defects propagate as defects rather than fabricated provider errors.

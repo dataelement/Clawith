@@ -1,15 +1,18 @@
 import os
+from dataclasses import replace
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
 
-from app.infrastructure.errors import InvalidInput
+from app.infrastructure.errors import AccessDenied, InvalidInput, NotFound
 from app.modules.agent.models import AgentRecord
 from app.modules.agent.public import AgentService
 from app.modules.credential.crypto import CredentialKeyring, Secret
 from app.modules.credential.public import CredentialService
 from app.modules.identity_tenant.public import IdentityService, TenantPrincipal
 from app.modules.model.public import ModelService
+from app.modules.permission.public import PermissionService
 
 
 async def _setup(transaction_factory, model_acceptance):
@@ -85,6 +88,38 @@ async def test_default_model_is_resolved_only_when_agent_is_created(transaction_
         assert first_agent.model_id == first.id
         assert second_agent.model_id == second.id
         assert (await agents.get(principal, agent_id=first_agent.id)).model_id == first.id
+
+
+async def test_member_execution_view_preserves_management_boundary_and_captured_access(transaction_factory, model_acceptance):
+    admin, model, _ = await _setup(transaction_factory, model_acceptance)
+    async with transaction_factory() as tx:
+        agents = AgentService(tx)
+        agent = await agents.create(admin, name="Readable", soul="Execution identity", timezone="UTC", model_id=model.id)
+        other = await agents.create(admin, name="Not allowed", soul="Private", timezone="UTC", model_id=model.id)
+        identity = IdentityService(tx)
+        account = await identity.create_account()
+        membership = await identity.create_membership(tenant_id=admin.tenant_id, account_id=account.id,
+            display_name="Member", role="member")
+        permission = PermissionService(tx)
+        await permission.set_visibility(admin, agent_id=agent.id, visibility="restricted")
+        await permission.grant_membership(admin, agent_id=agent.id, membership_id=membership.id)
+        member = await permission.freeze_principal(TenantPrincipal(account.id, membership.id, admin.tenant_id, "member"))
+        view = await agents.get_for_execution(member, agent_id=agent.id)
+        assert (view.name, view.soul, view.timezone, view.model_id) == ("Readable", "Execution identity", "UTC", model.id)
+        with pytest.raises(AccessDenied):
+            await agents.get(member, agent_id=agent.id)
+        with pytest.raises(AccessDenied):
+            await agents.get_for_execution(member, agent_id=other.id)
+        with pytest.raises(NotFound):
+            await agents.get_for_execution(replace(member, tenant_id=uuid4()), agent_id=agent.id)
+        await permission.revoke_membership_grant(admin, agent_id=agent.id, membership_id=membership.id)
+        assert await agents.get_for_execution(member, agent_id=agent.id) == view
+        refreshed = await permission.freeze_principal(replace(member, allowed_agent_ids=frozenset()))
+        with pytest.raises(AccessDenied):
+            await agents.get_for_execution(refreshed, agent_id=agent.id)
+        await agents.set_enabled(admin, agent_id=agent.id, enabled=False)
+        with pytest.raises(NotFound):
+            await agents.get_for_execution(member, agent_id=agent.id)
 
 
 @pytest.mark.asyncio

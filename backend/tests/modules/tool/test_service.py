@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from app.modules.capability_market.models import CapabilityCatalogItemRecord
 from app.modules.credential.public import CredentialKeyring, CredentialService, Secret
 from app.modules.identity_tenant.public import IdentityService, TenantPrincipal
 from app.modules.model.public import ModelService
+from app.modules.permission.public import PermissionService
 from app.modules.tool.public import (
     AgentInstallScope,
     AgentToolResolutionScope,
@@ -90,6 +92,50 @@ async def setup(transaction_factory, model_acceptance):
         tx.session.add(catalog)
         await tx.session.flush()
         return principal, a.id, b.id, catalog.id, keyring
+
+
+async def test_member_capture_and_personal_mcp_preserve_membership_identity(transaction_factory, model_acceptance):
+    admin, agent, other_agent, catalog, keyring = await setup(transaction_factory, model_acceptance)
+    async with transaction_factory() as tx:
+        identities, permissions = IdentityService(tx), PermissionService(tx)
+        people = []
+        await permissions.set_visibility(admin, agent_id=agent, visibility="restricted")
+        for name in ("Alice", "Bob"):
+            account = await identities.create_account()
+            membership = await identities.create_membership(tenant_id=admin.tenant_id, account_id=account.id,
+                display_name=name, role="member")
+            await permissions.grant_membership(admin, agent_id=agent, membership_id=membership.id)
+            people.append(await permissions.freeze_principal(TenantPrincipal(account.id, membership.id, admin.tenant_id, "member")))
+        alice, bob = people
+        tools = ToolService(tx, enabled_sources=enabled_sources)
+        definition = await tools.register_definition(admin, definition=DefinitionSpec("member_mail", "Mail",
+            '{"type":"object"}', "mcp.v1", "mcp", catalog, "mail"))
+        connection = await tools.connect_mcp(admin, agent_id=agent, catalog_item_id=catalog,
+            endpoint="https://mcp.test", auth_required=False, discovered=(MCPTool("mail", "Agent mail", '{"type":"object"}'),))
+        await tools.grant(admin, agent_id=agent, definition_id=definition.id, mcp_connection_id=connection.id)
+        captured = await tools.capture_authorized(ToolResolutionScope(alice, agent, "main"))
+        assert captured.tools[0].definition.id == definition.id
+        assert captured.tools[0].credential is None
+        with pytest.raises(AccessDenied):
+            await tools.capture_authorized(ToolResolutionScope(alice, other_agent, "main"))
+        with pytest.raises(NotFound):
+            await tools.capture_authorized(ToolResolutionScope(replace(alice, tenant_id=uuid4()), agent, "main"))
+        credentials = CredentialService(tx, keyring)
+        alice_key = await credentials.create(alice, kind="api_key", provider="mcp", label="Alice mail",
+            secret=Secret("alice-secret"), owner_kind="membership")
+        personal = await tools.bind_personal_connection(alice, agent_id=agent, definition_id=definition.id,
+            credential_id=alice_key.id, label="Alice", endpoint="https://mcp.test",
+            discovered=(MCPTool("mail", "Alice mail", '{"type":"object"}'),))
+        selected = await tools.capture_authorized(ToolResolutionScope(alice, agent, "main", frozenset({personal}), (personal,)))
+        assert selected.tools[0].credential.owner_kind == "membership"
+        assert selected.tools[0].credential.owner_id == alice.membership_id
+        assert selected.tools[0].credential.id == alice_key.id
+        with pytest.raises(AccessDenied):
+            await tools.capture_authorized(ToolResolutionScope(bob, agent, "main", frozenset({personal}), (personal,)))
+        with pytest.raises(AccessDenied):
+            await tools.bind_personal_connection(bob, agent_id=agent, definition_id=definition.id,
+                credential_id=alice_key.id, label="Not Bob's", endpoint="https://mcp.test", discovered=())
+        assert (await tools.capture_authorized(ToolResolutionScope(alice, agent, "main"))).tools[0].credential is None
 
 
 async def test_optional_auth_grants_idempotency_and_fixed_discovery(transaction_factory, model_acceptance):

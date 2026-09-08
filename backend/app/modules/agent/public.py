@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.exc import IntegrityError
 
-from app.infrastructure.errors import Conflict, InvalidInput, NotFound
+from app.infrastructure.errors import AccessDenied, Conflict, InvalidInput, NotFound
 from app.infrastructure.transactions import TransactionContext
 from app.modules.agent.models import AgentRecord
 from app.modules.agent.repository import AgentRepository
@@ -102,6 +102,15 @@ class AgentService:
     async def get(self, principal: TenantPrincipal, *, agent_id: UUID) -> AgentView:
         require_admin(principal)
         return _view(await self._require(principal.tenant_id, agent_id))
+
+    async def get_for_execution(self, principal: TenantPrincipal, *, agent_id: UUID) -> AgentView:
+        """Read execution configuration within already captured human authorization."""
+        if not principal.can_manage_all_agents and agent_id not in principal.allowed_agent_ids:
+            raise AccessDenied("Agent access is denied")
+        record = await self._require(principal.tenant_id, agent_id)
+        if not record.enabled or record.archived_at is not None:
+            raise NotFound("Executing Agent is unavailable")
+        return _view(record)
 
     async def list(
         self, principal: TenantPrincipal, *, limit: int = MAX_PAGE_SIZE, offset: int = 0
