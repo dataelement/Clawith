@@ -139,6 +139,10 @@ One lightweight Agent Runner is the shared execution boundary for Main Runs and 
 
 The detailed lifecycle contract is defined by [Agent Runner Lifecycle and Run History](2026-08-27-agent-runner-lifecycle-and-history.md). Agent Runner does not interpret Task descriptions, judge completion, or own Session, Context, Model, Tool, Workspace, or product facts.
 
+### User-visible messages
+
+The [unified user-message outlet](2026-09-09-user-messages-and-run-completion.md) uses a Main-only message Tool and separates all Main-authored chat messages from Final settlement. Main may communicate repeatedly during execution; Need Input commits its question and Waiting relation together. Final records the execution result without automatically sending another reply. Subagent Final remains a result for Parent, not a direct user message.
+
 ### Waiting, completion, and cancellation
 
 Waiting pauses only the corresponding Run and releases its current execution resources. A Main Run waiting for Subagent Run Results does not block Session, another Main Run, or unrelated delegated work.
@@ -172,7 +176,7 @@ Main Run B ---- Task Tool ---- Subagent Runs ---- disposition
 Main Run C ------------------------------ objective achieved
 ```
 
-Before a Goal-mode Main Run finishes, the Main Agent explicitly declares one disposition: achieved, continue, or wait, together with any progress that should survive the Run. These dispositions are Run Output instructions rather than durable Goal statuses. Session applies them but does not plan work or judge completion independently: `continue` completes the current Run, updates committed progress, and starts a new ordinary Main Run without creating Session Input or Agent Reply; `wait` completes the current Run, stores committed progress and a future wake condition, and starts a new ordinary Main Run only after that condition is satisfied; `achieved` completes the current Run, emits an ordinary final Agent Reply, and disables Goal mode.
+Before a Goal-mode Main Run finishes, the Main Agent explicitly declares one disposition: achieved, continue, or wait, together with any progress that should survive the Run. These dispositions are Run Output instructions rather than durable Goal statuses. Session applies them but does not plan work or judge completion independently: `continue` completes the current Run, updates committed progress, and starts a new ordinary Main Run without creating Session Input or Agent Reply; `wait` completes the current Run, stores committed progress and a future wake condition, and starts a new ordinary Main Run only after that condition is satisfied; `achieved` completes the current Run and disables Goal mode. Visible Goal result messages use the unified outlet; no disposition automatically creates a reply.
 
 Goal mode has no `require_user` disposition. When the current Goal Main Run cannot proceed without human information or a user-only action, it uses the ordinary Agent Loop Need Input path and remains Waiting. An explicitly related human Session Input resumes the same Run with its existing History and Context snapshot. Prompt guidance should make Need Input a last resort after the Agent exhausts authorized Context, Tools, reasonable reversible choices, and alternative paths; that triggering policy is model behavior rather than another Goal lifecycle contract.
 
@@ -180,7 +184,7 @@ Goal `wait` is not Run Status Waiting. Need Input preserves and later resumes th
 
 Each later Main Run relates to the original `/goal` Session Input and receives bounded Product Input containing the original objective, committed progress, the preceding disposition or execution outcome, and the satisfied wake condition when applicable. It reuses the original Session-history cutoff and does not resume or implicitly read the complete History of an earlier Main Run. Durable files, Memory, and other committed artifacts remain available through their normal Context sources.
 
-A Failed or Interrupted Goal-mode Main Run remains terminal. Ordinary per-Run termination cancels its active Subagent Runs; service-wide cleanup interrupts all non-terminal members instead. Session Goal mode may start a new ordinary Main Run from committed facts and the failure outcome, but it cannot restore the failed Run or recover uncommitted execution. Repeated failures must stop automatic continuation rather than create an unbounded retry loop; stopping produces an ordinary final Agent Reply related to the original `/goal` input. The concrete bound remains implementation policy.
+A Failed or Interrupted Goal-mode Main Run remains terminal. Ordinary per-Run termination cancels its active Subagent Runs; service-wide cleanup interrupts all non-terminal members instead. The [failure and crash decision](2026-09-09-goal-failure-and-crash-boundary.md) stops automatic Goal continuation after Failed and does not recover interrupted work after restart. Session preserves committed progress and the failure outcome; any user-facing notification uses the unified outlet related to the original `/goal` input. A new iteration cannot bypass the Run's finite Model retry policy.
 
 Cancelling Goal mode disables the Session configuration, stops further continuation, and cancels the active Main Run and its descendants. Goal continuation facts remain Session-owned product facts rather than Workspace Memory or Runner lifecycle state.
 
@@ -261,7 +265,7 @@ These mechanisms are not required for responsive conversation or reconstructable
 - A new Goal-mode Main Run reuses the original Session relation and cutoff, receives bounded committed continuation facts rather than inheriting earlier Run History, and never resumes a failed or interrupted Run.
 - Goal mode has no `require_user` disposition; ordinary Need Input leaves the current Goal Main Run Waiting and an explicitly related human reply resumes it.
 - Goal `continue` and `wait` complete the current iteration and later create new ordinary Main Runs; `wait` delays creation until its wake condition is satisfied and is distinct from Run Status Waiting.
-- Goal `continue` and `wait` create no Session Input or Agent Reply; `achieved` and final stopped failure use existing Agent Reply semantics.
+- Goal dispositions create no new Session Input and do not automatically send Agent Replies; user-visible result delivery uses the unified outlet.
 - Context compaction changes only model view and does not delete source facts.
 
 ## Risks and open questions

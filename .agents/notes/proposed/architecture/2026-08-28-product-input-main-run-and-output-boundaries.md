@@ -36,7 +36,7 @@ Product capability
 
 Agent Runner receives only common execution facts and does not interpret Session, Group, Heartbeat, Trigger, A2A, Goal, Channel, or UI fields. Agent Loop never delivers product messages directly.
 
-Input acceptance, Run execution, product result recording, external delivery, and delivery failure remain separate outcomes.
+Input acceptance, user-message recording, Run execution, product result recording, external delivery, and delivery failure remain separate outcomes. The [unified user-message outlet](2026-09-09-user-messages-and-run-completion.md) owns visible communication; Final settles execution without an automatic second message.
 
 Separate outcomes do not require separate commits when the owner shares PostgreSQL with Agent Runner. Run terminal Status and History plus the initiating owner's durable result record commit in one transaction through an in-process Outcome Consumer; failure rolls the terminal settlement back without re-executing Model or Tool. External transport delivery remains post-commit and separately retryable.
 
@@ -46,7 +46,8 @@ An accepted product input may have no Run when admission has not succeeded. The 
 
 ```text
 Direct Session
-  Human Input -> Session -> Main Run -> Session Reply
+  Human Input -> Session -> Main Run -> Session execution result
+                             └─────> Session messages through the common outlet
 
 Group
   Group event -> Group selects target Agent -> Main Run -> Group Reply or result
@@ -90,9 +91,9 @@ A2A starts the receiving Agent's independent Main Run. It never creates a Subage
 
 Goal mode is owned by direct Session rather than an independent product capability. A Session stores at most one active lightweight Goal configuration: enabled state, original objective, committed progress, current wait condition, and relation to the existing `/goal` Session Input. It uses existing Session persistence and adds no Goal table, ID, domain object, status state machine, Agent role, Run type, Reply type, projection type, or history.
 
-Every iteration executes the Session's same Main Agent through a new ordinary Main Run related to the original `/goal` input and cutoff. Product Input carries a bounded snapshot of the objective, committed progress, preceding disposition or execution outcome, and satisfied wake condition; it never inherits the previous Run History implicitly. Session consumes terminal iteration outputs `continue` and `wait` internally: `continue` starts the next Run immediately, while `wait` stores a future condition and starts the next Run only after it is satisfied. Goal has no `require_user` disposition: ordinary Need Input leaves the current Run Waiting and a related human reply resumes it. `achieved` and final stopped failure use ordinary Agent Reply related to the original `/goal` input.
+Every iteration executes the Session's same Main Agent through a new ordinary Main Run related to the original `/goal` input and cutoff. Product Input carries a bounded snapshot of the objective, committed progress, preceding disposition or execution outcome, and satisfied wake condition; it never inherits the previous Run History implicitly. Session consumes terminal iteration outputs `continue` and `wait` internally: `continue` starts the next Run immediately, while `wait` stores a future condition and starts the next Run only after it is satisfied. Goal has no `require_user` disposition: ordinary Need Input leaves the current Run Waiting and a related human reply resumes it. Goal result messages use the common outlet and original `/goal` input relation; terminal dispositions do not automatically send a reply.
 
-A failed or interrupted iteration remains terminal. Session may create a new Main Run from committed facts, but it cannot restore the old Run, and repeated failure must stop automatic continuation under a bounded implementation policy. Achieved or user cancellation disables Goal mode; cancellation also cancels its active Main Run and descendants.
+A failed or interrupted iteration remains terminal. The [failure and crash decision](2026-09-09-goal-failure-and-crash-boundary.md) stops automatic Goal continuation after Failed and does not recover interrupted work after restart. Session retains committed progress without creating another iteration to bypass Model retry exhaustion. Achieved or user cancellation disables Goal mode; cancellation also cancels its active Main Run and descendants.
 
 ### No shared product event bus
 

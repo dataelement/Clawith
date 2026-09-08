@@ -13,3 +13,7 @@ The [Audit observation contract](backend-audit-observation.md) replaces the foun
 [Execution Dependencies](backend-execution-dependencies.md) defines the reviewed G004 implementation scope, Agent-only shared/private Skills, MCP account selection and S2 schema-only product boundaries. It does not claim completed Workspace, Tool, Market, Provider or Runtime implementation.
 
 [Core Runtime](backend-core-runtime.md) records G005 implementation boundaries and the user-confirmed first-release interruption rule: stopping the service ends both Running and Waiting Runs without automatic restart recovery. Its owner bindings require independent preflight review before Run/Context lifecycle service implementation.
+
+[Session Input and Work Control](backend-session-work-control.md) records the user-confirmed G006 conversational follow-up and cancellation design. Ordinary messages create a new Main Run, which may explicitly supplement or cancel existing same-Session work; the original Main retains its Children. This is a scoped design handoff, not completed G006 behavior or an owner-ledger approval receipt.
+
+The [user-message and completion decision](../.agents/notes/proposed/architecture/2026-09-09-user-messages-and-run-completion.md) selects a Main-only message Tool: all visible messages share one outlet; Final settles execution without automatically creating a reply. The Session handoff also records fixed 24-hour human login and stopping Goal after execution failure. Implementation approval and product acceptance remain pending.

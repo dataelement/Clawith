@@ -100,15 +100,19 @@ Run Status is limited to Running, Waiting, Completed, Failed, Cancelled, and Int
 
 Agent Runner does not provide cross-Worker takeover, arbitrary execution-point recovery, generic side-effect reconciliation, or automatic replay. Lost execution ends as Interrupted; later work starts a new Run from committed facts.
 
+### User messages and execution completion
+
+The [unified user-message outlet](2026-09-09-user-messages-and-run-completion.md) handles acknowledgements, progress and final-result delivery through one product-owned message contract. Final separately settles Run and initiating-owner execution results without generating another chat reply. Message sending does not imply Waiting or terminal status, create a Run, or wake one. Tool/native-output encoding remains undecided; parent-child and interruption rules are unchanged.
+
 ### Session and product inputs
 
-Direct Session is a human-facing conversation. Only authenticated human input creates Session Input. An explicit reply resumes its exact Waiting Main Run; every other input starts a new Main Run. Each new Main Run receives a fixed Session-history cutoff, and concurrent replies commit when ready while retaining their originating Input relation.
+Direct Session is a human-facing conversation. Only authenticated human input creates Session Input. An explicit reply resumes its exact Waiting Main Run; every other input starts a new Main Run. Each new Main Run receives a fixed Session-history cutoff, and concurrent replies commit when ready while retaining their originating Input relation. A new Main may interpret a follow-up or stop request and use [Session-owned work control](2026-08-27-direct-session-input-history-and-concurrency.md#conversational-work-control) to explicitly supplement or cancel another Main in the same Session; ordinary chat does not require a user-created Task, transfer Child ownership or implicitly merge Run histories.
 
 Group, Heartbeat, Trigger, and A2A remain independent product capabilities. Each records its own input, initiates or resumes Main Run through Agent Runner, consumes Run Output, and owns product projection and delivery. There is no global Product Event bus and no routing of non-human events through direct Session.
 
 Heartbeat is independent from Trigger. A2A creates the receiver's independent Main Run and transfers only explicit input, never sender authorization or implicit Context. A2A Tool Calls settle with immediate acceptance; `consult` and `task_delegate` later submit correlated A2A Result Input to the exact non-terminal source Main Run, while `notify` remains one-way.
 
-Goal mode is lightweight direct Session configuration and continuation policy. One Session stores at most one active objective, committed progress, wait condition, and relation to the existing `/goal` Session Input without a Goal table or ID. Each iteration starts a new ordinary Main Run related to that input and cutoff with bounded committed facts rather than inheriting an earlier Run History or restoring a terminal Run. `continue` completes the current iteration and starts the next immediately; Goal `wait` completes it and delays the next Run until a future condition is satisfied. Goal has no `require_user` disposition; missing human information uses ordinary Need Input, Run Status Waiting, and Resume of the same Run. `achieved` and final stopped failure use ordinary Agent Reply without new Goal-specific output types.
+Goal mode is lightweight direct Session configuration and continuation policy. One Session stores at most one active objective, committed progress, wait condition, and relation to the existing `/goal` Session Input without a Goal table or ID. Each iteration starts a new ordinary Main Run related to that input and cutoff with bounded committed facts rather than inheriting an earlier Run History or restoring a terminal Run. `continue` completes the current iteration and starts the next immediately; Goal `wait` completes it and delays the next Run until a future condition is satisfied. Goal has no `require_user` disposition; missing human information uses ordinary Need Input, Run Status Waiting, and Resume of the same Run. Goal result messages use the unified message outlet without new Goal-specific output types; terminal dispositions do not automatically send replies.
 
 ### Context
 

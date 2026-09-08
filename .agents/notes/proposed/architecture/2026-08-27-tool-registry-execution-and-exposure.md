@@ -231,6 +231,14 @@ The target Main Run remains independent from the source Main Run. Failure, cance
 
 A2A never carries the sender's User or Group Workspace, Agent Workspace, broad Tool authorization, Run History, or implicit Context. Text, files, Artifacts, and explicitly delegated Membership connection references cross the boundary only when the A2A Input includes their bounded authorized reference. Credential material never crosses.
 
+### User-message outlet
+
+The [unified user-message outlet](2026-09-09-user-messages-and-run-completion.md) separates communication from Final settlement. A Main-only Tool is one possible encoding, not a selected or implemented requirement. If implemented as a Tool, it uses the initiating product owner and trusted destination rather than arbitrary recipient selection; it does not control Run lifecycle. Native output is another possible encoding of the same contract. Subagents retain Parent-directed results without direct user-message access.
+
+### Session work-control Tools
+
+Main-only Tools expose bounded work discovery, supplementation and cancellation through the [Session-owned conversational work-control contract](2026-08-27-direct-session-input-history-and-concurrency.md#conversational-work-control). The new Main interprets the human message and selects an explicit target; the Session service validates the caller and same-Session Main relation before using Run's public ports. These operations neither dispatch new Child work through Task Tool nor ask another Agent through A2A. Their bindings use trusted execution scope, explicit services and correlated Tool results; names and schemas remain G006 implementation details. They are not available to Subagents, and registration or schema presence alone does not imply authorization.
+
 ### Task Tool
 
 Task Tool is the optional Main Agent delegation surface. Main Agent decides whether to invoke it from current Product Input, Main-role guidance, and the Tool Description. The architecture does not define how the model detects an explicit work method or judges complexity, and Agent Loop does not force any request or model-generated step through Task Tool.
