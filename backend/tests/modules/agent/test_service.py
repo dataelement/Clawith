@@ -122,6 +122,20 @@ async def test_member_execution_view_preserves_management_boundary_and_captured_
             await agents.get_for_execution(member, agent_id=agent.id)
 
 
+@pytest.mark.parametrize("timezone", ["/private/zone", "../private-zone", "Etc/../UTC"])
+async def test_invalid_timezone_paths_are_sanitized_on_create_and_update(transaction_factory, model_acceptance, timezone):
+    admin, model, _ = await _setup(transaction_factory, model_acceptance)
+    async with transaction_factory() as tx:
+        agents = AgentService(tx)
+        with pytest.raises(InvalidInput, match="^timezone must be a valid IANA timezone$") as error:
+            await agents.create(admin, name="Invalid", soul="Help", timezone=timezone, model_id=model.id)
+        assert timezone not in str(error.value)
+        existing = await agents.create(admin, name="Valid", soul="Help", timezone="UTC", model_id=model.id)
+        with pytest.raises(InvalidInput, match="^timezone must be a valid IANA timezone$"):
+            await agents.update(admin, agent_id=existing.id, timezone=timezone)
+        assert (await agents.get(admin, agent_id=existing.id)).timezone == "UTC"
+
+
 @pytest.mark.asyncio
 async def test_agent_validates_soul_and_timezone(transaction_factory, model_acceptance) -> None:
     principal, first, _ = await _setup(transaction_factory, model_acceptance)

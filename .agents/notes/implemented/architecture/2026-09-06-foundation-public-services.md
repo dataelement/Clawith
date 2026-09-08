@@ -26,6 +26,8 @@ Permission owns `tenant` and `restricted` Agent visibility plus retained, revoca
 
 ## Consequences
 
+Invalid IANA timezone names and invalid timezone path forms both become the same bounded `InvalidInput`; library `ValueError` and raw path input do not escape the Agent service. Creation and update use the same validation boundary.
+
 `AgentService.get_for_execution` supplies Agent configuration to an already authorized human execution path. It checks the captured Principal's Agent IDs or administrator scope, Tenant identity and Agent availability without granting management access or refreshing login permissions. Tool capture and personal-account binding use this execution read, while administrative `get` remains administrator-only. Ordinary members can execute a visible Agent without acquiring its management API.
 
 Public provisioning and configuration methods are trusted application ports, not unauthenticated product endpoints. Transport must authenticate callers before constructing Principal values. G003 service verification does not authorize HTTP exposure, registration, SSO, Workspace/Tool provisioning, Provider execution or Run execution.

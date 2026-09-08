@@ -246,7 +246,7 @@ def _timezone(value: str) -> str:
     normalized = _required_text(value, field_name="timezone", max_length=64)
     try:
         ZoneInfo(normalized)
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):
         raise InvalidInput("timezone must be a valid IANA timezone") from None
     return normalized
 
