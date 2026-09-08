@@ -35,6 +35,7 @@ from app.modules.workspace.skills import (
     SkillDiscovery,
     SkillInstallScope,
     SkillOperations,
+    SkillPublicationGuard,
     SkillRemoval,
 )
 
@@ -56,6 +57,7 @@ __all__ = [
     "SkillContent",
     "SkillDiscovery",
     "SkillInstallScope",
+    "SkillPublicationGuard",
     "SkillRemoval",
     "WorkspaceScope",
     "WorkspaceService",

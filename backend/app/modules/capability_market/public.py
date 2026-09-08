@@ -292,6 +292,8 @@ class CapabilityMarketService:
         try:
             source = await self._materialize_for_agent(scope, item_id)
             try:
+                if not source.item.enabled:
+                    raise NotFound("Tenant capability source is unavailable")
                 if source.item.spec.kind != "skill":
                     raise InvalidInput("Capability is not a Skill")
                 binding = await self._workspace.publish_skill(
@@ -303,6 +305,7 @@ class CapabilityMarketService:
                     package_id=package_id,
                     expected_revision=expected_revision,
                     catalog_item_id=source.item.id,
+                    publication_guard=self.assert_active_skill_source,
                 )
                 published = True
             except DomainError as error:
@@ -449,6 +452,8 @@ class CapabilityMarketService:
         try:
             source = await self.materialize(principal, item_id=item_id)
             try:
+                if not source.item.enabled:
+                    raise NotFound("Tenant capability source is unavailable")
                 if source.item.spec.kind != "skill":
                     raise InvalidInput("Capability is not a Skill")
                 binding = await self._workspace.publish_skill(
@@ -460,6 +465,7 @@ class CapabilityMarketService:
                     package_id=package_id,
                     expected_revision=expected_revision,
                     catalog_item_id=source.item.id,
+                    publication_guard=self.assert_active_skill_source,
                 )
                 published = True
             except DomainError as error:
@@ -495,6 +501,7 @@ class CapabilityMarketService:
                 package_id=package.package_id,
                 prepared=prepared,
                 expected_revision=expected_revision,
+                publication_guard=self.assert_active_skill_source,
             )
             published = True
         finally:
@@ -510,9 +517,18 @@ class CapabilityMarketService:
         item_id: UUID,
         kind: CapabilityKind,
     ) -> None:
+        await self._require_active_source(repo, principal.tenant_id, item_id, kind)
+
+    async def assert_active_skill_source(self, transaction_context: TransactionContext, *, tenant_id: UUID,
+            catalog_item_id: UUID) -> None:
+        """Validate and lock source admission inside Workspace's final publication transaction."""
+        await self._require_active_source(CatalogRepository(transaction_context.session), tenant_id, catalog_item_id, "skill")
+
+    async def _require_active_source(self, repo: CatalogRepository, tenant_id: UUID,
+            item_id: UUID, kind: CapabilityKind) -> None:
         # Serialize shared definitions without holding a transaction during discovery.
-        row = await repo.get(principal.tenant_id, item_id, lock=True)
-        if row is None or row.tenant_id != principal.tenant_id or not row.enabled:
+        row = await repo.get(tenant_id, item_id, lock=True)
+        if row is None or row.tenant_id != tenant_id or not row.enabled:
             raise NotFound("Tenant capability source is unavailable")
         if row.kind != kind:
             raise Conflict("Capability source kind does not match installation")

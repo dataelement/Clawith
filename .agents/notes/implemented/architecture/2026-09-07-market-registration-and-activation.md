@@ -14,6 +14,8 @@ Installation first establishes the source, then invokes the public Tool or Works
 
 Shared Skill refresh updates the shared package through Workspace without rebinding an Agent's private fork. Private updates affect only the selected Agent. MCP installation passes explicit transport and account selection through Tool; Catalog reuse does not share account credentials or discovery.
 
+Skill activation rechecks the Tenant source after Platform-template materialization. Workspace requires the injected Market publication guard for Catalog-backed install, bind and refresh; the guard locks and checks the source in the same transaction as publication. Disabled or wrong-kind sources cannot produce an active binding or report activation success. File preparation remains outside that transaction. Concurrent disablement is ordered by the source-row lock, while explicit loads from an existing Run still follow captured discovery rather than polling enablement.
+
 Source-backed Tool and Skill resolution inject Market's bounded `enabled_source_ids` query. It uses the caller's existing TransactionContext and neither borrows another database connection nor invokes consumers recursively. This preserves the public dependency direction while allowing new discovery to exclude disabled sources. Captured execution views remain unchanged.
 
 ## Alternatives considered

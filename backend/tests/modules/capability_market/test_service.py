@@ -261,7 +261,8 @@ async def test_skill_shared_and_private_updates_use_workspace_owner(test_databas
     )
     assert initial.activated and initial.skill_binding
     binding = initial.skill_binding
-    await workspace.bind_skill(principal, agent_id=second.id, skill_name="example", package_id=binding.package_id)
+    await workspace.bind_skill(principal, agent_id=second.id, skill_name="example", package_id=binding.package_id,
+        publication_guard=market.assert_active_skill_source)
     discovery_a = await workspace.discover_skills(tenant_id=principal.tenant_id, agent_id=first.id)
     discovery_b = await workspace.discover_skills(tenant_id=principal.tenant_id, agent_id=second.id)
     shared = await market.install_skill(

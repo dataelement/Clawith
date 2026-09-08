@@ -9,3 +9,5 @@ Self-install ports accept only the trusted `AgentInstallScope` injected by an ex
 Tool/Skill configuration injects the bounded `enabled_source_ids` read port. It queries only Catalog facts through the caller's `TransactionContext`, never borrows a nested connection, commits, or invokes Tool/Workspace. Disabled sources affect new configuration discovery, not already resolved Run bindings. Source-backed consumers must fail explicitly if this port is absent.
 
 Only Agent Skill installation exists. Shared publication affects remaining shared bindings; private publication rebinds only its Agent through Workspace. No User/Group Skill namespace, install state machine or historical package archive is added.
+
+Catalog-backed Skill publication requires Market's active-source guard inside the final Workspace transaction. Source locking orders publication against concurrent disablement; external preparation remains outside the transaction. Template materialization never bypasses the existing Tenant source's disabled state.

@@ -92,6 +92,19 @@ class EnabledSkillSources(Protocol):
     ) -> frozenset[UUID]: ...
 
 
+class SkillPublicationGuard(Protocol):
+    async def __call__(self, transaction_context: TransactionContext, *, tenant_id: UUID,
+        catalog_item_id: UUID) -> None: ...
+
+
+async def _check_publication_source(guard: SkillPublicationGuard | None, tx: TransactionContext,
+        tenant_id: UUID, catalog_item_id: UUID | None) -> None:
+    if catalog_item_id is not None:
+        if guard is None:
+            raise InvalidInput("Catalog-backed Skill publication requires its source guard")
+        await guard(tx, tenant_id=tenant_id, catalog_item_id=catalog_item_id)
+
+
 class SkillOperations:
     _sessions: async_sessionmaker[AsyncSession]
     _storage: StorageBackend
@@ -168,6 +181,7 @@ class SkillOperations:
         package_id: UUID | None = None,
         expected_revision: str | None = None,
         catalog_item_id: UUID | None = None,
+        publication_guard: SkillPublicationGuard | None = None,
     ) -> SkillBindingView:
         self._validate_name(skill_name)
         if shared and catalog_item_id is not None and package_id is None and expected_revision is None:
@@ -175,7 +189,8 @@ class SkillOperations:
                 current = await self.lookup_shared_skill(principal, catalog_item_id=catalog_item_id)
                 if current:
                     result = await self.bind_skill(
-                        principal, agent_id=agent_id, skill_name=skill_name, package_id=current.package_id
+                        principal, agent_id=agent_id, skill_name=skill_name, package_id=current.package_id,
+                        publication_guard=publication_guard,
                     )
                     try:
                         await self.discard_prepared_skill(prepared)
@@ -201,6 +216,7 @@ class SkillOperations:
                     package_id=package_id,
                     expected_revision=expected_revision,
                     catalog_item_id=catalog_item_id,
+                    publication_guard=publication_guard,
                 )
         return await self._publish_binding(
             principal,
@@ -211,6 +227,7 @@ class SkillOperations:
             package_id=package_id,
             expected_revision=expected_revision,
             catalog_item_id=catalog_item_id,
+            publication_guard=publication_guard,
         )
 
     async def lookup_shared_skill(
@@ -229,7 +246,8 @@ class SkillOperations:
             return SharedSkillView(package.id, package.revision) if package else None
 
     async def refresh_shared_skill(
-        self, principal: TenantPrincipal, *, package_id: UUID, prepared: PreparedSkillPackage, expected_revision: str
+        self, principal: TenantPrincipal, *, package_id: UUID, prepared: PreparedSkillPackage, expected_revision: str,
+        publication_guard: SkillPublicationGuard | None = None,
     ) -> SharedSkillView:
         """Refresh Tenant-shared content without installing or rebinding any Agent."""
         require_admin(principal)
@@ -253,6 +271,7 @@ class SkillOperations:
                     raise AccessDenied("shared refresh cannot change a private package")
                 if package.revision != expected_revision:
                     raise Conflict("shared Skill changed; reload before refreshing")
+                await _check_publication_source(publication_guard, tx, principal.tenant_id, package.catalog_item_id)
                 old_key = package.storage_key
                 package.storage_key = prepared.storage_key
                 package.content_hash = prepared.content_hash
@@ -289,6 +308,7 @@ class SkillOperations:
         package_id: UUID | None,
         expected_revision: str | None,
         catalog_item_id: UUID | None,
+        publication_guard: SkillPublicationGuard | None,
     ) -> SkillBindingView:
         async with self._storage.resource_lock(f"skill-binding/{principal.tenant_id}/{agent_id}/{skill_name}"):
             try:
@@ -301,6 +321,7 @@ class SkillOperations:
                     package_id=package_id,
                     expected_revision=expected_revision,
                     catalog_item_id=catalog_item_id,
+                    publication_guard=publication_guard,
                 )
             except IntegrityError:
                 raise Conflict("Skill installation references changed or are incompatible") from None
@@ -316,6 +337,7 @@ class SkillOperations:
         package_id: UUID | None,
         expected_revision: str | None,
         catalog_item_id: UUID | None,
+        publication_guard: SkillPublicationGuard | None,
     ) -> SkillBindingView:
         self._validate_handle(prepared)
         self._validate_name(skill_name)
@@ -353,6 +375,10 @@ class SkillOperations:
                         raise Conflict("Skill no longer exists")
                     if shared and package and package.owner_agent_id is not None:
                         raise InvalidInput("private Skill cannot replace a shared package")
+                    if package and catalog_item_id is not None and package.catalog_item_id != catalog_item_id:
+                        raise Conflict("Skill update cannot replace its source registration")
+                    actual_source = package.catalog_item_id if package else catalog_item_id
+                    await _check_publication_source(publication_guard, tx, principal.tenant_id, actual_source)
                     if package and not shared and package.owner_agent_id is None:
                         package = None
                         selected_id = uuid4()
@@ -361,7 +387,7 @@ class SkillOperations:
                             id=selected_id,
                             tenant_id=principal.tenant_id,
                             owner_agent_id=None if shared else agent_id,
-                            catalog_item_id=catalog_item_id,
+                            catalog_item_id=actual_source,
                             storage_key=prepared.storage_key,
                             content_hash=prepared.content_hash,
                             format_version=1,
@@ -426,7 +452,8 @@ class SkillOperations:
         return result
 
     async def bind_skill(
-        self, principal: TenantPrincipal | SkillInstallScope, *, agent_id: UUID, skill_name: str, package_id: UUID
+        self, principal: TenantPrincipal | SkillInstallScope, *, agent_id: UUID, skill_name: str, package_id: UUID,
+        publication_guard: SkillPublicationGuard | None = None,
     ) -> SkillBindingView:
         self._validate_name(skill_name)
         async with (
@@ -441,6 +468,7 @@ class SkillOperations:
                 raise NotFound("Skill package does not exist")
             if package.owner_agent_id not in {None, agent_id}:
                 raise AccessDenied("private Skill belongs to another Agent")
+            await _check_publication_source(publication_guard, tx, principal.tenant_id, package.catalog_item_id)
             if await repository.binding(principal.tenant_id, agent_id, skill_name):
                 raise Conflict("Skill name is already installed")
             now = datetime.now(UTC)
