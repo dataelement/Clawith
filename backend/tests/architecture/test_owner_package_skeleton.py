@@ -21,7 +21,7 @@ OWNER_IMPLEMENTATION_FILES = {
     "model": {"execution.py", "adapters.py", "continuation.py"},
     "tool": {"contracts.py", "execution.py", "mcp.py"},
     "workspace": {"files.py", "skills.py"},
-    "run": {"contracts.py"},
+    "run": {"contracts.py", "snapshot.py", "engine.py", "lifecycle.py"},
 }
 
 
@@ -186,19 +186,21 @@ def test_s2_product_approval_permits_schema_but_not_services(tmp_path: Path, own
         _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved)
 
 
-def test_run_schema_approval_does_not_allow_runtime_service(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filename", ["public.py", "snapshot.py", "lifecycle.py", "engine.py"])
+def test_run_schema_approval_does_not_allow_runtime_service(tmp_path: Path, filename: str) -> None:
     owners = _canonical_owner_contracts()
     _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
-    (tmp_path / "run/public.py").write_text("class Runner: pass\n", encoding="utf-8")
+    (tmp_path / "run" / filename).write_text("class Runner: pass\n", encoding="utf-8")
     with pytest.raises(SkeletonError, match="run"):
         _validate_owner_package_skeleton(tmp_path, owners, approved_owners=frozenset({"run"}))
 
 
-@pytest.mark.parametrize("owner", ["run", "context"])
-def test_g005_contract_approval_allows_only_runtime_owner_implementation(tmp_path: Path, owner: str) -> None:
+@pytest.mark.parametrize("owner,filename", [("run", "public.py"), ("context", "public.py"),
+    ("run", "snapshot.py"), ("run", "lifecycle.py"), ("run", "engine.py")])
+def test_g005_contract_approval_allows_only_runtime_owner_implementation(tmp_path: Path, owner: str, filename: str) -> None:
     owners = _canonical_owner_contracts()
     _write_skeleton(tmp_path, (owner_id for owner_id, _, _ in owners))
-    (tmp_path / owner / "public.py").write_text("class Service: pass\n", encoding="utf-8")
+    (tmp_path / owner / filename).write_text("class Service: pass\n", encoding="utf-8")
     approved = frozenset({owner, "session"})
     _validate_owner_package_skeleton(tmp_path, owners, approved_owners=approved,
                                     runtime_implementation_owners=frozenset({owner}))
