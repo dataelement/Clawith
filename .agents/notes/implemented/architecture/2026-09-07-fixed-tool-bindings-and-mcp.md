@@ -1,6 +1,6 @@
 # Agent Note: Fixed Tool bindings and account-scoped MCP
 
-Status: implemented — Tool configuration, resolution, scheduling, MCP adapters and Workspace/search Builtins are available; per-Run assembly remains G005 work.
+Status: implemented — Tool configuration, resolution, scheduling, MCP adapters and Workspace/search Builtins are connected to per-Run assembly.
 
 ## Problem
 
@@ -22,6 +22,8 @@ The scheduler preserves call/result order and serial barriers. Only explicitly s
 
 MCP supports explicitly selected Streamable HTTP and legacy SSE, initialization, bounded discovery and calls through the application-owned stateless HTTP pool. Neither transport guessing nor default client authentication supplies account policy. Context closure releases streams and attempts server-session cleanup without undoing a completed Tool effect.
 
+`tool_result_content` exposes a bounded text/image presentation of normalized MCP results. It preserves text and image ordering, validates image MIME and Base64, retains unhandled blocks and metadata as text, and does not duplicate image bytes into that text. Non-MCP JSON is not interpreted as media. The function performs no I/O and does not rewrite the authoritative Tool Result; Run decides whether the captured exposed definition is eligible and retains original History. Invalid media presentation is a contained Tool-view error, not permission to replay the external call.
+
 ## Alternatives considered
 
 Requiring identical schemas for the same MCP identity was rejected because different credentials can expose different capabilities. Sharing account discovery or silently switching credentials would violate the selected account boundary. A Tool execution ledger was excluded by the approved architecture.
@@ -30,7 +32,7 @@ Deriving Child authorization from a filtered Main view loses Todo. Resolving liv
 
 ## Consequences
 
-`ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. [Workspace Builtins](2026-09-07-workspace-builtin-composition.md) and persisted provisioning are implemented. Task/Todo, A2A and actual Runner integration remain in their owning stages. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
+`ToolSearchExecutor` supplies the code-owned `search_tools` executor over a fixed Run-scoped set. A successful search exposes matching definitions only for subsequent requests and batches. Its result returns names; subsequent model requests obtain schemas from the updated view without repeating schema payloads in the Tool Result. Search changes exposure, not authorization or installation, and malformed or wrong-Run calls leave the view unchanged. [Workspace Builtins](2026-09-07-workspace-builtin-composition.md), persisted provisioning and [Run composition](2026-09-08-run-tool-and-application-composition.md) are implemented. A2A remains product-stage work. OAuth negotiation, optional MCP resource/prompt APIs and hosted-server compatibility are not implied by the implemented transport adapters.
 
 ## Verification
 

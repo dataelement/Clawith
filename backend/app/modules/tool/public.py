@@ -30,12 +30,14 @@ from app.modules.tool.contracts import (
     RunRole,
     ToolCall,
     ToolDefinition,
+    ToolOutputPart,
     ToolResolutionScope,
     ToolResult,
     ToolSource,
     canonical_json,
     json_object,
     role_eligible,
+    tool_result_content,
     validate_endpoint,
 )
 from app.modules.tool.execution import (
@@ -80,6 +82,7 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "ToolExecutor",
+    "ToolOutputPart",
     "ToolRegistry",
     "ToolResolutionScope",
     "ToolResult",
@@ -90,6 +93,7 @@ __all__ = [
     "canonical_json",
     "json_object",
     "role_eligible",
+    "tool_result_content",
     "validate_endpoint",
 ]
 

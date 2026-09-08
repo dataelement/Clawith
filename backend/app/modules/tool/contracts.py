@@ -1,5 +1,7 @@
 """Immutable public Tool contracts and bounded boundary codecs."""
 
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass
@@ -259,6 +261,81 @@ class ToolResult:
             {"call_id": self.call_id, "status": self.status, "content": json_object(self.content_json, maximum=262144)},
             maximum=262144,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ToolOutputPart:
+    kind: Literal["text", "image"]
+    value: str
+
+
+def tool_result_content(definition: ToolDefinition, result: ToolResult) -> tuple[ToolOutputPart, ...]:
+    """Project normalized MCP images without changing the authoritative Tool Result.
+
+    Non-MCP JSON remains opaque text. Unsupported MCP content and metadata are
+    retained as labelled JSON text, not interpreted or fetched. Consumers keep
+    the original result status and call identity alongside these content parts.
+    """
+    try:
+        ToolResult(result.call_id, result.status, result.content_json)
+        if definition.spec.source != "mcp":
+            return _bounded_output(result, [ToolOutputPart("text", result.content_json)])
+        body = json_object(result.content_json, maximum=262144)
+        if "content" not in body:
+            if result.status in ("error", "uncertain") and isinstance(body.get("message"), str):
+                return _bounded_output(result, [ToolOutputPart("text", result.content_json)])
+            raise InvalidInput("MCP Tool Result is missing its content blocks")
+        blocks = body["content"]
+        if not isinstance(blocks, list) or len(blocks) > 128:
+            raise InvalidInput("MCP Tool Result content must contain at most 128 blocks")
+        if "structuredContent" in body and not isinstance(body["structuredContent"], dict):
+            raise InvalidInput("MCP structured content must be an object")
+        parts: list[ToolOutputPart] = []
+        for block in blocks:
+            if not isinstance(block, dict) or not isinstance(block.get("type"), str) or not 1 <= len(block["type"]) <= 128:
+                raise InvalidInput("MCP Tool Result block type is invalid")
+            kind = block["type"]
+            if kind == "image":
+                data, mime = block.get("data"), block.get("mimeType")
+                if not isinstance(data, str) or not data or not isinstance(mime, str) or not re.fullmatch(
+                        r"image/[a-z0-9][a-z0-9.+-]{0,126}", mime, flags=re.IGNORECASE):
+                    raise InvalidInput("MCP image requires base64 data and an image media type")
+                try:
+                    if not base64.b64decode(data, validate=True):
+                        raise ValueError
+                except (ValueError, binascii.Error):
+                    raise InvalidInput("MCP image base64 data is invalid") from None
+                parts.append(ToolOutputPart("image", f"data:{mime.lower()};base64,{data}"))
+                metadata = {key: value for key, value in block.items() if key not in {"type", "data", "mimeType"}}
+            elif kind == "text":
+                if not isinstance(block.get("text"), str):
+                    raise InvalidInput("MCP text block is invalid")
+                parts.append(ToolOutputPart("text", block["text"]))
+                metadata = {key: value for key, value in block.items() if key not in {"type", "text"}}
+            else:
+                parts.append(ToolOutputPart("text", canonical_json(block, maximum=262144)))
+                continue
+            if metadata:
+                parts.append(ToolOutputPart("text", canonical_json({"type": kind, "metadata": metadata}, maximum=262144)))
+        metadata = {key: value for key, value in body.items() if key != "content"}
+        if metadata:
+            parts.append(ToolOutputPart("text", canonical_json({"type": "mcp_metadata", "metadata": metadata}, maximum=262144)))
+        if not parts:
+            parts.append(ToolOutputPart("text", '{"type":"mcp_content","content":[]}'))
+        return _bounded_output(result, parts)
+    except InvalidInput:
+        raise
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        raise InvalidInput("Tool Result content cannot be represented") from None
+
+
+def _bounded_output(result: ToolResult, parts: list[ToolOutputPart]) -> tuple[ToolOutputPart, ...]:
+    if len(parts) > 257:
+        raise InvalidInput("Tool Result content exceeds its part limit")
+    # JSON-in-text escaping adds a bounded representation cost to the 256 KiB source result.
+    canonical_json({"call_id": result.call_id, "status": result.status,
+        "parts": [{"kind": part.kind, "value": part.value} for part in parts]}, maximum=1024 * 1024)
+    return tuple(parts)
 
 
 @dataclass(frozen=True, slots=True)
