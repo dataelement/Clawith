@@ -76,6 +76,18 @@ async def test_later_tenant_enters_under_flood_and_failed_runs_release_capacity(
             tools=batches, slots=slots, capacity=150)
         batches.runtime = runtime
         await runtime.startup()
+        cleanup_gate = asyncio.Event()
+        cleanup_seen, cleanup_finished = set(), set()
+        release_continuation = runtime._model.release_continuation
+        async def observed_cleanup(**kwargs):
+            cleanup_seen.add(kwargs["run_id"])
+            # Once all requests reached the provider, hold real cleanup to distinguish
+            # committed admission release from termination of the execution task.
+            if len(observed) == 51:
+                await cleanup_gate.wait()
+            await release_continuation(**kwargs)
+            cleanup_finished.add(kwargs["run_id"])
+        monkeypatch.setattr(runtime._model, "release_continuation", observed_cleanup)
         try:
             starts = []
             for index in range(50):
@@ -101,6 +113,14 @@ async def test_later_tenant_enters_under_flood_and_failed_runs_release_capacity(
                 assert (await service.get(tenant_id=b.tenant_id, run_id=second.run.id)).status == "Failed"
                 for start in starts:
                     assert (await service.get(tenant_id=a.tenant_id, run_id=start.run.id)).status == "Completed"
+            expected = {start.run.id for start in starts} | {second.run.id}
+            await wait_until(lambda: cleanup_seen == expected)
+            assert runtime.dispatcher.active > 0
+            cleanup_gate.set()
+            await wait_until(lambda: runtime.dispatcher.active == 0)
+            assert cleanup_finished == expected
+            assert runtime.dispatcher.failures == {}
             assert runtime.dispatcher.active == 0
         finally:
+            cleanup_gate.set()
             await runtime.close()

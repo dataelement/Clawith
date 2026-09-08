@@ -35,6 +35,104 @@ from app.modules.workspace.public import WorkspaceSubject
 
 PROFILE = Path(__file__).parent / "profiles/backend_50.json"
 MAX_LATENCY_BUCKET_MS = 60000
+CORE_LATENCY_THRESHOLDS = {
+    "run_input_acceptance": "session_input_acceptance",
+    "run_control_read": "non_model_api",
+    "hot_context_assembly": "hot_context_assembly",
+    "cold_context_assembly": "cold_context_assembly",
+    "bounded_workspace_operation": "bounded_workspace_operation",
+    "provider_delta_forwarding": "provider_delta_forwarding",
+}
+
+
+def qualify_core(report, profile):
+    """Judge measured core services, not G006 HTTP APIs or mixed product entry points."""
+    if report.get("smoke") is True:
+        return "smoke_only", ["Short driver smoke is not load qualification"]
+    reasons = []
+
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+    def count(value):
+        return type(value) is int and value >= 0
+
+    environment = report.get("environment", {})
+    expected = profile["environment"]
+    if (environment.get("backend_cpu_vcpus") != expected["cpu_vcpus"]
+            or environment.get("backend_memory_bytes") != expected["memory_gib"] * 1024**3):
+        reasons.append("Backend CPU/RAM do not match the reference environment")
+    for field, minimum in (("docker_cpu_vcpus", expected["cpu_vcpus"]),
+            ("docker_memory_bytes", expected["memory_gib"] * 1024**3)):
+        actual = environment.get(field)
+        if not number(actual) or actual < minimum:
+            reasons.append(f"{field} is missing or below the reference environment")
+    for service in ("postgresql", "object_storage"):
+        if environment.get(service) != expected["services"][service]:
+            reasons.append(f"{service} does not match the reference topology")
+    if environment.get("redis") not in (expected["services"]["redis"], "not_used_by_core"):
+        reasons.append("Redis topology is unreported or differs from the reference")
+    for phase in ("warmup", "measurement"):
+        seconds = report.get("durations_seconds", {}).get(phase)
+        target = profile["duration"][f"{phase}_seconds"]
+        # A phase uses a monotonic deadline; allow one polling interval of overshoot.
+        if not number(seconds) or not target <= seconds <= target + 1:
+            reasons.append(f"{phase} duration does not match the reference window")
+    if report.get("agent_count") != 50:
+        reasons.append("Core load must exercise 50 Agents")
+    if report.get("offered_client_lanes") != 50:
+        reasons.append("Core load must offer 50 concurrent client lanes")
+    if report.get("runtime_capacity") != profile["capacity"]:
+        reasons.append("Runtime capacity differs from the frozen profile")
+    if report.get("payload_targets") != profile["fixture_payload_bytes"]:
+        reasons.append("Payload targets differ from the frozen profile")
+    metrics = report.get("metrics", {})
+    for metric, threshold_name in CORE_LATENCY_THRESHOLDS.items():
+        value = metrics.get(metric, {})
+        threshold = profile["thresholds"]["p95_ms"][threshold_name]
+        if not count(value.get("count")) or value["count"] == 0 or not number(value.get("p95_ms")):
+            reasons.append(f"{metric} lacks measured p95 samples")
+        elif value["p95_ms"] > threshold:
+            reasons.append(f"{metric} p95 exceeds {threshold} ms")
+    for field in ("accepted_runs", "completed_runs", "failed_runs", "platform_failed_runs",
+            "runs_with_failed_or_missing_tool_result", "accepted_durable_event_loss", "stream_event_loss"):
+        if not count(report.get(field)):
+            reasons.append(f"{field} is missing or invalid")
+    accepted = report.get("accepted_runs")
+    completed, failed = report.get("completed_runs"), report.get("failed_runs")
+    platform_failed = report.get("platform_failed_runs")
+    tool_failed = report.get("runs_with_failed_or_missing_tool_result")
+    if not count(accepted) or accepted == 0:
+        reasons.append("No accepted Runs were measured")
+    elif all(count(value) for value in (completed, failed, platform_failed, tool_failed)):
+        if completed + failed != accepted or not max(failed, tool_failed) <= platform_failed <= accepted:
+            reasons.append("Measured Run outcomes do not reconcile")
+        rate = report.get("platform_error_rate")
+        if (not number(rate) or not math.isclose(rate, platform_failed / accepted, rel_tol=1e-12)
+                or rate >= profile["thresholds"]["platform_error_rate_max_exclusive"]):
+            reasons.append("Platform error rate is missing, inconsistent or exceeds its exclusive threshold")
+    for field in ("accepted_durable_event_loss", "stream_event_loss"):
+        if report.get(field) != profile["thresholds"][field]:
+            reasons.append(f"{field} exceeds the loss threshold")
+    active = report.get("max_active_slots_observed")
+    if not count(active) or active != profile["capacity"]["run_pool"]:
+        reasons.append("Observed execution concurrency must reach, but not exceed, the 50-slot target")
+    if report.get("sample_overflow") is not False:
+        reasons.append("Latency histogram overflow is missing or did not pass")
+    # Slow and CPU-heavy Tools are core execution-isolation requirements, unlike
+    # the deferred G006 product workload mix. Missing observations cannot mean zero.
+    workloads = report.get("workload_measurements", {})
+    slow = workloads.get("slow_io", {})
+    if (not count(slow.get("count")) or slow["count"] == 0
+            or slow.get("latency_ms") != profile["tools"]["slow_latency_ms"]
+            or slow.get("payload_bytes") != profile["fixture_payload_bytes"]["slow_tool_result"]):
+        reasons.append("Slow Tool latency/payload workload is unmeasured or differs from the profile")
+    cpu = workloads.get("cpu", {})
+    if (not count(cpu.get("count")) or cpu["count"] == 0
+            or not count(cpu.get("max_concurrency"))
+            or not 0 < cpu["max_concurrency"] <= profile["capacity"]["tool_concurrency"]["cpu"]):
+        reasons.append("CPU Tool execution/concurrency workload is unmeasured or exceeds its bound")
+    return ("not_qualified" if reasons else "qualified"), reasons
 
 
 class Measurements:
@@ -76,7 +174,7 @@ class Measurements:
 
 def host_environment():
     result = {"platform": platform.platform(), "backend_cpu_vcpus": os.cpu_count(), "backend_memory_bytes": None,
-        "postgresql": "disposable_local_container", "redis": "not_used_by_core", "object_storage": "local_filesystem"}
+        "postgresql": "local_container", "redis": "not_used_by_core", "object_storage": "local_filesystem"}
     if platform.system() == "Darwin":
         value = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=True, timeout=10)
         result["backend_memory_bytes"] = int(value.stdout)
@@ -226,7 +324,8 @@ async def exercise(test_database, tmp_path, monkeypatch, profile, *, smoke=False
                         async with transaction(database.control_sessions) as tx:
                             run = await RunService(tx).get(tenant_id=principal.tenant_id, run_id=start.run.id)
                         tracker.sample("run_control_read", (perf_counter() - now) * 1000)
-                        max_active = max(max_active, runtime.dispatcher.active)
+                        if tracker.phase == "measurement":
+                            max_active = max(max_active, runtime.dispatcher.active)
                         if run.status in ("Completed", "Failed", "Cancelled", "Interrupted"):
                             break
                         await asyncio.sleep(.02)
@@ -269,6 +368,7 @@ async def exercise(test_database, tmp_path, monkeypatch, profile, *, smoke=False
                         tracker.sample(f"{label}_context_assembly", (perf_counter() - now) * 1000)
                     await asyncio.sleep(.1)
             jobs = [asyncio.create_task(worker(snapshot)) for snapshot in snapshots]
+            offered_client_lanes = len(jobs)
             jobs.append(asyncio.create_task(contexts()))
             try:
                 for phase, seconds in (("warmup", profile["duration"]["warmup_seconds"]), ("measurement", profile["duration"]["measurement_seconds"])):
@@ -299,25 +399,24 @@ async def exercise(test_database, tmp_path, monkeypatch, profile, *, smoke=False
             await runtime.close()
     stream_loss = sum(measured for _, measured in tracker.emitted.values())
     metrics = tracker.percentiles()
-    reasons = ["Local filesystem storage differs from the required object-storage container",
-        "Core fixture does not exercise G006 product API/workload mix or CPU Tools",
-        "Slow Tool-result payload fixture is not exercised by the current read_file Tool"]
-    thresholds = profile["thresholds"]
-    for name, threshold in thresholds["p95_ms"].items():
-        if name in metrics and (metrics[name]["p95_ms"] is None or metrics[name]["p95_ms"] > threshold):
-            reasons.append(f"{name} p95 exceeds {threshold} ms")
-    if failures or tool_failures or durable_loss or stream_loss or tracker.overflow:
-        reasons.append("Execution/loss/sample bounds did not pass")
-    return {"schema_version": 1, "scenario": "core", "qualification": "smoke_only" if smoke else "not_qualified",
-        "reasons": reasons, "durations_seconds": actual_durations, "metrics": metrics,
+    report = {"schema_version": 1, "scenario": "core", "smoke": smoke,
+        "durations_seconds": actual_durations, "metrics": metrics,
         "accepted_runs": accepted, "completed_runs": completed, "failed_runs": failures,
+        "platform_failed_runs": platform_failures, "sample_overflow": tracker.overflow,
         "platform_error_rate": platform_failures / accepted if accepted else None,
         "runs_with_failed_or_missing_tool_result": tool_failures,
         "accepted_durable_event_loss": durable_loss, "stream_event_loss": stream_loss,
         "max_active_slots_observed": max_active, "agent_count": len(snapshots),
+        "offered_client_lanes": offered_client_lanes,
         "runtime_capacity": profile["capacity"], "payload_targets": profile["fixture_payload_bytes"],
-        "unmeasured": ["non_model_api", "session_input_acceptance", "hostile_fairness_during_load", "cpu_tool_concurrency"],
+        "workload_measurements": {},
+        "unmeasured": ["non_model_api", "session_input_acceptance", "g006_product_workload_mix",
+            "hostile_fairness_during_load", "cpu_tool_concurrency", "slow_tool_workload"],
+        "latency_scope": "run_input_acceptance and run_control_read measure core service calls, not HTTP. They use the profile's input-acceptance and non-model-control latency thresholds.",
         "scope": "Actual RunRuntime, Model HTTP adapter, Workspace Tool, PostgreSQL. Hot/cold are isolated Context owner calls under the same load, not full Run cold-start timings."}
+    if smoke:
+        report["qualification"], report["reasons"] = qualify_core(report, profile)
+    return report
 
 
 @pytest.mark.skipif("CLAWITH_CORE_LOAD_PROFILE" not in os.environ, reason="18-minute canonical load is opt-in")
@@ -334,10 +433,7 @@ async def test_full_core_profile(test_database, tmp_path, monkeypatch):
             "environment": environment, "note": "The full measurement did not complete; no performance acceptance."}, indent=2) + "\n")
         raise
     report["environment"] = environment
-    if environment["backend_cpu_vcpus"] != 8 or environment["backend_memory_bytes"] != 16 * 1024**3:
-        report["reasons"].append("Backend CPU/RAM do not match the required 8 vCPU/16 GiB envelope")
-    if environment["docker_memory_bytes"] < 16 * 1024**3:
-        report["reasons"].append("Docker memory allocation is below the required envelope")
+    report["qualification"], report["reasons"] = qualify_core(report, profile)
     output.write_text(json.dumps(report, indent=2) + "\n")
 
 
