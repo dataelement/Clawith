@@ -38,6 +38,10 @@ The first release still requires one non-overlapping Runner. Production source m
 
 ## Verification
 
+The cumulative repair source at `26c792f3` passed 540 focused tests from a clean Git export, excluding deferred importer drafts and uncommitted G006 documents. Coverage includes application fixtures, Run/Engine, Model, Context, Agent, Tool, Workspace, Market, Context statistics, qualification policy and execution fairness. The concurrent working-tree full Backend run passed 2910 tests with one formal long-load skip and four deprecation warnings. These are separate source scopes, not interchangeable test counts. Ruff, Pyright, architecture guard and owner/goal manifest validation passed; the architecture guard retains legacy size and direct-query warnings. Independent code and architecture lanes found no remaining high-priority blocker in the repaired contracts.
+
+G005 core functional repair does not establish formal load qualification. The reference-environment long test was not rerun, slow/CPU workload measurements remain missing, and live Provider/MCP behavior and G006 product APIs remain unverified. The performance gate continues to report those gaps rather than converting fixture success into platform acceptance.
+
 Real PostgreSQL tests cover source races, scope isolation, rollback, Child waits/resume, unseen-input completion guards, late cancellation, post-commit scheduling failure, retained-result retries, malformed result rejection and stop-with-pending-creation. The application fixture exercises actual Runtime, Model HTTP adapters and Workspace Tools with a controlled Provider and transactional product-owner output. Independent code and architecture review cover the corresponding ownership and concurrency boundaries.
 
 Earlier global-lock removal measurements are retained in `backend/artifacts/performance/start-latency-comparison.json`. These are controlled local startup measurements, not full-platform qualification. The earlier 18-minute load remains diagnostic: it used a different source snapshot, a smaller Docker memory envelope and incomplete product workloads.
