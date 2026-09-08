@@ -331,6 +331,9 @@ async def test_task_child_need_input_resume_and_result_return_use_same_child(tes
         assert "waiting" in kinds
         assert any("Monday" in content.value for request in model.requests if request.run_id == child_id
             for message in request.messages for content in message.content)
+        assert all(sum("initial_input:task:" in part.value and "research" in part.value
+            for message in request.messages for part in message.content) == 1
+            for request in model.requests if request.run_id == child_id)
         assert owners == [main]
     finally:
         await engine.close()
@@ -397,6 +400,8 @@ async def test_compacted_observed_base_survives_waiting_cache_and_projection_del
             source=SourceIdentity("session", uuid4(), "answer"), waiting_reference=waiting.waiting_reference)
         await wait_status(test_database, tenant, run, "Completed")
         assert len(model.requests) == 4
+        assert all(sum("initial_input:" in part.value and "read two reports" in part.value
+            for message in request.messages for part in message.content) == 1 for request in model.requests)
         assert any("Earlier Tool output omitted" in content.value for message in model.requests[-1].messages for content in message.content)
     finally:
         await engine.close()
@@ -412,6 +417,8 @@ async def test_summary_generation_and_primary_call_use_separate_quanta(test_data
         async def summarize(self, **kwargs):
             nonlocal summary_calls
             summary_calls += 1
+            assert all("inspect all reports" not in part.value for unit in kwargs["units"]
+                for message in unit.messages for part in message.content)
             return ContextSummary("preserved task", "", "read prior material", "", "", "continue", "")
     async def reply(request):
         calls = (ModelToolCall(f"call-{len(model.requests)}", "read_file", "{}"),) if len(model.requests) < 9 else ()
@@ -435,6 +442,8 @@ async def test_summary_generation_and_primary_call_use_separate_quanta(test_data
         await engine.start(snapshot=snap, input=InputContent("inspect all reports"), source=SourceIdentity("session", uuid4(), "q"))
         await wait_status(test_database, tenant, run, "Completed")
         assert summary_calls > 0 and max(quantum_counts) == 1
+        assert all(sum("initial_input:" in part.value and "inspect all reports" in part.value
+            for message in request.messages for part in message.content) == 1 for request in model.requests)
     finally:
         await engine.close()
 
@@ -602,7 +611,8 @@ async def test_interleaved_stream_events_retain_exact_run_scope(test_database, t
                 await asyncio.sleep(0)
             return ModelStepResult("done", (), "stop", ModelUsage(), request.step_id, False)
     async def observer(key, event):
-        observed.append((key, event))
+        if event.kind == "model_event":
+            observed.append((key, event.event))
     engine = runtime(test_database, StreamingModel(), observer=observer, slots=2)
     await engine.startup()
     try:
@@ -691,6 +701,8 @@ async def test_run_cancellation_during_observer_still_stops_execution(test_datab
             finally:
                 model_stopped.set()
     async def observer(key, event):
+        if event.kind != "model_event":
+            return
         observing.set()
         await asyncio.Event().wait()
     engine = runtime(test_database, StreamingModel(), observer=observer)
@@ -824,14 +836,17 @@ async def test_projection_hash_hit_and_all_cache_misses_reconstruct_identical_mo
     tenant, agent = await seed(transaction_factory)
     run = uuid4()
     async def reply(request):
-        calls = (ModelToolCall("ask", "need_input", "{}"),)
+        calls = ((ModelToolCall("read", "read_file", "{}"),) if len(model.requests) == 1 else
+            (ModelToolCall("ask", "need_input", "{}"),))
         return ModelStepResult("", calls, "tool_calls", ModelUsage(), request.step_id, False)
     async def execute(snap, step_id, available, calls):
-        return ToolBatchOutcome((ToolResult("ask", "success", '{"need_input":true,"question":"which day?"}'),), available)
-    engine = runtime(test_database, Model(reply), Tools(execute))
+        content = "{}" if calls[0].name == "read_file" else '{"need_input":true,"question":"which day?"}'
+        return ToolBatchOutcome((ToolResult(calls[0].call_id, "success", content),), available)
+    model = Model(reply)
+    engine = runtime(test_database, model, Tools(execute))
     await engine.startup()
     try:
-        await engine.start(snapshot=with_tools(snapshot(tenant, agent, run), "need_input"), input=InputContent("actual source"),
+        await engine.start(snapshot=with_tools(snapshot(tenant, agent, run), "read_file", "need_input"), input=InputContent("actual source"),
             source=SourceIdentity("session", uuid4(), "q"))
         waiting = await wait_status(test_database, tenant, run, "Waiting")
         key = RunKey(tenant, agent, run)
@@ -860,8 +875,8 @@ async def test_projection_hash_hit_and_all_cache_misses_reconstruct_identical_mo
                 result = await cache.assembler.prepare(state=cache.state, additions=tuple(cache.additions), tools=definitions)
                 return initial_cursor, result.messages, reads
         cursor, expected, reads = await rebuild()
-        assert cursor == saved.through_sequence == 1
-        assert reads == [saved.through_sequence]
+        assert cursor == saved.through_sequence == 4
+        assert reads == [0, saved.through_sequence]
         variants = [None, {"broken": True},
             TypeAdapter(ContextState).dump_python(ContextState((ContextUnit(1,
                 (ModelMessage("user", (ModelContent("text", "invented projection content"),)),)),), 1), mode="json"),
@@ -875,14 +890,14 @@ async def test_projection_hash_hit_and_all_cache_misses_reconstruct_identical_mo
                 else:
                     await tx.session.execute(update(ContextProjectionRecord).where(ContextProjectionRecord.run_id == run).values(payload=invalid))
             cursor, restored, reads = await rebuild()
-            assert cursor == 0 and restored == expected
-            assert reads == [0]
+            assert cursor == 1 and restored == expected
+            assert reads == [0, 1]
             async with transaction(test_database.sessions) as tx:
                 assert await tx.session.scalar(select(ContextProjectionRecord.run_id).where(ContextProjectionRecord.run_id == run)) is None
                 assert (await RunService(tx).get(tenant_id=tenant, run_id=run)).status == "Waiting"
         async with transaction(test_database.sessions) as tx:
             after = await RunService(tx).read_history(tenant_id=tenant, run_id=run)
-            assert after.entries[-1].payload.read_through_sequence == 1
+            assert after.entries[-1].payload.read_through_sequence == fact.payload.read_through_sequence
         from app.modules.run.contracts import encode_history
         from app.modules.run.models import RunHistoryRecord
 
@@ -892,7 +907,7 @@ async def test_projection_hash_hit_and_all_cache_misses_reconstruct_identical_mo
             await tx.session.execute(update(RunHistoryRecord).where(RunHistoryRecord.run_id == run,
                 RunHistoryRecord.sequence == fact.sequence).values(payload_schema_version=old_input.version, payload=old_input.payload))
         cursor, restored, reads = await rebuild()
-        assert cursor == 0 and reads == [0] and restored == expected
+        assert cursor == 1 and reads == [0, 1] and restored == expected
     finally:
         await engine.close()
 
@@ -1376,5 +1391,508 @@ async def test_runtime_fresh_main_has_four_sql_one_transaction_and_one_checkout(
             for target, name, listener in listeners:
                 event.remove(target, name, listener)
         assert result.created and counts == {"sql": 4, "begin": 1, "commit": 1, "checkout": 1}
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("during_tool", [False, True])
+async def test_inflight_input_follows_old_response_and_complete_exchange_after_cache_rebuild(
+        test_database, transaction_factory, during_tool):
+    from sqlalchemy import delete
+
+    from app.modules.context.models import ContextProjectionRecord
+    from app.modules.model.public import ModelToolDefinition
+    from app.runtime.scheduler import RunKey
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    entered, release, next_entered, finish = (asyncio.Event() for _ in range(4))
+    async def reply(request):
+        if len(model.requests) == 1:
+            if not during_tool:
+                entered.set()
+                await release.wait()
+            return ModelStepResult("old response", (ModelToolCall("read", "read_file", "{}"),),
+                "tool_calls", ModelUsage(), request.step_id, False)
+        next_entered.set()
+        await finish.wait()
+        return ModelStepResult("new response", (), "stop", ModelUsage(), request.step_id, False)
+    async def execute(snap, step_id, available, calls):
+        if during_tool:
+            entered.set()
+            await release.wait()
+        return ToolBatchOutcome((ToolResult("read", "success", '{"fact":"old tool result"}'),), available)
+    model = Model(reply)
+    engine = runtime(test_database, model, Tools(execute))
+    await engine.startup()
+    try:
+        await engine.start(snapshot=with_tools(snapshot(tenant, agent, run), "read_file"), input=InputContent("original query"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await asyncio.wait_for(entered.wait(), 2)
+        await engine.input(tenant_id=tenant, run_id=run, input=InputContent("new information"),
+            source=SourceIdentity("session", uuid4(), "next"))
+        release.set()
+        await asyncio.wait_for(next_entered.wait(), 3)
+        expected = model.requests[1].messages
+        assert [message.role for message in expected] == ["system", "user", "assistant", "tool", "user"]
+        assert expected[2].content[0].value == "old response"
+        assert "new information" in expected[-1].content[0].value
+        async with transaction(test_database.sessions) as tx:
+            service = RunService(tx)
+            receipt = await service.latest_fact(tenant_id=tenant, run_id=run, kind="model_input")
+            await tx.session.execute(delete(ContextProjectionRecord).where(ContextProjectionRecord.run_id == run))
+            cache = await engine._load(service, RunKey(tenant, agent, run), tx)
+            await engine._advance(service, RunKey(tenant, agent, run), cache, receipt.payload.read_through_sequence)
+            tools = tuple(ModelToolDefinition(tool.spec.name, tool.spec.description, tool.spec.input_schema_json)
+                for tool in cache.available.visible())
+            prepared = await cache.assembler.prepare(state=cache.state, additions=tuple(cache.additions), tools=tools)
+            assert prepared.messages == expected
+        finish.set()
+        await wait_status(test_database, tenant, run, "Completed")
+    finally:
+        release.set()
+        finish.set()
+        await engine.close()
+
+
+async def test_input_before_model_input_record_is_not_retroactively_consumed(test_database, transaction_factory, monkeypatch):
+    from app.modules.context.public import ContextAssembler
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    original_prepare = ContextAssembler.prepare
+    injected = False
+    async def prepare(assembler, **kwargs):
+        nonlocal injected
+        prepared = await original_prepare(assembler, **kwargs)
+        if not injected:
+            injected = True
+            await engine.input(tenant_id=tenant, run_id=run, input=InputContent("arrived after preparation"),
+                source=SourceIdentity("session", uuid4(), "new"))
+        return prepared
+    monkeypatch.setattr(ContextAssembler, "prepare", prepare)
+    model = Model()
+    engine = runtime(test_database, model)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snapshot(tenant, agent, run), input=InputContent("original query"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        assert len(model.requests) == 2
+        assert [message.role for message in model.requests[1].messages] == ["system", "user", "assistant", "user"]
+        assert "arrived after preparation" in model.requests[1].messages[-1].content[0].value
+        async with transaction(test_database.sessions) as tx:
+            history = await RunService(tx).read_history(tenant_id=tenant, run_id=run)
+        assert [type(entry.payload).__name__ for entry in history.entries[:4]] == [
+            "InitialInputPayload", "RelatedInputPayload", "ModelInputPayload", "ModelStepPayload"]
+        assert history.entries[3].payload.read_through_sequence == 1
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("at_startup", [True, False])
+async def test_runtime_startup_and_close_deliver_interrupted_main_outcome_once(test_database, transaction_factory, at_startup):
+    from modules.run.test_lifecycle import start
+
+    tenant, agent = await seed(transaction_factory)
+    calls = []
+    entered = asyncio.Event()
+    class Consumer:
+        async def record_outcome(self, tx, *, run, outcome):
+            calls.append((run.id, outcome.status))
+    async def blocked(request):
+        entered.set()
+        await asyncio.Event().wait()
+    model = Model(blocked)
+    engine = runtime(test_database, model, consumer=Consumer())
+    run = uuid4()
+    if at_startup:
+        await start(transaction_factory, tenant, agent, run=run)
+    await engine.startup()
+    if not at_startup:
+        await engine.start(snapshot=snapshot(tenant, agent, run), input=InputContent("work"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await asyncio.wait_for(entered.wait(), 2)
+    await engine.close()
+    await engine.close()
+    assert calls == [(run, "Interrupted")]
+
+
+@pytest.mark.parametrize("broken", [False, True])
+async def test_context_telemetry_has_a_real_scoped_consumer_and_cannot_fail_the_run(test_database, transaction_factory, caplog, broken):
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    measurements = []
+    def observer(key, telemetry):
+        measurements.append((key, telemetry))
+        if broken:
+            raise RuntimeError("private metric details")
+    engine = runtime(test_database, context_observer=observer)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snapshot(tenant, agent, run), input=InputContent("work"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        assert len(measurements) == 1
+        key, telemetry = measurements[0]
+        assert (key.tenant_id, key.agent_id, key.run_id) == (tenant, agent, run)
+        assert telemetry.assembly_seconds >= 0 and telemetry.input_tokens > 0
+        assert telemetry.validated_units >= 0 and telemetry.serialized_messages >= 0 and telemetry.reused_units >= 0
+        assert engine.context_observer_failures == int(broken)
+        assert "private metric details" not in caplog.text
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("code,unrecoverable,attempts", [
+    ("transport_failed", False, 3), ("rate_limited", False, 3), ("provider_unavailable", False, 3),
+    ("transport_failed", True, 1), ("provider_rejected", True, 1), ("credential_unavailable", True, 1),
+    ("invalid_input", False, 1),
+])
+async def test_model_failure_retry_policy_is_bounded_and_does_not_fake_success(test_database, transaction_factory, code, unrecoverable, attempts):
+    from app.modules.model.public import ModelFailure
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    async def fail(request):
+        return ModelFailure(code, "controlled failure", unrecoverable)
+    model, tools = Model(fail), Tools()
+    engine = runtime(test_database, model, tools)
+    quanta = []
+    original = engine.quantum
+    async def count(key):
+        before = len(model.requests)
+        result = await original(key)
+        quanta.append(len(model.requests) - before)
+        return result
+    engine.dispatcher._quantum = count
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snapshot(tenant, agent, run), input=InputContent("work"), source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Failed")
+        async with asyncio.timeout(2):
+            while engine.dispatcher.active:
+                await asyncio.sleep(0.01)
+        assert len(model.requests) == attempts and all(item is model.requests[0] for item in model.requests)
+        assert tools.calls == [] and max(quanta) == 1
+        async with transaction(test_database.sessions) as tx:
+            history = await RunService(tx).read_history(tenant_id=tenant, run_id=run)
+        assert not any(type(entry.payload).__name__ == "ModelStepPayload" for entry in history.entries)
+        assert history.entries[-1].payload.reason == code
+        assert run not in engine._attempts
+    finally:
+        await engine.close()
+
+
+async def test_retry_stream_attempts_reset_and_late_input_waits_for_next_logical_request(test_database, transaction_factory):
+    from app.modules.model.public import ModelFailure, ModelStreamEvent
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    displayed, events = {}, []
+    injected = False
+    class RetryingModel(Model):
+        async def execute_step(self, policy, request, *, on_event=None):
+            self.requests.append(request)
+            if len(self.requests) <= 2:
+                await on_event(ModelStreamEvent("text", "discard me"))
+                return ModelFailure("transport_failed", "temporary")
+            await on_event(ModelStreamEvent("text", "kept answer"))
+            return ModelStepResult("kept answer", (), "stop", ModelUsage(), request.step_id, False)
+    async def observer(key, event):
+        nonlocal injected
+        events.append(event)
+        if event.kind in ("attempt_started", "attempt_discarded"):
+            displayed[event.step_id] = ""
+        else:
+            displayed[event.step_id] += event.event.text
+        if event.kind == "attempt_discarded" and not injected:
+            injected = True
+            await engine.input(tenant_id=tenant, run_id=run, input=InputContent("late requirement"),
+                source=SourceIdentity("session", uuid4(), "late"))
+    model = RetryingModel()
+    engine = runtime(test_database, model, observer=observer)
+    snap = snapshot(tenant, agent, run)
+    snap = replace(snap, model=replace(snap.model,
+        policy=replace(snap.model.policy, capabilities_json='{"supports_tool_calling":true,"supports_streaming":true}'),
+        profile=replace(snap.model.profile, supports_streaming=True)))
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snap, input=InputContent("work"), source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        assert len(model.requests) == 4
+        assert model.requests[0] is model.requests[1] is model.requests[2]
+        assert all(request.stream for request in model.requests)
+        assert "late requirement" not in str(model.requests[2].messages)
+        assert "late requirement" in model.requests[3].messages[-1].content[0].value
+        assert all(text == "kept answer" for text in displayed.values())
+        assert [event.attempt for event in events if event.kind == "attempt_started"] == [1, 2, 3, 1]
+        async with transaction(test_database.sessions) as tx:
+            history = await RunService(tx).read_history(tenant_id=tenant, run_id=run)
+        steps = [entry.payload for entry in history.entries if type(entry.payload).__name__ == "ModelStepPayload"]
+        assert len(steps) == 2 and steps[0].read_through_sequence == 1
+    finally:
+        await engine.close()
+
+
+async def test_model_retry_does_not_repeat_completed_effectful_tool(test_database, transaction_factory):
+    from app.modules.model.public import ModelFailure
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    async def reply(request):
+        if len(model.requests) == 1:
+            return ModelStepResult("", (ModelToolCall("write", "write_file", "{}"),), "tool_calls", ModelUsage(), request.step_id, False)
+        if len(model.requests) < 4:
+            return ModelFailure("provider_unavailable", "temporary")
+        return ModelStepResult("done", (), "stop", ModelUsage(), request.step_id, False)
+    model, tools = Model(reply), Tools()
+    engine = runtime(test_database, model, tools)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=with_tools(snapshot(tenant, agent, run), "write_file"), input=InputContent("write"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        assert len(tools.calls) == 1 and len(model.requests) == 4
+        assert model.requests[1] is model.requests[2] is model.requests[3]
+    finally:
+        await engine.close()
+
+
+async def test_cancelled_model_attempt_is_not_retried(test_database, transaction_factory):
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    entered = asyncio.Event()
+    async def wait(request):
+        entered.set()
+        await asyncio.Event().wait()
+    model = Model(wait)
+    engine = runtime(test_database, model)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snapshot(tenant, agent, run), input=InputContent("work"), source=SourceIdentity("session", uuid4(), "q"))
+        await asyncio.wait_for(entered.wait(), 2)
+        await engine.cancel(tenant_id=tenant, run_id=run)
+        assert len(model.requests) == 1 and run not in engine._attempts
+    finally:
+        await engine.close()
+
+
+async def test_exhausted_model_retry_fails_main_and_stops_child_without_repeating_task(test_database, transaction_factory):
+    from app.modules.model.public import ModelFailure
+
+    tenant, agent = await seed(transaction_factory)
+    main, child = uuid4(), None
+    child_stopped = asyncio.Event()
+    parent_calls = 0
+    async def reply(request):
+        nonlocal parent_calls
+        if request.run_id != main:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                child_stopped.set()
+        parent_calls += 1
+        if parent_calls == 1:
+            return ModelStepResult("", (ModelToolCall("delegate", "task", "{}"),), "tool_calls", ModelUsage(), request.step_id, False)
+        return ModelFailure("rate_limited", "temporary")
+    async def execute(snap, step_id, available, calls):
+        nonlocal child
+        child = await engine.delegate(tenant_id=tenant, parent_run_id=main, step_id=step_id,
+            call_id="delegate", work="background work")
+        return ToolBatchOutcome((ToolResult("delegate", "success", '{"accepted":true}'),), available)
+    tools = Tools(execute)
+    engine = runtime(test_database, Model(reply), tools, slots=2)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=with_tools(snapshot(tenant, agent, main), "task"), input=InputContent("work"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, main, "Failed")
+        await asyncio.wait_for(child_stopped.wait(), 2)
+        assert (await status(test_database, tenant, child)).status == "Cancelled"
+        assert parent_calls == 4 and len(tools.calls) == 1
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("unrecoverable", [False, True])
+async def test_summary_failure_retries_fixed_plan_in_separate_quanta(test_database, transaction_factory, unrecoverable):
+    from app.modules.context.public import ContextSummary, ModelPreparationFailure
+    from app.modules.model.public import ModelFailure
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    plans = []
+    completed_summary = False
+    class Summary:
+        async def summarize(self, **kwargs):
+            nonlocal completed_summary
+            plans.append(kwargs)
+            if len(plans) == 1:
+                await engine.input(tenant_id=tenant, run_id=run, input=InputContent("new input during summary retry"),
+                    source=SourceIdentity("session", uuid4(), "new"))
+            if len(plans) < 3:
+                raise ModelPreparationFailure(ModelFailure("provider_unavailable", "temporary", unrecoverable))
+            completed_summary = True
+            return ContextSummary("original task", "", "processed earlier material", "", "", "continue", "")
+    async def reply(request):
+        calls = () if completed_summary else (ModelToolCall(f"call-{len(model.requests)}", "read_file", "{}"),)
+        return ModelStepResult("done", calls, "tool_calls" if calls else "stop", ModelUsage(), request.step_id, False)
+    model = Model(reply)
+    engine = runtime(test_database, model, summarizer_factory=lambda snap: Summary())
+    snap = with_tools(snapshot(tenant, agent, run), "read_file")
+    snap = replace(snap, model=replace(snap.model,
+        policy=replace(snap.model.policy, context_limit=4000, output_limit=500),
+        profile=replace(snap.model.profile, context_limit=4000, output_limit=500)))
+    observed = []
+    original = engine.quantum
+    async def quantum(key):
+        before = len(model.requests) + len(plans)
+        result = await original(key)
+        observed.append(len(model.requests) + len(plans) - before)
+        return result
+    engine.dispatcher._quantum = quantum
+    await engine.startup()
+    try:
+        await engine.start(snapshot=snap, input=InputContent("original task"), source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Failed" if unrecoverable else "Completed")
+        assert len(plans) == (1 if unrecoverable else 3)
+        assert all(plan == plans[0] for plan in plans)
+        assert all("new input during summary retry" not in str(plan["units"]) for plan in plans)
+        assert max(observed) == 1
+        if not unrecoverable:
+            assert "new input during summary retry" in str(model.requests[-1].messages)
+    finally:
+        await engine.close()
+
+
+def mcp_snapshot(tenant, agent, run):
+    snap = snapshot(tenant, agent, run)
+    spec = DefinitionSpec("mcp_image", "Get an image", '{"type":"object"}', "mcp.v1", "mcp", uuid4(), "image")
+    return replace(snap, tools=AuthorizedToolSet(tenant, agent,
+        (ResolvedTool(ToolDefinition(uuid4(), tenant, spec), None, "https://mcp.invalid"),)),
+        initial_direct_names=frozenset({"mcp_image"}), model=replace(snap.model,
+            policy=replace(snap.model.policy, capabilities_json='{"supports_tool_calling":true,"supports_images":true}'),
+            profile=replace(snap.model.profile, supports_images=True)))
+
+
+async def test_mcp_image_tool_parts_reach_model_and_exact_counter_preserving_raw_history(test_database, transaction_factory):
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    data = "iVBORw0KGgo="
+    raw = '{"content":[{"type":"text","text":"picture"},{"type":"image","mimeType":"image/png","data":"' + data + '"}],"structuredContent":{"title":"sample"}}'
+    counts = []
+    async def counter(messages, tools):
+        counts.append((messages, tools))
+        return 400
+    async def reply(request):
+        calls = (ModelToolCall("image", "mcp_image", "{}"),) if len(model.requests) == 1 else ()
+        return ModelStepResult("done", calls, "tool_calls" if calls else "stop", ModelUsage(), request.step_id, False)
+    async def execute(snap, step, available, calls):
+        return ToolBatchOutcome((ToolResult("image", "success", raw),), available)
+    model = Model(reply)
+    engine = runtime(test_database, model, Tools(execute), token_counter_factory=lambda snap: counter)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=mcp_snapshot(tenant, agent, run), input=InputContent("inspect"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        assert len(model.requests) == 2 and len(counts) == 1
+        message = next(message for message in model.requests[-1].messages if message.role == "tool")
+        assert message.call_id == "image" and not message.is_error
+        assert [part.kind for part in message.content] == ["text", "image", "text"]
+        assert message.content[1].value == f"data:image/png;base64,{data}"
+        assert model.requests[-1].input_tokens == 400
+        assert all(data not in part.value for part in message.content if part.kind == "text")
+        async with transaction(test_database.sessions) as tx:
+            history = await RunService(tx).read_history(tenant_id=tenant, run_id=run)
+        output = next(entry.payload for entry in history.entries if type(entry.payload).__name__ == "ToolResultPayload")
+        assert output.result.content_json == raw
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("failure", ["transient", "permanent", "missing"])
+async def test_image_counter_failures_use_preparation_retry_without_guessed_budget(test_database, transaction_factory, failure):
+    from app.modules.context.public import ModelPreparationFailure
+    from app.modules.model.public import ModelFailure
+
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    counts = []
+    async def counter(messages, tools):
+        counts.append((messages, tools))
+        if failure == "permanent" or len(counts) < 3:
+            raise ModelPreparationFailure(ModelFailure("transport_failed", "counter unavailable", failure == "permanent"))
+        return 456
+    async def reply(request):
+        calls = (ModelToolCall("image", "mcp_image", "{}"),) if len(model.requests) == 1 else ()
+        return ModelStepResult("done", calls, "tool_calls" if calls else "stop", ModelUsage(), request.step_id, False)
+    async def execute(snap, step, available, calls):
+        return ToolBatchOutcome((ToolResult("image", "success", '{"content":[{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}]}'),), available)
+    model, tools = Model(reply), Tools(execute)
+    engine = runtime(test_database, model, tools,
+        token_counter_factory=None if failure == "missing" else lambda snap: counter)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=mcp_snapshot(tenant, agent, run), input=InputContent("inspect"), source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed" if failure == "transient" else "Failed")
+        assert len(tools.calls) == 1
+        if failure == "transient":
+            assert len(counts) == 3 and all(value == counts[0] for value in counts)
+            assert len(model.requests) == 2 and model.requests[-1].input_tokens == 456
+        else:
+            assert len(model.requests) == 1 and len(counts) == (0 if failure == "missing" else 1)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_text_and_unknown_tool_errors_never_infer_mcp_media_or_call_counter(test_database, transaction_factory, unknown):
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    raw = '{"content":[{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}]}'
+    calls = []
+    async def counter(messages, tools):
+        calls.append(True)
+        raise AssertionError("text must not use image counting")
+    name = "not_exposed" if unknown else "read_file"
+    async def reply(request):
+        tools = (ModelToolCall("call", name, "{}"),) if len(model.requests) == 1 else ()
+        return ModelStepResult("done", tools, "tool_calls" if tools else "stop", ModelUsage(), request.step_id, False)
+    async def execute(snap, step, available, calls):
+        return ToolBatchOutcome((ToolResult("call", "error" if unknown else "success", raw),), available)
+    model = Model(reply)
+    engine = runtime(test_database, model, Tools(execute), token_counter_factory=lambda snap: counter)
+    await engine.startup()
+    try:
+        await engine.start(snapshot=with_tools(snapshot(tenant, agent, run), "read_file"), input=InputContent("work"),
+            source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        message = next(message for message in model.requests[-1].messages if message.role == "tool")
+        assert len(message.content) == 1 and message.content[0].kind == "text" and message.content[0].value == raw
+        assert message.is_error == unknown and calls == []
+    finally:
+        await engine.close()
+
+
+async def test_malformed_mcp_media_is_a_tool_view_error_not_a_run_failure(test_database, transaction_factory):
+    tenant, agent = await seed(transaction_factory)
+    run = uuid4()
+    raw = '{"content":[{"type":"image","mimeType":"image/png","data":"bad base64"}]}'
+    async def reply(request):
+        calls = (ModelToolCall("image", "mcp_image", "{}"),) if len(model.requests) == 1 else ()
+        return ModelStepResult("use another result", calls, "tool_calls" if calls else "stop", ModelUsage(), request.step_id, False)
+    async def execute(snap, step, available, calls):
+        return ToolBatchOutcome((ToolResult("image", "success", raw),), available)
+    model = Model(reply)
+    engine = runtime(test_database, model, Tools(execute))
+    await engine.startup()
+    try:
+        await engine.start(snapshot=mcp_snapshot(tenant, agent, run), input=InputContent("inspect"), source=SourceIdentity("session", uuid4(), "q"))
+        await wait_status(test_database, tenant, run, "Completed")
+        message = next(message for message in model.requests[-1].messages if message.role == "tool")
+        assert message.is_error and message.content[0].kind == "text"
+        assert "invalid structured content" in message.content[0].value
     finally:
         await engine.close()

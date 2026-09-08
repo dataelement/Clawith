@@ -30,6 +30,10 @@ The concurrency scope follows patterns inspected in [Codex thread registration](
 
 ## Consequences
 
+The initial input is a fixed labelled Context source outside the compactable interaction tail. Related input arriving during a Model call is represented after the resulting assistant/Tool exchange that did not observe it; persisted History order remains unchanged. Reconstruction uses recorded Model input-consumption boundaries, not a second durable cursor. Service-wide interruption invokes each Main's product outcome consumer in the same family transaction, without waking Children or resuming execution. Consumer failure rolls back settlement rather than silently losing the product outcome.
+
+Transient Provider failure follows [bounded same-model retries](2026-09-08-bounded-model-failure-retries.md). MCP image presentation preserves original Tool Results in History and delegates physical encoding and input accounting to Model; Context does not guess image cost from Base64 bytes. Run does not fetch attachment URLs or import them into Workspace.
+
 The first release still requires one non-overlapping Runner. Production source modules supply preauthorized inputs; G006 product APIs are not implied by the application fixture. Run startup acknowledgment, dispatch latency and Provider first output are distinct measurements. Snapshot validation, database atomicity and persisted-read validation remain intact during optimization.
 
 ## Verification

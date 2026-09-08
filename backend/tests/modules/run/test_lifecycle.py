@@ -533,3 +533,40 @@ async def test_fresh_main_snapshot_storage_failure_rolls_back_all_three_records(
         assert await tx.session.scalar(select(func.count()).select_from(RunRecord).where(RunRecord.id == run)) == 0
         assert await tx.session.scalar(select(func.count()).select_from(RunSnapshotRecord).where(RunSnapshotRecord.run_id == run)) == 0
         assert await tx.session.scalar(select(func.count()).select_from(RunHistoryRecord).where(RunHistoryRecord.run_id == run)) == 0
+
+
+async def test_service_interruption_consumes_main_outcome_atomically_and_never_delivers_child_result(test_database, transaction_factory):
+    from sqlalchemy import Column, MetaData, String, Table, Uuid, func, insert, select
+
+    tenant, _, main, child = await family(transaction_factory)
+    table = Table("fixture_interrupt_outcomes", MetaData(), Column("run_id", Uuid, primary_key=True),
+        Column("status", String), schema=test_database.schema)
+    async with test_database.engine.begin() as connection:
+        await connection.run_sync(table.create)
+    seen = []
+    class Consumer:
+        reject = True
+        async def record_outcome(self, tx, *, run, outcome):
+            assert run.id == main.id and outcome.status == "Interrupted"
+            await tx.session.execute(insert(table).values(run_id=run.id, status=outcome.status))
+            if self.reject:
+                raise RuntimeError("owner unavailable")
+            seen.append(run.id)
+    consumer = Consumer()
+    with pytest.raises(RuntimeError, match="owner unavailable"):
+        async with transaction_factory() as tx:
+            await RunService(tx).interrupt_batch(consumer=consumer)
+    async with transaction_factory() as tx:
+        service = RunService(tx)
+        assert (await service.get(tenant_id=tenant, run_id=main.id)).status == "Running"
+        assert (await service.get(tenant_id=tenant, run_id=child.id)).status == "Running"
+        assert await tx.session.scalar(select(func.count()).select_from(table)) == 0
+        consumer.reject = False
+        ended = await service.interrupt_batch(consumer=consumer)
+        assert {row.id for row in ended} == {main.id, child.id}
+        history = await service.read_history(tenant_id=tenant, run_id=main.id)
+        assert [type(entry.payload).__name__ for entry in history.entries] == ["InitialInputPayload", "TerminalOutcomePayload"]
+    async with transaction_factory() as tx:
+        assert await RunService(tx).interrupt_batch(consumer=consumer) == ()
+        assert await tx.session.scalar(select(func.count()).select_from(table)) == 1
+    assert seen == [main.id]

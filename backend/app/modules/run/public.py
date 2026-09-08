@@ -15,7 +15,7 @@ from app.modules.run.contracts import (
     ToolResultPayload,
     WaitingPayload,
 )
-from app.modules.run.engine import RunRuntime, RunStreamObserver, ToolBatchOutcome, ToolBatchPort
+from app.modules.run.engine import RunRuntime, RunStreamEvent, RunStreamObserver, ToolBatchOutcome, ToolBatchPort
 from app.modules.run.lifecycle import (
     HistoryFragment,
     OutcomeConsumer,
@@ -40,7 +40,7 @@ __all__ = [
     "AgentIdentity", "AppendHistoryResult", "ContextBasePayload", "HistoryEntry", "HistoryFragment", "HistoryKind", "HistoryPage",
     "HistoryPayload", "InitialInputPayload", "InputContent", "InputReference", "InvalidHistory", "InvalidSnapshot",
     "ModelInputPayload", "ModelStepPayload", "OutcomeConsumer", "PlatformInstructions", "RelatedInputPayload",
-    "RunRuntime", "RunService", "RunSnapshot", "RunStatus", "RunStreamObserver", "RunView", "SourceIdentity", "SourceSection", "StartResult",
+    "RunRuntime", "RunService", "RunSnapshot", "RunStatus", "RunStreamEvent", "RunStreamObserver", "RunView", "SourceIdentity", "SourceSection", "StartResult",
     "TerminalOutcomePayload", "ToolBatchOutcome", "ToolBatchPort", "ToolResultPayload", "TransitionResult",
     "WaitingPayload", "derive_child", "model_visible_prefix",
 ]

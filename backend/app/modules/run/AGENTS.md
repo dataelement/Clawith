@@ -1,5 +1,7 @@
 # Run owner
 
+Transient Model failures follow [bounded same-model retries](../../../../.agents/notes/implemented/architecture/2026-09-08-bounded-model-failure-retries.md): three attempts including the initial call, then Failed. Never retry Tool side effects or reinterpret Provider exhaustion as a new Waiting protocol.
+
 Run uniquely owns execution identity, lifecycle, immutable startup Snapshot and append-only History. Cross-owner consumers use the typed `public.py` facade; `lifecycle.py`, `engine.py`, models, snapshots and repositories remain private. `contracts.py` owns versioned History encoding.
 
 History preserves initial/related input, complete normalized Model Steps, Tool Results, Waiting and outcomes. Model-Step `read_through_sequence` is a durable input-consumption fact; Context summary coverage is not. Unknown authoritative kinds, versions, extra fields and malformed payloads fail explicitly without dropping data or exposing input values in diagnostics.

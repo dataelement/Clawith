@@ -183,7 +183,9 @@ async def exercise(test_database, tmp_path, monkeypatch, profile, *, smoke=False
         await app.state.runtime.close()
         batches = RuntimeToolBatches(app.state.execution)
         async def observe(key, event):
-            observed = tracker.emitted.pop((event.text, event.call_id), None)
+            if event.kind != "model_event" or event.event is None:
+                return
+            observed = tracker.emitted.pop((event.event.text, event.event.call_id), None)
             if observed is not None and observed[1]:
                 # Retain late forwarding samples during drain for events emitted in measurement.
                 previous = tracker.phase

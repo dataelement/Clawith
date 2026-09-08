@@ -372,7 +372,7 @@ class RunService:
             return TransitionResult(_view(row), False)
         return await self._settle(row, parent, TerminalOutcomePayload(status, reason=reason), consumer)
 
-    async def interrupt_batch(self, *, limit: int = 100) -> tuple[RunView, ...]:
+    async def interrupt_batch(self, *, limit: int = 100, consumer: OutcomeConsumer | None = None) -> tuple[RunView, ...]:
         """Stopped-intake maintenance only; caller commits one bounded family batch."""
         if type(limit) is not int or not 1 <= limit <= 100:
             raise InvalidInput("Interruption batch limit is invalid")
@@ -386,7 +386,7 @@ class RunService:
             if root.status in _ACTIVE:
                 if len(ended) >= MAX_TRANSACTION_RUNS:
                     raise Conflict("Interruption transaction exceeds its affected Run bound; use a smaller family batch")
-                await self._terminal(root, TerminalOutcomePayload("Interrupted", reason="service_interruption"), None)
+                await self._terminal(root, TerminalOutcomePayload("Interrupted", reason="service_interruption"), consumer)
                 ended.append(_view(root))
             async for child in await self._session.stream_scalars(select(RunRecord).where(
                     RunRecord.tenant_id == root.tenant_id, RunRecord.parent_run_id == root.id,

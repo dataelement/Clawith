@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal, Protocol, cast
@@ -21,7 +21,10 @@ from app.modules.context.public import (
     ContextSource,
     ContextState,
     ContextSummarizer,
+    ContextTelemetry,
+    ContextTokenCounter,
     ContextUnit,
+    ModelPreparationFailure,
     restore_base,
 )
 from app.modules.model.public import (
@@ -56,13 +59,23 @@ from app.modules.run.lifecycle import (
 )
 from app.modules.run.repository import HistoryEntry, SourceIdentity
 from app.modules.run.snapshot import RunSnapshot, derive_child, model_visible_prefix
-from app.modules.tool.public import AvailableToolSet, ToolResult
+from app.modules.tool.public import AvailableToolSet, ToolResult, tool_result_content
 from app.runtime.dispatcher import ExecutionDispatcher
 from app.runtime.scheduler import RunKey
 
 logger = logging.getLogger(__name__)
 _TERMINAL = ("Completed", "Failed", "Cancelled", "Interrupted")
-RunStreamObserver = Callable[[RunKey, ModelStreamEvent], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class RunStreamEvent:
+    step_id: str
+    attempt: int
+    kind: Literal["attempt_started", "model_event", "attempt_discarded"]
+    event: ModelStreamEvent | None = None
+
+
+RunStreamObserver = Callable[[RunKey, RunStreamEvent], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +100,9 @@ class _Cache:
     additions: list[ContextUnit] = field(default_factory=list)
     exchange: ModelStepPayload | None = None
     exchange_messages: list[ModelMessage] = field(default_factory=list)
-    deferred_inputs: list[ModelMessage] = field(default_factory=list)
+    deferred_inputs: list[tuple[int, ModelMessage]] = field(default_factory=list)
+    inflight: ModelInputPayload | None = None
+    exchange_visible: frozenset[str] = frozenset()
     result_ids: set[str] = field(default_factory=set)
     todo: str | None = None
     addition_bytes: int = 0
@@ -111,6 +126,26 @@ class _FailureCommit:
 
 
 @dataclass(frozen=True, slots=True)
+class _ModelAttempt:
+    snapshot: RunSnapshot
+    request: ModelStepRequest
+    read_through_sequence: int
+    number: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparationAttempt:
+    cache: _Cache
+    state: ContextState
+    additions: tuple[ContextUnit, ...]
+    tools: tuple[ModelToolDefinition, ...]
+    todo: str | None
+    minute: datetime | None
+    read_through_sequence: int
+    number: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class _Starting:
     agent_id: UUID
     parent_run_id: UUID | None
@@ -126,7 +161,9 @@ class RunRuntime:
             execution_sessions: async_sessionmaker[AsyncSession], model: ModelExecutionService,
             tools: ToolBatchPort, consumer: OutcomeConsumer | None = None,
             observer: RunStreamObserver | None = None,
+            context_observer: Callable[[RunKey, ContextTelemetry], None] | None = None,
             summarizer_factory: Callable[[RunSnapshot], ContextSummarizer] | None = None,
+            token_counter_factory: Callable[[RunSnapshot], ContextTokenCounter] | None = None,
             slots: int = 50, capacity: int = 150) -> None:
         self._control = control_sessions
         self._execution = execution_sessions
@@ -134,17 +171,21 @@ class RunRuntime:
         self._tools = tools
         self._consumer = consumer
         self._observer = observer
+        self._context_observer = context_observer
         self._summarizer_factory = summarizer_factory
+        self._token_counter_factory = token_counter_factory
         self.dispatcher = ExecutionDispatcher(self.quantum, self.on_failure, slots=slots, capacity=capacity)
         self._starting: dict[tuple[UUID, str, UUID, str], _Starting] = {}
         self._start_capacity = capacity
         self._caches: dict[UUID, _Cache] = {}
         self._pending: dict[UUID, _ModelCommit | _ToolCommit | _FailureCommit] = {}
+        self._attempts: dict[UUID, _ModelAttempt | _PreparationAttempt] = {}
         self._accepting = False
         self._started = False
         self._closed = False
         self._closing: asyncio.Task[None] | None = None
         self.observer_failures = 0
+        self.context_observer_failures = 0
 
     async def startup(self) -> None:
         if self._started:
@@ -179,6 +220,7 @@ class RunRuntime:
             self.dispatcher.release(key)
         self._caches.clear()
         self._pending.clear()
+        self._attempts.clear()
         self._closed = True
 
     async def start(self, *, snapshot: RunSnapshot, input: InputContent, source: SourceIdentity,
@@ -349,6 +391,9 @@ class RunRuntime:
     async def quantum(self, key: RunKey) -> bool:
         if key.run_id in self._pending:
             return await self._commit_pending(key)
+        if key.run_id in self._attempts:
+            work = self._attempts[key.run_id]
+            return await self._prepare_model(key, work) if isinstance(work, _PreparationAttempt) else await self._model_attempt(key, work)
         async with transaction(self._execution) as tx:
             service = RunService(tx)
             view = await service.get(tenant_id=key.tenant_id, run_id=key.run_id)
@@ -381,11 +426,36 @@ class RunRuntime:
             else:
                 self._pending[key.run_id] = _ToolCommit(cache.exchange, result, wait_question)
             return await self._commit_pending(key)
+        if cache.inflight is not None:
+            raise InvalidInput("Run History has an unfinished Model request")
         definitions = tuple(ModelToolDefinition(item.spec.name, item.spec.description, item.spec.input_schema_json)
             for item in cache.available.visible())
         minute = datetime.now(UTC).replace(second=0, microsecond=0) if cache.snapshot.include_current_time else None
-        prepared = await cache.assembler.prepare(state=cache.state, additions=tuple(cache.additions),
-            tools=definitions, todo=cache.todo, minute_time=minute)
+        work = _PreparationAttempt(cache, cache.state, tuple(cache.additions), definitions, cache.todo, minute, cache.cursor)
+        self._attempts[key.run_id] = work
+        return await self._prepare_model(key, work)
+
+    async def _prepare_model(self, key: RunKey, work: _PreparationAttempt) -> bool:
+        if work.number > 1:
+            await asyncio.sleep(0.25 * (work.number - 1))
+        cache, definitions, minute = work.cache, work.tools, work.minute
+        try:
+            prepared = await cache.assembler.prepare(state=work.state, additions=work.additions,
+                tools=definitions, todo=work.todo, minute_time=minute)
+        except ModelPreparationFailure as error:
+            if self._retryable(error.failure, work.number):
+                self._attempts[key.run_id] = replace(work, number=work.number + 1)
+                return True
+            self._attempts.pop(key.run_id, None)
+            self._pending[key.run_id] = _FailureCommit(error.failure.code)
+            return await self._commit_pending(key)
+        self._attempts.pop(key.run_id, None)
+        if self._context_observer is not None:
+            try:
+                self._context_observer(key, prepared.telemetry)
+            except Exception as error:  # noqa: BLE001 -- only the optional synchronous measurement sink is isolated.
+                self.context_observer_failures += 1
+                logger.warning("Run Context observer failed: %s", type(error).__name__)
         step_id = str(uuid4())
         base_sequence = cache.base_sequence
         async with transaction(self._execution) as tx:
@@ -396,10 +466,10 @@ class RunRuntime:
                     payload=ContextBasePayload(base.messages, base.state.coverage_sequence, base.state.through_sequence),
                     source=SourceIdentity("context_base", key.run_id, step_id))
                 base_sequence = record.entry.sequence
-            projection_hash = await ContextProjectionService(tx).save(tenant_id=key.tenant_id, run_id=key.run_id, state=prepared.state)
+            projection_hash = await ContextProjectionService(tx).save_prepared(tenant_id=key.tenant_id, run_id=key.run_id, prepared=prepared)
             if not prepared.telemetry.compactions:
                 await service.record_history(tenant_id=key.tenant_id, run_id=key.run_id,
-                    payload=ModelInputPayload(step_id, base_sequence, cache.cursor,
+                    payload=ModelInputPayload(step_id, base_sequence, work.read_through_sequence,
                         tuple(item.name for item in definitions), minute.isoformat(timespec="minutes") if minute else None,
                         projection_hash),
                     source=SourceIdentity("model_input", key.run_id, step_id))
@@ -408,8 +478,21 @@ class RunRuntime:
         if prepared.telemetry.compactions:
             # Summary generation consumed this quantum's Model operation; the primary call gets the next turn.
             return True
+        attempt = _ModelAttempt(cache.snapshot,
+            ModelStepRequest(key.run_id, step_id, prepared.messages, definitions, prepared.input_tokens,
+                prepared.output_tokens, stream=cache.snapshot.model.profile.supports_streaming), work.read_through_sequence)
+        self._attempts[key.run_id] = attempt
+        return await self._model_attempt(key, attempt)
+
+    @staticmethod
+    def _retryable(failure: ModelFailure, number: int) -> bool:
+        return not failure.unrecoverable and failure.code in ("transport_failed", "rate_limited", "provider_unavailable") and number < 3
+
+    async def _model_attempt(self, key: RunKey, attempt: _ModelAttempt) -> bool:
+        if attempt.number > 1:
+            await asyncio.sleep(0.25 * (attempt.number - 1))
         observer_enabled = True
-        async def observe(event: ModelStreamEvent) -> None:
+        async def emit(event: RunStreamEvent) -> None:
             nonlocal observer_enabled
             if self._observer is None or not observer_enabled:
                 return
@@ -427,14 +510,22 @@ class RunRuntime:
                 observer_enabled = False
                 self.observer_failures += 1
                 logger.warning("Run stream observer disconnected: %s", type(error).__name__)
-        result = await self._model.execute_step(cache.snapshot.model.policy,
-            ModelStepRequest(key.run_id, step_id, prepared.messages, definitions, prepared.input_tokens,
-                prepared.output_tokens, stream=cache.snapshot.model.profile.supports_streaming),
+
+        async def observe(event: ModelStreamEvent) -> None:
+            await emit(RunStreamEvent(attempt.request.step_id, attempt.number, "model_event", event))
+        await emit(RunStreamEvent(attempt.request.step_id, attempt.number, "attempt_started"))
+        result = await self._model.execute_step(attempt.snapshot.model.policy, attempt.request,
             on_event=observe if self._observer is not None else None)
         if isinstance(result, ModelFailure):
+            await emit(RunStreamEvent(attempt.request.step_id, attempt.number, "attempt_discarded"))
+            if self._retryable(result, attempt.number):
+                self._attempts[key.run_id] = replace(attempt, number=attempt.number + 1)
+                return True
+            self._attempts.pop(key.run_id, None)
             self._pending[key.run_id] = _FailureCommit(result.code)
         else:
-            payload = ModelStepPayload(step_id, cache.cursor, result)
+            self._attempts.pop(key.run_id, None)
+            payload = ModelStepPayload(attempt.request.step_id, attempt.read_through_sequence, result)
             try:
                 encode_history(payload)
             except InvalidHistory:
@@ -521,22 +612,30 @@ class RunRuntime:
 
     async def _load(self, service: RunService, key: RunKey, transaction_context: TransactionContext) -> _Cache:
         snapshot = await service.read_snapshot(tenant_id=key.tenant_id, run_id=key.run_id)
+        initial = (await service.read_history(tenant_id=key.tenant_id, run_id=key.run_id,
+            after_sequence=0, through_sequence=1, limit=1)).entries[0]
+        if not isinstance(initial.payload, InitialInputPayload) or initial.source is None:
+            raise InvalidHistory("Run requires its original initial input at sequence one")
         sources = tuple(ContextSource(f"{section.category}:{section.source}", section.content,
             "system" if section.category in ("platform", "agent") else "user") for section in model_visible_prefix(snapshot))
+        sources += (ContextSource(f"initial_input:{initial.source.kind}:{initial.source.owner_id}:{initial.source.key}:history:1",
+            self._input_text(initial.payload.input), "user"),)
         available = snapshot.tools.for_role(snapshot.role, direct_names=snapshot.initial_direct_names)
         summarizer = self._summarizer_factory(snapshot) if self._summarizer_factory is not None else None
+        counter = self._token_counter_factory(snapshot) if self._token_counter_factory is not None else None
         assembler = ContextAssembler(sources=sources, profile=snapshot.model.profile, summarizer=summarizer,
+            token_counter=counter,
             model_limits=self._model.operation_limits,
             request_overhead_bytes=32768 + len(snapshot.model.policy.settings_json.encode())
                 + len(snapshot.model.policy.capabilities_json.encode()))
-        cache = _Cache(snapshot, assembler, available, ContextState())
+        cache = _Cache(snapshot, assembler, available, ContextState(), cursor=1)
         base = await service.latest_fact(tenant_id=key.tenant_id, run_id=key.run_id, kind="context_base")
         if base is not None:
             if not isinstance(base.payload, ContextBasePayload):
                 raise InvalidInput("Context base has an invalid History payload")
             cache.state = restore_base(messages=base.payload.messages, coverage_sequence=base.payload.coverage_sequence,
                 through_sequence=base.payload.through_sequence)
-            cache.cursor, cache.base_sequence = base.payload.through_sequence, base.sequence
+            cache.cursor, cache.base_sequence = max(1, base.payload.through_sequence), base.sequence
         exposed = await service.latest_fact(tenant_id=key.tenant_id, run_id=key.run_id, kind="model_input")
         if exposed is not None:
             if not isinstance(exposed.payload, ModelInputPayload):
@@ -550,7 +649,7 @@ class RunRuntime:
                     and projection.coverage_sequence == cache.state.coverage_sequence
                     and cache.state.through_sequence <= projection.through_sequence <= exposed.payload.read_through_sequence
                     and exposed.payload.read_through_sequence <= latest.latest_history_sequence):
-                cache.state, cache.cursor = projection, projection.through_sequence
+                cache.state, cache.cursor = projection, max(1, projection.through_sequence)
         todo = await service.latest_fact(tenant_id=key.tenant_id, run_id=key.run_id, kind="tool_result", successful_tool_name="todo")
         if todo is not None and isinstance(todo.payload, ToolResultPayload):
             cache.todo = todo.payload.result.content_json
@@ -563,6 +662,22 @@ class RunRuntime:
             for entry in page.entries:
                 self._consume(cache, entry)
                 cache.cursor = entry.sequence
+        if cache.inflight is None and cache.exchange is None:
+            self._flush_inputs(cache)
+
+    @staticmethod
+    def _input_text(input: InputContent) -> str:
+        return input.text + "".join(f"\nReference: {ref.reference}" for ref in input.references)
+
+    @staticmethod
+    def _flush_inputs(cache: _Cache, through: int | None = None) -> None:
+        retained = []
+        for sequence, message in cache.deferred_inputs:
+            if through is None or sequence <= through:
+                cache.additions.append(ContextUnit(sequence, (message,)))
+            else:
+                retained.append((sequence, message))
+        cache.deferred_inputs = retained
 
     @staticmethod
     def _retain(cache: _Cache, message: ModelMessage) -> None:
@@ -576,27 +691,33 @@ class RunRuntime:
     @staticmethod
     def _consume(cache: _Cache, entry: HistoryEntry) -> None:
         payload = entry.payload
-        if isinstance(payload, (InitialInputPayload, RelatedInputPayload)):
-            references = "".join(f"\nReference: {ref.reference}" for ref in payload.input.references)
-            message = ModelMessage("user", (ModelContent("text", f"[Run input {entry.sequence}]\n{payload.input.text}{references}"),))
+        if isinstance(payload, InitialInputPayload):
+            raise InvalidHistory("Initial input cannot appear again in the execution tail")
+        if isinstance(payload, RelatedInputPayload):
+            message = ModelMessage("user", (ModelContent("text", f"[Run input {entry.sequence}]\n{RunRuntime._input_text(payload.input)}"),))
             RunRuntime._retain(cache, message)
-            if cache.exchange is not None:
-                cache.deferred_inputs.append(message)
-            else:
-                cache.additions.append(ContextUnit(entry.sequence, (message,)))
+            cache.deferred_inputs.append((entry.sequence, message))
         elif isinstance(payload, ModelStepPayload):
             if cache.exchange is not None:
                 raise InvalidInput("Run History contains overlapping Tool exchanges")
+            if cache.inflight is not None and (cache.inflight.step_id, cache.inflight.read_through_sequence) != (
+                    payload.step_id, payload.read_through_sequence):
+                raise InvalidHistory("Model Step does not match its observed request")
+            visible = frozenset(cache.inflight.visible_tool_names) if cache.inflight is not None else cache.available.direct_names
+            RunRuntime._flush_inputs(cache, payload.read_through_sequence)
+            cache.inflight = None
             message = ModelMessage("assistant", (ModelContent("text", payload.result.content),),
                 calls=payload.result.calls, interaction_id=payload.result.interaction_id,
                 requires_continuation=payload.result.requires_continuation)
             RunRuntime._retain(cache, message)
             if payload.result.calls:
                 cache.exchange = payload
+                cache.exchange_visible = visible
                 cache.exchange_messages = [message]
                 cache.result_ids.clear()
             else:
-                cache.additions.append(ContextUnit(entry.sequence, (message,)))
+                cache.additions.append(ContextUnit(entry.sequence, (message,) + tuple(part for _, part in cache.deferred_inputs)))
+                cache.deferred_inputs.clear()
         elif isinstance(payload, ToolResultPayload):
             if cache.exchange is None or cache.exchange.step_id != payload.step_id:
                 raise InvalidInput("Tool Result has no matching Context exchange")
@@ -604,8 +725,19 @@ class RunRuntime:
             if expected.get(payload.result.call_id) != payload.tool_name or payload.result.call_id in cache.result_ids:
                 raise InvalidInput("Tool Result does not match its unique Context call")
             cache.result_ids.add(payload.result.call_id)
-            message = ModelMessage("tool", (ModelContent("text", payload.result.content_json),),
-                call_id=payload.result.call_id, is_error=payload.result.status != "success")
+            definition = next((tool.definition for tool in cache.available.tools
+                if tool.definition.spec.name == payload.tool_name and payload.tool_name in cache.exchange_visible), None)
+            is_error = payload.result.status != "success"
+            if definition is None:
+                content = (ModelContent("text", payload.result.content_json),)
+            else:
+                try:
+                    content = tuple(ModelContent(part.kind, part.value) for part in tool_result_content(definition, payload.result))
+                except InvalidInput:
+                    # The original response stays in History; an invalid capability result is a Tool-view error.
+                    content = (ModelContent("text", "Tool returned invalid structured content. Treat this result as unusable; request supported text/image output or use another tool."),)
+                    is_error = True
+            message = ModelMessage("tool", content, call_id=payload.result.call_id, is_error=is_error)
             RunRuntime._retain(cache, message)
             cache.exchange_messages.append(message)
             if payload.tool_name == "todo" and payload.result.status == "success":
@@ -618,12 +750,17 @@ class RunRuntime:
                 cache.available = cache.available.expose(frozenset(names))
             if cache.result_ids == {call.call_id for call in cache.exchange.result.calls}:
                 cache.additions.append(ContextUnit(entry.sequence,
-                    tuple(cache.exchange_messages + cache.deferred_inputs)))
+                    tuple(cache.exchange_messages) + tuple(message for _, message in cache.deferred_inputs)))
                 cache.exchange = None
+                cache.exchange_visible = frozenset()
                 cache.exchange_messages.clear()
                 cache.deferred_inputs.clear()
                 cache.result_ids.clear()
         elif isinstance(payload, ModelInputPayload):
+            if cache.inflight is not None or cache.exchange is not None:
+                raise InvalidHistory("Run History contains overlapping Model requests")
+            RunRuntime._flush_inputs(cache, payload.read_through_sequence)
+            cache.inflight = payload
             cache.available = cache.available.expose(frozenset(payload.visible_tool_names))
 
     async def _apply(self, changed: TransitionResult) -> None:
@@ -632,6 +769,7 @@ class RunRuntime:
             if view.status in _TERMINAL:
                 self.dispatcher.release(_key(view))
                 self._pending.pop(view.id, None)
+                self._attempts.pop(view.id, None)
             if view.status != "Running":
                 self._caches.pop(view.id, None)
         for view in views:
@@ -641,6 +779,7 @@ class RunRuntime:
             if view.status in _TERMINAL:
                 await self.dispatcher.wait_released(_key(view))
                 self._pending.pop(view.id, None)
+                self._attempts.pop(view.id, None)
                 self._caches.pop(view.id, None)
                 await self._cleanup(view)
 
@@ -658,7 +797,7 @@ class RunRuntime:
     async def _interrupt_all(self) -> None:
         while True:
             async with transaction(self._control) as tx:
-                views = await RunService(tx).interrupt_batch(limit=1)
+                views = await RunService(tx).interrupt_batch(limit=1, consumer=self._consumer)
             if not views:
                 return
             for view in views:
