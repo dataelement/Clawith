@@ -28,4 +28,8 @@ Product Session/A2A/Group/Trigger/Heartbeat interfaces remain G006. Deferred Git
 
 ## Verification
 
+The MCP-image application fixture uses actual Market registration, MCP discovery/install, Tool search/execution, Run History, Context counting and Model physical encoding. Only external Provider/MCP HTTP peers are controlled. It verifies one image in the final request, invocation of the input-token endpoint, retained raw Tool Result and metadata, one MCP call and a committed Completed product outcome. The product owner remains a fixture rather than G006 Session or API wiring.
+
+Application-owned Context statistics consume assembly telemetry without content or identity labels. Counters have fixed cardinality, unknown cleared-Tool Token amounts remain explicitly unknown, and returned snapshots cannot mutate the collector. Counter I/O duration is separate from local Context assembly. These observations neither govern execution nor establish full-platform latency qualification.
+
 Actual executor tests check role and scope denial, Task acceptance/resume, bounded Todo, invalid arguments and cancellation. Application E2E verifies a Model-requested Workspace write and a committed fixture-owner final output, not merely a model's success claim. Summary integration tests preserve the 8192-context/2048-output regression and a thinking-budget case, including malformed or oversized summaries. Composition tests observe Runtime/Audit workers exiting before database disposal.

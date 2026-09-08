@@ -20,10 +20,33 @@ from app.infrastructure.resource_locks import PostgresResourceLocks
 from app.infrastructure.transactions import TransactionContext, transaction
 from app.modules.audit.public import AuditSink
 from app.modules.capability_market.public import CapabilityMarketService
+from app.modules.context.public import ContextTelemetry
 from app.modules.credential.public import CredentialKeyring, CredentialService, Secret
 from app.modules.model.public import ModelExecutionService
 from app.modules.tool.public import CallScope, CredentialBinding, ToolService
 from app.modules.workspace.public import WorkspaceService
+
+
+class ContextStatistics:
+    """Fixed-cardinality application observations; no content, identities or execution decisions."""
+
+    def __init__(self) -> None:
+        self._totals: dict[str, int | float] = {"preparations": 0}
+
+    def observe(self, telemetry: ContextTelemetry) -> None:
+        self._totals["preparations"] += 1
+        for name in ("assembly_seconds", "input_tokens", "source_reads", "source_snapshot_reuses", "cleared_tool_tokens",
+                     "compactions", "compaction_seconds", "validated_units", "serialized_messages", "reused_units",
+                     "token_counting_calls", "token_counting_seconds"):
+            value = getattr(telemetry, name)
+            if value is None:
+                self._totals[name + "_unknown"] = self._totals.get(name + "_unknown", 0) + 1
+            else:
+                self._totals[name] = self._totals.get(name, 0) + value
+        self._totals["last_coverage_sequence"] = telemetry.coverage_sequence
+
+    def snapshot(self) -> dict[str, int | float]:
+        return dict(self._totals)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +57,7 @@ class ExecutionResources:
     http: httpx.AsyncClient = field(repr=False)
     _sessions: async_sessionmaker[AsyncSession] = field(repr=False)
     _credential_keys: CredentialKeyring = field(repr=False)
+    context_statistics: ContextStatistics = field(default_factory=ContextStatistics)
 
     def tools(self, transaction_context: TransactionContext) -> ToolService:
         return ToolService(transaction_context, enabled_sources=self.market.enabled_source_ids)

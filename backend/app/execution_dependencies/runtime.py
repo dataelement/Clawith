@@ -12,7 +12,7 @@ from app.infrastructure.database import DatabaseResources
 from app.infrastructure.errors import InvalidInput
 from app.infrastructure.transactions import transaction
 from app.modules.agent.public import AgentView
-from app.modules.context.public import ContextSource, ContextSummary, ContextUnit
+from app.modules.context.public import ContextSource, ContextSummary, ContextUnit, ModelPreparationFailure
 from app.modules.model.public import (
     ModelContent,
     ModelExecutionService,
@@ -20,6 +20,7 @@ from app.modules.model.public import (
     ModelMessage,
     ModelStepRequest,
     ModelToolCall,
+    ModelToolDefinition,
     ResolvedModel,
 )
 from app.modules.run.public import (
@@ -136,6 +137,7 @@ class ModelSummarizer:
             raise InvalidInput("Context summary requires a Run identity")
         self.run_id = snapshot.workspace.run_id
         self.model, self.snapshot = model, snapshot
+        self._pending_request: ModelStepRequest | None = None
 
     async def summarize(self, *, previous: ContextSummary | None, units: tuple[ContextUnit, ...],
             sources: tuple[ContextSource, ...], max_tokens: int) -> ContextSummary:
@@ -147,7 +149,9 @@ class ModelSummarizer:
             parts.append("[Previous summary]\n" + json.dumps(asdict(previous), ensure_ascii=False))
         for unit in units:
             for message in unit.messages:
-                parts.append(f"[{message.role}]\n" + "\n".join(content.value for content in message.content))
+                parts.append(f"[{message.role}]\n" + "\n".join(
+                    content.value if content.kind == "text" else "[Image omitted from text summary; retain its source reference.]"
+                    for content in message.content))
                 parts.extend(f"[Tool call {call.call_id}: {call.name}]\n{call.arguments_json}" for call in message.calls)
                 if message.call_id is not None:
                     parts.append(f"[Result for {message.call_id}; error={message.is_error}]")
@@ -160,9 +164,16 @@ class ModelSummarizer:
         output_tokens = self.snapshot.model.profile.output_limit
         request = ModelStepRequest(self.run_id, str(uuid4()), messages, (),
             input_tokens, output_tokens, False)
+        if self._pending_request is not None:
+            if (self._pending_request.messages, self._pending_request.input_tokens, self._pending_request.output_tokens) != (
+                    messages, input_tokens, output_tokens):
+                raise InvalidInput("Pending summary inputs changed during retry")
+            request = self._pending_request
         result = await self.model.execute_summary(self.snapshot.model.policy, request)
         if isinstance(result, ModelFailure):
-            raise InvalidInput("Context summary could not be produced within the fixed Model bounds")
+            self._pending_request = request
+            raise ModelPreparationFailure(result)
+        self._pending_request = None
         try:
             content = json.loads(result.content)
         except (ValueError, RecursionError):
@@ -174,11 +185,31 @@ class ModelSummarizer:
         return ContextSummary(**content)
 
 
+class ModelInputCounter:
+    """Use the fixed Model's metadata endpoint without retrieving sources or exposing private settings."""
+
+    def __init__(self, model: ModelExecutionService, snapshot: RunSnapshot) -> None:
+        if snapshot.workspace.run_id is None:
+            raise InvalidInput("Input counting requires a Run identity")
+        self.model, self.snapshot = model, snapshot
+        self.run_id = snapshot.workspace.run_id
+
+    async def __call__(self, messages: tuple[ModelMessage, ...], tools: tuple[ModelToolDefinition, ...]) -> int:
+        result = await self.model.count_input_tokens(self.snapshot.model.policy,
+            ModelStepRequest(self.run_id, "context-input-count", messages, tools, 0,
+                self.snapshot.model.profile.output_limit, False))
+        if isinstance(result, ModelFailure):
+            raise ModelPreparationFailure(result)
+        return result
+
+
 def compose_runtime(database: DatabaseResources, execution: ExecutionResources, *,
                     outcome_consumer: OutcomeConsumer | None = None) -> RunRuntime:
     tools = RuntimeToolBatches(execution)
     runtime = RunRuntime(control_sessions=database.control_sessions, execution_sessions=database.execution_sessions,
         model=execution.model, tools=tools, consumer=outcome_consumer,
+        context_observer=lambda key, telemetry: execution.context_statistics.observe(telemetry),
+        token_counter_factory=lambda snapshot: ModelInputCounter(execution.model, snapshot),
         summarizer_factory=lambda snapshot: ModelSummarizer(execution.model, snapshot))
     tools.runtime = runtime
     return runtime
