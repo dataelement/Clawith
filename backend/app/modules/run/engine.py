@@ -85,6 +85,7 @@ RunStreamObserver = Callable[[RunKey, RunStreamEvent], Awaitable[None]]
 class ToolBatchOutcome:
     results: tuple[ToolResult, ...]
     available: AvailableToolSet
+    wait_for_related: bool = False
 
 
 class ToolBatchPort(Protocol):
@@ -425,9 +426,11 @@ class RunRuntime:
                 for item in result.results:
                     encode_history(ToolResultPayload(cache.exchange.step_id, names[item.call_id], item))
                 wait_question = self._wait_question(result.results, names)
+                if result.wait_for_related and wait_question is None:
+                    wait_question = ""
                 if wait_question is not None:
                     encode_history(WaitingPayload(cache.exchange.step_id, cache.exchange.step_id,
-                        wait_question, cache.exchange.read_through_sequence))
+                        wait_question, cache.exchange.read_through_sequence, result.wait_for_related and not wait_question))
             except (InvalidHistory, InvalidInput):
                 self._pending[key.run_id] = _FailureCommit("invalid_tool_result")
             else:
@@ -580,7 +583,8 @@ class RunRuntime:
                     if pending.wait_question is not None:
                         changed = await service.wait(tenant_id=key.tenant_id, run_id=key.run_id,
                             payload=WaitingPayload(pending.step.step_id, pending.step.step_id, pending.wait_question,
-                                pending.step.read_through_sequence), waiting_consumer=self._waiting_consumer)
+                                pending.step.read_through_sequence, pending.outcome.wait_for_related and not pending.wait_question),
+                            waiting_consumer=self._waiting_consumer)
         except SQLAlchemyError:
             # Retain the already-produced Model/Tool result; only this transaction is retried.
             await asyncio.sleep(0.05)

@@ -90,6 +90,7 @@ class WorkspaceScope:
     main: bool = True
     preview_only: bool = False
     allow_shared_memory_writes: bool = True
+    allow_shared_file_writes: bool = True
 
     def for_subagent(self, run_id: UUID) -> "WorkspaceScope":
         return replace(self, run_id=run_id, main=False)
@@ -239,6 +240,9 @@ class WorkspaceService(SkillOperations):
     ) -> str:
         self._authorize(scope, subject, write=write)
         ordinary_path(path, directory=directory)
+        if (write and subject.kind == "agent" and not scope.allow_shared_file_writes
+                and (not path or path == "files" or path.startswith("files/"))):
+            raise AccessDenied("Delegated work must use temporary files instead of shared Agent files")
         if (write and subject.kind == "agent" and not scope.allow_shared_memory_writes
                 and (not path or path == "memory" or path.startswith("memory/"))):
             raise AccessDenied("Private input provenance cannot modify shared Agent memory")

@@ -69,6 +69,7 @@ class WaitingPayload:
     reference: str
     question: str
     read_through_sequence: int
+    related_wait: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +176,7 @@ class _WaitingPayload(_Record):
     reference: Identifier
     question: Annotated[str, Field(max_length=65536)]
     read_through_sequence: Sequence
+    related_wait: bool = False
 
 
 class _TerminalPayload(_Record):
@@ -351,7 +353,9 @@ def decode_history(kind: str, version: int, payload: object) -> HistoryPayload:
                 ToolResult(tool.result.call_id, tool.result.status, tool.result.content_json))
         if kind == "waiting":
             waiting = _WaitingPayload.model_validate(payload)
-            return WaitingPayload(waiting.step_id, waiting.reference, waiting.question, waiting.read_through_sequence)
+            if waiting.related_wait and waiting.question:
+                raise InvalidHistory("Related-input waiting cannot contain a human question")
+            return WaitingPayload(waiting.step_id, waiting.reference, waiting.question, waiting.read_through_sequence, waiting.related_wait)
         if kind == "context_base":
             base = _ContextBase.model_validate(payload)
             if base.through_sequence < base.coverage_sequence:
@@ -404,6 +408,8 @@ def encode_history(payload: HistoryPayload) -> EncodedHistory:
             kind = "waiting"
             data = {"step_id": payload.step_id, "reference": payload.reference, "question": payload.question,
                 "read_through_sequence": payload.read_through_sequence}
+            if payload.related_wait:
+                data["related_wait"] = payload.related_wait
         elif isinstance(payload, TerminalOutcomePayload):
             kind = "terminal_outcome"
             data = {"status": payload.status, "output": payload.output, "reason": payload.reason}

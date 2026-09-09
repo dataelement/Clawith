@@ -370,9 +370,15 @@ class RunService:
         step = await self._step(row, payload.step_id)
         if payload.read_through_sequence != step.read_through_sequence:
             raise InvalidInput("Waiting boundary does not match its Model Step")
+        if payload.related_wait and (payload.question or parent is not None):
+            raise InvalidInput("Related-input waiting requires a Main without a human question")
+        if payload.question and parent is None:
+            snapshot = await self.read_snapshot(tenant_id=tenant_id, run_id=run_id)
+            if not snapshot.allow_human_input:
+                raise InvalidInput("This unattended execution cannot wait for human input")
         if await self._unseen(row, step):
             return TransitionResult(_view(row), False, wake_run_ids=(run_id,))
-        if not payload.question:
+        if not payload.question and not payload.related_wait:
             if parent is not None:
                 raise InvalidInput("Subagents cannot wait for delegated Tasks")
             active_child = await self._session.scalar(select(RunRecord.id).where(

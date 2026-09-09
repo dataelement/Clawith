@@ -22,6 +22,10 @@ Product orchestration applies returned transition facts through `RunRuntime.post
 
 `has_input_reference` checks exact references only in supported-version initial and related input History for the scoped Run. Model text, Tool Results and unknown-version payloads do not grant attachment access. The query tests existence without loading unrelated History bodies; attachment owners still decide source and delegation authorization.
 
+The [continuation amendment](../../../../specs/backend-product-input-continuations.md) adds a resolved `allow_human_input` Snapshot capability. Both the native Tool and Run's wait mutation reject human waiting for an unattended Main. Child derivation retains the original authorization set, enables Parent-directed questions and restores their direct exposure only when that Tool was already authorized. It does not grant a missing Tool.
+
+Application Tool composition may return a typed `wait_for_related` control after a validated A2A wait operation. Run consumes that general control without importing A2A policy. Waiting History records `related_wait=true`, with an empty question and no required Child; the same unseen-input check prevents waiting after a result already arrived. Default fields remain omitted from older Snapshot/History encoding. Arbitrary MCP result fields cannot set the application control.
+
 ## Alternatives considered
 
 Writing associations and questions after the Run transaction leaves a gap between execution facts and product facts. Making OutcomeConsumer publish replies conflates terminal execution with explicit messages and human-input requests. Neither approach satisfies the approved contract.

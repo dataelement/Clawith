@@ -75,8 +75,9 @@ def _integer(arguments: dict[str, object], name: str, default: int, minimum: int
 
 class _RunExecutor:
     def __init__(self, definition: DefinitionSpec, scope: CallScope, role: Literal["main", "sub"],
-                 operations: TaskOperations | None) -> None:
+                 operations: TaskOperations | None, allow_human_input: bool = True) -> None:
         self._definition, self._scope, self._role, self._operations = definition, scope, role, operations
+        self._allow_human_input = allow_human_input
 
     async def execute(self, tool: ResolvedTool, call: ToolCall, scope: CallScope) -> ToolResult:
         try:
@@ -108,6 +109,8 @@ class _RunExecutor:
                     normalized.append({"text": text, "status": status})
                 payload = {"items": normalized}
             elif name == "need_input":
+                if self._role == "main" and not self._allow_human_input:
+                    raise AccessDenied("This unattended work cannot wait for human input; report the limitation and finish")
                 _fields(arguments, {"question"})
                 payload = {"need_input": True, "question": _text(arguments, "question")}
             else:
@@ -144,11 +147,11 @@ class _RunExecutor:
 
 
 def run_tool_bindings(*, scope: CallScope, role: Literal["main", "sub"],
-                      operations: TaskOperations | None = None) -> tuple[ExecutorBinding, ...]:
+                      operations: TaskOperations | None = None, allow_human_input: bool = True) -> tuple[ExecutorBinding, ...]:
     """Compose fixed Run-local executors; publication and Waiting belong to the caller."""
     if role not in ("main", "sub") or (role == "main" and operations is None):
         raise InvalidInput("Run Tool bindings require a valid role and Main Task operations")
-    return tuple(ExecutorBinding(definition.executor_key, _RunExecutor(definition, scope, role, operations), builtin=definition)
+    return tuple(ExecutorBinding(definition.executor_key, _RunExecutor(definition, scope, role, operations, allow_human_input), builtin=definition)
         for definition in RUN_TOOL_DEFINITIONS
         if (definition.name != "todo" or role == "sub") and
            (definition.name not in ("task", "wait_for_tasks") or role == "main"))

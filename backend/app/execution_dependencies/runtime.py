@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from dataclasses import asdict
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, replace
 from uuid import UUID, uuid4
 
 from app.execution_dependencies.resources import ExecutionResources
@@ -29,8 +30,11 @@ from app.modules.run.public import (
     PlatformInstructions,
     RunRuntime,
     RunSnapshot,
+    RunStreamObserver,
     SourceSection,
+    StartConsumer,
     ToolBatchOutcome,
+    WaitingConsumer,
 )
 from app.modules.tool.public import (
     AgentToolResolutionScope,
@@ -54,7 +58,7 @@ PLATFORM = PlatformInstructions("1", (
     "Use need_input only when essential information cannot be obtained through your available means. "
     "Return a clear answer when the work is complete."
 ))
-DIRECT_TOOLS = frozenset({"task", "todo", "need_input", "wait_for_tasks", "search_tools", "read_file",
+DIRECT_TOOLS = frozenset({"task", "todo", "need_input", "wait_for_tasks", "search_tools", "send_message", "session_history", "session_work", "read_file",
     "list_files", "find_files", "search_files", "write_file", "edit_file", "load_skill"})
 
 
@@ -70,6 +74,8 @@ async def capture_snapshot(execution: ExecutionResources, database: DatabaseReso
         raise InvalidInput("Only an available Agent's Main input can capture new authorization")
     async with transaction(database.control_sessions) as tx:
         authorized = await execution.tools(tx).capture_authorized(tools)
+    if any(tool.credential is not None and tool.credential.owner_kind == "membership" for tool in authorized.tools):
+        workspace = replace(workspace, allow_shared_memory_writes=False, allow_shared_file_writes=False)
     skills = await execution.workspace.discover_skills(tenant_id=agent.tenant_id, agent_id=agent.id)
     sources = []
     own = WorkspaceSubject("agent", agent.id)
@@ -109,8 +115,10 @@ class _TaskBridge:
 
 
 class RuntimeToolBatches:
-    def __init__(self, execution: ExecutionResources) -> None:
+    def __init__(self, execution: ExecutionResources,
+                 extra_bindings: Callable[[RunSnapshot, str], Awaitable[tuple[ExecutorBinding, ...]]] | None = None) -> None:
         self.execution = execution
+        self.extra_bindings = extra_bindings
         self.runtime: RunRuntime | None = None
         self._semaphore = asyncio.Semaphore(32)
 
@@ -123,12 +131,22 @@ class RuntimeToolBatches:
         mcp = MCPExecutor(self.execution.http, credentials=self.execution.resolve_credential)
         bindings = (search.binding(), *workspace_bindings(self.execution.workspace, scope=snapshot.workspace,
             skills=snapshot.skills), *run_tool_bindings(scope=scope, role=snapshot.role,
-            operations=_TaskBridge(self.runtime, snapshot, step_id)), ExecutorBinding("mcp.v1", mcp))
+            operations=_TaskBridge(self.runtime, snapshot, step_id), allow_human_input=snapshot.allow_human_input), ExecutorBinding("mcp.v1", mcp))
+        if self.extra_bindings is not None:
+            bindings += await self.extra_bindings(snapshot, step_id)
         scheduler = ToolScheduler(ToolRegistry(bindings), max_parallel=32, timeout_seconds=180,
             shared_semaphore=self._semaphore)
         results = await scheduler.execute(available,
             tuple(ToolCall(call.call_id, call.name, call.arguments_json) for call in calls), scope)
-        return ToolBatchOutcome(results, search.available)
+        definitions = {item.definition.spec.name: item.definition.spec for item in available.tools}
+        names = {item.call_id: item.name for item in calls}
+        waits = False
+        for result in results:
+            definition = definitions.get(names[result.call_id])
+            if (definition is not None and definition.source == "builtin" and definition.name == "send_message_to_agent"
+                    and definition.executor_key == "product.a2a.v1" and result.status == "success"):
+                waits |= json.loads(result.content_json).get("wait_for_a2a") is True
+        return ToolBatchOutcome(results, search.available, wait_for_related=waits)
 
 
 class ModelSummarizer:
@@ -204,10 +222,15 @@ class ModelInputCounter:
 
 
 def compose_runtime(database: DatabaseResources, execution: ExecutionResources, *,
-                    outcome_consumer: OutcomeConsumer | None = None) -> RunRuntime:
-    tools = RuntimeToolBatches(execution)
+                    outcome_consumer: OutcomeConsumer | None = None,
+                    start_consumer: StartConsumer | None = None,
+                    waiting_consumer: WaitingConsumer | None = None,
+                    extra_bindings: Callable[[RunSnapshot, str], Awaitable[tuple[ExecutorBinding, ...]]] | None = None,
+                    observer: RunStreamObserver | None = None) -> RunRuntime:
+    tools = RuntimeToolBatches(execution, extra_bindings)
     runtime = RunRuntime(control_sessions=database.control_sessions, execution_sessions=database.execution_sessions,
         model=execution.model, tools=tools, consumer=outcome_consumer,
+        start_consumer=start_consumer, waiting_consumer=waiting_consumer, observer=observer,
         context_observer=lambda key, telemetry: execution.context_statistics.observe(telemetry),
         token_counter_factory=lambda snapshot: ModelInputCounter(execution.model, snapshot),
         summarizer_factory=lambda snapshot: ModelSummarizer(execution.model, snapshot))

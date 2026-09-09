@@ -71,6 +71,7 @@ class RunSnapshot:
     skills: SkillDiscovery
     sources: tuple[SourceSection, ...] = ()
     include_current_time: bool = False
+    allow_human_input: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +182,7 @@ class _WorkspaceV1(_V1):
     main: bool
     preview_only: bool
     allow_shared_memory_writes: bool = True
+    allow_shared_file_writes: bool = Field(default=True, exclude_if=lambda value: value is True)
 
 
 class _SkillsV1(_V1):
@@ -209,6 +211,7 @@ class _SnapshotV1(_V1):
     skills: _SkillsV1
     sources: tuple[_SourceV1, ...]
     include_current_time: bool
+    allow_human_input: bool = Field(default=True, exclude_if=lambda value: value is True)
 
 
 def _to_v1(value: RunSnapshot) -> _SnapshotV1:
@@ -238,11 +241,13 @@ def _to_v1(value: RunSnapshot) -> _SnapshotV1:
         initial_direct_names=tuple(sorted(value.initial_direct_names)),
         workspace=_WorkspaceV1(tenant_id=scope.tenant_id, agent_id=scope.agent_id,
             output=_SubjectV1(kind=scope.output.kind, id=scope.output.id), run_id=scope.run_id,
-            main=scope.main, preview_only=scope.preview_only, allow_shared_memory_writes=scope.allow_shared_memory_writes),
+            main=scope.main, preview_only=scope.preview_only, allow_shared_memory_writes=scope.allow_shared_memory_writes,
+            allow_shared_file_writes=scope.allow_shared_file_writes),
         skills=_SkillsV1(tenant_id=value.skills.tenant_id, agent_id=value.skills.agent_id, skills=value.skills.skills),
         sources=tuple(_SourceV1(category=source.category,
             subject=_SubjectV1(kind=source.subject.kind, id=source.subject.id), reference=source.reference,
-            content=source.content) for source in value.sources), include_current_time=value.include_current_time)
+            content=source.content) for source in value.sources), include_current_time=value.include_current_time,
+        allow_human_input=value.allow_human_input)
 
 
 def _from_v1(value: _SnapshotV1) -> RunSnapshot:
@@ -265,10 +270,10 @@ def _from_v1(value: _SnapshotV1) -> RunSnapshot:
                 profile.output_limit, profile.supports_images, profile.supports_streaming, profile.supports_prompt_cache)),
         AuthorizedToolSet(value.tools.tenant_id, value.tools.agent_id, tuple(tools)), frozenset(value.initial_direct_names),
         WorkspaceScope(scope.tenant_id, scope.agent_id, WorkspaceSubject(scope.output.kind, scope.output.id),
-            scope.run_id, scope.main, scope.preview_only, scope.allow_shared_memory_writes),
+            scope.run_id, scope.main, scope.preview_only, scope.allow_shared_memory_writes, scope.allow_shared_file_writes),
         SkillDiscovery(value.skills.tenant_id, value.skills.agent_id, value.skills.skills),
         tuple(SourceSection(source.category, WorkspaceSubject(source.subject.kind, source.subject.id),
-            source.reference, source.content) for source in value.sources), value.include_current_time)
+            source.reference, source.content) for source in value.sources), value.include_current_time, value.allow_human_input)
 
 
 def _validate(snapshot: RunSnapshot) -> None:
@@ -372,7 +377,9 @@ def _version(version: int) -> None:
 def derive_child(parent: RunSnapshot, *, run_id: UUID) -> RunSnapshot:
     if parent.role != "main" or parent.workspace.run_id == run_id:
         raise InvalidSnapshot("Only Main may derive a distinct Child Snapshot")
-    child = replace(parent, role="sub", workspace=parent.workspace.for_subagent(run_id))
+    child = replace(parent, role="sub", workspace=parent.workspace.for_subagent(run_id), allow_human_input=True)
+    if not parent.allow_human_input and any(tool.definition.spec.name == "need_input" for tool in parent.tools.tools):
+        child = replace(child, initial_direct_names=child.initial_direct_names | {"need_input"})
     encoded = encode_snapshot(child)
     return decode_snapshot(encoded.version, encoded.payload, encoded.content_hash)
 
