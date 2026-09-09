@@ -12,6 +12,13 @@ class IdentityTenantRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def invitation_candidates(self, tenant_id: UUID, *, limit: int, offset: int) -> tuple[tuple[UUID, str], ...]:
+        rows = await self._session.execute(select(MembershipRecord.id, MembershipRecord.display_name).join(
+            AccountRecord, AccountRecord.id == MembershipRecord.account_id).where(
+                MembershipRecord.tenant_id == tenant_id, MembershipRecord.enabled.is_(True), AccountRecord.enabled.is_(True))
+            .order_by(MembershipRecord.id).offset(offset).limit(limit))
+        return tuple((row[0], row[1]) for row in rows.all())
+
     def add_account(self, account: AccountRecord) -> None:
         self._session.add(account)
 
@@ -29,6 +36,10 @@ class IdentityTenantRepository:
 
     async def get_tenant(self, tenant_id: UUID) -> TenantRecord | None:
         return await self._session.get(TenantRecord, tenant_id)
+
+    async def enabled_tenant_ids(self, tenant_ids: tuple[UUID, ...]) -> frozenset[UUID]:
+        return frozenset(await self._session.scalars(select(TenantRecord.id).where(
+            TenantRecord.id.in_(tenant_ids), TenantRecord.enabled.is_(True))))
 
     async def get_membership(
         self, tenant_id: UUID, membership_id: UUID

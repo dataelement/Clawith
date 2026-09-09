@@ -32,8 +32,11 @@ class AgentRepository:
         limit: int,
         offset: int,
         active_only: bool = False,
+        allowed_ids: frozenset[UUID] | None = None,
     ) -> tuple[AgentRecord, ...]:
         statement = select(AgentRecord).where(AgentRecord.tenant_id == tenant_id)
+        if allowed_ids is not None:
+            statement = statement.where(AgentRecord.id.in_(allowed_ids))
         if active_only:
             statement = statement.where(AgentRecord.enabled.is_(True), AgentRecord.archived_at.is_(None))
         statement = statement.order_by(AgentRecord.created_at, AgentRecord.id).limit(limit).offset(offset)

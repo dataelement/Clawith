@@ -112,6 +112,13 @@ class AgentService:
             raise NotFound("Executing Agent is unavailable")
         return _view(record)
 
+    async def get_for_agent_execution(self, *, tenant_id: UUID, agent_id: UUID) -> AgentView:
+        """Trusted autonomous intake resolves its selected Agent without fabricating a human Principal."""
+        record = await self._require(tenant_id, agent_id)
+        if not record.enabled or record.archived_at is not None:
+            raise NotFound("Executing Agent is unavailable")
+        return _view(record)
+
     async def list(
         self, principal: TenantPrincipal, *, limit: int = MAX_PAGE_SIZE, offset: int = 0
     ) -> tuple[AgentView, ...]:
@@ -206,12 +213,30 @@ class AgentService:
         records = await self._repository.list(tenant_id, limit=limit, offset=offset, active_only=True)
         return tuple(_metadata(record) for record in records)
 
+    async def list_visible_metadata(self, principal: TenantPrincipal, *, limit: int = 100,
+            offset: int = 0) -> tuple[AgentMetadataView, ...]:
+        """Paginate active identities within the caller's captured Agent access."""
+        _page(limit=limit, offset=offset, maximum=MAX_PAGE_SIZE)
+        records = await self._repository.list(principal.tenant_id, limit=limit, offset=offset, active_only=True,
+            allowed_ids=None if principal.can_manage_all_agents else principal.allowed_agent_ids)
+        return tuple(_metadata(record) for record in records)
+
     async def filter_active_ids(self, *, tenant_id: UUID, agent_ids: tuple[UUID, ...]) -> frozenset[UUID]:
         """Filter one bounded Permission batch through Agent-owned state."""
         if len(agent_ids) > MAX_PERMISSION_AGENT_SCAN:
             raise InvalidInput(f"Agent metadata batch exceeds {MAX_PERMISSION_AGENT_SCAN} identities")
         records = await self._repository.list_by_ids(tenant_id, agent_ids, active_only=True)
         return frozenset(record.id for record in records)
+
+    async def require_execution_ids(self, principal: TenantPrincipal, *, agent_ids: tuple[UUID, ...]) -> None:
+        """Validate one bounded multi-target intake without repeating Agent queries."""
+        if len(agent_ids) > MAX_PERMISSION_AGENT_SCAN:
+            raise InvalidInput("Agent execution batch exceeds its bound")
+        requested = frozenset(agent_ids)
+        if not principal.can_manage_all_agents and not requested <= principal.allowed_agent_ids:
+            raise AccessDenied("Agent access is denied")
+        if await self.filter_active_ids(tenant_id=principal.tenant_id, agent_ids=agent_ids) != requested:
+            raise NotFound("Executing Agent is unavailable")
 
     async def _require(self, tenant_id: UUID, agent_id: UUID) -> AgentRecord:
         record = await self._repository.get(tenant_id, agent_id)

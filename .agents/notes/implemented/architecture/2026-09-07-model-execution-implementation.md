@@ -18,6 +18,8 @@ Model persists encrypted required continuation before returning the complete ste
 
 Captured policies are validated without consulting current configuration. The public validator checks bounded JSON before parsing, protocol agreement, required Tool Calling and Context profile capability/limit agreement. Model exposes its immutable operation limits to Context rather than requiring Context to invent request cardinalities.
 
+`resolve_configured_policy(tenant_id, model_id)` performs the new-Run intake read of one explicit active Model. It chooses only that record's validated `settings.protocol` and returns the existing policy/profile contract. Missing or unknown protocols, disabled/archive state and wrong-Tenant IDs fail without selecting a default, another protocol or another Model. The read performs one Model query, no Credential decryption, HTTP probe or fabricated administrator operation; activation acceptance remains the configuration owner's responsibility. This is not used to refresh the fixed policy of an existing Run.
+
 One-shot summary requests share the fixed Model, Credential, request validation and error normalization, but never read or modify the Run's encrypted continuation. Their input is non-streaming text without Tool execution or continuation references; only a complete text result is accepted. Returned summary results do not promise continuation. This prevents a summary call from pruning opaque state still needed by a recent execution interaction.
 
 `count_input_tokens(policy, request)` performs a metadata request, not generation or an execution Model Step. It returns a Provider token estimate or normalized Model failure; Context still checks the resulting input against the fixed window and output allowance. It reads the same owner-bound Credential and required continuation, releases database sessions before HTTP, and never saves continuation. The complete count request and response are bounded; its deadline is the smaller of ten seconds and the configured Model operation timeout. Counting neither grants tools nor creates a Run, and Model does not add retries around the operation.
@@ -43,6 +45,8 @@ Enabled configuration requires external validation before the write transaction.
 ## Verification and remaining gaps
 
 Controlled tests exercise the four adapters, streaming failure, credential isolation, continuation persistence/replay/cleanup and metadata/Catalog/administrator precedence. Dependent module fixtures provision disabled drafts, validate through a controlled peer and enable through the real public service instead of forging acceptance or setting database flags directly.
+
+Independent persisted-intake tests cover all four stored protocols, one-query resolution without HTTP, wrong-Tenant lookup, missing/unknown protocol and disabled/archive rejection. These tests deliberately seed persistence to inspect the read boundary; they do not replace activation or hosted Provider validation.
 
 Independent review and controlled tests cover continuation, configuration acceptance and exact probe output/reasoning fields across all four adapters. [Application resource composition](2026-09-07-application-execution-resources.md), Workspace Builtins and explicit provisioning are implemented; G005 supplies the actual Runner/Context consumer. Hosted Provider behavior, target migrations, deployment and 50-Agent performance are not established by local tests. The [G004 contract](../../../../specs/backend-execution-dependencies.md) remains the approved authority.
 

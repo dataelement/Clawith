@@ -299,10 +299,18 @@ class ModelExecutionService:
     async def resolve_policy(
         self, *, tenant_id: UUID, model_id: UUID, protocol: ModelProtocol,
     ) -> ResolvedModel:
+        return await self._resolve_policy(tenant_id=tenant_id, model_id=model_id, protocol=protocol)
+
+    async def resolve_configured_policy(self, *, tenant_id: UUID, model_id: UUID) -> ResolvedModel:
+        """Resolve the selected Model's own protocol without exposing admin configuration to intake."""
+        return await self._resolve_policy(tenant_id=tenant_id, model_id=model_id, protocol=None)
+
+    async def _resolve_policy(self, *, tenant_id: UUID, model_id: UUID,
+                              protocol: ModelProtocol | None) -> ResolvedModel:
         # Persistence is a trust boundary, using the same owner validators as configuration writes.
         from app.modules.model.public import _endpoint, _validate_configuration, _validate_json_object
 
-        if protocol not in {"openai_chat", "openai_responses", "anthropic", "gemini"}:
+        if protocol is not None and protocol not in {"openai_chat", "openai_responses", "anthropic", "gemini"}:
             raise InvalidInput("unsupported Model protocol")
         async with self._sessions() as session:
             model = await ModelRepository(session).get_model(tenant_id, model_id)
@@ -312,6 +320,11 @@ class ModelExecutionService:
                 raise InvalidInput("Model is disabled")
             capabilities = _validate_json_object(model.capabilities, field_name="capabilities", reject_secrets=True)
             settings = _validate_json_object(model.settings, field_name="settings", reject_secrets=True)
+            if protocol is None:
+                selected = settings.get("protocol")
+                if not isinstance(selected, str) or selected not in {"openai_chat", "openai_responses", "anthropic", "gemini"}:
+                    raise InvalidInput("Configured Model protocol is invalid")
+                protocol = cast(ModelProtocol, selected)
             if settings.get("protocol") != protocol:
                 raise InvalidInput("Requested protocol differs from the configured Model protocol")
             _validate_configuration(

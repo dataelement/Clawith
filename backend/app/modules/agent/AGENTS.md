@@ -9,3 +9,4 @@ This module owns the Tenant-scoped Agent core record: identity, presentation fie
 - Update distinguishes omitted optional presentation fields from explicit `None`; `None` clears avatar, description, or greeting.
 - Archival disables the Agent and preserves the record. This owner exposes no hard-delete operation and creates no Workspace, Tool, capability, or permission grant.
 - Permission may consume only the bounded, explicitly Tenant-scoped `AgentMetadataView` queries. It does not import Agent persistence.
+- Product invitation candidates use `list_visible_metadata`, which filters captured Agent access in SQL before pagination and returns only active metadata. Group roster membership does not create visibility grants.

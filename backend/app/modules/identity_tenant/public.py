@@ -17,6 +17,12 @@ PlatformRole = Literal["platform_admin"]
 
 
 @dataclass(frozen=True, slots=True)
+class InvitationCandidate:
+    membership_id: UUID
+    display_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class TenantPrincipal:
     """Human authorization captured when a login session is created."""
 
@@ -103,6 +109,12 @@ MAX_PAGE_SIZE = 100
 
 class IdentityService:
     """Operate on Identity/Tenant facts inside a caller-owned transaction."""
+
+    async def filter_enabled_tenant_ids(self, *, tenant_ids: tuple[UUID, ...]) -> frozenset[UUID]:
+        """Filter an explicit bounded autonomous-intake batch; do not refresh human authorization."""
+        if len(tenant_ids) > 100:
+            raise InvalidInput("Tenant intake batch exceeds 100 identities")
+        return await self._repository.enabled_tenant_ids(tenant_ids)
 
     def __init__(self, transaction: TransactionContext) -> None:
         self._repository = IdentityTenantRepository(transaction.session)
@@ -231,6 +243,16 @@ class IdentityService:
             principal.tenant_id, limit=limit, offset=offset
         )
         return tuple(_membership_view(record) for record in records)
+
+    async def invitation_candidates(self, principal: TenantPrincipal, *, limit: int = 100,
+            offset: int = 0) -> tuple[InvitationCandidate, ...]:
+        """Minimal same-Tenant identities for an authorized product invitation flow."""
+        _validate_page(limit=limit, offset=offset)
+        member = await self.require_membership(tenant_id=principal.tenant_id, membership_id=principal.membership_id)
+        if not member.enabled:
+            raise AccessDenied("Active membership is required")
+        return tuple(InvitationCandidate(*row) for row in await self._repository.invitation_candidates(
+            principal.tenant_id, limit=limit, offset=offset))
 
     async def require_membership(
         self, *, tenant_id: UUID, membership_id: UUID

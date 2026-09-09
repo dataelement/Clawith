@@ -9,3 +9,4 @@ This module is the sole owner of Account, Tenant, Membership, and the identity/r
 - Identity authorization helpers enforce captured administrator role and Tenant equality. Agent access policy belongs only to Permission.
 - Every query or mutation is explicitly Tenant-scoped and bounded. Identities are disabled rather than hard-deleted.
 - Platform principals target one explicit Tenant but are not ordinary Tenant execution principals.
+- Authorized product invitation flows may use the bounded `invitation_candidates` projection of active same-Tenant membership IDs and display names. This does not expose account IDs or roles, replace the administrator-only membership list, or implement an organization directory.
