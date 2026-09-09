@@ -78,6 +78,9 @@ class GroupEventRecord(Base):
             name="fk_group_events_source_run", ondelete="RESTRICT", use_alter=True,
         ),
         UniqueConstraint("tenant_id", "group_id", "id", "kind"),
+        UniqueConstraint("tenant_id", "group_id", "source_run_id", "id", "kind"),
+        ForeignKeyConstraint(["tenant_id", "agent_id", "source_run_id"],
+            ["agent_runs.tenant_id", "agent_runs.agent_id", "agent_runs.id"], ondelete="RESTRICT"),
         UniqueConstraint("tenant_id", "group_id", "id", "conversation_id"),
         UniqueConstraint("tenant_id", "id", "kind"),
         UniqueConstraint("tenant_id", "agent_id", "id", "kind"),
@@ -90,7 +93,7 @@ class GroupEventRecord(Base):
         CheckConstraint("source_run_id IS NULL OR (kind = 'reply' AND conversation_id IS NOT NULL)",
             name="ck_group_events_execution_source"),
         CheckConstraint(
-            "(kind = 'input' AND source_key IS NOT NULL AND origin_event_id IS NULL AND agent_id IS NULL) OR (kind = 'reply' AND source_key IS NULL AND origin_event_id IS NOT NULL AND agent_id IS NOT NULL AND membership_id IS NULL)",
+            "(kind = 'input' AND source_key IS NOT NULL AND origin_event_id IS NULL AND agent_id IS NULL) OR (kind = 'reply' AND source_key IS NULL AND (origin_event_id IS NOT NULL OR source_run_id IS NOT NULL) AND agent_id IS NOT NULL AND membership_id IS NULL)",
             name="ck_group_events_shape",
         ),
         CheckConstraint("position > 0 AND payload_version > 0", name="ck_group_events_versions"),
@@ -168,19 +171,26 @@ class GroupAttachmentRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(["tenant_id", "group_id"], ["groups.tenant_id", "groups.id"], ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "uploader_membership_id"], ["memberships.tenant_id", "memberships.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "created_by_run_id"], ["agent_runs.tenant_id", "agent_runs.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "group_id", "created_by_run_id", "bound_message_id", "bound_message_kind"],
+            ["group_events.tenant_id", "group_events.group_id", "group_events.source_run_id", "group_events.id", "group_events.kind"], ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "group_id", "origin_event_id", "origin_event_kind"],
             ["group_events.tenant_id", "group_events.group_id", "group_events.id", "group_events.kind"], ondelete="RESTRICT"),
         UniqueConstraint("tenant_id", "group_id", "upload_source_key"),
         CheckConstraint("byte_size >= 0 AND byte_size <= 4194304", name="ck_group_attachment_size"),
         CheckConstraint("num_nonnulls(storage_revision, published_at) IN (0, 2)", name="ck_group_attachment_publication"),
-        CheckConstraint("cleanup_claimed_at IS NULL OR origin_event_id IS NULL", name="ck_group_attachment_cleanup"),
-        Index("ix_group_attachment_unbound", "id", postgresql_where=text("origin_event_id IS NULL")),
+        CheckConstraint("cleanup_claimed_at IS NULL OR (origin_event_id IS NULL AND bound_message_id IS NULL)", name="ck_group_attachment_cleanup"),
+        CheckConstraint("num_nonnulls(uploader_membership_id, created_by_run_id) = 1 AND (bound_message_id IS NULL OR created_by_run_id IS NOT NULL) AND (created_by_run_id IS NULL OR origin_event_id IS NULL)", name="ck_group_attachment_creator"),
+        Index("ix_group_attachment_unbound", "id", postgresql_where=text("origin_event_id IS NULL AND bound_message_id IS NULL")),
         {"info": {"owner": "group"}},
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID]
     group_id: Mapped[UUID]
-    uploader_membership_id: Mapped[UUID]
+    uploader_membership_id: Mapped[UUID | None]
+    created_by_run_id: Mapped[UUID | None]
+    bound_message_id: Mapped[UUID | None]
+    bound_message_kind: Mapped[str] = mapped_column(String(16), Computed("'reply'", persisted=True))
     upload_source_key: Mapped[str] = mapped_column(String(512))
     origin_event_id: Mapped[UUID | None]
     origin_event_kind: Mapped[str] = mapped_column(String(16), Computed("'input'", persisted=True))

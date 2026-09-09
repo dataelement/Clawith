@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,6 +15,10 @@ class A2ARequestRecord(Base):
     __tablename__ = "a2a_requests"
     __table_args__ = (
         UniqueConstraint("tenant_id", "id"),
+        ForeignKeyConstraint(["tenant_id", "source_agent_id", "delivery_run_id"],
+            ["agent_runs.tenant_id", "agent_runs.agent_id", "agent_runs.id"], ondelete="RESTRICT"),
+        CheckConstraint("temp_files_version > 0 AND jsonb_typeof(temp_files_manifest) = 'object' AND octet_length(temp_files_manifest::text) <= 65536",
+            name="ck_a2a_temp_files_manifest"),
         ForeignKeyConstraint(["tenant_id"], ["tenants.id"], ondelete="RESTRICT"),
         ForeignKeyConstraint(
             ["tenant_id", "source_agent_id", "source_run_id"],
@@ -55,6 +59,9 @@ class A2ARequestRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source_agent_id: Mapped[UUID]
     source_run_id: Mapped[UUID]
+    delivery_run_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    temp_files_version: Mapped[int] = mapped_column(default=1, server_default="1")
+    temp_files_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
     source_call_id: Mapped[str] = mapped_column(String(256))
     target_agent_id: Mapped[UUID]
     target_run_id: Mapped[UUID | None]

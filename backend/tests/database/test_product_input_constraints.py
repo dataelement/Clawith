@@ -77,7 +77,9 @@ async def test_group_reply_must_match_exact_source_link(db_session, graph, drift
         "conversation": ("conversation_id", g["topics"][1]), "null_conversation": ("conversation_id", None)}[drift]
     values[field] = value
     await rejected(db_session, "group_events", g["seed"], values,
-        "ck_group_events_execution_source" if drift == "null_conversation" else "fk_group_events_source_run")
+        "ck_group_events_execution_source" if drift == "null_conversation" else
+        "fk_group_events_source_run|group_events_tenant_id_agent_id_source_run_id_fkey" if drift == "agent" else
+        "fk_group_events_source_run")
 
 
 async def test_group_run_link_cannot_move_input_to_another_topic(db_session, graph):

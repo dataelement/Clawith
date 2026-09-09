@@ -61,6 +61,9 @@ class SessionEntryRecord(Base):
         UniqueConstraint("tenant_id", "session_id", "position"),
         UniqueConstraint("tenant_id", "session_id", "id"),
         UniqueConstraint("tenant_id", "session_id", "id", "kind"),
+        UniqueConstraint("tenant_id", "session_id", "source_run_id", "id", "kind"),
+        ForeignKeyConstraint(["tenant_id", "agent_id", "source_run_id"],
+            ["agent_runs.tenant_id", "agent_runs.agent_id", "agent_runs.id"], ondelete="RESTRICT"),
         UniqueConstraint("tenant_id", "agent_id", "id", "kind"),
         UniqueConstraint("tenant_id", "session_id", "source_key"),
         UniqueConstraint("tenant_id", "session_id", "message_key"),
@@ -90,7 +93,7 @@ class SessionEntryRecord(Base):
         ),
         CheckConstraint("position > 0 AND payload_version > 0", name="ck_session_entries_versions"),
         CheckConstraint(
-            "(kind = 'input' AND source_key IS NOT NULL AND origin_input_id IS NULL) OR (kind = 'reply' AND source_key IS NULL AND origin_input_id IS NOT NULL AND related_waiting_run_id IS NULL)",
+            "(kind = 'input' AND source_key IS NOT NULL AND origin_input_id IS NULL) OR (kind = 'reply' AND source_key IS NULL AND (origin_input_id IS NOT NULL OR source_run_id IS NOT NULL) AND related_waiting_run_id IS NULL)",
             name="ck_session_entries_origin",
         ),
         CheckConstraint(
@@ -171,19 +174,26 @@ class SessionAttachmentRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(["tenant_id", "session_id"], ["sessions.tenant_id", "sessions.id"], ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "uploader_membership_id"], ["memberships.tenant_id", "memberships.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "created_by_run_id"], ["agent_runs.tenant_id", "agent_runs.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "session_id", "created_by_run_id", "bound_message_id", "bound_message_kind"],
+            ["session_entries.tenant_id", "session_entries.session_id", "session_entries.source_run_id", "session_entries.id", "session_entries.kind"], ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "session_id", "origin_input_id", "origin_input_kind"],
             ["session_entries.tenant_id", "session_entries.session_id", "session_entries.id", "session_entries.kind"], ondelete="RESTRICT"),
         UniqueConstraint("tenant_id", "session_id", "upload_source_key"),
         CheckConstraint("byte_size >= 0 AND byte_size <= 4194304", name="ck_session_attachment_size"),
         CheckConstraint("num_nonnulls(storage_revision, published_at) IN (0, 2)", name="ck_session_attachment_publication"),
-        CheckConstraint("cleanup_claimed_at IS NULL OR origin_input_id IS NULL", name="ck_session_attachment_cleanup"),
-        Index("ix_session_attachment_unbound", "id", postgresql_where=text("origin_input_id IS NULL")),
+        CheckConstraint("cleanup_claimed_at IS NULL OR (origin_input_id IS NULL AND bound_message_id IS NULL)", name="ck_session_attachment_cleanup"),
+        CheckConstraint("num_nonnulls(uploader_membership_id, created_by_run_id) = 1 AND (bound_message_id IS NULL OR created_by_run_id IS NOT NULL) AND (created_by_run_id IS NULL OR origin_input_id IS NULL)", name="ck_session_attachment_creator"),
+        Index("ix_session_attachment_unbound", "id", postgresql_where=text("origin_input_id IS NULL AND bound_message_id IS NULL")),
         {"info": {"owner": "session"}},
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID]
     session_id: Mapped[UUID]
-    uploader_membership_id: Mapped[UUID]
+    uploader_membership_id: Mapped[UUID | None]
+    created_by_run_id: Mapped[UUID | None]
+    bound_message_id: Mapped[UUID | None]
+    bound_message_kind: Mapped[str] = mapped_column(String(16), Computed("'reply'", persisted=True))
     upload_source_key: Mapped[str] = mapped_column(String(512))
     origin_input_id: Mapped[UUID | None]
     origin_input_kind: Mapped[str] = mapped_column(String(16), Computed("'input'", persisted=True))

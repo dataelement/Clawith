@@ -92,6 +92,9 @@ class ChannelDeliveryRecord(Base):
         CheckConstraint("num_nonnulls(session_reply_id, group_reply_id) = 1", name="ck_channel_deliveries_one_reply"),
         CheckConstraint("attempt_count >= 0", name="ck_channel_deliveries_attempts"),
         CheckConstraint("delivery_status IN ('pending', 'delivered', 'failed', 'uncertain')", name="ck_channel_deliveries_status"),
+        CheckConstraint("jsonb_typeof(provider_reply_ids) = 'array' AND jsonb_array_length(provider_reply_ids) <= 256",
+            name="ck_channel_delivery_reply_ids"),
+        Index("ix_channel_delivery_reply_ids", "provider_reply_ids", postgresql_using="gin"),
         CheckConstraint("reply_operation IS NULL OR (reply_context_id IS NOT NULL AND reply_operation IN ('original', 'followup'))",
             name="ck_channel_deliveries_reply_operation"),
         Index("uq_channel_original_reply", "tenant_id", "reply_context_id", unique=True,
@@ -113,6 +116,7 @@ class ChannelDeliveryRecord(Base):
     attempt_count: Mapped[int]
     delivery_status: Mapped[str] = mapped_column(String(16))
     provider_acknowledgement: Mapped[str | None] = mapped_column(String(512))
+    provider_reply_ids: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
     last_error: Mapped[str | None] = mapped_column(String(512))
     reply_context_id: Mapped[UUID | None] = mapped_column(nullable=True)
     reply_operation: Mapped[str | None] = mapped_column(String(16), nullable=True)
