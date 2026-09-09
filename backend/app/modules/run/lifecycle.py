@@ -127,18 +127,23 @@ class RunService:
             return _view(row)
         return _view(await self._row(tenant_id, run_id))
 
-    async def has_input_reference(self, *, tenant_id: UUID, run_id: UUID, reference: str) -> bool:
+    async def has_input_reference(self, *, tenant_id: UUID, run_id: UUID, reference: str,
+            source_kind: str | None = None, source_owner_id: UUID | None = None) -> bool:
         """Check an exact explicit input reference without reading Model or Tool output."""
         if not reference or len(reference) > 4096:
             raise InvalidInput("Input reference is outside its bound")
+        if (source_kind is None) != (source_owner_id is None) or (source_kind is not None and not 1 <= len(source_kind) <= 64):
+            raise InvalidInput("Input reference source filter is invalid")
         await self._row(tenant_id, run_id)
         query = select(RunHistoryRecord.run_id).where(
             RunHistoryRecord.tenant_id == tenant_id, RunHistoryRecord.run_id == run_id,
             RunHistoryRecord.payload_kind.in_(("initial_input", "related_input")),
             RunHistoryRecord.payload_schema_version == HISTORY_VERSION,
             RunHistoryRecord.payload["input"]["references"].contains([{"reference": reference}]),
-        ).exists()
-        return bool(await self._session.scalar(select(query)))
+        )
+        if source_kind is not None:
+            query = query.where(RunHistoryRecord.source_kind == source_kind, RunHistoryRecord.source_owner_id == source_owner_id)
+        return bool(await self._session.scalar(select(query.exists())))
 
     async def lock_main(self, *, tenant_id: UUID, run_id: UUID) -> RunView:
         """Lock the Run before a product owner locks its own facts in this transaction."""
