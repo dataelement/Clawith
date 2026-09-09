@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json",
+  "previous_receipt_hash": "3991cd6749cc8760d6c4252182666f3cf260a20ee0c769322507be87eb0f9b78",
+  "owner_row": {
+    "implementation_phase": 5,
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
+        "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+      }
+    ],
+    "schema_wave": "S2",
+    "state": "contract_approved",
+    "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+    "contract_artifact": "specs/backend-product-inputs.md",
+    "owner_id": "a2a"
+  }
+}
