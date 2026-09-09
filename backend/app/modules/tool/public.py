@@ -26,6 +26,7 @@ from app.modules.tool.contracts import (
     MCPConnection,
     MCPInstallSpec,
     MCPTool,
+    PersonalAccountSelection,
     ResolvedTool,
     RunRole,
     ToolCall,
@@ -35,6 +36,8 @@ from app.modules.tool.contracts import (
     ToolResult,
     ToolSource,
     canonical_json,
+    decode_personal_selections,
+    encode_personal_selections,
     json_object,
     role_eligible,
     tool_result_content,
@@ -77,6 +80,7 @@ __all__ = [
     "MCPFailure",
     "MCPInstallSpec",
     "MCPTool",
+    "PersonalAccountSelection",
     "ResolvedTool",
     "RunRole",
     "ToolCall",
@@ -91,6 +95,8 @@ __all__ = [
     "ToolService",
     "ToolSource",
     "canonical_json",
+    "decode_personal_selections",
+    "encode_personal_selections",
     "json_object",
     "role_eligible",
     "tool_result_content",
@@ -107,6 +113,18 @@ class ToolService:
         self._repo = ToolRepository(transaction.session)
         self._agents = AgentService(transaction)
         self._credentials = CredentialService(transaction)
+
+    async def validate_personal_selections(self, principal: TenantPrincipal, *,
+            selections: tuple[PersonalAccountSelection, ...]) -> tuple[PersonalAccountSelection, ...]:
+        """Validate explicit human choices using the same Agent/connection/grant policy as execution capture."""
+        encode_personal_selections(selections)
+        for selection in selections:
+            await self._agents.get_for_execution(principal, agent_id=selection.target_agent_id)
+            if not selection.connection_ids:
+                continue
+            await self.capture_authorized(ToolResolutionScope(principal, selection.target_agent_id, "main",
+                frozenset(selection.connection_ids), selection.connection_ids))
+        return selections
 
     async def install_for_agent(
         self, scope: AgentInstallScope, *, definition: DefinitionSpec, connection: MCPInstallSpec | None = None
@@ -545,6 +563,10 @@ class ToolService:
                     cast(Literal["streamable_http", "sse"], transport),
                 )
             )
+        resolved_personal = {item.definition.id for item in resolved
+            if item.credential is not None and item.credential.owner_kind == "membership"}
+        if resolved_personal != set(personal):
+            raise NotFound("An explicitly selected personal account Tool is unavailable")
         return AuthorizedToolSet(tenant_id, scope.agent_id, tuple(resolved))
 
     async def _credential(

@@ -155,6 +155,52 @@ class ToolResolutionScope:
 
 
 @dataclass(frozen=True, slots=True)
+class PersonalAccountSelection:
+    """One human input's explicit account choices for one executing Agent."""
+
+    target_agent_id: UUID
+    connection_ids: tuple[UUID, ...]
+
+
+def encode_personal_selections(selections: tuple[PersonalAccountSelection, ...]) -> dict[str, object]:
+    if (not isinstance(selections, tuple) or len(selections) > 100
+            or len({item.target_agent_id for item in selections}) != len(selections)
+            or sum(len(item.connection_ids) for item in selections) > MAX_TOOLS):
+        raise InvalidInput("Personal account selection is outside its bound")
+    targets = []
+    for item in selections:
+        if (not isinstance(item.target_agent_id, UUID) or not isinstance(item.connection_ids, tuple)
+                or any(not isinstance(id, UUID) for id in item.connection_ids)
+                or len(set(item.connection_ids)) != len(item.connection_ids)):
+            raise InvalidInput("Personal account selection is invalid")
+        targets.append({"target_agent_id": str(item.target_agent_id), "connection_ids": [str(id) for id in item.connection_ids]})
+    return {"version": 1, "targets": targets}
+
+
+def decode_personal_selections(value: object) -> tuple[PersonalAccountSelection, ...]:
+    if not isinstance(value, dict) or set(value) != {"version", "targets"} or type(value["version"]) is not int or value["version"] != 1:
+        raise InvalidInput("Personal account selection version is unsupported")
+    targets = value["targets"]
+    if not isinstance(targets, list) or len(targets) > 100:
+        raise InvalidInput("Personal account selection is invalid")
+    selections = []
+    try:
+        for item in targets:
+            if not isinstance(item, dict) or set(item) != {"target_agent_id", "connection_ids"}:
+                raise ValueError
+            ids = item["connection_ids"]
+            if not isinstance(ids, list) or len(ids) > MAX_TOOLS or not all(isinstance(id, str) for id in ids):
+                raise ValueError
+            selections.append(PersonalAccountSelection(UUID(item["target_agent_id"]), tuple(UUID(id) for id in ids)))
+    except (ValueError, TypeError, AttributeError):
+        raise InvalidInput("Stored personal account selection is invalid") from None
+    result = tuple(selections)
+    if encode_personal_selections(result) != value:
+        raise InvalidInput("Personal account selection must use canonical identities")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
 class AgentToolResolutionScope:
     """Authenticated Agent-owned intake, including exact explicit Product delegations."""
 
