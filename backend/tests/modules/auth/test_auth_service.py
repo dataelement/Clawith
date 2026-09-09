@@ -70,6 +70,11 @@ async def test_wrong_password_cross_tenant_expiry_and_logout_are_denied(test_dat
 
     token, principal = await auth.login("person", "password", tenant.id)
     assert principal == TenantPrincipal(account.id, membership.id, tenant.id, "member")
+    captured = await auth.authenticate_session(token)
+    assert captured.principal == principal
+    assert captured.expires_at == clock.value + timedelta(seconds=10)
+    clock.value += timedelta(seconds=1)
+    assert (await auth.authenticate_session(token)).expires_at == captured.expires_at
     await auth.logout(token)
     with pytest.raises(AccessDenied):
         await auth.authenticate(token)

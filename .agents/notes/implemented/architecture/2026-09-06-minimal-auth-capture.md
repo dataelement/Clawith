@@ -12,6 +12,8 @@ Auth owns salted versioned scrypt verifiers and opaque random session tokens who
 
 Authentication reads the stored session, validates its versioned captured authorization, expiry and logout marker, and returns the captured Principal. It does not reload human roles or Agent grants. Logout invalidates that session without cancelling Runs. Trusted verifier provisioning is explicit and is never startup seeding or a public registration endpoint.
 
+`authenticate_session` returns the validated Principal together with its persisted expiry for product HTTP/WebSocket consumers. It performs the same single authentication read and does not extend the deadline; `authenticate` retains its Principal-only return by delegating to that owner operation.
+
 The service requires an explicit lifetime and stores `expires_at`. It rejects an expired stored session and does not renew it implicitly. G006 product intake will supply the user-confirmed [fixed 24-hour login policy](../../proposed/architecture/2026-09-06-login-session-authorization.md), with no automatic renewal or cancellation of existing Runs. That product policy is not yet an implemented default of this minimal service.
 
 ## Alternatives considered

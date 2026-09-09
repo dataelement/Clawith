@@ -1,6 +1,7 @@
 """Public local-login service with login-scoped authorization snapshots."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -26,6 +27,12 @@ from app.modules.permission.public import MAX_CAPTURED_AGENT_IDS, PermissionServ
 
 AUTHORIZATION_SCHEMA_VERSION = 1
 MAX_LOGIN_NAME_LENGTH = 320
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedSession:
+    principal: TenantPrincipal
+    expires_at: datetime
 
 
 class AuthService:
@@ -145,18 +152,23 @@ class AuthService:
         return token, principal
 
     async def authenticate(self, token: str) -> TenantPrincipal:
+        return (await self.authenticate_session(token)).principal
+
+    async def authenticate_session(self, token: str) -> AuthenticatedSession:
+        """Validate access and expose its fixed deadline for HTTP/WebSocket consumers."""
         digest = _safe_token_digest(token)
         async with transaction(self._sessions) as tx:
             record = await AuthRepository(tx.session).get_session_by_token_hash(digest)
             if record is None or record.logged_out_at is not None or record.expires_at <= self._now():
                 raise AccessDenied("login session is invalid")
-            return _decode_authorization(
+            principal = _decode_authorization(
                 record.frozen_authorization,
                 schema_version=record.authorization_schema_version,
                 account_id=record.account_id,
                 membership_id=record.membership_id,
                 tenant_id=record.tenant_id,
             )
+            return AuthenticatedSession(principal, record.expires_at)
 
     async def logout(self, token: str) -> None:
         digest = _safe_token_digest(token)
