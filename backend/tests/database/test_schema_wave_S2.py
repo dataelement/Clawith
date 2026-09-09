@@ -26,17 +26,28 @@ S2_TABLE_OWNERS = {
     "sessions": "session",
     "session_entries": "session",
     "session_run_links": "session",
+    "session_attachments": "session",
     "a2a_requests": "a2a",
     "groups": "group",
     "group_memberships": "group",
     "group_events": "group",
     "group_run_links": "group",
+    "group_attachments": "group",
+    "group_agents": "group",
+    "group_conversations": "group",
+    "group_reads": "group",
     "agent_triggers": "trigger",
     "trigger_occurrences": "trigger",
     "agent_heartbeats": "heartbeat",
     "heartbeat_occurrences": "heartbeat",
     "agent_channel_configurations": "channel",
     "channel_deliveries": "channel",
+    "channel_actor_links": "channel",
+    "channel_group_links": "channel",
+    "channel_reply_contexts": "channel",
+    "channel_conversations": "channel",
+    "channel_input_routes": "channel",
+    "channel_sync_cursors": "channel",
 }
 for _owner in set(S2_TABLE_OWNERS.values()):
     import_module(f"app.modules.{_owner}.models")
@@ -167,6 +178,10 @@ async def test_s2_accepts_all_tables_and_shared_or_private_packages(db_session: 
     second = await _second_agent(db_session, seed)
     group = await _put(db_session, "groups", seed, name="group", announcement="", next_position=1, enabled=True)
     await _put(db_session, "group_memberships", seed, group_id=group, membership_id=member, enabled=True)
+    await _put(db_session, "group_agents", seed, group_id=group, agent_id=agent_id, enabled=True)
+    conversation = await _put(db_session, "group_conversations", seed, group_id=group, title="Default", is_default=True,
+        enabled=True, created_by_membership_id=member)
+    await _put(db_session, "group_reads", seed, group_id=group, conversation_id=conversation, membership_id=member, through_position=0)
     for owner, identity in (("membership_id", member), ("agent_id", agent_id), ("group_id", group)):
         await _put(db_session, "workspaces", seed, **{owner: identity})
     for owner, scope in ((None, "shared"), (agent_id, "private")):
@@ -387,6 +402,24 @@ async def test_s2_accepts_all_tables_and_shared_or_private_packages(db_session: 
         attempt_count=0,
         delivery_status="pending",
     )
+    await _put(db_session, "channel_actor_links", seed, channel_configuration_id=channel,
+        external_actor_id="actor", membership_id=member, enabled=True)
+    await _put(db_session, "channel_group_links", seed, channel_configuration_id=channel,
+        external_group_id="group", group_id=group, enabled=True)
+    await _put(db_session, "channel_reply_contexts", seed, agent_id=agent_id, channel_configuration_id=channel,
+        external_event_id="context", context_version=1, key_version="v1", nonce=b"n" * 12,
+        ciphertext=b"c" * 17, expires_at=seed["now"])
+    await _put(db_session, "channel_conversations", seed, agent_id=agent_id, channel_configuration_id=channel,
+        external_conversation_id="conversation", membership_id=member, session_id=session_id)
+    await _put(db_session, "channel_input_routes", seed, agent_id=agent_id, channel_configuration_id=channel,
+        external_event_id="event", session_input_id=input_id, destination="user")
+    await _put(db_session, "channel_sync_cursors", seed, agent_id=agent_id, channel_configuration_id=channel,
+        stream_key="stream", coordinate_kind="token", external_event_id="notice", cursor_version=1,
+        key_version="v1", nonce=b"n" * 12, ciphertext=b"c" * 17)
+    for table, field, owner_id in (("session_attachments", "session_id", session_id), ("group_attachments", "group_id", group)):
+        await _put(db_session, table, seed, **{field: owner_id}, uploader_membership_id=member,
+            upload_source_key="upload", filename="sample.txt", media_type="text/plain", byte_size=1,
+            sha256="a" * 64, storage_key=f"attachments/{table}/sample", unbound_expires_at=seed["now"])
     for table in S2_TABLE_OWNERS:
         assert await db_session.scalar(select(Base.metadata.tables[table].c.id).limit(1)) is not None, table
 
