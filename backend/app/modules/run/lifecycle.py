@@ -15,6 +15,7 @@ from sqlalchemy.orm import aliased
 from app.infrastructure.errors import Conflict, InvalidInput, NotFound
 from app.infrastructure.transactions import TransactionContext
 from app.modules.run.contracts import (
+    HISTORY_VERSION,
     HistoryKind,
     HistoryPayload,
     InitialInputPayload,
@@ -96,6 +97,15 @@ class OutcomeConsumer(Protocol):
             outcome: TerminalOutcomePayload) -> None: ...
 
 
+class StartConsumer(Protocol):
+    async def record_started(self, transaction: TransactionContext, *, run: RunView) -> None: ...
+
+
+class WaitingConsumer(Protocol):
+    async def record_waiting(self, transaction: TransactionContext, *, run: RunView,
+            waiting: WaitingPayload) -> None: ...
+
+
 def _view(row: RunRecord) -> RunView:
     if row.status not in (*_ACTIVE, "Completed", "Failed", "Cancelled", "Interrupted"):
         raise Conflict("Run status is invalid")
@@ -111,8 +121,31 @@ class RunService:
         self._history = RunHistoryRepository(transaction)
         self._snapshots = SnapshotRepository(transaction)
 
-    async def get(self, *, tenant_id: UUID, run_id: UUID) -> RunView:
+    async def get(self, *, tenant_id: UUID, run_id: UUID, lock: bool = False) -> RunView:
+        if lock:
+            row, _parent = await self._family_lock(tenant_id, run_id)
+            return _view(row)
         return _view(await self._row(tenant_id, run_id))
+
+    async def has_input_reference(self, *, tenant_id: UUID, run_id: UUID, reference: str) -> bool:
+        """Check an exact explicit input reference without reading Model or Tool output."""
+        if not reference or len(reference) > 4096:
+            raise InvalidInput("Input reference is outside its bound")
+        await self._row(tenant_id, run_id)
+        query = select(RunHistoryRecord.run_id).where(
+            RunHistoryRecord.tenant_id == tenant_id, RunHistoryRecord.run_id == run_id,
+            RunHistoryRecord.payload_kind.in_(("initial_input", "related_input")),
+            RunHistoryRecord.payload_schema_version == HISTORY_VERSION,
+            RunHistoryRecord.payload["input"]["references"].contains([{"reference": reference}]),
+        ).exists()
+        return bool(await self._session.scalar(select(query)))
+
+    async def lock_main(self, *, tenant_id: UUID, run_id: UUID) -> RunView:
+        """Lock the Run before a product owner locks its own facts in this transaction."""
+        row, parent = await self._family_lock(tenant_id, run_id)
+        if parent is not None:
+            raise InvalidInput("Product operations require a Main Run")
+        return _view(row)
 
     async def find_by_source(self, *, tenant_id: UUID, source: SourceIdentity) -> RunView | None:
         row = await self._session.scalar(select(RunRecord).where(RunRecord.tenant_id == tenant_id,
@@ -122,15 +155,22 @@ class RunService:
 
     async def verify_task_origin(self, *, tenant_id: UUID, parent_run_id: UUID,
             step_id: str, call_id: str) -> None:
-        row = await self._row(tenant_id, parent_run_id)
-        if row.parent_run_id is not None or row.status != "Running":
-            raise InvalidInput("Task operations require a Running Main Run")
+        await self.verify_main_tool_origin(tenant_id=tenant_id, run_id=parent_run_id,
+            step_id=step_id, call_id=call_id, tool_name="task")
+
+    async def verify_main_tool_origin(self, *, tenant_id: UUID, run_id: UUID,
+            step_id: str, call_id: str, tool_name: str) -> RunView:
+        """Verify an actual captured Main Tool call while holding Run-before-product locks."""
+        row, parent = await self._family_lock(tenant_id, run_id)
+        if parent is not None or row.status != "Running":
+            raise InvalidInput("Product Tool operations require a Running Main Run")
         step = await self._step(row, step_id)
-        if not any(call.call_id == call_id and call.name == "task" for call in step.result.calls):
-            raise InvalidInput("Task operation requires its originating Model Tool call")
-        snapshot = await self.read_snapshot(tenant_id=tenant_id, run_id=parent_run_id)
-        if not any(tool.definition.spec.name == "task" for tool in snapshot.tools.for_role("main").tools):
-            raise InvalidInput("Task is not in this Run's captured authorization")
+        if not any(call.call_id == call_id and call.name == tool_name for call in step.result.calls):
+            raise InvalidInput("Product operation requires its originating Model Tool call")
+        snapshot = await self.read_snapshot(tenant_id=tenant_id, run_id=run_id)
+        if not any(tool.definition.spec.name == tool_name for tool in snapshot.tools.for_role("main").tools):
+            raise InvalidInput("Tool is not in this Run's captured authorization")
+        return _view(row)
 
     async def read_snapshot(self, *, tenant_id: UUID, run_id: UUID) -> RunSnapshot:
         return await self._snapshots.read(tenant_id=tenant_id, run_id=run_id)
@@ -205,7 +245,7 @@ class RunService:
 
     async def start(self, *, tenant_id: UUID, agent_id: UUID, run_id: UUID, source: SourceIdentity,
             input: InputContent, snapshot: RunSnapshot, parent_run_id: UUID | None = None,
-            admit: Callable[[], None] | None = None) -> StartResult:
+            admit: Callable[[], None] | None = None, start_consumer: StartConsumer | None = None) -> StartResult:
         """Call the synchronous admission port only after deduplication; the caller owns its reservation and commit."""
         if (snapshot.tenant_id, snapshot.agent_id, snapshot.workspace.run_id, snapshot.role) != (
                 tenant_id, agent_id, run_id, "sub" if parent_run_id else "main"):
@@ -243,6 +283,8 @@ class RunService:
             return StartResult(existing, False)
         if parent is None:
             await self._initialize_main(inserted, snapshot, input, source)
+            if start_consumer is not None:
+                await start_consumer.record_started(self._transaction, run=_view(inserted))
             return StartResult(_view(inserted), True)
         await self._snapshots.insert(run_id=run_id, snapshot=snapshot)
         await self._history.append(tenant_id=tenant_id, run_id=run_id, payload=InitialInputPayload(input), source=source)
@@ -319,7 +361,8 @@ class RunService:
             source=SourceIdentity("tool_result", run_id,
                 sha256(f"{payload.step_id}\0{payload.result.call_id}".encode()).hexdigest()))
 
-    async def wait(self, *, tenant_id: UUID, run_id: UUID, payload: WaitingPayload) -> TransitionResult:
+    async def wait(self, *, tenant_id: UUID, run_id: UUID, payload: WaitingPayload,
+            waiting_consumer: WaitingConsumer | None = None) -> TransitionResult:
         row, parent = await self._family_lock(tenant_id, run_id)
         self._active(row)
         if row.status == "Waiting" and row.active_waiting_reference != payload.reference:
@@ -343,6 +386,8 @@ class RunService:
             return TransitionResult(_view(row), False)
         row.status, row.active_waiting_reference = "Waiting", payload.reference
         await self._session.flush()
+        if parent is None and payload.question.strip() and waiting_consumer is not None:
+            await waiting_consumer.record_waiting(self._transaction, run=_view(row), waiting=payload)
         wake = ()
         if parent is not None:
             await self._notify(parent, row, appended.entry.sequence, payload.question, "needs_input")

@@ -54,8 +54,10 @@ from app.modules.run.lifecycle import (
     OutcomeConsumer,
     RunService,
     RunView,
+    StartConsumer,
     StartResult,
     TransitionResult,
+    WaitingConsumer,
 )
 from app.modules.run.repository import HistoryEntry, SourceIdentity
 from app.modules.run.snapshot import RunSnapshot, derive_child, model_visible_prefix
@@ -161,6 +163,7 @@ class RunRuntime:
     def __init__(self, *, control_sessions: async_sessionmaker[AsyncSession],
             execution_sessions: async_sessionmaker[AsyncSession], model: ModelExecutionService,
             tools: ToolBatchPort, consumer: OutcomeConsumer | None = None,
+            start_consumer: StartConsumer | None = None, waiting_consumer: WaitingConsumer | None = None,
             observer: RunStreamObserver | None = None,
             context_observer: Callable[[RunKey, ContextTelemetry], None] | None = None,
             summarizer_factory: Callable[[RunSnapshot], ContextSummarizer] | None = None,
@@ -171,6 +174,8 @@ class RunRuntime:
         self._model = model
         self._tools = tools
         self._consumer = consumer
+        self._start_consumer = start_consumer
+        self._waiting_consumer = waiting_consumer
         self._observer = observer
         self._context_observer = context_observer
         self._summarizer_factory = summarizer_factory
@@ -275,7 +280,8 @@ class RunRuntime:
         try:
             async with transaction(self._control) as tx:
                 result = await RunService(tx).start(tenant_id=snapshot.tenant_id, agent_id=snapshot.agent_id,
-                    run_id=key.run_id, snapshot=snapshot, input=input, source=source, parent_run_id=parent_run_id, admit=admit)
+                    run_id=key.run_id, snapshot=snapshot, input=input, source=source, parent_run_id=parent_run_id, admit=admit,
+                    start_consumer=self._start_consumer)
         except BaseException:
             if reserved:
                 cleanup = asyncio.create_task(self._reconcile_failed_start(key, source, parent_run_id),
@@ -543,9 +549,11 @@ class RunRuntime:
         try:
             async with transaction(self._execution) as tx:
                 service = RunService(tx)
-                view = await service.get(tenant_id=key.tenant_id, run_id=key.run_id)
+                view = await service.get(tenant_id=key.tenant_id, run_id=key.run_id, lock=True)
                 consumer = self._consumer if view.parent_run_id is None else None
-                if isinstance(pending, _FailureCommit):
+                if view.status in _TERMINAL:
+                    changed = TransitionResult(view, False)
+                elif isinstance(pending, _FailureCommit):
                     changed = await service.terminate(tenant_id=key.tenant_id, run_id=key.run_id,
                         status="Failed", reason=pending.reason, consumer=consumer)
                 elif isinstance(pending, _ModelCommit):
@@ -572,7 +580,7 @@ class RunRuntime:
                     if pending.wait_question is not None:
                         changed = await service.wait(tenant_id=key.tenant_id, run_id=key.run_id,
                             payload=WaitingPayload(pending.step.step_id, pending.step.step_id, pending.wait_question,
-                                pending.step.read_through_sequence))
+                                pending.step.read_through_sequence), waiting_consumer=self._waiting_consumer)
         except SQLAlchemyError:
             # Retain the already-produced Model/Tool result; only this transaction is retried.
             await asyncio.sleep(0.05)
@@ -785,6 +793,10 @@ class RunRuntime:
                 self._attempts.pop(view.id, None)
                 self._caches.pop(view.id, None)
                 await self._cleanup(view)
+
+    async def post_commit(self, changed: TransitionResult) -> None:
+        """Apply scheduling and cleanup only after the caller's owner transaction committed."""
+        await self._apply(changed)
 
     async def _cleanup(self, view: RunView) -> None:
         try:

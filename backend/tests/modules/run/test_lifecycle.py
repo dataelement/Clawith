@@ -18,6 +18,7 @@ from app.modules.model.public import (
 )
 from app.modules.run.public import (
     InputContent,
+    InputReference,
     ModelStepPayload,
     RunService,
     SourceIdentity,
@@ -261,6 +262,30 @@ async def test_tool_results_require_matching_call_and_deduplicate(transaction_fa
         first = await service.record_tool_result(tenant_id=tenant, run_id=main.id, payload=payload)
         again = await service.record_tool_result(tenant_id=tenant, run_id=main.id, payload=payload)
         assert first.appended and not again.appended
+
+
+async def test_input_reference_requires_explicit_initial_or_related_reference(transaction_factory):
+    tenant, agent = await seed(transaction_factory)
+    run_id = uuid4()
+    async with transaction_factory() as tx:
+        service = RunService(tx)
+        await service.start(tenant_id=tenant, agent_id=agent, run_id=run_id, snapshot=snapshot(tenant, agent, run_id),
+            source=SourceIdentity("session", uuid4(), "references"),
+            input=InputContent("attachment:text-only", (InputReference("attachment:initial", "attachment"),)))
+        await service.append_related(tenant_id=tenant, run_id=run_id, source=SourceIdentity("session_input", uuid4(), "related"),
+            input=InputContent("more", (InputReference("attachment:related", "attachment"),)))
+        await service.record_model_step(tenant_id=tenant, run_id=run_id, payload=ModelStepPayload("step", 2,
+            ModelStepResult("attachment:model", (ModelToolCall("call", "read", "{}"),), "tool_calls", ModelUsage(), "step", False)))
+        await service.record_tool_result(tenant_id=tenant, run_id=run_id,
+            payload=ToolResultPayload("step", "read", ToolResult("call", "success", '{"input":{"references":[{"reference":"attachment:tool"}]}}')))
+        for reference in ("attachment:initial", "attachment:related"):
+            assert await service.has_input_reference(tenant_id=tenant, run_id=run_id, reference=reference)
+        for reference in ("attachment:text-only", "attachment:model", "attachment:tool", "attachment:missing"):
+            assert not await service.has_input_reference(tenant_id=tenant, run_id=run_id, reference=reference)
+        with pytest.raises(InvalidInput):
+            await service.has_input_reference(tenant_id=tenant, run_id=run_id, reference="x" * 4097)
+        with pytest.raises(NotFound):
+            await service.has_input_reference(tenant_id=uuid4(), run_id=run_id, reference="attachment:initial")
 
 
 async def test_input_committed_while_completion_waits_on_row_lock_wins(transaction_factory):
