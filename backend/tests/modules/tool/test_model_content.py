@@ -1,5 +1,6 @@
 import base64
 import json
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,16 @@ def definition(source="mcp"):
 
 def result(content, status="success"):
     return ToolResult("call", status, json.dumps(content, ensure_ascii=False))
+
+
+def test_explicit_captured_format_enables_images_without_tool_name_inference():
+    ordinary = definition("builtin")
+    body = result({"content":[{"type":"image","mimeType":"image/png","data":"aW1hZ2U="}]})
+    assert tool_result_content(ordinary, body) == (ToolOutputPart("text", body.content_json),)
+    declared = replace(ordinary, spec=replace(ordinary.spec, result_format="content_blocks"))
+    assert tool_result_content(declared, body) == (ToolOutputPart("image", "data:image/png;base64,aW1hZ2U="),)
+    with pytest.raises(InvalidInput):
+        replace(ordinary.spec, result_format="unknown")
 
 
 def test_mcp_text_and_images_keep_order_without_repeating_image_base64_in_text():

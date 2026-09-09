@@ -89,6 +89,7 @@ class WorkspaceScope:
     run_id: UUID | None = None
     main: bool = True
     preview_only: bool = False
+    allow_shared_memory_writes: bool = True
 
     def for_subagent(self, run_id: UUID) -> "WorkspaceScope":
         return replace(self, run_id=run_id, main=False)
@@ -238,6 +239,9 @@ class WorkspaceService(SkillOperations):
     ) -> str:
         self._authorize(scope, subject, write=write)
         ordinary_path(path, directory=directory)
+        if (write and subject.kind == "agent" and not scope.allow_shared_memory_writes
+                and (not path or path == "memory" or path.startswith("memory/"))):
+            raise AccessDenied("Private input provenance cannot modify shared Agent memory")
         async with transaction(self._sessions) as tx:
             record = await WorkspaceRepository(tx.session).workspace(scope.tenant_id, subject.kind, subject.id)
             if record is None:
@@ -664,7 +668,7 @@ class WorkspaceService(SkillOperations):
         if not scope.main or scope.preview_only:
             raise AccessDenied("only Main may explicitly distill generalized Agent memory")
         agent = WorkspaceSubject("agent", scope.agent_id)
-        if scope.output != agent:
+        if scope.output != agent or not scope.allow_shared_memory_writes:
             raise AccessDenied("shared Agent memory requires an Agent-owned execution context")
         revision = await self.write(
             scope, agent, "memory/MEMORY.md", content, expected_revision=expected_revision

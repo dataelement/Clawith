@@ -93,6 +93,7 @@ class DefinitionSpec:
     source: ToolSource
     catalog_item_id: UUID | None = None
     upstream_name: str | None = None
+    result_format: Literal["content_blocks"] | None = None
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.name):
@@ -101,6 +102,8 @@ class DefinitionSpec:
             raise InvalidInput("Tool definition is invalid")
         if self.source not in ("builtin", "product", "mcp", "external"):
             raise InvalidInput("Tool source is invalid")
+        if self.result_format not in (None, "content_blocks"):
+            raise InvalidInput("Tool result format is invalid")
         if self.source == "mcp" and (self.catalog_item_id is None or not self.upstream_name):
             raise InvalidInput("MCP definition requires its Catalog and upstream name")
         if self.source == "mcp" and self.executor_key != "mcp.v1":
@@ -316,15 +319,15 @@ class ToolOutputPart:
 
 
 def tool_result_content(definition: ToolDefinition, result: ToolResult) -> tuple[ToolOutputPart, ...]:
-    """Project normalized MCP images without changing the authoritative Tool Result.
+    """Project declared content blocks without changing the authoritative Tool Result.
 
-    Non-MCP JSON remains opaque text. Unsupported MCP content and metadata are
+    Undeclared non-MCP JSON remains opaque text. Unsupported content and metadata are
     retained as labelled JSON text, not interpreted or fetched. Consumers keep
     the original result status and call identity alongside these content parts.
     """
     try:
         ToolResult(result.call_id, result.status, result.content_json)
-        if definition.spec.source != "mcp":
+        if definition.spec.source != "mcp" and definition.spec.result_format != "content_blocks":
             return _bounded_output(result, [ToolOutputPart("text", result.content_json)])
         body = json_object(result.content_json, maximum=262144)
         if "content" not in body:
@@ -365,7 +368,8 @@ def tool_result_content(definition: ToolDefinition, result: ToolResult) -> tuple
                 parts.append(ToolOutputPart("text", canonical_json({"type": kind, "metadata": metadata}, maximum=262144)))
         metadata = {key: value for key, value in body.items() if key != "content"}
         if metadata:
-            parts.append(ToolOutputPart("text", canonical_json({"type": "mcp_metadata", "metadata": metadata}, maximum=262144)))
+            label = "mcp_metadata" if definition.spec.source == "mcp" else "tool_metadata"
+            parts.append(ToolOutputPart("text", canonical_json({"type": label, "metadata": metadata}, maximum=262144)))
         if not parts:
             parts.append(ToolOutputPart("text", '{"type":"mcp_content","content":[]}'))
         return _bounded_output(result, parts)

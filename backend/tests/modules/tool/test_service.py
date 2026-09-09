@@ -94,6 +94,21 @@ async def setup(transaction_factory, model_acceptance):
         return principal, a.id, b.id, catalog.id, keyring
 
 
+async def test_declared_result_format_persists_and_is_captured(transaction_factory, model_acceptance):
+    principal, agent, _, _, _ = await setup(transaction_factory, model_acceptance)
+    spec = DefinitionSpec("read_attachment", "Preview", '{"type":"object"}', "read_attachment.v1", "builtin",
+        result_format="content_blocks")
+    async with transaction_factory() as tx:
+        service = ToolService(tx, enabled_sources=enabled_sources)
+        definition = await service.register_definition(principal, definition=spec)
+        await service.grant(principal, agent_id=agent, definition_id=definition.id)
+    async with transaction_factory() as tx:
+        captured = await ToolService(tx, enabled_sources=enabled_sources).resolve(ToolResolutionScope(principal, agent, "main"))
+        assert captured.tools[0].definition.spec == spec
+        with pytest.raises(Conflict):
+            await ToolService(tx).register_definition(principal, definition=replace(spec, result_format=None))
+
+
 async def test_member_capture_and_personal_mcp_preserve_membership_identity(transaction_factory, model_acceptance):
     admin, agent, other_agent, catalog, keyring = await setup(transaction_factory, model_acceptance)
     async with transaction_factory() as tx:

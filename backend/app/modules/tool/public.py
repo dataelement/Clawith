@@ -177,7 +177,7 @@ class ToolService:
                 schema_version=1,
                 executor_key=definition.executor_key,
                 configuration_version=1,
-                non_secret_config={},
+                non_secret_config={"result_format": definition.result_format} if definition.result_format else {},
                 enabled=True,
             )
             try:
@@ -550,6 +550,7 @@ class ToolService:
                 "mcp",
                 row.catalog_item_id,
                 row.upstream_name,
+                definition.spec.result_format,
             )
             endpoint = config.get("endpoint")
             transport = config.get("transport")
@@ -602,6 +603,8 @@ def _matching_grant_id(row: AgentToolGrantRecord, connection_id: UUID | None, cr
 def _definition(row: ToolDefinitionRecord) -> ToolDefinition:
     if row.schema_version != 1 or row.configuration_version != 1:
         raise InvalidInput("Tool definition version is unsupported")
+    if not isinstance(row.non_secret_config, dict) or set(row.non_secret_config) - {"result_format"} or row.non_secret_config.get("result_format") not in (None, "content_blocks"):
+        raise InvalidInput("Tool definition result format is unsupported")
     return ToolDefinition(
         row.id,
         row.tenant_id,
@@ -613,6 +616,7 @@ def _definition(row: ToolDefinitionRecord) -> ToolDefinition:
             cast(ToolSource, row.source),
             row.catalog_item_id,
             row.upstream_name,
+            cast(Literal["content_blocks"] | None, row.non_secret_config.get("result_format")),
         ),
     )
 

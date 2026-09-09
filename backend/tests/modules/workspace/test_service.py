@@ -141,6 +141,18 @@ async def test_private_scope_distillation_rejected_before_storage(setup_workspac
     assert not audit.items
 
 
+async def test_private_provenance_cannot_write_shared_memory_through_ordinary_tools(setup_workspace):
+    service, scope, _, _, _, _ = setup_workspace
+    own = WorkspaceSubject("agent", scope.agent_id)
+    restricted = replace(scope, output=own, allow_shared_memory_writes=False)
+    for candidate in (restricted, restricted.for_subagent(uuid4())):
+        with pytest.raises(AccessDenied):
+            await service.write(candidate, own, "memory/MEMORY.md", b"private", expected_revision=None)
+    with pytest.raises(AccessDenied):
+        await service.distill_memory(restricted, b"private", expected_revision=None)
+    await service.write(restricted, own, "files/work.txt", b"ordinary work", expected_revision=None)
+
+
 @pytest.mark.asyncio
 async def test_copy_direction_and_move_conflict_retains_new_source(setup_workspace, monkeypatch):
     service, scope, _, _, _, _ = setup_workspace

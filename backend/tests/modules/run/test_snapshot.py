@@ -63,6 +63,21 @@ def test_exact_snapshot_roundtrip_canonical_hash_and_detached_payload():
         decode_snapshot(1, stored, encoded.content_hash)
 
 
+def test_optional_tool_content_format_roundtrips_without_changing_old_v1_shape():
+    value = snapshot()
+    original = encode_snapshot(value)
+    spec = original.payload["tools"]["tools"][0]["definition"]["spec"]
+    assert "result_format" not in spec
+    assert decode_snapshot(original.version, original.payload, original.content_hash) == value
+    tool = value.tools.tools[0]
+    updated = replace(tool, definition=replace(tool.definition, spec=replace(tool.definition.spec, result_format="content_blocks")))
+    declared = replace(value, tools=replace(value.tools, tools=(updated, *value.tools.tools[1:])))
+    encoded = encode_snapshot(declared)
+    assert encoded.payload["tools"]["tools"][0]["definition"]["spec"]["result_format"] == "content_blocks"
+    assert encoded.content_hash != original.content_hash
+    assert decode_snapshot(encoded.version, encoded.payload, encoded.content_hash) == declared
+
+
 @pytest.mark.parametrize("target", ["snapshot", "model", "policy", "tool", "section"])
 def test_extra_fields_rejected_through_every_public_dataclass(target):
     encoded = encode_snapshot(snapshot())

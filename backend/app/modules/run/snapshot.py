@@ -8,7 +8,7 @@ from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import Text, cast, func, select
 
 from app.infrastructure.errors import Conflict, DomainError, NotFound
@@ -51,7 +51,7 @@ class AgentIdentity:
 
 @dataclass(frozen=True, slots=True)
 class SourceSection:
-    category: Literal["memory_index", "skill_index"]
+    category: Literal["memory_index", "skill_index", "product_context"]
     subject: WorkspaceSubject
     reference: str
     content: str
@@ -82,7 +82,7 @@ class EncodedSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class VisibleSection:
-    category: Literal["platform", "agent", "memory_index", "skill_index"]
+    category: Literal["platform", "agent", "memory_index", "skill_index", "product_context"]
     source: str
     content: str
 
@@ -140,6 +140,7 @@ class _DefinitionV1(_V1):
     source: Literal["builtin", "product", "mcp", "external"]
     catalog_item_id: UUID | None
     upstream_name: str | None
+    result_format: Literal["content_blocks"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class _ToolDefinitionV1(_V1):
@@ -179,6 +180,7 @@ class _WorkspaceV1(_V1):
     run_id: UUID
     main: bool
     preview_only: bool
+    allow_shared_memory_writes: bool = True
 
 
 class _SkillsV1(_V1):
@@ -188,7 +190,7 @@ class _SkillsV1(_V1):
 
 
 class _SourceV1(_V1):
-    category: Literal["memory_index", "skill_index"]
+    category: Literal["memory_index", "skill_index", "product_context"]
     subject: _SubjectV1
     reference: str
     content: str
@@ -218,7 +220,8 @@ def _to_v1(value: RunSnapshot) -> _SnapshotV1:
         tools.append(_ToolV1(definition=_ToolDefinitionV1(id=tool.definition.id, tenant_id=tool.definition.tenant_id,
             spec=_DefinitionV1(name=definition.name, description=definition.description,
                 input_schema_json=definition.input_schema_json, executor_key=definition.executor_key,
-                source=definition.source, catalog_item_id=definition.catalog_item_id, upstream_name=definition.upstream_name)),
+                source=definition.source, catalog_item_id=definition.catalog_item_id, upstream_name=definition.upstream_name,
+                result_format=definition.result_format)),
             credential=_CredentialV1(id=binding.id, owner_kind=binding.owner_kind, owner_id=binding.owner_id) if binding else None,
             endpoint=tool.endpoint, transport=tool.transport))
     return _SnapshotV1(tenant_id=value.tenant_id, agent_id=value.agent_id, role=value.role,
@@ -235,7 +238,7 @@ def _to_v1(value: RunSnapshot) -> _SnapshotV1:
         initial_direct_names=tuple(sorted(value.initial_direct_names)),
         workspace=_WorkspaceV1(tenant_id=scope.tenant_id, agent_id=scope.agent_id,
             output=_SubjectV1(kind=scope.output.kind, id=scope.output.id), run_id=scope.run_id,
-            main=scope.main, preview_only=scope.preview_only),
+            main=scope.main, preview_only=scope.preview_only, allow_shared_memory_writes=scope.allow_shared_memory_writes),
         skills=_SkillsV1(tenant_id=value.skills.tenant_id, agent_id=value.skills.agent_id, skills=value.skills.skills),
         sources=tuple(_SourceV1(category=source.category,
             subject=_SubjectV1(kind=source.subject.kind, id=source.subject.id), reference=source.reference,
@@ -249,7 +252,7 @@ def _from_v1(value: _SnapshotV1) -> RunSnapshot:
         definition, binding = tool.definition.spec, tool.credential
         tools.append(ResolvedTool(ToolDefinition(tool.definition.id, tool.definition.tenant_id,
             DefinitionSpec(definition.name, definition.description, definition.input_schema_json,
-                definition.executor_key, definition.source, definition.catalog_item_id, definition.upstream_name)),
+                definition.executor_key, definition.source, definition.catalog_item_id, definition.upstream_name, definition.result_format)),
             CredentialBinding(binding.id, binding.owner_kind, binding.owner_id) if binding else None,
             tool.endpoint, tool.transport))
     return RunSnapshot(value.tenant_id, value.agent_id, value.role,
@@ -262,7 +265,7 @@ def _from_v1(value: _SnapshotV1) -> RunSnapshot:
                 profile.output_limit, profile.supports_images, profile.supports_streaming, profile.supports_prompt_cache)),
         AuthorizedToolSet(value.tools.tenant_id, value.tools.agent_id, tuple(tools)), frozenset(value.initial_direct_names),
         WorkspaceScope(scope.tenant_id, scope.agent_id, WorkspaceSubject(scope.output.kind, scope.output.id),
-            scope.run_id, scope.main, scope.preview_only),
+            scope.run_id, scope.main, scope.preview_only, scope.allow_shared_memory_writes),
         SkillDiscovery(value.skills.tenant_id, value.skills.agent_id, value.skills.skills),
         tuple(SourceSection(source.category, WorkspaceSubject(source.subject.kind, source.subject.id),
             source.reference, source.content) for source in value.sources), value.include_current_time)
@@ -330,6 +333,9 @@ def _encode_with_dto(snapshot: RunSnapshot) -> tuple[EncodedSnapshot, _SnapshotV
         _validate(snapshot)
         dto = _to_v1(snapshot)
         payload = dto.model_dump(mode="json")
+        if snapshot.workspace.allow_shared_memory_writes:
+            # Preserve canonical bytes of existing v1 snapshots without the restriction.
+            payload["workspace"].pop("allow_shared_memory_writes")
         canonical = _canonical(payload)
         if len(canonical.encode()) > MAX_SNAPSHOT_BYTES:
             raise InvalidSnapshot("Snapshot exceeds its byte bound")
