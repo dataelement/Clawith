@@ -116,17 +116,18 @@
       "schema_wave": "S2",
       "implementation_phase": 3,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-workspace-memory-scope.md",
-      "contract_hash": "88b0321674a56486f8c37f1dd6884c0299a85e1aa4315aaf7d0f6df2bcc580e0",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G005/workspace-memory-contract-review.md",
-          "sha256": "7a4eac4ab4f39b507c3681bb0be8f9623bb625d2fdece1d9d9b83aa7d906ed9c"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
         "backend/artifacts/rewrite/G004/receipts/workspace-contract-amendment.json",
-        "backend/artifacts/rewrite/G005/receipts/workspace-memory-contract-amendment.json"
+        "backend/artifacts/rewrite/G005/receipts/workspace-memory-contract-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/workspace-continuations-amendment.json"
       ]
     },
     {
@@ -134,17 +135,18 @@
       "schema_wave": "S2",
       "implementation_phase": 3,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
         "backend/artifacts/rewrite/G004/receipts/tool-contract-amendment.json",
-        "backend/artifacts/rewrite/G006/receipts/tool-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/tool-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/tool-continuations-amendment.json"
       ]
     },
     {
@@ -186,17 +188,18 @@
       "schema_wave": "S1",
       "implementation_phase": 4,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
         "backend/artifacts/rewrite/G005/receipts/run-contract-amendment.json",
-        "backend/artifacts/rewrite/G006/receipts/run-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/run-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/run-continuations-amendment.json"
       ]
     },
     {
@@ -204,16 +207,17 @@
       "schema_wave": "S2",
       "implementation_phase": 5,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
-        "backend/artifacts/rewrite/G006/receipts/session-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/session-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/session-continuations-amendment.json"
       ]
     },
     {
@@ -221,16 +225,17 @@
       "schema_wave": "S2",
       "implementation_phase": 5,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
-        "backend/artifacts/rewrite/G006/receipts/a2a-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/a2a-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/a2a-continuations-amendment.json"
       ]
     },
     {
@@ -238,16 +243,17 @@
       "schema_wave": "S2",
       "implementation_phase": 5,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
-        "backend/artifacts/rewrite/G006/receipts/group-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/group-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/group-continuations-amendment.json"
       ]
     },
     {
@@ -255,16 +261,17 @@
       "schema_wave": "S2",
       "implementation_phase": 5,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
-        "backend/artifacts/rewrite/G006/receipts/trigger-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/trigger-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/trigger-continuations-amendment.json"
       ]
     },
     {
@@ -272,16 +279,17 @@
       "schema_wave": "S2",
       "implementation_phase": 5,
       "state": "contract_approved",
-      "contract_artifact": "specs/backend-product-inputs.md",
-      "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+      "contract_artifact": "specs/backend-product-input-continuations.md",
+      "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
       "evidence": [
         {
-          "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
-          "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+          "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+          "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
         }
       ],
       "amendment_receipts": [
-        "backend/artifacts/rewrite/G006/receipts/heartbeat-product-input-amendment.json"
+        "backend/artifacts/rewrite/G006/receipts/heartbeat-product-input-amendment.json",
+        "backend/artifacts/rewrite/G006/receipts/heartbeat-continuations-amendment.json"
       ]
     },
     {

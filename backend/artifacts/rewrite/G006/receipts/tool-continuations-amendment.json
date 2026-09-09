@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G006/receipts/tool-product-input-amendment.json",
+  "previous_receipt_hash": "d7fda120e0344311d808357d17877b6eb07e91d8e5c8d5e3a8b7a0f17ed51672",
+  "owner_row": {
+    "contract_hash": "8d18e5c1bdb521c255c08fb0a1f20f4acc574a3f7bd9b676418bfcacf9b5334a",
+    "implementation_phase": 3,
+    "schema_wave": "S2",
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G006/continuations-contract-review.md",
+        "sha256": "36a5e321fb2bd715640bc443767a43aac5a9de104523f278dab37fa76e97e245"
+      }
+    ],
+    "contract_artifact": "specs/backend-product-input-continuations.md",
+    "state": "contract_approved",
+    "owner_id": "tool"
+  }
+}
