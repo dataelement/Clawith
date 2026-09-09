@@ -28,6 +28,11 @@ dependencies = [
     "boto3>=1.35.69",
     "aioboto3>=13.0.0",
     "cryptography>=50.0.0",
+    "croniter>=6.2.4",
+    "pillow>=12.3.0",
+    "azure-identity>=1.25.3",
+    "azure-core[aio]>=1.41.0",
+    "psutil>=7.0.0",
 ]
 
 [project.optional-dependencies]

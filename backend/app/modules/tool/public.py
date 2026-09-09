@@ -126,6 +126,13 @@ class ToolService:
                 frozenset(selection.connection_ids), selection.connection_ids))
         return selections
 
+    async def personal_connection_owners(self, *, tenant_id: UUID,
+            connection_ids: tuple[UUID, ...]) -> dict[UUID, UUID]:
+        """Read immutable owner metadata, including disabled connections; never authorize execution."""
+        if len(connection_ids) > 128:
+            raise InvalidInput("Personal connection metadata batch exceeds its bound")
+        return await self._repo.personal_connection_owners(tenant_id, connection_ids)
+
     async def install_for_agent(
         self, scope: AgentInstallScope, *, definition: DefinitionSpec, connection: MCPInstallSpec | None = None
     ) -> ToolDefinition:

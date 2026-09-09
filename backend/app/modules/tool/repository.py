@@ -100,6 +100,15 @@ class ToolRepository:
         )
         return {row.id: row for row in rows}
 
+    async def personal_connection_owners(self, tenant_id: UUID, ids: tuple[UUID, ...]) -> dict[UUID, UUID]:
+        if not ids:
+            return {}
+        rows = await self.session.execute(select(MembershipAgentToolConnectionRecord.id,
+            MembershipAgentToolConnectionRecord.membership_id).where(
+            MembershipAgentToolConnectionRecord.tenant_id == tenant_id,
+            MembershipAgentToolConnectionRecord.id.in_(ids)))
+        return {identity: membership for identity, membership in rows}
+
     async def grants(self, tenant_id: UUID, agent_id: UUID, *, maximum: int) -> list[AgentToolGrantRecord]:
         result = await self.session.scalars(
             select(AgentToolGrantRecord)
