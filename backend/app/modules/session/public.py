@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -28,6 +28,7 @@ from app.modules.session.attachments import (
     SessionAttachmentService,
     SessionAttachmentStorage,
     SessionAttachmentView,
+    SessionRunAttachmentAuthorizer,
 )
 from app.modules.session.models import SessionEntryRecord, SessionRecord, SessionRunLinkRecord
 from app.modules.session.repository import MAX_ENTRY_BYTES, MAX_GOAL_BYTES, MAX_PAGE_BYTES, SessionRepository
@@ -39,8 +40,16 @@ from app.modules.tool.public import (
     encode_personal_selections,
 )
 
-__all__ = ["SessionAttachmentBlob", "SessionAttachmentDelegation", "SessionAttachmentObject",
-    "SessionAttachmentService", "SessionAttachmentStorage", "SessionAttachmentView"]
+__all__ = [
+    "SessionAttachmentBlob",
+    "SessionAttachmentDelegation",
+    "SessionAttachmentObject",
+    "SessionAttachmentService",
+    "SessionAttachmentStorage",
+    "SessionAttachmentView",
+    "SessionExternalMessageAuthorizer",
+    "SessionRunAttachmentAuthorizer",
+]
 
 
 class _Reference(BaseModel):
@@ -382,6 +391,11 @@ def _link(row: SessionRunLinkRecord) -> SessionRunLink:
         row.history_cutoff, row.run_id, cast(Literal["pending", "started", "failed"], row.admission), row.admission_error, result)
 
 
+class SessionExternalMessageAuthorizer(Protocol):
+    async def __call__(self, transaction: TransactionContext, *, run: RunView,
+        target_id: UUID, conversation_id: UUID | None, input: InputContent) -> None: ...
+
+
 class SessionService:
     """All writes flush the caller's transaction; none schedules or executes a Run."""
     def __init__(self, transaction: TransactionContext, *, enabled_sources: EnabledSources | None = None) -> None:
@@ -652,6 +666,36 @@ class SessionService:
             step_id=step_id, call_id=call_id, tool_name="send_message")
         return await self._message(locked, key=key, content=input, step_id=step_id, call_id=call_id)
 
+    async def accept_external_message(self, *, run: RunView, session_id: UUID, step_id: str, call_id: str,
+            input: InputContent, authorize: SessionExternalMessageAuthorizer) -> MessageAccepted:
+        actual = await RunService(self._tx).lock_main(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.source.kind not in ("trigger", "heartbeat"):
+            raise AccessDenied("External Session messages require an unattended Main")
+        if not all(isinstance(value, str) and 0 < len(value) <= 256 for value in (step_id, call_id)):
+            raise InvalidInput("External message correlation is invalid")
+        await authorize(self._tx, run=actual, target_id=session_id, conversation_id=None, input=input)
+        destination = await self._repository.get(actual.tenant_id, session_id, lock=True)
+        if destination.agent_id != actual.agent_id:
+            raise AccessDenied("External message Agent differs from the Session")
+        key = "message:" + sha256(f"{actual.id}\0{step_id}\0{call_id}".encode()).hexdigest()
+        existing = await self._repository.entry_by_key(actual.tenant_id, session_id, key=key, message=True)
+        if existing is not None:
+            if existing.source_run_id != actual.id or existing.origin_input_id is not None:
+                raise Conflict("External message correlation is inconsistent")
+            return MessageAccepted(_entry(existing), False)
+        await RunService(self._tx).verify_main_tool_origin(tenant_id=actual.tenant_id, run_id=actual.id,
+            step_id=step_id, call_id=call_id, tool_name="send_message")
+        now = datetime.now(UTC)
+        entry = SessionEntryRecord(id=uuid4(), tenant_id=actual.tenant_id, session_id=session_id, agent_id=actual.agent_id,
+            position=destination.next_position, kind="reply", source_key=None, message_key=key, source_run_id=actual.id,
+            origin_input_id=None, related_waiting_run_id=None, waiting_reference=None, payload_version=1,
+            payload=_encode(input, step_id=step_id, call_id=call_id), created_at=now, updated_at=now)
+        destination.next_position += 1
+        destination.updated_at = now
+        self._tx.session.add(entry)
+        await self._tx.session.flush()
+        return MessageAccepted(_entry(entry), True)
+
     async def find_accepted_message(self, *, run: RunView, step_id: str, call_id: str) -> SessionEntryView | None:
         if run.parent_run_id is not None or run.source.kind != "session":
             raise AccessDenied("This execution has no Session message destination")
@@ -664,15 +708,41 @@ class SessionService:
             raise Conflict("Message correlation belongs to another Run")
         return entry
 
+    async def find_external_message(self, *, run: RunView, session_id: UUID, step_id: str, call_id: str,
+            authorize: SessionExternalMessageAuthorizer) -> SessionEntryView | None:
+        actual = await RunService(self._tx).get(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.parent_run_id is not None or actual.source.kind not in ("trigger", "heartbeat"):
+            raise AccessDenied("External message lookup requires an unattended Main")
+        await authorize(self._tx, run=actual, target_id=session_id, conversation_id=None, input=InputContent(""))
+        key = "message:" + sha256(f"{actual.id}\0{step_id}\0{call_id}".encode()).hexdigest()
+        row = await self._repository.entry_by_key(actual.tenant_id, session_id, key=key, message=True)
+        if row is None:
+            return None
+        if row.source_run_id != actual.id or row.origin_input_id is not None:
+            raise Conflict("External message lookup correlation differs")
+        return await self.get_message_for_delivery(tenant_id=actual.tenant_id, agent_id=actual.agent_id, message_id=row.id)
+
     async def get_message_for_delivery(self, *, tenant_id: UUID, agent_id: UUID, message_id: UUID) -> SessionEntryView:
         """Trusted Channel orchestration reads an accepted message in its own transaction."""
         entry = await self._repository.message(tenant_id, agent_id, message_id)
-        if entry.source_run_id is None or entry.origin_input_id is None:
+        if entry.source_run_id is None:
             raise InvalidInput("Session message lacks its source association")
+        if entry.origin_input_id is None:
+            run = await RunService(self._tx).get(tenant_id=tenant_id, run_id=entry.source_run_id)
+            if run.agent_id != agent_id or run.parent_run_id is not None or run.source.kind not in ("trigger", "heartbeat"):
+                raise InvalidInput("External Session message source is inconsistent")
+            return _entry(entry)
         link = await self._repository.link(tenant_id, entry.session_id, run_id=entry.source_run_id)
         if link is None or link.agent_id != agent_id or link.input_id != entry.origin_input_id:
             raise InvalidInput("Session message source is inconsistent")
         return _entry(entry)
+
+    async def delivery_membership(self, *, tenant_id: UUID, agent_id: UUID, session_id: UUID) -> UUID:
+        """Identify the recipient for an already configured destination, without granting access."""
+        row = await self._repository.get(tenant_id, session_id)
+        if row.agent_id != agent_id:
+            raise AccessDenied("Session delivery must use its own Agent")
+        return row.membership_id
 
     async def get_execution_context(self, run: RunView) -> SessionExecutionContext:
         actual = await RunService(self._tx).get(tenant_id=run.tenant_id, run_id=run.id)

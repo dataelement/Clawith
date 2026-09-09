@@ -8,6 +8,8 @@ A human input can commit before execution starts, a Main can send several messag
 
 ## Decision
 
+Bounded work-page reads materialize only the RunLink IDs selected by their size-metadata query; concurrent newly accepted inputs appear on a later refresh rather than changing that page, while selected result indexes that grow beyond their byte bound still fail closed.
+
 The [G006 contract](../../../../specs/backend-product-inputs.md) assigns Session to one Tenant Membership and Agent. Human services verify both membership ownership and the Agent scope captured at login. A Tenant administrator's Agent access does not reveal another membership's Session. Trusted execution and Channel readers use narrow services with explicit persisted source relations rather than invented human principals or private queries.
 
 Input acceptance appends an immutable versioned entry and, for ordinary input, a pending Run association in the caller's transaction. A Session-row lock allocates contiguous positions. Stable client source keys remain on input entries; ordinary association keys use `input:` plus their hash, leaving the `goal:` continuation namespace owner-generated. This prevents a client key from occupying another input's Goal continuation correlation. Retries return the original entry and association even when content differs; cutoffs do not move. Admission failure preserves the entry. An explicit retry may start the existing association, but Session performs no automatic replay after restart.
@@ -31,6 +33,8 @@ The application owns at most 200 subscriptions, each with 64 queued events and 2
 Creating a Run before committing its input would lose the owner's durable acceptance boundary. Starting it without an atomic owner association would let fast execution finish before message routing exists. Automatically translating Final into a reply would recreate a second message outlet. Copying full Model output into association rows would duplicate Run authority and make ordinary lists materialize large payloads. A separate message state machine is unnecessary because entry acceptance, Run status and Channel delivery already have independent owners.
 
 ## Consequences
+
+Explicit Trigger/Heartbeat output can be accepted as a Session reply without creating a human input or a Session Run association. Session invokes the application-supplied frozen-destination/private-origin verifier at its own boundary, checks the real Main `send_message` origin and same-Agent destination, then allocates the reply position in the caller's transaction. The reply retains its actual source Run and a null input origin. Receipt lookup and Channel delivery recognize this accepted external source; they do not manufacture a SessionRunLink or reread mutable source files before returning an existing receipt.
 
 Session history Tools read fixed-cutoff fragments, while work-control Tools validate source and target Main Runs in the same Session and Agent. Multi-Run locks use UUID ordering before Session locks. Supplements are labelled Agent-prepared but retain original human-input attribution and Tool correlation; cancellation uses the ordinary Run consumer transaction. Scheduling hints follow commit, not message acceptance or a guessed execution state.
 

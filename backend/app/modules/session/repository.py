@@ -202,7 +202,10 @@ class SessionRepository:
         metadata = (await self.session.execute(query.with_only_columns(SessionRunLinkRecord.id, size))).all()
         if any(value is not None and value > 8192 for _, value in metadata):
             raise InvalidInput("Stored Session result index exceeds its bound")
-        rows = tuple((await self.session.scalars(query.where(or_(SessionRunLinkRecord.result.is_(None), size <= 8192)))).all())
+        if not metadata:
+            return ()
+        rows = tuple((await self.session.scalars(query.where(SessionRunLinkRecord.id.in_([identity for identity, _ in metadata]),
+            or_(SessionRunLinkRecord.result.is_(None), size <= 8192)))).all())
         if len(rows) != len(metadata):
             raise InvalidInput("Stored Session result index changed while reading")
         return rows

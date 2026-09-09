@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import Text, cast, func, select, update
@@ -18,6 +19,7 @@ from app.modules.group.attachments import (
     GroupAttachmentService,
     GroupAttachmentStorage,
     GroupAttachmentView,
+    GroupRunAttachmentAuthorizer,
 )
 from app.modules.group.models import (
     GroupAgentRecord,
@@ -48,9 +50,23 @@ from app.modules.tool.public import (
 )
 
 __all__ = [
-    "AcceptedGroupInput", "GroupAttachmentBlob", "GroupAttachmentDelegation", "GroupAttachmentObject",
-    "GroupAttachmentService", "GroupAttachmentStorage", "GroupAttachmentView", "GroupConversationView",
-    "GroupDeliveryPage", "GroupDeliveryScope", "GroupEventView", "GroupMemberView", "GroupRunLinkView", "GroupService", "GroupView",
+    "AcceptedGroupInput",
+    "GroupAttachmentBlob",
+    "GroupAttachmentDelegation",
+    "GroupAttachmentObject",
+    "GroupAttachmentService",
+    "GroupAttachmentStorage",
+    "GroupAttachmentView",
+    "GroupConversationView",
+    "GroupDeliveryPage",
+    "GroupDeliveryScope",
+    "GroupEventView",
+    "GroupExternalMessageAuthorizer",
+    "GroupMemberView",
+    "GroupRunAttachmentAuthorizer",
+    "GroupRunLinkView",
+    "GroupService",
+    "GroupView",
 ]
 
 
@@ -205,6 +221,11 @@ def _link(row: GroupRunLinkRecord) -> GroupRunLinkView:
         row.conversation_id)
 
 
+class GroupExternalMessageAuthorizer(Protocol):
+    async def __call__(self, transaction: TransactionContext, *, run: RunView,
+        target_id: UUID, conversation_id: UUID | None, input: InputContent) -> None: ...
+
+
 class GroupService:
     def __init__(self, transaction: TransactionContext, *, enabled_sources: EnabledSources | None = None) -> None:
         self.tx, self.session = transaction, transaction.session
@@ -228,6 +249,32 @@ class GroupService:
             row.enabled, row.updated_at = enabled, now
         await self.session.flush()
 
+    async def authorize_destination(self, principal: TenantPrincipal, *, group_id: UUID,
+            agent_id: UUID, conversation_id: UUID | None = None) -> UUID:
+        """Resolve a human-selected delivery destination without granting another Group."""
+        selected = await self.resolve_conversation(principal, group_id=group_id, conversation_id=conversation_id)
+        await AgentService(self.tx).require_execution_ids(principal, agent_ids=(agent_id,))
+        await self._delivery_membership(principal.tenant_id, group_id, agent_id)
+        return selected
+
+    async def _delivery_membership(self, tenant_id: UUID, group_id: UUID, agent_id: UUID) -> None:
+        member = await self.session.scalar(select(GroupAgentRecord.id).where(GroupAgentRecord.tenant_id == tenant_id,
+            GroupAgentRecord.group_id == group_id, GroupAgentRecord.agent_id == agent_id, GroupAgentRecord.enabled.is_(True)))
+        if member is None:
+            raise AccessDenied("The delivering Agent is not a member of this Group")
+
+    async def execution_destination(self, run: RunView) -> tuple[UUID, UUID]:
+        """Native configuration can reuse only its actual Group conversation."""
+        group_id, conversation_id = await self.execution_conversation(run)
+        await self._delivery_membership(run.tenant_id, group_id, run.agent_id)
+        conversation = await self.session.scalar(select(GroupConversationRecord.id).join(GroupRecord,
+            (GroupRecord.tenant_id == GroupConversationRecord.tenant_id) & (GroupRecord.id == GroupConversationRecord.group_id)).where(
+            GroupConversationRecord.tenant_id == run.tenant_id, GroupConversationRecord.group_id == group_id,
+            GroupConversationRecord.id == conversation_id, GroupConversationRecord.enabled.is_(True), GroupRecord.enabled.is_(True)))
+        if conversation is None:
+            raise AccessDenied("Group delivery destination is unavailable")
+        return group_id, conversation_id
+
     async def invitation_candidates(self, principal: TenantPrincipal, *, group_id: UUID,
             kind: str, offset: int = 0, limit: int = 100) -> tuple[InvitationCandidate, ...] | tuple[AgentMetadataView, ...]:
         await self._authorized(principal, group_id)
@@ -237,6 +284,24 @@ class GroupService:
         if kind == "agent":
             return await AgentService(self.tx).list_visible_metadata(principal, offset=offset, limit=limit)
         raise InvalidInput("Unknown Group member kind")
+
+    async def authorized_group_ids(self, principal: TenantPrincipal, *, group_ids: tuple[UUID, ...]) -> frozenset[UUID]:
+        """Filter a bounded product-result page without exposing other Groups' contents."""
+        if len(group_ids) > 100:
+            raise InvalidInput("Group visibility batch exceeds its bound")
+        query = select(GroupRecord.id).join(GroupMembershipRecord,
+            (GroupMembershipRecord.tenant_id == GroupRecord.tenant_id) & (GroupMembershipRecord.group_id == GroupRecord.id)).where(
+            GroupRecord.tenant_id == principal.tenant_id, GroupRecord.id.in_(group_ids), GroupRecord.enabled.is_(True),
+            GroupMembershipRecord.membership_id == principal.membership_id, GroupMembershipRecord.enabled.is_(True))
+        return frozenset((await self.session.scalars(query)).all())
+
+    async def event_conversation(self, *, tenant_id: UUID, group_id: UUID, event_id: UUID) -> UUID:
+        """Return the actual event's topic for already-authorized input composition."""
+        value = await self.session.scalar(select(GroupEventRecord.conversation_id).where(
+            GroupEventRecord.tenant_id == tenant_id, GroupEventRecord.group_id == group_id, GroupEventRecord.id == event_id))
+        if value is None:
+            raise NotFound("Group event conversation is unavailable")
+        return value
 
     async def list_members(self, principal: TenantPrincipal, *, group_id: UUID,
             kind: str = "human", offset: int = 0, limit: int = 100) -> tuple[GroupMemberView, ...]:
@@ -690,11 +755,57 @@ class GroupService:
             GroupEventRecord.agent_id == agent_id, GroupEventRecord.id == message_id, GroupEventRecord.kind == "reply"))
         if row is None or row.source_run_id is None:
             raise NotFound("Group message does not belong to this Agent")
+        if row.origin_event_id is None:
+            run = await RunService(self.tx).get(tenant_id=tenant_id, run_id=row.source_run_id)
+            if run.agent_id != agent_id or run.parent_run_id is not None or run.source.kind not in ("trigger", "heartbeat"):
+                raise InvalidInput("External Group message source is inconsistent")
+            return _event(row)
         link = await self.session.scalar(select(GroupRunLinkRecord).where(GroupRunLinkRecord.tenant_id == tenant_id,
             GroupRunLinkRecord.agent_id == agent_id, GroupRunLinkRecord.run_id == row.source_run_id,
             GroupRunLinkRecord.group_id == row.group_id, GroupRunLinkRecord.event_id == row.origin_event_id))
         if link is None:
             raise InvalidInput("Group message has no matching execution association")
+        return _event(row)
+
+    async def accept_external_message(self, *, run: RunView, group_id: UUID, conversation_id: UUID,
+            step_id: str, call_id: str, input: InputContent, authorize: GroupExternalMessageAuthorizer) -> GroupEventView:
+        if conversation_id is None:
+            raise InvalidInput("External Group delivery requires its explicit conversation")
+        actual = await RunService(self.tx).lock_main(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.source.kind not in ("trigger", "heartbeat"):
+            raise AccessDenied("External Group messages require an unattended Main")
+        if not all(isinstance(value, str) and 0 < len(value) <= 256 for value in (step_id, call_id)):
+            raise InvalidInput("External message correlation is invalid")
+        await authorize(self.tx, run=actual, target_id=group_id, conversation_id=conversation_id, input=input)
+        group = await self._group(actual.tenant_id, group_id, lock=True)
+        conversation = await self._conversation(actual.tenant_id, group_id, conversation_id)
+        key = sha256(f"{actual.id}\0{step_id}\0{call_id}".encode()).hexdigest()
+        existing = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == actual.tenant_id,
+            GroupEventRecord.group_id == group_id, GroupEventRecord.message_key == key))
+        if existing is not None:
+            if existing.source_run_id != actual.id or existing.origin_event_id is not None or existing.conversation_id != conversation_id:
+                raise Conflict("External Group message correlation is inconsistent")
+            return _event(existing)
+        if not group.enabled or not await self.session.scalar(select(GroupAgentRecord.id).where(
+                GroupAgentRecord.tenant_id == actual.tenant_id, GroupAgentRecord.group_id == group_id,
+                GroupAgentRecord.agent_id == actual.agent_id, GroupAgentRecord.enabled.is_(True))):
+            raise AccessDenied("External message destination or Agent membership is unavailable")
+        await RunService(self.tx).verify_main_tool_origin(tenant_id=actual.tenant_id, run_id=actual.id,
+            step_id=step_id, call_id=call_id, tool_name="send_message")
+        content = asdict(input)
+        _input(content)
+        payload = {"input":content,"waiting_reference":None,"related_run_id":None,"step_id":step_id,
+            "call_id":call_id,"account_selections":encode_personal_selections(()),"mentioned_membership_ids":[]}
+        if len(json.dumps(payload, ensure_ascii=False).encode()) > 256 * 1024:
+            raise InvalidInput("External Group message exceeds its byte bound")
+        now = datetime.now(UTC)
+        row = GroupEventRecord(id=uuid4(), tenant_id=actual.tenant_id, group_id=group_id, conversation_id=conversation.id,
+            position=group.next_position, kind="reply", source_key=None, message_key=key, source_run_id=actual.id,
+            membership_id=None, agent_id=actual.agent_id, origin_event_id=None, payload_version=1,
+            payload=payload, created_at=now, updated_at=now)
+        group.next_position += 1
+        self.session.add(row)
+        await self.session.flush()
         return _event(row)
 
     async def find_accepted_message(self, *, run: RunView, step_id: str, call_id: str) -> GroupEventView | None:
@@ -706,6 +817,23 @@ class GroupService:
         if row is None:
             return None
         return await self.get_message_for_delivery(tenant_id=run.tenant_id, agent_id=run.agent_id, message_id=row.id)
+
+    async def find_external_message(self, *, run: RunView, group_id: UUID, conversation_id: UUID,
+            step_id: str, call_id: str, authorize: GroupExternalMessageAuthorizer) -> GroupEventView | None:
+        if conversation_id is None:
+            raise InvalidInput("External Group delivery requires its explicit conversation")
+        actual = await RunService(self.tx).get(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.parent_run_id is not None or actual.source.kind not in ("trigger", "heartbeat"):
+            raise AccessDenied("External message lookup requires an unattended Main")
+        await authorize(self.tx, run=actual, target_id=group_id, conversation_id=conversation_id, input=InputContent(""))
+        key = sha256(f"{actual.id}\0{step_id}\0{call_id}".encode()).hexdigest()
+        row = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == actual.tenant_id,
+            GroupEventRecord.group_id == group_id, GroupEventRecord.message_key == key))
+        if row is None:
+            return None
+        if row.source_run_id != actual.id or row.origin_event_id is not None or row.conversation_id != conversation_id:
+            raise Conflict("External message lookup correlation differs")
+        return await self.get_message_for_delivery(tenant_id=actual.tenant_id, agent_id=actual.agent_id, message_id=row.id)
 
     async def _message(self, group: GroupRecord, link: GroupRunLinkRecord, run: RunView,
             key: str, input: InputContent, waiting_reference: str | None = None,
@@ -820,6 +948,10 @@ class GroupService:
         after = rows[-1].position if rows else after_position
         return GroupDeliveryPage(tuple(_event(row) for row in rows), after, after < through)
 
+    async def default_conversation_id(self, *, tenant_id: UUID, group_id: UUID) -> UUID:
+        """Trusted Channel mappings address the Group's default conversation only."""
+        return (await self._conversation(tenant_id, group_id, None)).id
+
     async def input_accounts(self, principal: TenantPrincipal, *, group_id: UUID, event_id: UUID,
             target_agent_id: UUID) -> tuple[UUID, ...]:
         await self._authorized(principal, group_id)
@@ -836,6 +968,18 @@ class GroupService:
         if link is None:
             raise AccessDenied("Group execution has no input association")
         return await self._event_accounts(run.tenant_id, link.group_id, link.event_id, target_agent_id)
+
+    async def execution_conversation(self, run: RunView) -> tuple[UUID, UUID]:
+        """Trusted operations compare the actual Main's Group and topic association."""
+        actual = await RunService(self.tx).get(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.parent_run_id is not None or actual.source.kind != "group":
+            raise AccessDenied("Only a Group Main has a Group conversation")
+        link = await self.session.scalar(select(GroupRunLinkRecord).where(
+            GroupRunLinkRecord.tenant_id == actual.tenant_id, GroupRunLinkRecord.event_id == actual.source.owner_id,
+            GroupRunLinkRecord.agent_id == actual.agent_id, GroupRunLinkRecord.run_id == actual.id))
+        if link is None or link.conversation_id is None:
+            raise AccessDenied("Group execution has no conversation association")
+        return link.group_id, link.conversation_id
 
     async def _event_accounts(self, tenant_id: UUID, group_id: UUID, event_id: UUID, target_agent_id: UUID) -> tuple[UUID, ...]:
         row = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == tenant_id,

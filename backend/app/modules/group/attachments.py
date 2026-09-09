@@ -4,7 +4,6 @@ import re
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256 as content_digest
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -14,13 +13,14 @@ from app.infrastructure.errors import AccessDenied, Conflict, InvalidInput, NotF
 from app.infrastructure.transactions import TransactionContext
 from app.modules.group.models import (
     GroupAttachmentRecord,
+    GroupConversationRecord,
     GroupEventRecord,
     GroupMembershipRecord,
     GroupRecord,
     GroupRunLinkRecord,
 )
 from app.modules.identity_tenant.public import TenantPrincipal
-from app.modules.run.public import RunService, RunView
+from app.modules.run.public import InputContent, RunService, RunView
 
 MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 
@@ -47,12 +47,17 @@ class GroupAttachmentDelegation(Protocol):
     async def __call__(self, transaction: TransactionContext, *, run: RunView, reference: str) -> None: ...
 
 
+class GroupRunAttachmentAuthorizer(Protocol):
+    async def __call__(self, transaction: TransactionContext, *, run: RunView, target_id: UUID,
+            conversation_id: UUID | None, input: InputContent) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class GroupAttachmentView:
     id: UUID
     tenant_id: UUID
     group_id: UUID
-    uploader_membership_id: UUID
+    uploader_membership_id: UUID | None
     filename: str
     media_type: str
     byte_size: int
@@ -61,6 +66,8 @@ class GroupAttachmentView:
     published_at: datetime | None
     unbound_expires_at: datetime
     cleanup_claimed_at: datetime | None
+    created_by_run_id: UUID | None = None
+    bound_message_id: UUID | None = None
 
     @property
     def reference(self) -> str:
@@ -100,12 +107,15 @@ def _blob(row: GroupAttachmentRecord) -> GroupAttachmentBlob:
     _metadata(row.filename, row.media_type, row.byte_size, row.sha256)
     key = f"input-attachments/group/{row.tenant_id}/{row.group_id}/{row.id}"
     if (row.storage_key != key or (row.published_at is None) != (row.storage_revision is None)
-            or (row.cleanup_claimed_at is not None and row.origin_event_id is not None)):
+            or (row.cleanup_claimed_at is not None and (row.origin_event_id is not None or row.bound_message_id is not None))
+            or (row.uploader_membership_id is None) == (row.created_by_run_id is None)
+            or (row.bound_message_id is not None and row.created_by_run_id is None)):
         raise InvalidInput("Group attachment storage metadata is invalid")
     if row.storage_revision is not None and (not row.storage_revision or len(row.storage_revision) > 512):
         raise InvalidInput("Attachment storage revision is invalid")
     return GroupAttachmentBlob(GroupAttachmentView(row.id, row.tenant_id, row.group_id, row.uploader_membership_id,
-        row.filename, row.media_type, row.byte_size, row.sha256, row.origin_event_id, row.published_at, row.unbound_expires_at, row.cleanup_claimed_at),
+        row.filename, row.media_type, row.byte_size, row.sha256, row.origin_event_id, row.published_at, row.unbound_expires_at,
+        row.cleanup_claimed_at, row.created_by_run_id, row.bound_message_id),
         row.storage_key, row.storage_revision)
 
 
@@ -113,76 +123,96 @@ class GroupAttachmentService:
     def __init__(self, transaction: TransactionContext, *, delegated_access: GroupAttachmentDelegation | None = None) -> None:
         self.tx, self.session, self.delegated_access = transaction, transaction.session, delegated_access
 
-    async def _message_scope(self, tenant_id: UUID, run_id: UUID, step_id: str, call_id: str) -> tuple[UUID, UUID, UUID]:
-        run = await RunService(self.tx).verify_main_tool_origin(tenant_id=tenant_id, run_id=run_id,
-            step_id=step_id, call_id=call_id, tool_name="send_message")
-        if run.source.kind != "group":
-            raise AccessDenied("Run has no Group message destination")
-        linked = await self.session.scalar(select(GroupRunLinkRecord).where(GroupRunLinkRecord.tenant_id == tenant_id,
-            GroupRunLinkRecord.event_id == run.source.owner_id, GroupRunLinkRecord.run_id == run_id,
-            GroupRunLinkRecord.agent_id == run.agent_id))
-        if linked is None:
-            raise AccessDenied("Run has no matching Group message destination")
-        await self.session.scalar(select(GroupRecord).where(GroupRecord.tenant_id == tenant_id,
-            GroupRecord.id == linked.group_id).with_for_update())
-        event = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == tenant_id,
-            GroupEventRecord.id == linked.event_id, GroupEventRecord.kind == "input"))
-        if event is None or event.membership_id is None:
-            raise AccessDenied("Group execution has no source Membership")
-        return linked.group_id, event.membership_id, event.id
+    async def _run_destination(self, run: RunView, group_id: UUID, conversation_id: UUID,
+            authorize: GroupRunAttachmentAuthorizer | None) -> RunView:
+        actual = await RunService(self.tx).lock_main(tenant_id=run.tenant_id, run_id=run.id)
+        group = await self.session.scalar(select(GroupRecord).where(GroupRecord.tenant_id == actual.tenant_id,
+            GroupRecord.id == group_id).with_for_update())
+        topic = await self.session.scalar(select(GroupConversationRecord).where(
+            GroupConversationRecord.tenant_id == actual.tenant_id, GroupConversationRecord.group_id == group_id,
+            GroupConversationRecord.id == conversation_id))
+        if group is None or topic is None:
+            raise AccessDenied("Run attachment destination does not exist")
+        if actual.source.kind == "group":
+            link = await self.session.scalar(select(GroupRunLinkRecord).where(GroupRunLinkRecord.tenant_id == actual.tenant_id,
+                GroupRunLinkRecord.group_id == group_id, GroupRunLinkRecord.conversation_id == conversation_id,
+                GroupRunLinkRecord.event_id == actual.source.owner_id, GroupRunLinkRecord.run_id == actual.id,
+                GroupRunLinkRecord.agent_id == actual.agent_id))
+            if link is None:
+                raise AccessDenied("Run attachment does not belong to this Group conversation")
+        elif actual.source.kind in ("trigger", "heartbeat"):
+            if authorize is None:
+                raise AccessDenied("External Run attachment requires frozen destination authorization")
+            await authorize(self.tx, run=actual, target_id=group_id, conversation_id=conversation_id, input=InputContent(""))
+        else:
+            raise AccessDenied("Run has no Group attachment publication destination")
+        return actual
 
-    @staticmethod
-    def _message_source(run_id: UUID, step_id: str, call_id: str, ordinal: int) -> str:
-        if type(ordinal) is not int or not 0 <= ordinal < 8:
-            raise InvalidInput("Message attachment ordinal is invalid")
-        return "message:" + content_digest(f"{run_id}\0{step_id}\0{call_id}\0{ordinal}".encode()).hexdigest()
+    async def begin_run_upload(self, *, run: RunView, group_id: UUID, conversation_id: UUID, step_id: str, call_id: str,
+            upload_source_key: str, filename: str, media_type: str, byte_size: int, sha256: str,
+            authorize: GroupRunAttachmentAuthorizer | None = None, now: datetime | None = None) -> GroupAttachmentBlob:
+        actual = await self._run_destination(run, group_id, conversation_id, authorize)
+        existing = await self.session.scalar(select(GroupAttachmentRecord).where(GroupAttachmentRecord.tenant_id == actual.tenant_id,
+            GroupAttachmentRecord.group_id == group_id, GroupAttachmentRecord.upload_source_key == upload_source_key))
+        if existing is None:
+            await RunService(self.tx).verify_main_tool_origin(tenant_id=actual.tenant_id, run_id=actual.id,
+                step_id=step_id, call_id=call_id, tool_name="send_message")
+        return await self._begin(tenant_id=actual.tenant_id, group_id=group_id, membership_id=None, created_by_run_id=actual.id,
+            upload_source_key=upload_source_key, filename=filename, media_type=media_type, byte_size=byte_size, sha256=sha256, now=now)
 
-    async def begin_run_upload(self, *, tenant_id: UUID, run_id: UUID, step_id: str, call_id: str, ordinal: int,
-            filename: str, media_type: str, byte_size: int, sha256: str) -> GroupAttachmentBlob:
-        owner_id, membership_id, _ = await self._message_scope(tenant_id, run_id, step_id, call_id)
-        return await self._begin(tenant_id=tenant_id, group_id=owner_id, membership_id=membership_id,
-            upload_source_key=self._message_source(run_id, step_id, call_id, ordinal),
-            filename=filename, media_type=media_type, byte_size=byte_size, sha256=sha256)
-
-    async def publish_run_upload(self, *, tenant_id: UUID, run_id: UUID, step_id: str, call_id: str, ordinal: int,
-            attachment_id: UUID, revision: str, byte_size: int, sha256: str) -> GroupAttachmentView:
-        owner_id, membership_id, _ = await self._message_scope(tenant_id, run_id, step_id, call_id)
-        row = await self._row(tenant_id, attachment_id, lock=True)
-        if (row.group_id, row.uploader_membership_id, row.upload_source_key) != (
-                owner_id, membership_id, self._message_source(run_id, step_id, call_id, ordinal)):
-            raise AccessDenied("Attachment is not this message's prepared upload")
-        return await self._publish(row, revision=revision, byte_size=byte_size, sha256=sha256)
-
-    async def get_run_upload(self, *, tenant_id: UUID, run_id: UUID, step_id: str, call_id: str, ordinal: int,
-            attachment_id: UUID) -> GroupAttachmentBlob:
-        owner_id, membership_id, _ = await self._message_scope(tenant_id, run_id, step_id, call_id)
-        row = await self._row(tenant_id, attachment_id)
-        if (row.group_id, row.uploader_membership_id, row.upload_source_key) != (
-                owner_id, membership_id, self._message_source(run_id, step_id, call_id, ordinal)):
-            raise AccessDenied("Attachment is not this message's prepared upload")
-        self._available(row, _time(None), published=False)
+    async def get_run_upload(self, *, run: RunView, group_id: UUID, conversation_id: UUID, attachment_id: UUID,
+            authorize: GroupRunAttachmentAuthorizer | None = None, now: datetime | None = None) -> GroupAttachmentBlob:
+        actual = await self._run_destination(run, group_id, conversation_id, authorize)
+        row = await self._row(actual.tenant_id, attachment_id)
+        if row.group_id != group_id or row.created_by_run_id != actual.id:
+            raise AccessDenied("Attachment was not created by this Run for this Group")
+        self._available(row, _time(now), published=False)
         return _blob(row)
 
-    async def bind_message_uploads(self, *, tenant_id: UUID, run_id: UUID, step_id: str, call_id: str,
-            message_id: UUID, attachment_ids: tuple[UUID, ...]) -> None:
-        owner_id, membership_id, source_input = await self._message_scope(tenant_id, run_id, step_id, call_id)
+    async def publish_run_upload(self, *, run: RunView, group_id: UUID, conversation_id: UUID, attachment_id: UUID,
+            revision: str, byte_size: int, sha256: str, authorize: GroupRunAttachmentAuthorizer | None = None,
+            now: datetime | None = None) -> GroupAttachmentView:
+        actual = await self._run_destination(run, group_id, conversation_id, authorize)
+        row = await self._row(actual.tenant_id, attachment_id, lock=True)
+        if row.group_id != group_id or row.created_by_run_id != actual.id:
+            raise AccessDenied("Attachment was not created by this Run for this Group")
+        if row.published_at is None and actual.status != "Running":
+            raise Conflict("Only a running producer can publish a new attachment")
+        return await self._publish(row, revision=revision, byte_size=byte_size, sha256=sha256, now=now)
+
+    async def bind_to_message(self, *, run: RunView, group_id: UUID, message_id: UUID,
+            attachment_ids: tuple[UUID, ...], now: datetime | None = None) -> tuple[GroupAttachmentView, ...]:
+        actual = await RunService(self.tx).lock_main(tenant_id=run.tenant_id, run_id=run.id)
         if len(attachment_ids) > 8 or len(set(attachment_ids)) != len(attachment_ids):
             raise InvalidInput("Message attachment count is invalid")
-        message = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == tenant_id,
-            GroupEventRecord.id == message_id, GroupEventRecord.source_run_id == run_id, GroupEventRecord.kind == "reply"))
-        if message is None:
-            raise AccessDenied("Attachment binding requires this Run's committed message")
-        payload = message.payload.get("input", {})
-        references = {item["reference"] for item in payload.get("references", [])}
-        for ordinal, identity in enumerate(attachment_ids):
-            row = await self._row(tenant_id, identity, lock=True)
-            self._available(row, _time(None))
-            if (row.group_id, row.uploader_membership_id, row.upload_source_key) != (
-                    owner_id, membership_id, self._message_source(run_id, step_id, call_id, ordinal)) or _blob(row).view.reference not in references:
-                raise AccessDenied("Message attachment does not match its prepared source")
-            if row.origin_event_id is None:
-                row.origin_event_id, row.updated_at = source_input, _time(None)
+        message = await self.session.scalar(select(GroupEventRecord).where(GroupEventRecord.tenant_id == actual.tenant_id,
+            GroupEventRecord.group_id == group_id, GroupEventRecord.id == message_id,
+            GroupEventRecord.source_run_id == actual.id, GroupEventRecord.kind == "reply"))
+        if message is None or not isinstance(message.payload, dict):
+            raise AccessDenied("Attachment binding requires this Run's accepted message")
+        payload = message.payload.get("input")
+        references = payload.get("references") if isinstance(payload, dict) else None
+        if not isinstance(references, (list, tuple)) or len(references) > 64:
+            raise InvalidInput("Accepted message references are invalid")
+        names = {item.get("reference") for item in references if isinstance(item, dict)}
+        rows = tuple(await self.session.scalars(select(GroupAttachmentRecord).where(
+            GroupAttachmentRecord.tenant_id == actual.tenant_id, GroupAttachmentRecord.group_id == group_id,
+            GroupAttachmentRecord.id.in_(attachment_ids)).order_by(GroupAttachmentRecord.id).with_for_update()))
+        if len(rows) != len(attachment_ids):
+            raise AccessDenied("Run attachments belong to another destination")
+        if sum(row.byte_size for row in rows) > 16 * 1024 * 1024:
+            raise InvalidInput("Message attachments exceed sixteen MiB")
+        stamp = _time(now)
+        for row in rows:
+            self._available(row, stamp)
+            if row.created_by_run_id != actual.id or row.origin_event_id is not None or _blob(row).view.reference not in names:
+                raise AccessDenied("Run attachment source or explicit message reference differs")
+            if row.bound_message_id not in (None, message_id):
+                raise Conflict("Run attachment is already bound to another message")
+        for row in rows:
+            row.bound_message_id, row.updated_at = message_id, stamp
         await self.session.flush()
+        return tuple(_blob(row).view for row in rows)
 
     async def authorize_delivery(self, *, tenant_id: UUID, agent_id: UUID, message_id: UUID,
             attachment_id: UUID) -> GroupAttachmentBlob:
@@ -193,10 +223,10 @@ class GroupAttachmentService:
         row = await self._row(tenant_id, attachment_id)
         self._available(row, _time(None))
         payload = message.payload.get("input", {})
-        if row.group_id != message.group_id or row.origin_event_id is None or not any(
+        if row.group_id != message.group_id or (row.origin_event_id is None and row.bound_message_id is None) or not any(
                 item.get("reference") == _blob(row).view.reference for item in payload.get("references", [])):
             raise AccessDenied("Message does not explicitly include this immutable attachment")
-        return _blob(row)
+        return await self.authorize_run_read(tenant_id=tenant_id, run_id=message.source_run_id, attachment_id=attachment_id)
 
     async def begin_upload(self, principal: TenantPrincipal, *, group_id: UUID, upload_source_key: str,
             filename: str, media_type: str, byte_size: int, sha256: str, now: datetime | None = None) -> GroupAttachmentBlob:
@@ -206,8 +236,9 @@ class GroupAttachmentService:
         return await self._begin(tenant_id=principal.tenant_id, group_id=group_id, membership_id=principal.membership_id,
             upload_source_key=upload_source_key, filename=filename, media_type=media_type, byte_size=byte_size, sha256=sha256, now=now)
 
-    async def _begin(self, *, tenant_id: UUID, group_id: UUID, membership_id: UUID, upload_source_key: str,
-            filename: str, media_type: str, byte_size: int, sha256: str, now: datetime | None = None) -> GroupAttachmentBlob:
+    async def _begin(self, *, tenant_id: UUID, group_id: UUID, membership_id: UUID | None, upload_source_key: str,
+            filename: str, media_type: str, byte_size: int, sha256: str, now: datetime | None = None,
+            created_by_run_id: UUID | None = None) -> GroupAttachmentBlob:
         _metadata(filename, media_type, byte_size, sha256)
         stamp = _time(now)
         if not upload_source_key or len(upload_source_key) > 512:
@@ -215,7 +246,7 @@ class GroupAttachmentService:
         row = await self.session.scalar(select(GroupAttachmentRecord).where(GroupAttachmentRecord.tenant_id == tenant_id,
             GroupAttachmentRecord.group_id == group_id, GroupAttachmentRecord.upload_source_key == upload_source_key))
         if row is not None:
-            if row.uploader_membership_id != membership_id:
+            if (row.uploader_membership_id, row.created_by_run_id) != (membership_id, created_by_run_id):
                 raise AccessDenied("Upload source belongs to another Group member")
             if (row.filename, row.media_type, row.byte_size, row.sha256) != (filename, media_type, byte_size, sha256):
                 raise Conflict("Upload source already identifies different content")
@@ -223,7 +254,8 @@ class GroupAttachmentService:
             return _blob(row)
         identity = uuid4()
         row = GroupAttachmentRecord(id=identity, tenant_id=tenant_id, group_id=group_id,
-            uploader_membership_id=membership_id, upload_source_key=upload_source_key, filename=filename,
+            uploader_membership_id=membership_id, created_by_run_id=created_by_run_id, bound_message_id=None,
+            upload_source_key=upload_source_key, filename=filename,
             media_type=media_type, byte_size=byte_size, sha256=sha256, origin_event_id=None,
             storage_key=f"input-attachments/group/{tenant_id}/{group_id}/{identity}", storage_revision=None,
             published_at=None, unbound_expires_at=stamp + timedelta(hours=24), cleanup_claimed_at=None, created_at=stamp, updated_at=stamp)
@@ -288,10 +320,10 @@ class GroupAttachmentService:
             self._available(row, stamp)
             if _blob(row).view.reference not in names:
                 raise InvalidInput("Attachment is not explicitly referenced by this input")
-            if row.origin_event_id is None and row.uploader_membership_id != principal.membership_id:
+            if row.origin_event_id is None and row.bound_message_id is None and row.uploader_membership_id != principal.membership_id:
                 raise AccessDenied("Another member's unsubmitted upload is private")
         for row in rows:
-            if row.origin_event_id is None:
+            if row.origin_event_id is None and row.bound_message_id is None:
                 row.origin_event_id, row.updated_at = event_id, stamp
         await self.session.flush()
         return tuple(_blob(row).view for row in rows)
@@ -300,7 +332,8 @@ class GroupAttachmentService:
             now: datetime | None = None) -> GroupAttachmentBlob:
         await self._human(principal, group_id)
         row = await self._row(principal.tenant_id, attachment_id)
-        if row.group_id != group_id or (row.origin_event_id is None and row.uploader_membership_id != principal.membership_id):
+        if row.group_id != group_id or (row.origin_event_id is None and row.bound_message_id is None
+                and row.uploader_membership_id != principal.membership_id):
             raise AccessDenied("Group attachment access is denied")
         self._available(row, _time(now))
         return _blob(row)
@@ -308,13 +341,15 @@ class GroupAttachmentService:
     async def authorize_run_read(self, *, tenant_id: UUID, run_id: UUID, attachment_id: UUID) -> GroupAttachmentBlob:
         row = await self._row(tenant_id, attachment_id)
         self._available(row, _time(None))
-        if row.origin_event_id is None:
+        if row.origin_event_id is None and row.bound_message_id is None:
             raise AccessDenied("Execution cannot read an unsubmitted upload")
         runs = RunService(self.tx)
         run = await runs.get(tenant_id=tenant_id, run_id=run_id)
         if run.parent_run_id is not None:
             run = await runs.get(tenant_id=tenant_id, run_id=run.parent_run_id)
         reference = _blob(row).view.reference
+        if row.created_by_run_id == run.id and row.bound_message_id is not None:
+            return _blob(row)
         if run.source.kind in ("trigger", "heartbeat"):
             snapshot = await runs.read_snapshot(tenant_id=tenant_id, run_id=run.id)
             if (snapshot.workspace.output.kind != "group" or snapshot.workspace.output.id != row.group_id
@@ -333,10 +368,10 @@ class GroupAttachmentService:
             raise AccessDenied("Execution does not belong to this attachment's Group")
         cutoff = await self.session.scalar(select(GroupEventRecord.position).where(GroupEventRecord.tenant_id == tenant_id,
             GroupEventRecord.group_id == row.group_id, GroupEventRecord.id == link.event_id))
-        if row.upload_source_key.startswith("message:"):
+        if row.bound_message_id is not None:
             published = (await self.session.execute(select(GroupEventRecord.position, GroupEventRecord.source_run_id).where(
                 GroupEventRecord.tenant_id == tenant_id, GroupEventRecord.group_id == row.group_id,
-                GroupEventRecord.origin_event_id == row.origin_event_id,
+                GroupEventRecord.id == row.bound_message_id, GroupEventRecord.source_run_id == row.created_by_run_id,
                 GroupEventRecord.kind == "reply", GroupEventRecord.payload["input"]["references"].contains(
                     [{"reference": reference}])).order_by(GroupEventRecord.position).limit(1))).one_or_none()
             if published is None:
@@ -358,6 +393,7 @@ class GroupAttachmentService:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise InvalidInput("Attachment cleanup page is invalid")
         query = select(GroupAttachmentRecord).where(GroupAttachmentRecord.origin_event_id.is_(None),
+            GroupAttachmentRecord.bound_message_id.is_(None),
             or_(GroupAttachmentRecord.unbound_expires_at <= stamp, GroupAttachmentRecord.cleanup_claimed_at.is_not(None)))
         if after_id is not None:
             query = query.where(GroupAttachmentRecord.id > after_id)
@@ -368,7 +404,7 @@ class GroupAttachmentService:
         query = select(GroupAttachmentRecord).where(GroupAttachmentRecord.id == observed.view.id,
             GroupAttachmentRecord.tenant_id == observed.view.tenant_id, GroupAttachmentRecord.group_id == observed.view.group_id)
         row = await self.session.scalar(query.with_for_update().execution_options(populate_existing=True))
-        if row is None or row.origin_event_id is not None:
+        if row is None or row.origin_event_id is not None or row.bound_message_id is not None:
             return None
         current = _blob(row)
         if (current.storage_key, current.storage_revision, current.view.published_at, current.view.sha256) != (
@@ -389,7 +425,8 @@ class GroupAttachmentService:
             return False
         row = GroupAttachmentRecord
         removed = await self.session.scalar(delete(row).where(row.id == observed.view.id, row.tenant_id == observed.view.tenant_id,
-            row.group_id == observed.view.group_id, row.origin_event_id.is_(None), row.cleanup_claimed_at == observed.view.cleanup_claimed_at,
+            row.group_id == observed.view.group_id, row.origin_event_id.is_(None), row.bound_message_id.is_(None),
+            row.cleanup_claimed_at == observed.view.cleanup_claimed_at,
             row.published_at == observed.view.published_at, row.storage_revision == observed.storage_revision,
             row.storage_key == observed.storage_key, row.sha256 == observed.view.sha256).returning(row.id))
         return removed is not None
@@ -418,7 +455,7 @@ class GroupAttachmentService:
     def _available(row: GroupAttachmentRecord, now: datetime, *, published: bool = True) -> None:
         if row.cleanup_claimed_at is not None:
             raise Conflict("Attachment removal has been claimed")
-        if row.origin_event_id is None and row.unbound_expires_at <= now:
+        if row.origin_event_id is None and row.bound_message_id is None and row.unbound_expires_at <= now:
             raise Conflict("Unsubmitted attachment has expired")
         if published and row.published_at is None:
             raise Conflict("Attachment bytes are not published")
