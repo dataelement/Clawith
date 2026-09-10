@@ -1,0 +1,73 @@
+G006 product-input implementation evidence
+Date: 2026-09-10
+Implementation HEAD: 96bdb542
+
+Scope
+Session HTTP/WebSocket intake, message ownership, work control, Goal continuation,
+Group conversations, A2A waiting/takeover and temporary files, Trigger/Heartbeat,
+Channel intake/delivery, authorized attachment previews and document extraction.
+The application uses the single Run/Runner/Loop. G007 and frontend changes are not
+part of this delivery. No push or deployment was performed.
+
+Verification method
+Selected changes were exported from the Git index into an isolated directory,
+excluding unrelated Market installation drafts and frontend prototypes. Tests use
+real PostgreSQL and product owners; provider HTTP is controlled, not a live vendor.
+The existing Backend virtual environment supplies dependencies. Pyright explicitly
+uses that environment's Python executable in the isolated export.
+
+Verified slices
+Session/Group/message attachment owners: 113 passed.
+A2A/Run owners: 221 passed.
+Trigger/Heartbeat/A2A visibility: 68 passed.
+Channel owners and adapters: 115 passed.
+Attachment/document/temp-storage mechanics: 39 passed.
+Application E2E and execution dependencies: 272 passed.
+Scheduled result reader plus related owners, E2E and metadata tests: 97 passed.
+Independent A2A answer/attachment review: 65 passed.
+Independent A2A temporary PDF/DOCX application review: 2 passed.
+Independent scheduled result authorization review: 5 passed.
+These suites overlap; their counts must not be added into a unique test total.
+
+Baseline worktree full regression
+Command: uv run --extra dev pytest -q --tb=short
+Result: 3525 passed, 1 skipped, 4 warnings in 659.03 seconds.
+This predates the final scheduled-result repair and includes unrelated worktree
+drafts; it is supporting evidence, not final committed-scope acceptance.
+
+Final isolated full regression
+Command: <backend-venv>/bin/python -B -m pytest -q --tb=short
+Result: 3517 passed, 1 skipped, 4 warnings in 603.18 seconds.
+The skipped test is the opt-in 18-minute canonical core-load test. Warnings come
+from existing Sandbox Pydantic configuration, FastAPI TestClient and Feishu SDK
+deprecations. The isolated app, tests and dependency files match implementation
+HEAD 96bdb542. The smaller total than the worktree run reflects excluded Market
+draft tests and the added final regression cases, not removed G006 assertions.
+
+Static and governance checks
+Isolated: ruff check app tests -- passed.
+Isolated: pyright --pythonpath <backend-venv>/bin/python app -- 0 errors/warnings.
+python -B scripts/validate_goal_gates.py --manifest rewrite/goal-gates.json -- passed.
+python -B scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json -- passed.
+Isolated architecture suite: 1779 passed initially; one Git-tracking check failed
+because the export had no .git metadata. Initializing and indexing the disposable
+export, without changing product code or the test, made that exact check pass.
+The final full regression covers the corrected isolated test environment.
+
+Acceptance boundaries
+Independent code/security and architecture reviews closed the discovered
+continuation, file-publication and complete-result-read blockers. This records
+functional implementation and controlled tests, not formal G006 gate qualification.
+The goal manifest still requires mixed-product-input-load. Running its exact
+command, uv run python tests/performance/run_backend_load.py --profile
+tests/performance/profiles/backend_50.json --scenario mixed --out
+artifacts/performance/mixed.json, exits 2 at argument parsing: invalid choice
+'mixed' (choose from core). No load runs and no report is created. Its runner
+currently supports only --scenario core; mixed is not implemented.
+The formally specified 50-Agent mixed-load qualification therefore remains open,
+not merely an unexecuted passing-ready command. No gate or threshold was weakened.
+Live provider credentials/webhooks, production deployment, frontend responsiveness,
+Linux hard memory limits and full-platform performance were not verified.
+Frozen legacy migration Ruff findings are outside the app/tests lint claim.
+Initial schema migration and fresh-environment qualification remain G008 work.
+GitHub/ClawHub import drafts remain unchanged and outside G006 acceptance.

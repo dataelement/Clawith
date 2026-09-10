@@ -55,17 +55,20 @@ Group Run for Group G by Agent A
 Heartbeat for Agent A
   └── Agent A Workspace: read and write
 
-Agent-owned Trigger or A2A Main Run for Agent A
+Agent-owned Trigger Main Run for Agent A
   └── Agent A Workspace: read and write
 
 A2A Main Run received by Agent B
-  └── Agent B Workspace: read and write
+  ├── Agent B Workspace: read; Memory writes follow resolved source scope
+  └── Ordinary work files: A2A request-owned temporary files
 
 Subagent Run created by Main Run A
   └── Parent Workspace direction, without Agent Memory distillation Tool
 ```
 
 Subagent Run inherits the complete resolved Workspace access of its parent Main Run. A delegated Task work description has no Workspace or persistence of its own. A2A is different: its receiving Main Run uses the receiver's own Workspace and only explicit A2A Input, never the sender's Workspaces.
+
+The [unattended and A2A continuation amendment](../../../../specs/backend-product-input-continuations.md) narrows A2A file mutation: the receiver and its Children cannot write ordinary files into the receiver's shared Workspace. Request-owned temporary files hold that work; explicitly returned files are saved through the authorized source Main's actual output scope. This exception adds no Workspace type and does not change the existing Memory rules.
 
 ### Memory
 
@@ -77,7 +80,7 @@ Multiple authorized Memory Indexes remain separate. Context does not merge them 
 
 Every Memory creation, edit, deletion, and Index update is explicit. Agent Final Output, Run completion, delegated-work judgment, Context compaction, search, and reads do not mutate Memory implicitly.
 
-Direct and Group Main Runs may update the executing Agent's own Memory only through a dedicated distillation Tool. Distillation creates new Agent-owned generalized knowledge rather than copying a Membership or Group file or Memory entry. Memory owner defines first-release privacy and Secret filtering during implementation and emits source Run, source Workspace type, and content hash for non-model-visible asynchronous Audit. Audit delivery or persistence does not govern the Memory write outcome, and missing Audit cannot be used to infer that no write occurred. Subagent Run cannot distill; it returns a proposed reusable insight to Main for judgment. The current Run observes a successful write only through Tool Result, while the updated Agent Memory Index becomes a source only for later Runs.
+The [Agent-owned shared Memory amendment](../../../../specs/backend-workspace-memory-scope.md) supersedes the earlier Direct/Group distillation exception. Membership and Group contexts cannot distill into shared Agent Memory. Distillation requires a non-preview Main with its own Agent output Workspace and no inherited private-source restriction; selecting an Agent output destination does not remove private provenance. This is a source restriction, not semantic privacy or Secret filtering. Successful distillation emits source Run, source Workspace type, and content hash for non-model-visible asynchronous Audit. Audit delivery or persistence does not govern the Memory write outcome, and missing Audit cannot be used to infer that no write occurred. Subagent Run cannot distill; it returns a proposed reusable insight to Main for judgment within Main's authorized scope. The current Run observes a successful write only through Tool Result, while the updated Agent Memory Index becomes a source only for later Runs.
 
 ### Skills
 
@@ -110,7 +113,7 @@ Directories such as `projects/`, `reports/`, `source-code/`, `datasets/`, and `i
 
 Generation, authorized import, and delivery are ways a file enters or leaves a Workspace, not separate persistent namespaces. Human-uploaded or externally received attachments are usable as Product Input without being written to Workspace. The initiating product owner retains their input association and availability through execution and Waiting; temporary staging is not the sole source of a committed input. An Agent explicitly writes an attachment to its authorized Membership or Group Workspace only when the task requires it. User-private files belong to a User Workspace, Group-shared files belong to a Group Workspace, and Agent-shared files belong to an Agent Workspace.
 
-The first release permits file publication only from Agent Workspace into the current Membership or Group Workspace. It uses revision-checked Copy, never Move, and does not mutate the Agent source. Direct and Group Runs cannot copy Membership or Group files into Agent Workspace and cannot write Agent `files/`; their outputs go directly to the Membership or Group Workspace. Agent-owned Main Runs may write Agent `files/`. Memory distillation is the only Direct or Group exception for writing the executing Agent Workspace and is not generic cross-Workspace copy.
+The first release permits file publication only from Agent Workspace into the current Membership or Group Workspace. It uses revision-checked Copy, never Move, and does not mutate the Agent source. Direct and Group Runs cannot copy Membership or Group files into Agent Workspace and cannot write Agent `files/`; their outputs go directly to the Membership or Group Workspace. Agent-owned Main Runs may write Agent `files/`, except A2A receivers under the continuation amendment above. Direct and Group contexts have no shared Memory distillation exception under the shared Memory amendment.
 
 Run Output and Child Result content may reference Workspace files without creating a separate Artifact store. Runtime temporary files, sandbox copies, caches, and uncommitted candidates are not Workspace content; they become durable only through an explicit write to an authorized Workspace.
 
@@ -240,9 +243,9 @@ Rejected for controlled package updates because a reader could combine new instr
 - User, Agent, and Group Memory Indexes remain separate and retain source identity; Skill discovery comes only from the executing Agent's bindings.
 - Shared Skill updates affect every Agent still bound to the shared package; private updates affect only their owning Agent, without changing shared content or adding retained history.
 - `files/` is an arbitrary durable file tree; uploads and outputs do not create additional persistent namespaces or a separate Artifact store.
-- Direct and Group Runs write ordinary files only to their Membership or Group Workspace; Agent-owned Main Runs may write Agent files, and Agent-to-Membership/Group file publication is one-way Copy.
+- Direct and Group Runs write ordinary files only to their Membership or Group Workspace; Agent-owned Main Runs other than A2A receivers may write Agent files, and Agent-to-Membership/Group file publication is one-way Copy. A2A receivers use request-owned temporary files and explicitly return selected revisions.
 - Membership and Group files cannot be copied or moved into Agent Workspace in the first release.
-- Direct and Group Main Runs may distill only generalized Agent Memory through a dedicated Tool; Subagent Runs only return proposals, and new Memory Index content becomes available from the next Run.
+- Shared Agent Memory distillation requires an eligible Agent-owned Main context; Membership/Group contexts and Subagent Runs cannot distill, and new Memory Index content becomes available from the next Run.
 - Agent Runs cannot create, edit, delete, or publish Skill in the first release; controlled Market/Admin installation or future Frontend editing invalidates caches, and the next explicit load reads current content without a Skill revision system.
 - Authorized humans may inspect and preview Workspace content but cannot mutate it directly; all Workspace mutations come from authorized Agent Runs through Workspace Tools.
 - Every Workspace mutation and cross-Workspace publication is explicit and authorized.
