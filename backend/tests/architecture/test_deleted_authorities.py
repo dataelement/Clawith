@@ -1079,15 +1079,12 @@ DAO_PACKAGE_INIT = Path("app/dao/__init__.py")
 REMOVED_ORPHAN_DIRECT_DEPENDENCIES = frozenset(
     {
         "anyascii",
-        "azure-identity",
-        "croniter",
         "dingtalk-stream",
         "discord-py",
         "langgraph",
         "langgraph-checkpoint-postgres",
         "markdown",
         "passlib",
-        "pillow",
         "pymupdf",
         "pynacl",
         "pycryptodome",
@@ -10487,7 +10484,7 @@ def test_retained_dependency_fixture_passes_deleted_owner_guard(tmp_path: Path) 
         """[project]
 name = "fixture"
 version = "0"
-dependencies = ["lxml-html-clean>=0.4", "aioboto3>=13"]
+dependencies = ["lxml-html-clean>=0.4", "aioboto3>=13", "azure-identity>=1", "croniter>=6", "pillow>=11"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

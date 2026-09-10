@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app import application
@@ -51,13 +52,64 @@ def composed_database(test_database, monkeypatch):
     return resource, closed
 
 
+@pytest.fixture
+def current_task_connections(test_database):
+    """Track borrowers, including when SQLAlchemy returns a connection in a cleanup task."""
+    borrowers = {}
+    pool = test_database.engine.sync_engine.pool
+
+    def checkout(_connection, record, _proxy):
+        borrowers[id(record)] = asyncio.current_task()
+
+    def checkin(_connection, record):
+        borrowers.pop(id(record), None)
+
+    def count():
+        current = asyncio.current_task()
+        return sum(owner is current for owner in borrowers.values())
+
+    event.listen(pool, "checkout", checkout)
+    event.listen(pool, "checkin", checkin)
+    try:
+        yield count
+    finally:
+        event.remove(pool, "checkout", checkout)
+        event.remove(pool, "checkin", checkin)
+
+
+async def test_current_task_connection_observation_distinguishes_other_workers(test_database, current_task_connections):
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def background():
+        async with test_database.sessions.begin() as session:
+            await session.execute(text("SELECT 1"))
+            assert current_task_connections() == 1
+            ready.set()
+            await release.wait()
+
+    worker = asyncio.create_task(background())
+    try:
+        await ready.wait()
+        assert test_database.engine.pool.checkedout() == 1
+        assert current_task_connections() == 0
+        async with test_database.sessions.begin() as session:
+            await session.execute(text("SELECT 1"))
+            assert current_task_connections() == 1
+            with pytest.raises(AssertionError):
+                assert current_task_connections() == 0
+        assert current_task_connections() == 0
+    finally:
+        release.set()
+        await worker
+
+
 async def test_application_services_execute_and_close_with_real_owners(
-    test_database, composed_database, tmp_path, monkeypatch,
+    test_database, composed_database, tmp_path, monkeypatch, current_task_connections,
 ):
     observed = []
 
     def provider(request):
-        assert test_database.engine.pool.checkedout() == 0
+        assert current_task_connections() == 0
         assert request.headers["authorization"] == "Bearer composed-provider-secret"
         observed.append(request)
         return httpx.Response(200, json={"choices": [{"finish_reason": "tool_calls", "message": {
@@ -160,7 +212,7 @@ async def test_storage_close_failure_does_not_skip_other_resource_cleanup(compos
     assert not hasattr(app.state, "execution")
 
 
-async def test_s3_locks_use_a_distinct_pool_and_close_it(test_database, composed_database, tmp_path, monkeypatch):
+async def test_s3_locks_use_a_distinct_pool_and_close_it(test_database, composed_database, tmp_path, monkeypatch, current_task_connections):
     locks = []
     engines = []
     original_lock = composition.PostgresResourceLocks
@@ -187,6 +239,6 @@ async def test_s3_locks_use_a_distinct_pool_and_close_it(test_database, composed
         assert engines[0].pool is not app.state.database.execution_engine.pool
         async with locks[0]("resource"):
             assert engines[0].pool.checkedout() == 1
-            assert test_database.engine.pool.checkedout() == 0
+            assert current_task_connections() == 0
     assert execution.http.is_closed and engines[0].pool.checkedout() == 0
     assert engines[0].pool.checkedin() == 0

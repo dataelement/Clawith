@@ -6,6 +6,7 @@ import base64
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Protocol, cast
 
 import pytest
@@ -45,6 +46,7 @@ class FakeEngine:
 @dataclass
 class FakeDatabaseResources:
     close_calls: int = 0
+    control_sessions: async_sessionmaker[AsyncSession] = field(default_factory=async_sessionmaker)
     execution_sessions: async_sessionmaker[AsyncSession] = field(default_factory=async_sessionmaker)
 
     async def aclose(self) -> None:
@@ -55,8 +57,15 @@ class FakeDatabaseResources:
 class RuntimeResourceFixture:
     """Exercise composition cleanup; real Run/SQL behavior belongs to the E2E fixture."""
     worker: asyncio.Task[bool] | None = None
+    children: list[RuntimeResourceFixture] = field(default_factory=list)
 
     async def startup(self) -> None:
+        self.worker = asyncio.create_task(asyncio.Event().wait())
+
+    async def start(self) -> None:
+        await self.startup()
+
+    def start_cleanup(self) -> None:
         self.worker = asyncio.create_task(asyncio.Event().wait())
 
     async def close(self) -> None:
@@ -68,12 +77,16 @@ class RuntimeResourceFixture:
 @pytest.fixture
 def runtime_resource(monkeypatch: pytest.MonkeyPatch) -> RuntimeResourceFixture:
     runtime = RuntimeResourceFixture()
+    other, goal, scheduled, attachments, a2a_files, channels = (RuntimeResourceFixture() for _ in range(6))
+    runtime.children.extend((other, goal, scheduled, attachments, a2a_files, channels))
+    streams = SimpleNamespace(close=RuntimeResourceFixture().close, observe=None)
+    products = SimpleNamespace(other=other, goal=goal, scheduled=scheduled, attachments=attachments,
+        a2a_files=SimpleNamespace(start_cleanup=a2a_files.start, close=a2a_files.close),
+        streams=streams, documents=SimpleNamespace(close=RuntimeResourceFixture().close), bindings=None)
+    monkeypatch.setattr(application, "ProductInputs", lambda *args, **kwargs: products)
+    monkeypatch.setattr(application, "ChannelInputs", lambda *args, **kwargs: channels)
     monkeypatch.setattr(application, "compose_runtime", lambda *args, **kwargs: runtime)
     return runtime
-
-
-class RouteWithPath(Protocol):
-    path: str
 
 
 class SettingsFactory(Protocol):
@@ -106,12 +119,12 @@ def _qualified_name(node: ast.expr) -> str | None:
     return None
 
 
-def test_main_exports_the_single_factory_application_without_product_routes() -> None:
+def test_main_exports_the_single_factory_application_with_g006_product_routes() -> None:
     assert isinstance(asgi_app, FastAPI)
-    route_paths = [cast(RouteWithPath, route).path for route in asgi_app.routes]
-    assert {path for path in route_paths if path.startswith("/api/")} == {
-        "/api/health"
-    }
+    route_paths = set(asgi_app.openapi()["paths"])
+    assert {"/api/health", "/api/auth/login", "/api/sessions", "/api/triggers",
+        "/api/agents/{agent_id}/heartbeat", "/api/webhooks/{tenant_id}/{trigger_id}"} <= set(route_paths)
+    assert not any(path.startswith(("/api/okr", "/api/sso", "/api/openclaw")) for path in route_paths)
 
 
 def test_missing_execution_configuration_fails_before_database_creation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,6 +167,8 @@ def test_create_app_owns_database_resources_for_its_complete_lifespan(
     assert observed_settings == [settings]
     assert resources.close_calls == 1
     assert runtime_resource.worker is not None and runtime_resource.worker.done()
+    assert all(resource.worker is not None and resource.worker.done() for resource in runtime_resource.children)
+    assert not any(hasattr(app.state, name) for name in ("products", "scheduled", "channel_inputs", "attachment_inputs", "auth"))
     assert not hasattr(app.state, "runtime")
     assert not hasattr(app.state, "database")
     assert not hasattr(app.state, "audit")
@@ -171,6 +186,7 @@ async def test_audit_consumer_stops_before_database_disposal(
     async def close_resources() -> None:
         assert observed and all(task.done() for task in observed)
         assert runtime_resource.worker is not None and runtime_resource.worker.done()
+        assert all(resource.worker is not None and resource.worker.done() for resource in runtime_resource.children)
         resources.close_calls += 1
 
     monkeypatch.setattr(database, "create_database_resources", create_resources)
@@ -204,6 +220,34 @@ def test_database_disposed_if_audit_initialization_fails(monkeypatch: pytest.Mon
     assert resources.close_calls == 1
     assert not hasattr(app.state, "database")
     assert not hasattr(app.state, "audit")
+
+
+async def test_product_startup_failure_drains_prior_workers_before_database_close(
+        monkeypatch: pytest.MonkeyPatch, runtime_resource: RuntimeResourceFixture) -> None:
+    resources = FakeDatabaseResources()
+    channels = runtime_resource.children[-1]
+
+    async def failed_startup() -> None:
+        raise ValueError("Channel startup failed")
+
+    async def create_resources(_settings: Settings) -> DatabaseResources:
+        return cast(DatabaseResources, resources)
+
+    async def closed() -> None:
+        assert runtime_resource.worker is not None and runtime_resource.worker.done()
+        started = [resource.worker for resource in runtime_resource.children if resource.worker is not None]
+        assert len(started) == 3 and all(worker.done() for worker in started)
+        resources.close_calls += 1
+
+    monkeypatch.setattr(channels, "startup", failed_startup)
+    monkeypatch.setattr(database, "create_database_resources", create_resources)
+    monkeypatch.setattr(resources, "aclose", closed)
+    app = application.create_app(_settings())
+    with pytest.raises(ValueError, match="Channel startup failed"):
+        async with app.router.lifespan_context(app):
+            pytest.fail("Partially started application must not serve requests")
+    assert resources.close_calls == 1
+    assert not any(hasattr(app.state, name) for name in ("products", "runtime", "database", "audit"))
 
 
 @pytest.mark.parametrize(

@@ -30,11 +30,13 @@ A second application factory would divide lifecycle ownership. Reusing the busin
 
 ## Consequences
 
-Starting the backend requires deployment keys and storage configuration even while HTTP routing remains health-only. Application configuration does not expose ineffective global timeout overrides; existing capability owners retain request deadlines. G005 must register consumer draining before these execution resources close.
+Starting the backend requires deployment keys and storage configuration before product HTTP routing or Runtime becomes available. Application configuration does not expose ineffective global timeout overrides; existing capability owners retain request deadlines. The application stops input producers, interrupts and drains Runtime, and closes transient streams before these shared execution resources close.
 
 ## Verification and deferred work
 
 Application integration tests obtain real services through app state and exercise Credential encryption/resolution, controlled Model validation, explicit Builtin grants, Workspace writes and Market-backed Skill discovery. Failure tests cover each construction stage and storage-close errors; S3 lock tests observe independent checked-out connections and pool disposal. No external Provider or S3 request is required for these tests.
+
+Connection-boundary assertions track the task that borrowed each business-pool connection and remove that association on check-in, including check-in performed by a cleanup task. Model HTTP and S3 lock acquisition must hold zero business connections for the current operation; unrelated G006 background queries may hold their own connections. A controlled concurrent-transaction test verifies both the allowed independent worker and the rejected current-task transaction. S3's separate pool still must hold exactly one lock connection during the lock and no checked-in or checked-out connections after disposal.
 
 Resource/configuration tests passed 45 cases; together with application and import-boundary tests the focused suite passed 177 cases. Ruff and configured Pyright passed. Independent code and architecture reviews found no remaining blocker for this resource-assembly slice.
 

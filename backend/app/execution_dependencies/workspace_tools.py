@@ -500,5 +500,6 @@ def workspace_bindings(
         ExecutorBinding(definition.executor_key, _WorkspaceExecutor(definition, scope, handler), builtin=definition)
         for definition, handler in zip(WORKSPACE_DEFINITIONS, handlers, strict=True)
         if definition.name != "distill_memory" or (
-            scope.main and not scope.preview_only and scope.output == WorkspaceSubject("agent", scope.agent_id))
+            scope.main and not scope.preview_only and scope.allow_shared_memory_writes
+            and scope.output == WorkspaceSubject("agent", scope.agent_id))
     )

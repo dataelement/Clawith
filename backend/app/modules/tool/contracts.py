@@ -276,7 +276,7 @@ class AvailableToolSet:
 def role_eligible(name: str, role: RunRole) -> bool:
     if role not in ("main", "sub"):
         raise InvalidInput("Run role is invalid")
-    if name in ("task", "call_agent", "wake_agent", "send_message_to_agent", "distill_memory", "wait_for_tasks"):
+    if name in ("task", "call_agent", "wake_agent", "send_message_to_agent", "send_message", "session_history", "session_work", "trigger", "heartbeat", "distill_memory", "wait_for_tasks"):
         return role == "main"
     if name == "todo":
         return role == "sub"

@@ -85,7 +85,7 @@ def _target_files(app_root: Path) -> list[Path]:
         )
         if path.is_file()
     ]
-    for directory in ("infrastructure", "modules", "runtime", "execution_dependencies"):
+    for directory in ("infrastructure", "modules", "runtime", "execution_dependencies", "api/product_inputs"):
         root = app_root / directory
         if root.is_dir():
             files.extend(root.rglob("*.py"))
@@ -204,7 +204,10 @@ def _scan_target_tree(
 
         for imported in imports:
             if any(_is_module_or_child(imported, legacy) for legacy in LEGACY_MODULES):
-                violations.append(Violation("legacy-import", relative, imported))
+                product_transport = _is_module_or_child(imported, "app.api.product_inputs") and (
+                    relative == Path("application.py") or relative.parts[:2] == ("api", "product_inputs"))
+                if not product_transport:
+                    violations.append(Violation("legacy-import", relative, imported))
 
         object_storage_imports = {
             imported
@@ -232,7 +235,7 @@ def _scan_target_tree(
                     for imported in sorted(object_storage_imports)
                 )
 
-        if relative_parts[0] == "execution_dependencies" or (
+        if relative_parts[0] == "execution_dependencies" or relative_parts[:2] == ("api", "product_inputs") or (
             len(relative_parts) >= 3 and relative_parts[0] == "modules"
         ):
             importing_owner = relative_parts[1] if relative_parts[0] == "modules" else None
@@ -351,6 +354,21 @@ def test_current_target_tree_satisfies_import_boundaries() -> None:
     violations = _scan_target_tree(APP_ROOT, require_canonical_singletons=True)
 
     assert violations == []
+
+
+@pytest.mark.parametrize("path,source,allowed", [
+    ("app/application.py", "from app.api.product_inputs.sessions import router", True),
+    ("app/api/product_inputs/sessions.py", "from app.modules.session.public import SessionService", True),
+    ("app/api/product_inputs/groups.py", "from app.api.product_inputs.auth import authenticated", True),
+    ("app/modules/run/service.py", "from app.api.product_inputs.sessions import router", False),
+    ("app/execution_dependencies/bridge.py", "from app.api.product_inputs.sessions import router", False),
+    ("app/application.py", "from app.api.auth import router", False),
+    ("app/api/product_inputs/sessions.py", "from app.modules.session.models import SessionRecord", False),
+    ("app/api/product_inputs/sessions.py", "from app.services.agent_service import AgentService", False),
+])
+def test_product_transport_keeps_public_owner_direction(tmp_path: Path, path: str, source: str, allowed: bool) -> None:
+    app_root = _materialize_case(tmp_path, {"id": "product-api", "path": path, "source": source + "\n"})
+    assert (not _violation_rules(app_root)) is allowed
 
 
 @pytest.mark.parametrize("case", _fixture_cases("allowed.json"), ids=lambda case: case["id"])

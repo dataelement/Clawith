@@ -1,6 +1,6 @@
 # Agent Note: Session input and message acceptance
 
-Status: implemented — Session persistence and Run transactional consumer services are available; product HTTP, Tool and delivery acceptance remain separate G006 integration work.
+Status: implemented — Session owner services and application HTTP, Tool and WebSocket paths have controlled integration tests; cumulative G006 acceptance remains separate.
 
 ## Problem
 
@@ -43,3 +43,5 @@ Product composition must distinguish accepted input, admission, accepted message
 ## Verification
 
 Focused real PostgreSQL tests cover source deduplication and concurrent positions, membership/captured-Agent isolation, startup association rollback, multiple Main messages, message retries after terminal settlement, no terminal-generated reply, Waiting rollback and unseen-input suppression, fixed execution cutoffs, bounded recent references, payload versions and transaction rollback. The Waiting-reply/terminal race verifies that a reply blocked on Run holds no Session lock and that the losing reply reports conflict; an accepted reply remains retryable after the Run resumes. Run consumer tests use real Run services with controlled normalized Model facts; they do not establish HTTP routing, a live Model, Channel delivery, Goal iteration or full G006 acceptance.
+
+Separate application tests exercise actual login and HTTP Session input, message Tools, multiple messages, Waiting replies, independent ordinary-input Main Runs, Model SSE through WebSocket, committed-history replay and logout/expiry/shutdown cleanup. Scheduled destination tests use the same message outlet without fabricating a Session input, including immutable file capture and receipt replay after source-file deletion. These tests use real PostgreSQL and controlled external HTTP; owner and application evidence do not establish hosted Provider behavior, frontend completion or cumulative G006 qualification.

@@ -37,6 +37,7 @@ from app.modules.run.snapshot import (
     derive_child,
     model_visible_prefix,
 )
+from app.runtime.scheduler import RunKey
 
 __all__ = [
     "AgentIdentity",
@@ -57,6 +58,7 @@ __all__ = [
     "OutcomeConsumer",
     "PlatformInstructions",
     "RelatedInputPayload",
+    "RunKey",
     "RunRuntime",
     "RunService",
     "RunSnapshot",

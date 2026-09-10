@@ -14,10 +14,13 @@ from app.infrastructure.errors import AccessDenied
 from app.infrastructure.execution_config import ExecutionSettings, LocalStorageSettings
 from app.infrastructure.http import create_stateless_http_client
 from app.infrastructure.object_storage.base import StorageBackend
+from app.infrastructure.object_storage.input_files import InputFileStorage
 from app.infrastructure.object_storage.local import LocalStorageBackend
 from app.infrastructure.object_storage.s3 import S3StorageBackend
+from app.infrastructure.object_storage.temp_files import TempFileStorage
 from app.infrastructure.resource_locks import PostgresResourceLocks
 from app.infrastructure.transactions import TransactionContext, transaction
+from app.modules.a2a.public import A2ATempStorage
 from app.modules.audit.public import AuditSink
 from app.modules.capability_market.public import CapabilityMarketService
 from app.modules.context.public import ContextTelemetry
@@ -58,6 +61,8 @@ class ExecutionResources:
     _sessions: async_sessionmaker[AsyncSession] = field(repr=False)
     _credential_keys: CredentialKeyring = field(repr=False)
     context_statistics: ContextStatistics = field(default_factory=ContextStatistics)
+    input_files: InputFileStorage | None = field(default=None, repr=False)
+    temp_files: A2ATempStorage | None = field(default=None, repr=False)
 
     def tools(self, transaction_context: TransactionContext) -> ToolService:
         return ToolService(transaction_context, enabled_sources=self.market.enabled_source_ids)
@@ -129,4 +134,5 @@ async def open_execution_resources(
             database.execution_sessions, http_client=http, credential_keyring=credential_keys,
             continuation_keys=continuation_keys, active_continuation_key=settings.continuation_keys.active_version,
         )
-        yield ExecutionResources(workspace, market, model, http, database.execution_sessions, credential_keys)
+        yield ExecutionResources(workspace, market, model, http, database.execution_sessions, credential_keys,
+            input_files=InputFileStorage(storage), temp_files=TempFileStorage(storage))
