@@ -22,6 +22,7 @@ from app.modules.credential.public import CredentialService
 from app.modules.group.public import GroupService
 from app.modules.identity_tenant.public import IdentityService, TenantPrincipal
 from app.modules.run.public import (
+    HistoryFragment,
     InputContent,
     InputReference,
     RunService,
@@ -742,6 +743,86 @@ class TriggerService:
         if message_id is not None:
             raise InvalidInput("Legacy message origin requires provenance backfill before reading its content")
         return "agent", agent_id, None
+
+    async def _result_metadata(self, *, tenant_id: UUID, owner_id: UUID, occurrence_id: UUID
+            ) -> tuple[UUID, UUID | None, str, tuple[Literal["agent", "membership", "group"], UUID, UUID | None]]:
+        row = (await self._session.execute(select(TriggerOccurrenceRecord.agent_id, TriggerOccurrenceRecord.run_id,
+            TriggerOccurrenceRecord.source_key, TriggerOccurrenceRecord.payload_version,
+            func.octet_length(cast(TriggerOccurrenceRecord.payload, Text)),
+            func.left(TriggerOccurrenceRecord.payload["origin_kind"].as_string(), 32),
+            func.left(TriggerOccurrenceRecord.payload["origin_id"].as_string(), 64),
+            func.left(TriggerOccurrenceRecord.payload["origin_conversation_id"].as_string(), 64)).where(
+                TriggerOccurrenceRecord.tenant_id == tenant_id, TriggerOccurrenceRecord.id == occurrence_id, TriggerOccurrenceRecord.trigger_id == owner_id))).one_or_none()
+        if row is None:
+            raise NotFound("Trigger occurrence is unavailable")
+        agent, run_id, source_key, version, size, kind, identity, conversation = row
+        if version not in (1, 2, 3, 4) or size > 256 * 1024 + 4096:
+            raise InvalidInput("Stored Trigger occurrence exceeds its version or size boundary")
+        if version == 4:
+            try:
+                origin = _read_origin({"origin_kind": kind, "origin_id": identity, "origin_conversation_id": conversation})
+            except (ValidationError, ValueError, TypeError):
+                raise InvalidInput("Stored scheduled origin is invalid") from None
+        else:
+            connections = await self._session.scalar(select(TriggerOccurrenceRecord.payload["delegated_connections"]).where(
+                TriggerOccurrenceRecord.tenant_id == tenant_id, TriggerOccurrenceRecord.id == occurrence_id,
+                func.octet_length(cast(TriggerOccurrenceRecord.payload["delegated_connections"], Text)) <= 8192))
+            if not isinstance(connections, list):
+                raise InvalidInput("Legacy scheduled delegation metadata is unavailable")
+            try:
+                message_id = UUID(source_key[len("message:"):]) if source_key.startswith("message:") else None
+            except ValueError:
+                raise InvalidInput("Legacy message origin requires provenance backfill") from None
+            origin = await self._origin(tenant_id, agent, _delegated(connections), run_id=run_id, message_id=message_id)
+        return agent, run_id, source_key, origin
+
+    async def _result_fragment(self, *, tenant_id: UUID, agent_id: UUID, run_id: UUID | None,
+            occurrence_id: UUID, source_key: str, content_offset: int) -> HistoryFragment | None:
+        if type(content_offset) is not int or not 0 <= content_offset <= 16 * 1024 * 1024:
+            raise InvalidInput("Result content offset is invalid")
+        if run_id is None:
+            return None
+        runs = RunService(self._tx)
+        run = await runs.get(tenant_id=tenant_id, run_id=run_id)
+        if run.agent_id != agent_id or run.parent_run_id is not None or run.source != SourceIdentity("trigger", occurrence_id, source_key):
+            raise InvalidInput("Trigger result Run association is inconsistent")
+        if run.status in ("Running", "Waiting"):
+            return None
+        fragment = await runs.read_history_fragment(tenant_id=tenant_id, run_id=run_id,
+            after_sequence=run.latest_history_sequence - 1, content_offset=content_offset, max_characters=8000)
+        if fragment is None or fragment.kind != "terminal_outcome":
+            raise InvalidInput("Trigger result does not reference a terminal Run fact")
+        return fragment
+
+    async def read_result(self, principal: TenantPrincipal, *, trigger_id: UUID, occurrence_id: UUID,
+            content_offset: int = 0) -> HistoryFragment | None:
+        """Read the complete terminal result only after authorizing its original visibility."""
+        await self.get(principal, trigger_id=trigger_id)
+        agent, run_id, source_key, origin = await self._result_metadata(tenant_id=principal.tenant_id,
+            owner_id=trigger_id, occurrence_id=occurrence_id)
+        readable = await GroupService(self._tx).authorized_group_ids(principal, group_ids=(origin[1],)) if origin[0] == "group" else frozenset()
+        if not (origin[0] == "agent" and (principal.can_manage_all_agents or origin[1] in principal.allowed_agent_ids)
+                or origin[0] == "membership" and origin[1] == principal.membership_id
+                or origin[0] == "group" and origin[1] in readable):
+            raise AccessDenied("Trigger result belongs to another private source")
+        return await self._result_fragment(tenant_id=principal.tenant_id, agent_id=agent, run_id=run_id,
+            occurrence_id=occurrence_id, source_key=source_key, content_offset=content_offset)
+
+    async def read_result_for_run(self, run: RunView, *, trigger_id: UUID, occurrence_id: UUID,
+            content_offset: int = 0) -> HistoryFragment | None:
+        """Native Main reads public Agent results or its exact captured private output scope."""
+        actual = await RunService(self._tx).get(tenant_id=run.tenant_id, run_id=run.id)
+        if actual.parent_run_id is not None:
+            raise AccessDenied("Only a Main may inspect scheduled results")
+        agent, run_id, source_key, origin = await self._result_metadata(tenant_id=actual.tenant_id,
+            owner_id=trigger_id, occurrence_id=occurrence_id)
+        snapshot = await RunService(self._tx).read_snapshot(tenant_id=actual.tenant_id, run_id=actual.id)
+        if agent != actual.agent_id or not (origin[0] == "agent" and origin[1] == actual.agent_id
+                or (origin[0], origin[1]) == (snapshot.workspace.output.kind, snapshot.workspace.output.id)):
+            raise AccessDenied("Scheduled result is outside this Run's captured source scope")
+        return await self._result_fragment(tenant_id=actual.tenant_id, agent_id=agent, run_id=run_id,
+            occurrence_id=occurrence_id, source_key=source_key, content_offset=content_offset)
+
 
     async def history(self, principal: TenantPrincipal, *, trigger_id: UUID, limit: int = 100,
             after_id: UUID | None = None, max_bytes: int = 1024 * 1024) -> TriggerHistoryPage:

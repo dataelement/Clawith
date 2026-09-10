@@ -53,17 +53,19 @@ def _config_schema(config: type[TriggerConfig] | type[HeartbeatConfig]) -> dict:
 
 
 SCHEDULE_TOOL_DEFINITIONS = (
-    DefinitionSpec("trigger", "Manage this Agent's triggers. Timezone defaults to the Agent timezone. Poll Credential stores the complete Authorization header value; webhook Credential is an HMAC key. Pass only Credential IDs, never Secrets.", canonical_json({
-        "type": "object", "properties": {"action": {"type": "string", "enum": ["create", "update", "get", "list", "remove", "fire"]},
+    DefinitionSpec("trigger", "Manage this Agent's triggers. Use result with trigger_id and occurrence_id to read complete authorized terminal results, including runs without a message destination; continue with result.next_offset. Timezone defaults to the Agent timezone. Poll Credential stores the complete Authorization header value; webhook Credential is an HMAC key. Pass only Credential IDs, never Secrets.", canonical_json({
+        "type": "object", "properties": {"action": {"type": "string", "enum": ["create", "update", "get", "list", "remove", "fire", "result"]},
             "trigger_id": {"type": "string", "format": "uuid"}, "config": _config_schema(TriggerConfig),
-            "content_offset": {"type": "integer", "minimum": 0, "description": "get reads 16000-character JSON fragments; continue with next_offset until null."},
+            "occurrence_id": {"type": "string", "format": "uuid"},
+            "content_offset": {"type": "integer", "minimum": 0, "description": "Continue get with next_offset or result with result.next_offset until null; result pages contain at most 8000 characters."},
             "enabled": {"type": "boolean"}, "after_id": {"type": "string", "format": "uuid"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, "required": ["action"], "additionalProperties": False}),
         "schedule.trigger.v1", "builtin"),
-    DefinitionSpec("heartbeat", "Configure or inspect this Agent's independent heartbeat. It never creates a trigger. Timezone defaults to the Agent timezone; set enabled=false to disable it.", canonical_json({
-        "type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "get"]},
+    DefinitionSpec("heartbeat", "Configure or inspect this Agent's independent heartbeat. Use result with occurrence_id to read complete authorized terminal results and continue with result.next_offset. It never creates a trigger. Timezone defaults to the Agent timezone; set enabled=false to disable it.", canonical_json({
+        "type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "get", "result"]},
+            "occurrence_id": {"type": "string", "format": "uuid"},
             "config": _config_schema(HeartbeatConfig), "enabled": {"type": "boolean"},
-            "content_offset": {"type": "integer", "minimum": 0, "description": "get continuation offset from the previous JSON fragment."}},
+            "content_offset": {"type": "integer", "minimum": 0, "description": "Continue get with next_offset or result with result.next_offset until null; result pages contain at most 8000 characters."}},
         "required": ["action"], "additionalProperties": False}), "schedule.heartbeat.v1", "builtin"),
 )
 
@@ -125,7 +127,20 @@ class _ScheduleExecutor:
                 origin_run = await RunService(tx).verify_main_tool_origin(tenant_id=scope.tenant_id, run_id=scope.run_id,
                     step_id=self.step_id, call_id=call.id, tool_name=call.name)
                 agent = await AgentService(tx).get_for_agent_execution(tenant_id=scope.tenant_id, agent_id=scope.agent_id)
-                if call.name == "heartbeat":
+                if action == "result":
+                    required = {"action", "occurrence_id"} | ({"trigger_id"} if call.name == "trigger" else set())
+                    if not required <= args.keys() or args.keys() - (required | {"content_offset"}):
+                        raise InvalidInput("Result action fields are invalid")
+                    offset = args.get("content_offset", 0)
+                    if not isinstance(offset, int) or isinstance(offset, bool):
+                        raise InvalidInput("Result content offset is invalid")
+                    occurrence_id = _id(args["occurrence_id"])
+                    fragment = (await TriggerService(tx).read_result_for_run(origin_run,
+                        trigger_id=_id(args["trigger_id"]), occurrence_id=occurrence_id, content_offset=offset)
+                        if call.name == "trigger" else await HeartbeatService(tx).read_result_for_run(
+                            origin_run, occurrence_id=occurrence_id, content_offset=offset))
+                    payload = {"result": _json_view(fragment) if fragment is not None else None}
+                elif call.name == "heartbeat":
                     owner = HeartbeatService(tx, enabled_sources=self.inputs.execution.market.enabled_source_ids)
                     if action == "get" and not args.keys() - {"action", "content_offset"}:
                         result = await owner.get_for_agent(self.scope)

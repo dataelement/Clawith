@@ -102,6 +102,15 @@ async def fire_trigger(trigger_id: UUID, body: ManualInput, request: Request):
         input=InputContent(body.text) if body.text is not None else None)
 
 
+@router.get("/triggers/{trigger_id}/history/{occurrence_id}/result")
+async def trigger_result(trigger_id: UUID, occurrence_id: UUID, request: Request,
+        content_offset: int = Query(0, ge=0, le=16777216)):
+    principal = (await authenticated(request)).principal
+    async with transaction(schedules(request).database.control_sessions) as tx:
+        return await TriggerService(tx).read_result(principal, trigger_id=trigger_id,
+            occurrence_id=occurrence_id, content_offset=content_offset)
+
+
 @router.get("/agents/{agent_id}/heartbeat")
 async def get_heartbeat(agent_id: UUID, request: Request):
     principal = (await authenticated(request)).principal
@@ -146,3 +155,12 @@ async def receive_webhook(tenant_id: UUID, trigger_id: UUID, request: Request):
         event_id=event_id, signature=signature, body=b"".join(chunks))
     return {"accepted": True, "occurrence_id": str(occurrence.id), "admission": occurrence.admission,
         "run_id": str(occurrence.run_id) if occurrence.run_id else None}
+
+
+@router.get("/agents/{agent_id}/heartbeat/history/{occurrence_id}/result")
+async def heartbeat_result(agent_id: UUID, occurrence_id: UUID, request: Request,
+        content_offset: int = Query(0, ge=0, le=16777216)):
+    principal = (await authenticated(request)).principal
+    async with transaction(schedules(request).database.control_sessions) as tx:
+        return await HeartbeatService(tx).read_result(principal, agent_id=agent_id,
+            occurrence_id=occurrence_id, content_offset=content_offset)
