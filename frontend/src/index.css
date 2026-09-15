@@ -61,8 +61,9 @@
   --space-12: 48px;
 
   /* Typography */
-  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-family:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
 
   --text-xs: 11px;
   --text-sm: 13px;
@@ -148,8 +149,12 @@
 }
 
 @keyframes marquee {
-  0% { transform: translateX(100%); }
-  100% { transform: translateX(-100%); }
+  0% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
 }
 
 .notification-bar-close {
@@ -209,7 +214,9 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.3;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .notification-bar-dismiss-menu button:hover {
@@ -266,7 +273,9 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
 
   /* Light mode: notification bar always white text */
-  --notification-bar-text: var(--bg-primary); /* For light mode, bg-primary is #fff */
+  --notification-bar-text: var(
+    --bg-primary
+  ); /* For light mode, bg-primary is #fff */
   --notification-bar-close-hover: rgba(255, 255, 255, 0.2);
 }
 
@@ -568,7 +577,10 @@ select:focus {
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .workspace-switcher-trigger:hover,
@@ -687,7 +699,9 @@ select:focus {
   flex: 0 0 auto;
   color: var(--text-tertiary);
   opacity: 0;
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .workspace-switcher-trigger:hover .workspace-switcher-chevron,
@@ -814,7 +828,10 @@ select:focus {
   cursor: pointer;
   font-size: 14px;
   text-align: left;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .tenant-switcher-item:hover,
@@ -977,7 +994,7 @@ select:focus {
 
 .tenant-setup-divider::before,
 .tenant-setup-divider::after {
-  content: '';
+  content: "";
   height: 1px;
   flex: 1;
   background: var(--border-subtle);
@@ -1090,7 +1107,11 @@ select:focus {
     linear-gradient(-45deg, transparent 75%, var(--bg-secondary) 75%);
   background-color: var(--bg-tertiary);
   background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -1101,7 +1122,7 @@ select:focus {
 }
 
 .tenant-logo-crop-stage::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -1261,7 +1282,7 @@ select:focus {
 }
 
 .sidebar-agent-item.owned .agent-avatar::after {
-  content: '';
+  content: "";
   position: absolute;
   bottom: -2px;
   left: -2px;
@@ -1283,7 +1304,10 @@ select:focus {
   padding: 3px;
   color: var(--text-tertiary);
   opacity: 0;
-  transition: opacity 0.25s ease-in-out, color 0.25s ease-in-out, background 0.25s ease-in-out;
+  transition:
+    opacity 0.25s ease-in-out,
+    color 0.25s ease-in-out,
+    background 0.25s ease-in-out;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1532,8 +1556,14 @@ select:focus {
 }
 
 @keyframes accountDropdownIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .account-dropdown-item {
@@ -1924,7 +1954,6 @@ select:focus {
 }
 
 @keyframes pulse {
-
   0%,
   100% {
     opacity: 1;
@@ -2101,7 +2130,9 @@ select:focus {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition:
+    background 0.1s ease,
+    color 0.1s ease;
 }
 .scope-dropdown-item:hover {
   background: var(--bg-secondary);
@@ -2135,7 +2166,9 @@ select:focus {
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .session-sidebar-toggle-btn:hover {
   background: var(--bg-secondary);
@@ -2204,7 +2237,9 @@ select:focus {
   background: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: color 0.35s ease-in-out, background 0.35s ease-in-out;
+  transition:
+    color 0.35s ease-in-out,
+    background 0.35s ease-in-out;
 }
 
 .session-item:hover .session-del-btn {
@@ -2234,7 +2269,6 @@ select:focus {
   padding: var(--space-8) var(--space-8) 0;
   flex-shrink: 0;
 }
-
 
 .page-title {
   font-size: var(--text-2xl);
@@ -2311,16 +2345,34 @@ select:focus {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 20% 22%, rgba(17, 17, 20, 0.055), transparent 0 1px, transparent 1.5px),
-    radial-gradient(circle at 78% 18%, rgba(124, 124, 114, 0.09), transparent 32%),
-    radial-gradient(circle at 22% 76%, rgba(160, 166, 151, 0.13), transparent 36%),
-    linear-gradient(125deg, rgba(255, 255, 255, 0.92), rgba(245, 245, 240, 0.34) 46%, rgba(255,255,255,0.72)),
+    radial-gradient(
+      circle at 20% 22%,
+      rgba(17, 17, 20, 0.055),
+      transparent 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 78% 18%,
+      rgba(124, 124, 114, 0.09),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at 22% 76%,
+      rgba(160, 166, 151, 0.13),
+      transparent 36%
+    ),
+    linear-gradient(
+      125deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(245, 245, 240, 0.34) 46%,
+      rgba(255, 255, 255, 0.72)
+    ),
     #f8f8f6;
   z-index: 0;
 }
 
 .login-hero-bg::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   background-image:
@@ -2328,19 +2380,35 @@ select:focus {
     linear-gradient(90deg, rgba(17, 17, 20, 0.035) 1px, transparent 1px);
   background-size: 72px 72px;
   mask-image:
-    linear-gradient(90deg, rgba(0,0,0,0.12), rgba(0,0,0,0.04) 70%, transparent),
-    linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 12%, rgba(0,0,0,0.95) 76%, transparent 100%);
+    linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.12),
+      rgba(0, 0, 0, 0.04) 70%,
+      transparent
+    ),
+    linear-gradient(
+      180deg,
+      transparent 0%,
+      rgba(0, 0, 0, 0.7) 12%,
+      rgba(0, 0, 0, 0.95) 76%,
+      transparent 100%
+    );
   mask-composite: intersect;
 }
 
 .login-hero-bg::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 9%;
   right: 11%;
   bottom: 15%;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(17, 17, 20, 0.12), transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(17, 17, 20, 0.12),
+    transparent
+  );
   opacity: 0.55;
 }
 
@@ -2424,7 +2492,7 @@ select:focus {
   letter-spacing: 0;
   color: #141417;
   margin-bottom: 16px;
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
 .login-hero-title span {
@@ -2455,7 +2523,10 @@ select:focus {
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.075);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    transform 180ms ease;
 }
 
 .login-hero-feature:hover {
@@ -2523,7 +2594,11 @@ select:focus {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
@@ -2569,7 +2644,6 @@ select:focus {
 [data-theme="dark"] .login-logo-img {
   filter: invert(1);
 }
-
 
 .login-form-title {
   font-size: 28px;
@@ -2625,7 +2699,10 @@ select:focus {
   border-radius: 12px;
   font-size: 14px;
   color: #17171a;
-  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    box-shadow 150ms ease;
   outline: none;
 }
 
@@ -2650,7 +2727,9 @@ select:focus {
 .login-field input:-webkit-autofill:active {
   -webkit-text-fill-color: #17171a;
   caret-color: #17171a;
-  box-shadow: 0 0 0 1000px #fff inset, 0 0 0 1px rgba(17, 17, 20, 0.12) inset;
+  box-shadow:
+    0 0 0 1000px #fff inset,
+    0 0 0 1px rgba(17, 17, 20, 0.12) inset;
   transition: background-color 9999s ease-in-out 0s;
 }
 
@@ -2751,10 +2830,28 @@ select:focus {
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(circle at 18% 20%, rgba(17, 17, 20, 0.055), transparent 0 1px, transparent 1.5px),
-    radial-gradient(circle at 78% 18%, rgba(124, 124, 114, 0.08), transparent 34%),
-    radial-gradient(circle at 24% 78%, rgba(160, 166, 151, 0.11), transparent 38%),
-    linear-gradient(125deg, rgba(255, 255, 255, 0.92), rgba(245, 245, 240, 0.35) 46%, rgba(255,255,255,0.72)),
+    radial-gradient(
+      circle at 18% 20%,
+      rgba(17, 17, 20, 0.055),
+      transparent 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 78% 18%,
+      rgba(124, 124, 114, 0.08),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 24% 78%,
+      rgba(160, 166, 151, 0.11),
+      transparent 38%
+    ),
+    linear-gradient(
+      125deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(245, 245, 240, 0.35) 46%,
+      rgba(255, 255, 255, 0.72)
+    ),
     var(--bg-primary);
   padding: 40px 20px;
   position: relative;
@@ -2773,8 +2870,16 @@ select:focus {
 /* ─── Dark cosmic theme for CompanySetup ──────────────── */
 .company-setup-page--dark {
   background:
-    radial-gradient(ellipse 80% 60% at 50% 35%, rgba(40, 60, 110, 0.18), transparent 70%),
-    radial-gradient(ellipse 60% 50% at 80% 25%, rgba(80, 60, 140, 0.12), transparent 70%),
+    radial-gradient(
+      ellipse 80% 60% at 50% 35%,
+      rgba(40, 60, 110, 0.18),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 60% 50% at 80% 25%,
+      rgba(80, 60, 140, 0.12),
+      transparent 70%
+    ),
     #08090d;
   color: #f5f5f7;
 }
@@ -2834,14 +2939,20 @@ select:focus {
 .onboarding-page--dark .onboarding-primary-btn {
   background: #f5f5f7;
   color: #111116;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.1);
-  transition: transform 140ms ease, box-shadow 140ms ease;
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .company-setup-page--dark .onboarding-primary-btn:hover:not(:disabled),
 .onboarding-page--dark .onboarding-primary-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.2);
+  box-shadow:
+    0 16px 44px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .company-setup-page--dark .onboarding-primary-btn:disabled,
@@ -2881,7 +2992,10 @@ select:focus {
   align-items: center;
   justify-content: center;
   z-index: 101;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
 }
 
 .company-setup-page--dark .company-setup-lang-switcher {
@@ -2946,7 +3060,10 @@ select:focus {
   box-shadow: 0 14px 48px rgba(17, 17, 20, 0.035);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
+  transition:
+    border-color 200ms ease,
+    background 200ms ease,
+    box-shadow 200ms ease;
 }
 
 .company-setup-panel:hover {
@@ -3030,7 +3147,9 @@ select:focus {
   text-decoration: underline;
   text-decoration-color: rgba(17, 17, 20, 0.18);
   text-underline-offset: 4px;
-  transition: color 160ms ease, text-decoration-color 160ms ease;
+  transition:
+    color 160ms ease,
+    text-decoration-color 160ms ease;
 }
 
 .company-setup-join-link:hover {
@@ -3053,8 +3172,12 @@ select:focus {
 }
 
 @keyframes join-modal-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .join-modal {
@@ -3070,8 +3193,14 @@ select:focus {
 }
 
 @keyframes join-modal-pop {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .join-modal-close {
@@ -3088,7 +3217,9 @@ select:focus {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
 }
 
 .join-modal-close:hover {
@@ -3176,7 +3307,7 @@ select:focus {
   outline: none;
   text-align: center;
   font-size: 30px;
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-style: italic;
   padding: 12px 8px 18px;
 }
@@ -3250,11 +3381,20 @@ select:focus {
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(circle at 20% 18%, rgba(17, 17, 20, 0.055), transparent 0 1px, transparent 1.5px),
+    radial-gradient(
+      circle at 20% 18%,
+      rgba(17, 17, 20, 0.055),
+      transparent 0 1px,
+      transparent 1.5px
+    ),
     linear-gradient(rgba(17, 17, 20, 0.025) 1px, transparent 1px),
     linear-gradient(90deg, rgba(17, 17, 20, 0.025) 1px, transparent 1px),
     var(--bg-primary);
-  background-size: auto, 72px 72px, 72px 72px, auto;
+  background-size:
+    auto,
+    72px 72px,
+    72px 72px,
+    auto;
 }
 
 .onboarding-page--dark {
@@ -3324,7 +3464,12 @@ select:focus {
   top: -8%;
   width: 180px;
   height: 78%;
-  background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.02) 70%, transparent);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0.02) 70%,
+    transparent
+  );
   clip-path: polygon(42% 0, 58% 0, 100% 100%, 0 100%);
   filter: blur(0.2px);
 }
@@ -3335,7 +3480,7 @@ select:focus {
   top: 36%;
   width: 120px;
   height: 250px;
-  filter: drop-shadow(0 32px 30px rgba(0,0,0,0.3));
+  filter: drop-shadow(0 32px 30px rgba(0, 0, 0, 0.3));
 }
 
 .assistant-silhouette span {
@@ -3345,7 +3490,7 @@ select:focus {
   height: 58px;
   border-radius: 50%;
   background: linear-gradient(145deg, #696a70, #3e3f45);
-  border: 1px solid rgba(255,255,255,0.28);
+  border: 1px solid rgba(255, 255, 255, 0.28);
 }
 
 .assistant-silhouette strong {
@@ -3356,7 +3501,7 @@ select:focus {
   height: 132px;
   border-radius: 54px 54px 0 0;
   background: linear-gradient(145deg, #62636a, #33343a);
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
 .assistant-panel {
@@ -3366,7 +3511,7 @@ select:focus {
 }
 
 .assistant-panel h1 {
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-weight: 400;
   line-height: 1.25;
   font-size: 32px;
@@ -3375,17 +3520,17 @@ select:focus {
 }
 
 .assistant-panel p {
-  color: rgba(255,255,255,0.56);
+  color: rgba(255, 255, 255, 0.56);
   margin: 0 0 28px;
 }
 
 .assistant-name-input {
   width: 100%;
   border: 0;
-  border-bottom: 1px solid rgba(255,255,255,0.28);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.28);
   background: transparent;
-  color: rgba(255,255,255,0.92);
-  font-family: Georgia, 'Times New Roman', serif;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: Georgia, "Times New Roman", serif;
   font-style: italic;
   font-size: 28px;
   padding: 14px 0;
@@ -3394,7 +3539,7 @@ select:focus {
 
 .assistant-name-input::placeholder,
 .assistant-options textarea::placeholder {
-  color: rgba(255,255,255,0.36);
+  color: rgba(255, 255, 255, 0.36);
 }
 
 .assistant-expand {
@@ -3403,8 +3548,8 @@ select:focus {
   padding: 12px 0;
   background: transparent;
   border: 0;
-  border-bottom: 1px solid rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.58);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.58);
   display: flex;
   justify-content: space-between;
   cursor: pointer;
@@ -3419,7 +3564,7 @@ select:focus {
 .assistant-options label {
   display: block;
   margin-bottom: 8px;
-  color: rgba(255,255,255,0.52);
+  color: rgba(255, 255, 255, 0.52);
   font-size: 12px;
 }
 
@@ -3430,9 +3575,9 @@ select:focus {
 }
 
 .assistant-chips button {
-  border: 1px solid rgba(255,255,255,0.16);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   background: transparent;
-  color: rgba(255,255,255,0.72);
+  color: rgba(255, 255, 255, 0.72);
   border-radius: 999px;
   padding: 7px 12px;
   cursor: pointer;
@@ -3447,9 +3592,9 @@ select:focus {
   min-height: 64px;
   resize: vertical;
   border: 0;
-  border-bottom: 1px solid rgba(255,255,255,0.18);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
   background: transparent;
-  color: rgba(255,255,255,0.86);
+  color: rgba(255, 255, 255, 0.86);
   outline: none;
 }
 
@@ -3458,7 +3603,7 @@ select:focus {
   justify-content: flex-start;
   align-items: center;
   gap: 20px;
-  color: rgba(255,255,255,0.42);
+  color: rgba(255, 255, 255, 0.42);
   font-size: 12px;
   margin-top: 26px;
 }
@@ -3512,7 +3657,7 @@ select:focus {
 
 .opening-stage h1,
 .onboarding-center-card h1 {
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-weight: 400;
   font-size: 36px;
   margin: 0 0 12px;
@@ -3539,11 +3684,11 @@ select:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 28px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 18px 42px rgba(17,17,20,0.08);
+  box-shadow: 0 18px 42px rgba(17, 17, 20, 0.08);
   transform: rotate(-8deg);
 }
 
@@ -3565,15 +3710,44 @@ select:focus {
   animation: floatConfetti 4s ease-in-out infinite;
 }
 
-.opening-confetti span:nth-child(1) { left: 18%; top: 20%; }
-.opening-confetti span:nth-child(2) { left: 68%; top: 14%; animation-delay: .6s; }
-.opening-confetti span:nth-child(3) { left: 82%; top: 42%; animation-delay: 1.1s; }
-.opening-confetti span:nth-child(4) { left: 15%; top: 58%; animation-delay: 1.6s; background: transparent; border: 1px solid #111116; border-radius: 50%; }
-.opening-confetti span:nth-child(5) { left: 58%; top: 78%; animation-delay: 2.1s; }
+.opening-confetti span:nth-child(1) {
+  left: 18%;
+  top: 20%;
+}
+.opening-confetti span:nth-child(2) {
+  left: 68%;
+  top: 14%;
+  animation-delay: 0.6s;
+}
+.opening-confetti span:nth-child(3) {
+  left: 82%;
+  top: 42%;
+  animation-delay: 1.1s;
+}
+.opening-confetti span:nth-child(4) {
+  left: 15%;
+  top: 58%;
+  animation-delay: 1.6s;
+  background: transparent;
+  border: 1px solid #111116;
+  border-radius: 50%;
+}
+.opening-confetti span:nth-child(5) {
+  left: 58%;
+  top: 78%;
+  animation-delay: 2.1s;
+}
 
 @keyframes floatConfetti {
-  0%, 100% { transform: translateY(0) rotate(0deg); opacity: .9; }
-  50% { transform: translateY(-14px) rotate(18deg); opacity: .55; }
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0.9;
+  }
+  50% {
+    transform: translateY(-14px) rotate(18deg);
+    opacity: 0.55;
+  }
 }
 
 .opening-check {
@@ -3682,7 +3856,6 @@ select:focus {
 .main-content.chat-page .chat-container {
   padding: 0 var(--space-8);
 }
-
 
 /* When live panel is active, switch to horizontal layout */
 .chat-container.chat-with-live-panel {
@@ -3856,10 +4029,11 @@ select:focus {
   visibility: hidden;
   transform: translateY(-6px);
   pointer-events: none;
-  transition: opacity 180ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-              visibility 180ms ease,
-              box-shadow 250ms ease;
+  transition:
+    opacity 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 180ms ease,
+    box-shadow 250ms ease;
   z-index: 80;
   overflow: hidden;
   /* Glass card defaults */
@@ -3882,10 +4056,14 @@ select:focus {
   visibility: visible;
   transform: translateY(0);
   pointer-events: auto;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04);
 }
 [data-theme="dark"] .agent-info-card--open {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 /* Chevron toggle button */
@@ -3901,7 +4079,11 @@ select:focus {
   color: var(--text-tertiary);
   flex-shrink: 0;
   opacity: 0;
-  transition: opacity 120ms, color 120ms, background 120ms, transform 200ms ease;
+  transition:
+    opacity 120ms,
+    color 120ms,
+    background 120ms,
+    transform 200ms ease;
 }
 .agent-detail-identity-trigger:hover .agent-info-chevron,
 .agent-detail-identity-trigger:focus-within .agent-info-chevron,
@@ -3919,7 +4101,7 @@ select:focus {
 
 /* Bridge the 8px gap between trigger and card so hover doesn't break */
 .agent-info-card--open::before {
-  content: '';
+  content: "";
   position: absolute;
   top: -12px;
   left: 0;
@@ -4054,7 +4236,10 @@ select:focus {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .agent-info-expiry-button:hover {
@@ -4128,7 +4313,9 @@ select:focus {
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
-  transition: background 120ms ease, color 120ms ease;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
 }
 
 .agent-expiry-close:hover {
@@ -4161,7 +4348,11 @@ select:focus {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
 }
 
 .agent-expiry-chip {
@@ -4468,7 +4659,6 @@ select:focus {
 
 /* (variant toggle removed — saas is the only style) */
 
-
 .agent-chat-shell {
   flex: 1;
   min-height: 0;
@@ -4542,7 +4732,11 @@ select:focus {
   align-items: flex-start;
   text-align: left;
   cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .aware-side-focus-head:hover {
@@ -4630,7 +4824,8 @@ select:focus {
 
 .aware-side-status-dot.done {
   background: var(--success, #10b981);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success, #10b981) 12%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success, #10b981) 12%, transparent);
 }
 
 .aware-side-focus-marker {
@@ -4650,7 +4845,8 @@ select:focus {
 .aware-side-focus-marker.done {
   background: var(--success, #10b981);
   border-color: var(--success, #10b981);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success, #10b981) 12%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--success, #10b981) 12%, transparent);
 }
 
 .aware-side-focus-marker.system {
@@ -4729,7 +4925,11 @@ select:focus {
   cursor: pointer;
   font-size: 12px;
   line-height: 16px;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .aware-side-collapse:hover {
@@ -4740,7 +4940,8 @@ select:focus {
 
 .aware-side-collapse:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 26%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--accent-primary) 26%, transparent);
 }
 
 .aware-calendar {
@@ -4892,7 +5093,10 @@ select:focus {
   opacity: 0;
   visibility: hidden;
   transform: translateY(2px);
-  transition: opacity 80ms ease, transform 80ms ease, visibility 80ms ease;
+  transition:
+    opacity 80ms ease,
+    transform 80ms ease,
+    visibility 80ms ease;
   pointer-events: none;
 }
 
@@ -4911,7 +5115,9 @@ select:focus {
   transform: rotate(45deg);
   opacity: 0;
   visibility: hidden;
-  transition: opacity 80ms ease, visibility 80ms ease;
+  transition:
+    opacity 80ms ease,
+    visibility 80ms ease;
   pointer-events: none;
 }
 
@@ -5196,8 +5402,14 @@ select:focus {
 }
 
 @keyframes livePanelSlideIn {
-  from { opacity: 0; transform: translateX(16px); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .live-panel-header {
@@ -5250,7 +5462,10 @@ select:focus {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
 }
 
 .agent-side-panel-tab:hover {
@@ -5269,7 +5484,11 @@ select:focus {
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-primary) 72%, var(--text-tertiary));
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 72%,
+    var(--text-tertiary)
+  );
   opacity: 0.75;
   flex-shrink: 0;
 }
@@ -5356,7 +5575,9 @@ select:focus {
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 .live-panel-icon-btn:hover {
   color: var(--text-secondary);
@@ -5451,8 +5672,13 @@ select:focus {
 }
 
 @keyframes livePulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .live-panel-code {
@@ -5466,7 +5692,7 @@ select:focus {
 
 .live-panel-code pre {
   margin: 0;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -5537,7 +5763,7 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 11px;
   color: var(--text-secondary);
 }
@@ -5550,7 +5776,7 @@ select:focus {
   border-radius: 8px;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 11px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -5599,7 +5825,7 @@ select:focus {
   background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 .workspace-op-inline-actions a {
@@ -5621,7 +5847,10 @@ select:focus {
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .workspace-op-icon-btn:hover,
@@ -5638,7 +5867,10 @@ select:focus {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 16px;
-  transition: color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .workspace-op-save.saving {
@@ -5778,7 +6010,10 @@ select:focus {
   font-size: 11px;
   font-weight: 650;
   cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .workspace-op-tree-action-btn:hover {
@@ -5830,7 +6065,10 @@ select:focus {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .workspace-op-mini-btn:hover {
@@ -5848,7 +6086,8 @@ select:focus {
 }
 
 @keyframes analysis-tool-running-dot {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.35;
     transform: scale(0.92);
   }
@@ -5958,7 +6197,9 @@ select:focus {
 .analysis-trace-chevron {
   flex-shrink: 0;
   color: var(--text-tertiary);
-  transition: transform 140ms ease, color var(--transition-fast);
+  transition:
+    transform 140ms ease,
+    color var(--transition-fast);
 }
 
 .analysis-trace:not(.analysis-trace--open) .analysis-trace-chevron {
@@ -6221,7 +6462,11 @@ select:focus {
   opacity: 0.86;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(6px);
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .workspace-op-body.tree-closed .workspace-op-tree-edge-toggle {
@@ -6305,7 +6550,11 @@ select:focus {
   cursor: pointer;
   opacity: 0;
   transform: translateY(-2px);
-  transition: opacity var(--transition-fast), transform var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(8px);
 }
@@ -6360,7 +6609,9 @@ select:focus {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .markdown-image-lightbox__btn:hover {
@@ -7076,11 +7327,11 @@ select:focus {
   z-index: 20001;
   border-radius: 14px;
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.84);
+  border: 1px solid rgba(255, 255, 255, 0.84);
   box-shadow:
     0 0 0 9999px rgba(17, 17, 18, 0.58),
-    0 12px 40px rgba(0,0,0,0.16),
-    0 0 0 1px rgba(17,17,20,0.12) inset;
+    0 12px 40px rgba(0, 0, 0, 0.16),
+    0 0 0 1px rgba(17, 17, 20, 0.12) inset;
   pointer-events: none;
 }
 
@@ -7094,11 +7345,11 @@ select:focus {
   color: #fff;
   border-radius: 10px;
   padding: 18px;
-  box-shadow: 0 18px 60px rgba(0,0,0,0.34);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
 }
 
 .company-tour-card::before {
-  content: '';
+  content: "";
   position: absolute;
   left: -8px;
   top: 24px;
@@ -7146,7 +7397,7 @@ select:focus {
 
 .company-tour-card p {
   margin: 0;
-  color: rgba(255,255,255,0.78);
+  color: rgba(255, 255, 255, 0.78);
   font-size: 13px;
   line-height: 1.65;
 }
@@ -7165,7 +7416,7 @@ select:focus {
   color: #fff;
   border-radius: 10px;
   padding: 10px 14px;
-  box-shadow: 0 14px 40px rgba(0,0,0,0.26);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.26);
   max-width: calc(100vw - 24px);
   white-space: nowrap;
 }
@@ -7173,7 +7424,7 @@ select:focus {
 .company-tour-controls button {
   border: 0;
   background: transparent;
-  color: rgba(255,255,255,0.78);
+  color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
 }
 
@@ -7199,7 +7450,7 @@ select:focus {
   width: 18px;
   height: 3px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.28);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .company-tour-dots span.active {
@@ -7212,8 +7463,8 @@ select:focus {
   pointer-events: none;
   top: 12px;
   right: 14px;
-  border: 1px dashed rgba(255,255,255,0.38);
-  color: rgba(255,255,255,0.72);
+  border: 1px dashed rgba(255, 255, 255, 0.38);
+  color: rgba(255, 255, 255, 0.72);
   border-radius: 999px;
   padding: 8px 14px;
   font-size: 12px;
@@ -7238,7 +7489,9 @@ select:focus {
   font-size: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   z-index: 10;
-  transition: background 120ms ease, box-shadow 120ms ease;
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease;
 }
 .chat-scroll-btn:hover {
   background: rgba(255, 255, 255, 0.9);
@@ -7266,7 +7519,9 @@ select:focus {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   overflow: hidden;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
 }
 [data-theme="dark"] .chat-composer {
@@ -7376,7 +7631,9 @@ select:focus {
   color: var(--text-secondary);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .chat-composer-btn:hover:not(:disabled) {
@@ -7413,7 +7670,9 @@ select:focus {
   color: #0a0a0f;
 }
 
-[data-theme="dark"] .chat-composer .btn.chat-composer-send:hover:not(:disabled) {
+[data-theme="dark"]
+  .chat-composer
+  .btn.chat-composer-send:hover:not(:disabled) {
   background: #ffffff;
   border-color: #ffffff;
 }
@@ -7448,7 +7707,11 @@ select:focus {
   top: 0;
   bottom: 0;
   width: 0;
-  background: color-mix(in srgb, var(--accent-primary) 20%, var(--bg-secondary));
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 20%,
+    var(--bg-secondary)
+  );
   transition: width 0.12s ease;
   pointer-events: none;
   border-radius: inherit;
@@ -7587,7 +7850,9 @@ select:focus {
   padding: 0 14px;
   font-size: 14px;
   color: var(--text-primary);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
   outline: none;
   align-self: center;
   white-space: pre-wrap;
@@ -7699,7 +7964,8 @@ select:focus {
   height: 6px;
   border-radius: 999px;
   background: var(--text-tertiary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--text-tertiary) 12%, transparent);
   flex-shrink: 0;
 }
 
@@ -7757,7 +8023,9 @@ select:focus {
 }
 
 @keyframes thinkingBounce {
-  0%, 80%, 100% {
+  0%,
+  80%,
+  100% {
     opacity: 0.3;
     transform: scale(0.8);
   }
@@ -7849,7 +8117,9 @@ select:focus {
 }
 
 @keyframes typing {
-  0%, 80%, 100% {
+  0%,
+  80%,
+  100% {
     transform: scale(0);
   }
   40% {
@@ -7860,163 +8130,163 @@ select:focus {
 /* ─── Login QR Code ────────────────────────────────── */
 
 .login-qr-toggle {
-    margin-top: 24px;
-    padding: 12px;
-    border: 1px dashed var(--border-strong);
-    border-radius: var(--radius-lg);
-    text-align: center;
-    cursor: pointer;
-    font-size: var(--text-sm);
-    color: var(--text-secondary);
-    transition: all var(--transition-fast);
+  margin-top: 24px;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
 }
 
 .login-qr-toggle:hover {
-    border-color: var(--accent-primary);
-    color: var(--text-primary);
-    background: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .login-qr-section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 16px;
-    padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 0;
 }
 
 .login-qr-container {
-    position: relative;
-    width: 200px;
-    height: 200px;
-    padding: 10px;
-    background: white;
-    border-radius: var(--radius-lg);
-    overflow: hidden;
+  position: relative;
+  width: 200px;
+  height: 200px;
+  padding: 10px;
+  background: white;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 .login-qr-container img {
-    width: 100%;
-    height: 100%;
-    display: block;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .login-qr-container img.blur {
-    filter: blur(4px);
-    opacity: 0.5;
+  filter: blur(4px);
+  opacity: 0.5;
 }
 
 .login-qr-overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    z-index: 10;
-    padding: 20px;
-    text-align: center;
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  padding: 20px;
+  text-align: center;
 }
 
 .login-qr-overlay p {
-    color: white;
-    font-size: var(--text-sm);
-    margin-bottom: 12px;
+  color: white;
+  font-size: var(--text-sm);
+  margin-bottom: 12px;
 }
 
 .login-qr-overlay button {
-    background: var(--accent-primary);
-    color: var(--bg-primary);
-    border: none;
-    padding: 6px 16px;
-    border-radius: var(--radius-md);
-    font-size: var(--text-xs);
-    font-weight: 600;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border: none;
+  padding: 6px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  font-weight: 600;
 }
 
 .login-qr-overlay.success {
-    background: rgba(34, 197, 94, 0.9);
+  background: rgba(34, 197, 94, 0.9);
 }
 
 .login-qr-hint {
-    font-size: var(--text-xs);
-    color: var(--text-tertiary);
-    text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-align: center;
 }
 
 .login-qr-back {
-    margin-top: 12px;
-    font-size: var(--text-sm);
-    color: var(--accent-text);
-    cursor: pointer;
+  margin-top: 12px;
+  font-size: var(--text-sm);
+  color: var(--accent-text);
+  cursor: pointer;
 }
 
 .login-qr-back:hover {
-    text-decoration: underline;
+  text-decoration: underline;
 }
 
 /* ─── Drop Zone Overlay (drag-and-drop upload) ───── */
 
 .drop-zone-wrapper {
-    position: relative;
+  position: relative;
 }
 
 .drop-zone-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 8px;
-    background: rgba(99, 102, 241, 0.07);
-    border: 2px dashed rgba(99, 102, 241, 0.45);
-    border-radius: 12px;
-    pointer-events: none;
-    animation: dropZoneFadeIn 0.15s ease;
-    backdrop-filter: blur(2px);
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(99, 102, 241, 0.07);
+  border: 2px dashed rgba(99, 102, 241, 0.45);
+  border-radius: 12px;
+  pointer-events: none;
+  animation: dropZoneFadeIn 0.15s ease;
+  backdrop-filter: blur(2px);
 }
 
 .drop-zone-overlay__icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: rgba(99, 102, 241, 0.12);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 20px;
-    color: var(--accent-primary);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: var(--accent-primary);
 }
 
 .drop-zone-overlay__text {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--accent-primary);
-    letter-spacing: 0.2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  letter-spacing: 0.2px;
 }
 
 .drop-zone-overlay__hint {
-    font-size: 11px;
-    color: var(--text-tertiary);
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 @keyframes dropZoneFadeIn {
-    from {
-        opacity: 0;
-        border-color: transparent;
-    }
-    to {
-        opacity: 1;
-        border-color: rgba(99, 102, 241, 0.45);
-    }
+  from {
+    opacity: 0;
+    border-color: transparent;
+  }
+  to {
+    opacity: 1;
+    border-color: rgba(99, 102, 241, 0.45);
+  }
 }
 
 [data-theme="light"] .drop-zone-overlay {
-    background: rgba(99, 102, 241, 0.06);
-    border-color: rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.06);
+  border-color: rgba(99, 102, 241, 0.35);
 }
 
 /* Workspace Panel file actions */
@@ -8080,7 +8350,10 @@ select:focus {
   font-weight: 600;
   line-height: 18px;
   padding: 5px 11px;
-  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .tool-source-tabs button:hover {
@@ -8138,15 +8411,15 @@ select:focus {
    ═══════════════════════════════════════════════════════════════ */
 .exp-draft {
   /* Night paper (default theme) — same warm family, inverted luminance. */
-  --exp-paper: #1B1917;
-  --exp-ink: #E9E5DE;
-  --exp-ink-2: #CBC5BA;
-  --exp-muted: #8C857B;
-  --exp-muted-2: #756E65;
+  --exp-paper: #1b1917;
+  --exp-ink: #e9e5de;
+  --exp-ink-2: #cbc5ba;
+  --exp-muted: #8c857b;
+  --exp-muted-2: #756e65;
   --exp-hair: rgba(231, 226, 219, 0.13);
   --exp-hair-2: rgba(231, 226, 219, 0.08);
-  --exp-accent: #C0A175;
-  --exp-accent-ink: #C3A87F;
+  --exp-accent: #c0a175;
+  --exp-accent-ink: #c3a87f;
   --exp-chip-bg: rgba(169, 138, 94, 0.14);
   --exp-chip-br: rgba(169, 138, 94, 0.32);
   --exp-ghost-br: rgba(231, 226, 219, 0.16);
@@ -8161,18 +8434,18 @@ select:focus {
 }
 
 [data-theme="light"] .exp-draft {
-  --exp-paper: #FBFAF8;
-  --exp-ink: #2E2B28;
-  --exp-ink-2: #3C3833;
-  --exp-muted: #8C857B;
-  --exp-muted-2: #A39C92;
-  --exp-hair: #E7E2DB;
-  --exp-hair-2: #EFEAE2;
-  --exp-accent: #A98A5E;
-  --exp-accent-ink: #7A6A4E;
-  --exp-chip-bg: #F6F1E8;
-  --exp-chip-br: #E7DFD1;
-  --exp-ghost-br: #E0DAD1;
+  --exp-paper: #fbfaf8;
+  --exp-ink: #2e2b28;
+  --exp-ink-2: #3c3833;
+  --exp-muted: #8c857b;
+  --exp-muted-2: #a39c92;
+  --exp-hair: #e7e2db;
+  --exp-hair-2: #efeae2;
+  --exp-accent: #a98a5e;
+  --exp-accent-ink: #7a6a4e;
+  --exp-chip-bg: #f6f1e8;
+  --exp-chip-br: #e7dfd1;
+  --exp-ghost-br: #e0dad1;
 }
 
 .exp-draft-head {
@@ -8183,7 +8456,9 @@ select:focus {
   padding: 16px 18px 12px;
 }
 
-.exp-draft-head-l { min-width: 0; }
+.exp-draft-head-l {
+  min-width: 0;
+}
 
 .exp-draft-tagrow {
   display: flex;
@@ -8225,7 +8500,9 @@ select:focus {
   margin: 0 18px;
 }
 
-.exp-draft-fields { padding: 14px 18px 4px; }
+.exp-draft-fields {
+  padding: 14px 18px 4px;
+}
 
 .exp-draft-grid {
   display: grid;
@@ -8295,14 +8572,17 @@ select:focus {
   transition: opacity 120ms ease;
 }
 
-.exp-draft-btn:hover { opacity: 0.85; }
-
+.exp-draft-btn:hover {
+  opacity: 0.85;
+}
 
 /* Distill (message → experience draft) pending state. Carries the experience
    ochre so a running distill is legible at a glance, without hovering. */
 .distill-spinner {
   animation: spin 0.7s linear infinite;
-  color: #C0A175;
+  color: #c0a175;
 }
 
-[data-theme="light"] .distill-spinner { color: #A98A5E; }
+[data-theme="light"] .distill-spinner {
+  color: #a98a5e;
+}

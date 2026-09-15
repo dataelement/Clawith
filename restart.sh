@@ -1,359 +1,247 @@
-#!/bin/bash
-# Clawith — Restart Script
-# Usage: ./restart.sh [--source]
-#   --source  Force source (non-Docker) mode even if Docker is available
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
-
-# ═══════════════════════════════════════════════════════
-# 配置
-# ═══════════════════════════════════════════════════════
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-DATA_DIR="$ROOT/.data"
-PID_DIR="$DATA_DIR/pid"
-LOG_DIR="$DATA_DIR/log"
-
 BACKEND_DIR="$ROOT/backend"
-FRONTEND_DIR="$ROOT/frontend"
+BACKEND_ENV="$BACKEND_DIR/.env"
+STATE_DIR="$ROOT/.data"
+PROCESS_FILE="$STATE_DIR/backend.process"
+RESTART_LOCK="$STATE_DIR/backend.restart.lock"
+LOG_FILE="$STATE_DIR/backend.log"
+BACKEND_HOST="${CLAWITH_BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${CLAWITH_BACKEND_PORT:-8008}"
+HEALTH_ATTEMPTS="${CLAWITH_HEALTH_ATTEMPTS:-50}"
+STOP_ATTEMPTS="${CLAWITH_STOP_ATTEMPTS:-50}"
+UVICORN_BIN="$BACKEND_DIR/.venv/bin/uvicorn"
+PYTHON_BIN="$BACKEND_DIR/.venv/bin/python"
+PROCESS_MARKER="$UVICORN_BIN app.main:app"
+cleanup_armed=false
+restart_lock_held=false
+pending_pid=""
+pending_start=""
+pending_startup_id=""
 
-BACKEND_PORT=8008
-FRONTEND_PORT=3008
-FRONTEND_LOG="$LOG_DIR/frontend.log"
-BACKEND_LOG="$LOG_DIR/backend.log"
-BACKEND_PID="$PID_DIR/backend.pid"
-FRONTEND_PID="$PID_DIR/frontend.pid"
+read_evidence() {
+    evidence_pid="$(sed -n 's/^pid=//p' "$PROCESS_FILE")"
+    evidence_start="$(sed -n 's/^start=//p' "$PROCESS_FILE")"
+    [ -n "$evidence_pid" ] && [[ "$evidence_pid" =~ ^[0-9]+$ ]] && [ -n "$evidence_start" ]
+}
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+evidence_matches_pending() {
+    [ -f "$PROCESS_FILE" ] || return 1
+    read_evidence || return 1
+    evidence_startup_id="$(sed -n 's/^startup_id=//p' "$PROCESS_FILE")"
+    [ "$evidence_pid" = "$pending_pid" ] \
+        && [ "$evidence_start" = "$pending_start" ] \
+        && [ "$evidence_startup_id" = "$pending_startup_id" ]
+}
 
-# Parse arguments
-FORCE_SOURCE=false
-for arg in "$@"; do
-    case $arg in
-        --source) FORCE_SOURCE=true ;;
+write_pending_evidence() {
+    evidence_path="$1"
+    evidence_start_value="${pending_start:-unverified}"
+    printf 'pid=%s\nstart=%s\nstartup_id=%s\n' \
+        "$pending_pid" "$evidence_start_value" "$pending_startup_id" > "$evidence_path"
+}
+
+retain_unsettled_process_evidence() {
+    if [ ! -e "$PROCESS_FILE" ] \
+        && (set -o noclobber; write_pending_evidence "$PROCESS_FILE") 2>/dev/null; then
+        echo "Owned target backend did not stop; ownership evidence retained: $PROCESS_FILE" >&2
+        return
+    fi
+    unsettled_file="$STATE_DIR/backend.unsettled.${pending_startup_id}.process"
+    write_pending_evidence "$unsettled_file"
+    echo "Owned target backend did not stop; foreign evidence preserved and unsettled ownership recorded: $unsettled_file" >&2
+}
+
+release_restart_lock() {
+    [ "$restart_lock_held" = true ] || return 0
+    if ! rmdir "$RESTART_LOCK"; then
+        echo "Could not release restart lock: $RESTART_LOCK" >&2
+        return 1
+    fi
+    restart_lock_held=false
+}
+
+process_start_identity() {
+    ps -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
+}
+
+process_command() {
+    ps -p "$1" -o command= 2>/dev/null || true
+}
+
+process_matches_identity() {
+    owned_pid="$1"
+    owned_start="$2"
+    [ "$(process_start_identity "$owned_pid")" = "$owned_start" ] || return 1
+    command_line="$(process_command "$owned_pid")"
+    case "$command_line" in
+        *"$PROCESS_MARKER"*"--workers 1"*) ;;
+        *) return 1 ;;
     esac
-done
-
-# ═══════════════════════════════════════════════════════
-# 初始化目录
-# ═══════════════════════════════════════════════════════
-init_dirs() {
-    mkdir -p "$PID_DIR" "$LOG_DIR"
 }
 
-# ═══════════════════════════════════════════════════════
-# 加载环境变量
-# ═══════════════════════════════════════════════════════
-load_env() {
-    if [ -f "$ROOT/.env" ]; then
-        set -a
-        source "$ROOT/.env"
-        set +a
-    fi
-
-    : "${DATABASE_URL:=postgresql+asyncpg://clawith:clawith@localhost:5432/clawith?ssl=disable}"
-    export DATABASE_URL
-
-    # Parse host and port from DATABASE_URL regardless of hostname
-    # Format: postgresql+asyncpg://user:pass@host:port/dbname?...
-    _db_hostpart=$(echo "$DATABASE_URL" | sed 's|.*://[^@]*@||' | sed 's|/.*||' | sed 's|?.*||')
-    PG_HOST="${_db_hostpart%%:*}"
-    PG_PORT="${_db_hostpart##*:}"
-    PG_PORT=${PG_PORT:-5432}
-    export PG_HOST PG_PORT
-
-    # Detect external (non-localhost) database
-    EXTERNAL_DB=false
-    if [ "$PG_HOST" != "localhost" ] && [ "$PG_HOST" != "127.0.0.1" ]; then
-        EXTERNAL_DB=true
-    fi
-    export EXTERNAL_DB
-}
-
-# ═══════════════════════════════════════════════════════
-# 清理旧进程
-# ═══════════════════════════════════════════════════════
-cleanup() {
-    echo -e "${YELLOW}🔄 Stopping existing services...${NC}"
-
-    for pidfile in "$BACKEND_PID" "$FRONTEND_PID"; do
-        if [ -f "$pidfile" ]; then
-            kill -9 "$(cat "$pidfile")" 2>/dev/null || true
-            rm -f "$pidfile"
-        fi
-    done
-
-    for port in $BACKEND_PORT $FRONTEND_PORT; do
-        if command -v lsof &>/dev/null; then
-            lsof -ti:$port | xargs kill -9 2>/dev/null || true
-        elif command -v fuser &>/dev/null; then
-            fuser -k $port/tcp 2>/dev/null || true
-        fi
-    done
-
-    sleep 1
-}
-
-# ═══════════════════════════════════════════════════════
-# 等待端口就绪
-# ═══════════════════════════════════════════════════════
-wait_for_port() {
-    local port=$1 name=$2 max=${3:-10}
-    for i in $(seq 1 "$max"); do
-        if curl -s -o /dev/null -m 1 "http://localhost:$port" 2>/dev/null; then
-            echo -e "  ${GREEN}✅ $name ready (${i}s)${NC}"
+terminate_owned_process() {
+    owned_pid="$1"
+    owned_start="$2"
+    kill -0 "$owned_pid" 2>/dev/null || return 0
+    process_matches_identity "$owned_pid" "$owned_start" || return 1
+    kill -TERM "$owned_pid"
+    for _ in $(seq 1 "$STOP_ATTEMPTS"); do
+        if ! kill -0 "$owned_pid" 2>/dev/null; then
             return 0
         fi
-        sleep 1
+        sleep 0.1
     done
-    echo -e "  ${RED}❌ $name failed to start in ${max}s${NC}"
     return 1
 }
 
-# Start a command as a real detached daemon. Plain `nohup ... &` is not enough in
-# some agent/PTY runners: when the parent command finishes, descendants in the
-# same session can still be cleaned up. Double-fork + setsid detaches the service
-# from this script's session so it survives after restart.sh exits.
-start_detached() {
-    local cwd=$1 log_file=$2 pid_file=$3
-    shift 3
-    python3 - "$cwd" "$log_file" "$pid_file" "$@" <<'PY'
-import os
-import sys
-
-cwd, log_file, pid_file, *cmd = sys.argv[1:]
-if not cmd:
-    raise SystemExit("missing command")
-
-first_pid = os.fork()
-if first_pid:
-    os._exit(0)
-
-os.setsid()
-
-second_pid = os.fork()
-if second_pid:
-    os._exit(0)
-
-os.chdir(cwd)
-os.umask(0o022)
-
-os.makedirs(os.path.dirname(log_file), exist_ok=True)
-os.makedirs(os.path.dirname(pid_file), exist_ok=True)
-
-fd_in = os.open(os.devnull, os.O_RDONLY)
-fd_out = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-os.dup2(fd_in, 0)
-os.dup2(fd_out, 1)
-os.dup2(fd_out, 2)
-if fd_in > 2:
-    os.close(fd_in)
-if fd_out > 2:
-    os.close(fd_out)
-
-with open(pid_file, "w", encoding="utf-8") as f:
-    f.write(str(os.getpid()))
-
-os.execvpe(cmd[0], cmd, os.environ.copy())
-PY
-}
-
-# ═══════════════════════════════════════════════════════
-# 添加 PostgreSQL 到 PATH
-# ═══════════════════════════════════════════════════════
-add_pg_path() {
-    if [ -d "$ROOT/.pg/bin" ]; then
-        export PATH="$ROOT/.pg/bin:$PATH"
-    fi
-    for dir in /www/server/pgsql/bin /usr/local/pgsql/bin; do
-        if [ -x "$dir/pg_isready" ] && ! command -v pg_isready &>/dev/null; then
-            export PATH="$dir:$PATH"
+terminate_pending_process() {
+    kill -0 "$pending_pid" 2>/dev/null || return 0
+    command_line="$(process_command "$pending_pid")"
+    case "$command_line" in
+        *"$PROCESS_MARKER"*"--workers 1"*) ;;
+        *) return 1 ;;
+    esac
+    kill -TERM "$pending_pid"
+    for _ in $(seq 1 "$STOP_ATTEMPTS"); do
+        if ! kill -0 "$pending_pid" 2>/dev/null; then
+            return 0
         fi
+        sleep 0.1
     done
+    return 1
 }
 
-# ═══════════════════════════════════════════════════════
-# 启动 PostgreSQL
-# ═══════════════════════════════════════════════════════
-start_postgres() {
-    # Skip local PostgreSQL management when using an external database
-    if [ "$EXTERNAL_DB" = true ]; then
-        echo -e "${GREEN}🐘 Using external database at ${PG_HOST}:${PG_PORT} — skipping local PostgreSQL startup${NC}"
-        return 0
-    fi
-
-    add_pg_path
-
-    if command -v pg_isready &>/dev/null; then
-        if ! pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
-            echo -e "${YELLOW}🐘 Starting PostgreSQL (port $PG_PORT)...${NC}"
-
-            STARTED=false
-            [ -f "$ROOT/.pgdata/PG_VERSION" ] && command -v pg_ctl &>/dev/null && \
-                pg_ctl -D "$ROOT/.pgdata" -l "$ROOT/.pgdata/pg.log" start >/dev/null 2>&1 && STARTED=true
-
-            if [ "$STARTED" = false ] && command -v brew &>/dev/null; then
-                brew services start postgresql@15 2>/dev/null || brew services start postgresql 2>/dev/null || true
-                STARTED=true
-            fi
-
-            if [ "$STARTED" = false ] && command -v systemctl &>/dev/null; then
-                sudo systemctl start postgresql 2>/dev/null || true
-                STARTED=true
-            fi
-
-            for i in $(seq 1 10); do
-                if pg_isready -h localhost -p "$PG_PORT" -q 2>/dev/null; then
-                    echo -e "  ${GREEN}✅ PostgreSQL ready (${i}s)${NC}"
-                    return 0
-                fi
-                sleep 1
-            done
-            echo -e "  ${RED}❌ PostgreSQL failed to start on port $PG_PORT${NC}"
-            exit 1
-        else
-            echo -e "${GREEN}🐘 PostgreSQL already running (port $PG_PORT)${NC}"
-        fi
-    else
-        echo -e "${YELLOW}🐘 pg_isready not found — assuming PostgreSQL is running${NC}"
-    fi
-}
-
-# ═══════════════════════════════════════════════════════
-# 启动后端
-# ═══════════════════════════════════════════════════════
-start_backend() {
-    echo -e "${YELLOW}🚀 Starting backend...${NC}"
-    cd "$BACKEND_DIR"
-
-    # Auto-run schema migrations via alembic
-    echo -e "${YELLOW}🔄 Running schema migrations...${NC}"
-    .venv/bin/alembic upgrade head
-
-    # Auto-run LangGraph checkpoint migrations (idempotent and serialized)
-    echo -e "${YELLOW}🔄 Running LangGraph checkpoint migrations...${NC}"
-    .venv/bin/python -m app.scripts.setup_langgraph_checkpoints
-
-    start_detached "$BACKEND_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
-        env PYTHONUNBUFFERED=1 \
-            AGENT_RUNTIME_V2_ENABLED=true \
-            AGENT_RUNTIME_V2_AGENT_IDS= \
-            AGENT_RUNTIME_V2_SOURCE_TYPES= \
-            PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" \
-            DATABASE_URL="$DATABASE_URL" \
-            .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $BACKEND_PORT
-    wait_for_port $BACKEND_PORT "Backend" 10
-}
-
-# ═══════════════════════════════════════════════════════
-# 启动前端
-# ═══════════════════════════════════════════════════════
-start_frontend() {
-    echo -e "${YELLOW}🚀 Starting frontend...${NC}"
-    cd "$FRONTEND_DIR"
-    # Vite 6 listens for stdin "end" and exits cleanly when a background shell
-    # closes stdin. Setting CI=true disables that stdin-end shutdown path while
-    # keeping the normal dev server behavior.
-    start_detached "$FRONTEND_DIR" "$FRONTEND_LOG" "$FRONTEND_PID" \
-        env CI=true BACKEND_PORT=$BACKEND_PORT node_modules/.bin/vite --host 0.0.0.0 --port $FRONTEND_PORT --strictPort
-    wait_for_port $FRONTEND_PORT "Frontend" 8
-}
-
-# ═══════════════════════════════════════════════════════
-# 验证代理
-# ═══════════════════════════════════════════════════════
-verify_proxy() {
-    echo -e "${YELLOW}🔍 Verifying API proxy...${NC}"
-    HEALTH=$(curl -s -m 3 http://localhost:$FRONTEND_PORT/api/health 2>/dev/null || echo "FAIL")
-    if echo "$HEALTH" | grep -q "ok"; then
-        echo -e "  ${GREEN}✅ Proxy working${NC}"
-    else
-        echo -e "  ${YELLOW}⚠️  Proxy may need a moment, backend direct check:${NC}"
-        curl -s http://localhost:$BACKEND_PORT/api/health && echo ""
-    fi
-}
-
-# ═══════════════════════════════════════════════════════
-# 打印访问信息
-# ═══════════════════════════════════════════════════════
-print_info() {
-    SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$SERVER_IP" ] && SERVER_IP=$(ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
-    [ -z "$SERVER_IP" ] && SERVER_IP="<your-server-ip>"
-
-    echo ""
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
-    echo -e "${GREEN}  Clawith running!${NC}"
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
-    echo ""
-    echo -e "  ${CYAN}Local:${NC}   http://localhost:$FRONTEND_PORT"
-    echo -e "  ${CYAN}Network:${NC} http://${SERVER_IP}:$FRONTEND_PORT"
-    echo -e "  ${CYAN}API:${NC}     http://${SERVER_IP}:$BACKEND_PORT"
-    echo ""
-    echo -e "  Backend log:  tail -f $BACKEND_LOG"
-    echo -e "  Frontend log: tail -f $FRONTEND_LOG"
-}
-
-# ═══════════════════════════════════════════════════════
-# Docker 模式
-# ═══════════════════════════════════════════════════════
-run_docker_mode() {
-    if [ "$FORCE_SOURCE" = true ]; then
+stop_owned_process() {
+    [ -f "$PROCESS_FILE" ] || return 0
+    if ! read_evidence; then
+        echo "Refusing to signal process with malformed ownership evidence: $PROCESS_FILE" >&2
         return 1
     fi
-    # Only switch to Docker mode when there are RUNNING Clawith containers
-    if command -v docker &>/dev/null && docker ps --filter 'name=clawith' --filter 'status=running' -q 2>/dev/null | grep -q .; then
-        echo -e "${YELLOW}Detected running Docker containers. Starting in Docker mode...${NC}"
-        echo -e "  ${YELLOW}Tip: use --source to force source (non-Docker) mode.${NC}"
-        DIR_NAME=$(basename "$(dirname "$ROOT")")
-        [ -z "$DIR_NAME" ] && DIR_NAME="custom"
+    if ! kill -0 "$evidence_pid" 2>/dev/null; then
+        rm -f "$PROCESS_FILE"
+        return 0
+    fi
+    if ! process_matches_identity "$evidence_pid" "$evidence_start"; then
+        echo "Refusing to signal process without matching ownership evidence: $evidence_pid" >&2
+        return 1
+    fi
+    if ! terminate_owned_process "$evidence_pid" "$evidence_start"; then
+        echo "Owned target backend did not stop; ownership evidence retained: $PROCESS_FILE" >&2
+        return 1
+    fi
+    rm -f "$PROCESS_FILE"
+}
 
-        PROJECT_NAME="clawith-${DIR_NAME}"
-        echo -e "  Using project name: ${GREEN}$PROJECT_NAME${NC}"
-        export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
-
-        cd "$ROOT"
-
-        # 查找空闲端口
-        FRONTEND_PORT=3008
-        while true; do
-            if docker ps 2>/dev/null | grep -q ":$FRONTEND_PORT->"; then
-                FRONTEND_PORT=$((FRONTEND_PORT+1)); continue
+cleanup_after_launch() {
+    status=$?
+    termination_succeeded=true
+    trap - EXIT
+    if [ "$cleanup_armed" = true ]; then
+        if [ -n "$pending_pid" ]; then
+            if [ -n "$pending_start" ]; then
+                if ! terminate_owned_process "$pending_pid" "$pending_start"; then
+                    termination_succeeded=false
+                    status=1
+                    if evidence_matches_pending; then
+                        echo "Owned target backend did not stop; ownership evidence retained: $PROCESS_FILE" >&2
+                    else
+                        retain_unsettled_process_evidence
+                    fi
+                fi
+            elif ! terminate_pending_process; then
+                termination_succeeded=false
+                retain_unsettled_process_evidence
+                status=1
             fi
-            if command -v ss &>/dev/null && ss -tln 2>/dev/null | grep -qE ":$FRONTEND_PORT\b"; then
-                FRONTEND_PORT=$((FRONTEND_PORT+1)); continue
+            if [ "$termination_succeeded" = true ] && evidence_matches_pending; then
+                rm -f "$PROCESS_FILE"
             fi
-            if command -v lsof &>/dev/null && lsof -nP -iTCP:$FRONTEND_PORT -sTCP:LISTEN >/dev/null 2>&1; then
-                FRONTEND_PORT=$((FRONTEND_PORT+1)); continue
-            fi
-            break
-        done
+        fi
+    fi
+    release_restart_lock || status=1
+    exit "$status"
+}
 
-        echo -e "  Allocated Frontend Port: ${GREEN}$FRONTEND_PORT${NC}"
-        export FRONTEND_PORT
+trap cleanup_after_launch EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-        docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
-        docker compose up -d --build 2>/dev/null || docker-compose up -d --build
+if [ ! -f "$BACKEND_ENV" ]; then
+    echo "Missing backend/.env. Run bash setup.sh first." >&2
+    exit 1
+fi
+for command in curl ps; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Required command is unavailable: $command" >&2
+        exit 1
+    fi
+done
+for executable in "$UVICORN_BIN" "$PYTHON_BIN"; do
+    if [ ! -x "$executable" ]; then
+        echo "Required Backend executable is unavailable: $executable" >&2
+        exit 1
+    fi
+done
 
-        echo -e "${GREEN}✅ Deployed via Docker. Port: $FRONTEND_PORT${NC}"
-        echo -e "  ${CYAN}Local:${NC} http://localhost:$FRONTEND_PORT"
+mkdir -p "$STATE_DIR"
+if ! mkdir "$RESTART_LOCK"; then
+    echo "Another restart is already in progress or left an unverifiable stale lock: $RESTART_LOCK" >&2
+    echo "Verify no restart process is active before manually removing that exact lock directory." >&2
+    exit 1
+fi
+restart_lock_held=true
+if compgen -G "$STATE_DIR/backend.unsettled.*.process" >/dev/null; then
+    echo "Unsettled Backend ownership evidence requires manual recovery before restart: $STATE_DIR/backend.unsettled.*.process" >&2
+    exit 1
+fi
+stop_owned_process
+
+cd "$BACKEND_DIR"
+startup_id="$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(16))')"
+pending_startup_id="$startup_id"
+(
+    trap - INT TERM
+    exec nohup env STARTUP_INSTANCE_ID="$startup_id" \
+        "$UVICORN_BIN" app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --workers 1
+) > "$LOG_FILE" 2>&1 &
+backend_pid=$!
+pending_pid="$backend_pid"
+cleanup_armed=true
+backend_start="$(process_start_identity "$backend_pid")"
+if [ -z "$backend_start" ]; then
+    echo "Could not capture target backend start identity: pid=$backend_pid" >&2
+    exit 1
+fi
+pending_start="$backend_start"
+TEMP_PROCESS_FILE="$(mktemp "$STATE_DIR/backend.process.tmp.XXXXXX")"
+printf 'pid=%s\nstart=%s\nstartup_id=%s\n' \
+    "$backend_pid" "$backend_start" "$startup_id" > "$TEMP_PROCESS_FILE"
+mv "$TEMP_PROCESS_FILE" "$PROCESS_FILE"
+
+for _ in $(seq 1 "$HEALTH_ATTEMPTS"); do
+    health_response="$(curl --fail --silent --max-time 1 "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" || true)"
+    if printf '%s' "$health_response" | grep -q '"status":"ok"' \
+        && printf '%s' "$health_response" | grep -q "\"process_pid\":${backend_pid}" \
+        && printf '%s' "$health_response" | grep -q "\"startup_id\":\"${startup_id}\"" \
+        && evidence_matches_pending; then
+        if ! release_restart_lock; then
+            exit 1
+        fi
+        cleanup_armed=false
+        trap - EXIT INT TERM
+        echo "G002 target backend health check passed: http://${BACKEND_HOST}:${BACKEND_PORT}/api/health"
+        echo "Backend log: $LOG_FILE"
         exit 0
     fi
-}
+    if ! kill -0 "$backend_pid" 2>/dev/null; then
+        echo "Target backend exited before becoming healthy. See $LOG_FILE" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
 
-# ═══════════════════════════════════════════════════════
-# Main
-# ═══════════════════════════════════════════════════════
-main() {
-    init_dirs
-    load_env
-    run_docker_mode || true
-    # 启动本地模式，如果docker 不存在
-    cleanup
-    start_postgres
-    start_backend
-    start_frontend
-    verify_proxy
-    print_info
-}
-
-main "$@"
+echo "Target backend health check timed out. See $LOG_FILE" >&2
+exit 1

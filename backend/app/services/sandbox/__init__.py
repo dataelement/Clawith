@@ -27,22 +27,19 @@ from app.services.sandbox.base import (
 )
 from app.services.sandbox.config import SandboxConfig, SandboxType
 from app.services.sandbox.registry import (
-    get_sandbox_backend,
     get_registered_backends,
+    get_sandbox_backend,
     register_sandbox_backend,
 )
 
 __all__ = [
-    # Base classes
     "BaseSandboxBackend",
     "ExecutionResult",
     "SandboxBackend",
     "SandboxCapabilities",
-    # Config
     "SandboxConfig",
     "SandboxType",
-    # Registry
-    "get_sandbox_backend",
     "get_registered_backends",
+    "get_sandbox_backend",
     "register_sandbox_backend",
 ]

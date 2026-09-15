@@ -1,0 +1,7 @@
+goal: G001
+validation: strict-load-profile
+command: uv run python scripts/validate_load_profile.py tests/performance/profiles/backend_50.json
+verified_source_head: 085a40b79e936baaddb20683a14f15f06ff4df6f
+verified_at: 2026-09-07T03:10:04Z
+exit_code: 0
+result: load profile is valid: tests/performance/profiles/backend_50.json

@@ -7,8 +7,3 @@ capability_bullets:
   - "Security — OWASP-level issues caught early, not after prod"
   - "Maintainability — flags clever code that'll haunt the next reader"
 default_skills: []
-default_autonomy_policy:
-  read_files: "L1"
-  write_workspace_files: "L2"
-  delete_files: "L2"
-  send_feishu_message: "L2"

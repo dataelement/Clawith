@@ -1,8 +1,8 @@
 """Core email utilities for SMTP operations and network compatibility."""
 
+import smtplib
 import socket
 import ssl
-import smtplib
 from contextlib import contextmanager
 
 

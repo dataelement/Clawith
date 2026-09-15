@@ -1,0 +1,26 @@
+{
+  "qualification": "diagnostic_only",
+  "scope": "Real PostgreSQL intake only; prebuilt Snapshot sources; dispatch wake recorded without executing Model or Tools",
+  "control_pool": 20,
+  "execution_pool": 20,
+  "concurrent_starts": 50,
+  "rounds": ["cold_burst", "warm_1", "warm_2"],
+  "before": {
+    "source": "Pre-optimization working tree with global admission lock across database awaits",
+    "p95_ms": [680.8, 787.5, 722.9],
+    "lock_wait_p95_ms": [668.1, 768.4, 704.3],
+    "snapshot_encodes_per_start": 2,
+    "snapshot_decodes_per_start": 1
+  },
+  "after": {
+    "source": "Optimized working tree; later failure-path fixes did not add normal-path SQL or global locks",
+    "p95_ms": [579.9, 267.2, 287.8],
+    "snapshot_encodes_per_start": 1,
+    "snapshot_decodes_per_start": 0,
+    "duplicate_request_p95_ms": [1.02, 0.86, 1.30]
+  },
+  "sql_statements_per_new_start": 11,
+  "duplicate_burst_sql_statements_after": 1,
+  "checks": ["same source returns original Run", "cancellation releases capacity", "independent database sessions"],
+  "limitations": ["First burst includes cold connection establishment", "Async database timings include event-loop scheduling", "Not a final full-platform or frontend qualification"]
+}

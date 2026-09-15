@@ -3,10 +3,10 @@
 import time
 
 import httpx
+from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-from loguru import logger
 
 
 class AioSandboxBackend(BaseSandboxBackend):
@@ -54,7 +54,7 @@ class AioSandboxBackend(BaseSandboxBackend):
                     timeout=5.0
                 )
                 return response.status_code == 200
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health normalizes provider failures.
             return False
 
     async def execute(
@@ -80,10 +80,8 @@ class AioSandboxBackend(BaseSandboxBackend):
             # Build command based on language
             if language == "bash":
                 cmd = code
-            elif language == "node":
-                cmd = f"node -e {repr(code)}"
-            elif language == "javascript":
-                cmd = f"node -e {repr(code)}"
+            elif language == "node" or language == "javascript":
+                cmd = f"node -e {code!r}"
             else:
                 return ExecutionResult(
                     success=False,
@@ -180,9 +178,9 @@ class AioSandboxBackend(BaseSandboxBackend):
                 error=f"Code execution timed out after {timeout}s"
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- provider failures become results.
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.exception(f"[AioSandbox] Execution error")
+            logger.exception("[AioSandbox] Execution error")
             return ExecutionResult(
                 success=False,
                 stdout="",

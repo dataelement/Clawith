@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "operation": "approve_owner_contract",
+  "owner_id": "workspace",
+  "manifest_path": "backend/rewrite/owner-contracts.json",
+  "contract_artifact": "specs/backend-foundation.md",
+  "contract_hash": "b55de94780a126d55e2ae9ef7dfa4f3d1b7d2c4e1433559b231b277d89f70017",
+  "evidence": [
+    {
+      "path": "backend/artifacts/rewrite/G003/contract-review.md",
+      "sha256": "15350dd8b588cef9b979244373e77fd6d5b5d81864b2db6c87487d27213ef6b4"
+    }
+  ],
+  "resulting_state": "contract_approved",
+  "resulting_owner_row_hash": "0ec3f3938276b0b41e46e718fe5614eb4c5b0512107ec8b76e24fcb866cd1379"
+}

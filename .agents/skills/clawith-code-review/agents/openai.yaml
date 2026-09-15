@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clawith Code Review"
+  short_description: "Review Clawith changes against repository contracts."
+  default_prompt: "Use $clawith-code-review to review the current outgoing change and return a merge verdict."

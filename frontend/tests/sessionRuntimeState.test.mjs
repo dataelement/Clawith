@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
 
 import {
   activeRunForSession,
@@ -19,208 +19,235 @@ import {
   toolReconciliationNeedsUserAction,
   toolReconciliationsByCallId,
   waitingSessionActiveRunHint,
-} from '../src/pages/agent-detail/sessionRuntimeState.ts';
+} from "../src/pages/agent-detail/sessionRuntimeState.ts";
 
 const agentDetailSource = readFileSync(
-  new URL('../src/pages/agent-detail/AgentDetailPage.tsx', import.meta.url),
-  'utf8',
+  new URL("../src/pages/agent-detail/AgentDetailPage.tsx", import.meta.url),
+  "utf8",
 );
 
 const waitingRun = {
-  runId: 'run-1',
-  threadId: 'session-1',
-  sessionId: 'session-1',
-  status: 'waiting_user',
-  waitingType: 'user',
-  waitingReason: 'Continue?',
-  correlationId: 'confirm-1',
+  runId: "run-1",
+  threadId: "session-1",
+  sessionId: "session-1",
+  status: "waiting_user",
+  waitingType: "user",
+  waitingReason: "Continue?",
+  correlationId: "confirm-1",
   modelStepCount: 2,
   canResume: true,
   canCancel: true,
   pendingToolReconciliations: [],
 };
 
-test('active run controls are projected only onto their own selected session', () => {
-  assert.equal(activeRunForSession(waitingRun, 'session-2'), null);
+test("active run controls are projected only onto their own selected session", () => {
+  assert.equal(activeRunForSession(waitingRun, "session-2"), null);
   assert.equal(activeRunForSession(waitingRun, null), null);
-  assert.equal(activeRunForSession(waitingRun, 'session-1'), waitingRun);
+  assert.equal(activeRunForSession(waitingRun, "session-1"), waitingRun);
 });
 
-test('answer stream starts and resets provisional content by attempt', () => {
+test("answer stream starts and resets provisional content by attempt", () => {
   const firstAttempt = reduceSessionStreamChunk(null, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
+    run_id: "run-1",
+    attempt_id: "attempt-1",
     sequence: 1,
-    content: 'first',
+    content: "first",
     reset: true,
   });
   assert.deepEqual(firstAttempt, {
-    content: 'first',
-    runId: 'run-1',
-    attemptId: 'attempt-1',
+    content: "first",
+    runId: "run-1",
+    attemptId: "attempt-1",
     sequence: 1,
   });
 
-  assert.deepEqual(reduceSessionStreamChunk(firstAttempt, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-2',
-    sequence: 1,
-    content: 'replacement',
-    reset: false,
-  }), {
-    content: 'replacement',
-    runId: 'run-1',
-    attemptId: 'attempt-2',
-    sequence: 1,
-  });
+  assert.deepEqual(
+    reduceSessionStreamChunk(firstAttempt, {
+      run_id: "run-1",
+      attempt_id: "attempt-2",
+      sequence: 1,
+      content: "replacement",
+      reset: false,
+    }),
+    {
+      content: "replacement",
+      runId: "run-1",
+      attemptId: "attempt-2",
+      sequence: 1,
+    },
+  );
 
-  assert.deepEqual(reduceSessionStreamChunk(firstAttempt, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
-    sequence: 2,
-    content: 'explicit reset',
-    reset: true,
-  }), {
-    content: 'explicit reset',
-    runId: 'run-1',
-    attemptId: 'attempt-1',
-    sequence: 2,
-  });
+  assert.deepEqual(
+    reduceSessionStreamChunk(firstAttempt, {
+      run_id: "run-1",
+      attempt_id: "attempt-1",
+      sequence: 2,
+      content: "explicit reset",
+      reset: true,
+    }),
+    {
+      content: "explicit reset",
+      runId: "run-1",
+      attemptId: "attempt-1",
+      sequence: 2,
+    },
+  );
 });
 
-test('answer stream appends only contiguous packets from the active attempt', () => {
+test("answer stream appends only contiguous packets from the active attempt", () => {
   const first = reduceSessionStreamChunk(null, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
+    run_id: "run-1",
+    attempt_id: "attempt-1",
     sequence: 1,
-    content: 'one',
+    content: "one",
     reset: true,
   });
   const second = reduceSessionStreamChunk(first, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
+    run_id: "run-1",
+    attempt_id: "attempt-1",
     sequence: 2,
-    content: ' two',
+    content: " two",
     reset: false,
   });
-  assert.equal(second.content, 'one two');
+  assert.equal(second.content, "one two");
   assert.equal(second.sequence, 2);
 
   const gap = reduceSessionStreamChunk(second, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
+    run_id: "run-1",
+    attempt_id: "attempt-1",
     sequence: 4,
-    content: ' four',
+    content: " four",
     reset: false,
   });
   assert.equal(gap, second);
 
   const replay = reduceSessionStreamChunk(gap, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
+    run_id: "run-1",
+    attempt_id: "attempt-1",
     sequence: 3,
-    content: ' three',
+    content: " three",
     reset: false,
   });
-  assert.equal(replay.content, 'one two three');
+  assert.equal(replay.content, "one two three");
   assert.equal(replay.sequence, 3);
-  assert.equal(reduceSessionStreamChunk(replay, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
-    sequence: 2,
-    content: ' duplicate',
-    reset: false,
-  }), replay);
-});
-
-test('answer stream rejects a new attempt that starts after sequence one', () => {
-  assert.equal(reduceSessionStreamChunk(null, {
-    run_id: 'run-1',
-    attempt_id: 'attempt-1',
-    sequence: 2,
-    content: 'missing prefix',
-    reset: false,
-  }), null);
-});
-
-test('failed cancelled and delivery-failed terminals preserve provisional output', () => {
-  assert.equal(shouldPreserveInterruptedStream('failed', null), true);
-  assert.equal(shouldPreserveInterruptedStream('cancelled', null), true);
-  assert.equal(shouldPreserveInterruptedStream('completed', 'delivery_failed'), true);
-  assert.equal(shouldPreserveInterruptedStream('completed', null), false);
-  assert.equal(shouldPreserveInterruptedStream('waiting_user', null), false);
-});
-
-test('canonical refresh retains interrupted partial immediately before terminal answer', () => {
-  const partial = { role: 'assistant', content: 'useful partial', _streaming: false };
-  const terminal = { role: 'assistant', content: 'provider failed', runtimeError: { code: 'failed' } };
-  assert.deepEqual(
-    mergeInterruptedStreamMessage(
-      [{ role: 'user', content: 'work' }, terminal],
-      partial,
-    ),
-    [{ role: 'user', content: 'work' }, partial, terminal],
+  assert.equal(
+    reduceSessionStreamChunk(replay, {
+      run_id: "run-1",
+      attempt_id: "attempt-1",
+      sequence: 2,
+      content: " duplicate",
+      reset: false,
+    }),
+    replay,
   );
 });
 
-test('starting a later run clears the prior interrupted stream cache', () => {
+test("answer stream rejects a new attempt that starts after sequence one", () => {
+  assert.equal(
+    reduceSessionStreamChunk(null, {
+      run_id: "run-1",
+      attempt_id: "attempt-1",
+      sequence: 2,
+      content: "missing prefix",
+      reset: false,
+    }),
+    null,
+  );
+});
+
+test("failed cancelled and delivery-failed terminals preserve provisional output", () => {
+  assert.equal(shouldPreserveInterruptedStream("failed", null), true);
+  assert.equal(shouldPreserveInterruptedStream("cancelled", null), true);
+  assert.equal(
+    shouldPreserveInterruptedStream("completed", "delivery_failed"),
+    true,
+  );
+  assert.equal(shouldPreserveInterruptedStream("completed", null), false);
+  assert.equal(shouldPreserveInterruptedStream("waiting_user", null), false);
+});
+
+test("canonical refresh retains interrupted partial immediately before terminal answer", () => {
+  const partial = {
+    role: "assistant",
+    content: "useful partial",
+    _streaming: false,
+  };
+  const terminal = {
+    role: "assistant",
+    content: "provider failed",
+    runtimeError: { code: "failed" },
+  };
+  assert.deepEqual(
+    mergeInterruptedStreamMessage(
+      [{ role: "user", content: "work" }, terminal],
+      partial,
+    ),
+    [{ role: "user", content: "work" }, partial, terminal],
+  );
+});
+
+test("starting a later run clears the prior interrupted stream cache", () => {
   assert.match(
     agentDetailSource,
     /const dispatchChatMessage[\s\S]*delete interruptedStreamMessagesRef\.current\[runtimeKey\]/,
   );
 });
 
-test('legacy answer chunks remain append-compatible', () => {
-  const first = reduceSessionStreamChunk(null, { content: 'legacy' });
-  assert.deepEqual(first, { content: 'legacy' });
-  assert.deepEqual(reduceSessionStreamChunk(first, { content: ' stream' }), {
-    content: 'legacy stream',
+test("legacy answer chunks remain append-compatible", () => {
+  const first = reduceSessionStreamChunk(null, { content: "legacy" });
+  assert.deepEqual(first, { content: "legacy" });
+  assert.deepEqual(reduceSessionStreamChunk(first, { content: " stream" }), {
+    content: "legacy stream",
   });
 });
 
-test('agent detail chunk handler uses attempt-aware reducer while done stays canonical', () => {
+test("agent detail chunk handler uses attempt-aware reducer while done stays canonical", () => {
   assert.match(agentDetailSource, /reduceSessionStreamChunk/);
-  assert.match(agentDetailSource, /else if \(d\.type === 'chunk'\)[\s\S]*reduceSessionStreamChunk/);
   assert.match(
     agentDetailSource,
-    /else if \(d\.type === 'done'\)[\s\S]*prev\.slice\(0, -1\), terminalMessage/,
+    /else if \(d\.type === ["']chunk["']\)[\s\S]*reduceSessionStreamChunk/,
+  );
+  assert.match(
+    agentDetailSource,
+    /else if \(d\.type === ["']done["']\)[\s\S]*prev\.slice\(0, -1\),\s*terminalMessage/,
   );
 });
 
-test('session Tool cache restores a running card after switching back', () => {
+test("session Tool cache restores a running card after switching back", () => {
   const running = {
-    role: 'tool_call',
-    content: '',
-    toolName: 'move_file',
-    toolCallId: 'call-1',
-    toolArgs: { path: 'draft.md' },
-    toolStatus: 'running',
+    role: "tool_call",
+    content: "",
+    toolName: "move_file",
+    toolCallId: "call-1",
+    toolArgs: { path: "draft.md" },
+    toolStatus: "running",
   };
 
-  assert.deepEqual(mergeSessionToolMessages([
-    { id: 'user-1', role: 'user', content: 'move it' },
-  ], [running]), [
-    { id: 'user-1', role: 'user', content: 'move it' },
-    running,
-  ]);
+  assert.deepEqual(
+    mergeSessionToolMessages(
+      [{ id: "user-1", role: "user", content: "move it" }],
+      [running],
+    ),
+    [{ id: "user-1", role: "user", content: "move it" }, running],
+  );
 });
 
-test('session Tool cache updates by call id without downgrading canonical history', () => {
+test("session Tool cache updates by call id without downgrading canonical history", () => {
   const running = {
-    role: 'tool_call',
-    content: '',
-    toolName: 'move_file',
-    toolCallId: 'call-1',
-    toolArgs: { path: 'draft.md' },
-    toolStatus: 'running',
+    role: "tool_call",
+    content: "",
+    toolName: "move_file",
+    toolCallId: "call-1",
+    toolArgs: { path: "draft.md" },
+    toolStatus: "running",
   };
-  const done = { ...running, toolStatus: 'done', toolResult: 'moved' };
+  const done = { ...running, toolStatus: "done", toolResult: "moved" };
 
   assert.deepEqual(mergeSessionToolMessage([running], done), [done]);
   assert.deepEqual(mergeSessionToolMessage([done], running), [done]);
 });
 
-test('runtime-state request failure preserves display identity but disables actions', () => {
+test("runtime-state request failure preserves display identity but disables actions", () => {
   assert.deepEqual(failClosedSessionActiveRun(waitingRun), {
     ...waitingRun,
     canResume: false,
@@ -229,73 +256,87 @@ test('runtime-state request failure preserves display identity but disables acti
   assert.equal(failClosedSessionActiveRun(null), null);
 });
 
-test('settled lane transition refreshes canonical messages after websocket loss', () => {
+test("settled lane transition refreshes canonical messages after websocket loss", () => {
   assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, null), true);
   assert.equal(runtimeCompletionNeedsMessageRefresh(null, null), false);
-  assert.equal(runtimeCompletionNeedsMessageRefresh(waitingRun, waitingRun), false);
+  assert.equal(
+    runtimeCompletionNeedsMessageRefresh(waitingRun, waitingRun),
+    false,
+  );
 });
 
-test('terminal websocket packet refreshes canonical tool-call history', () => {
-  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('completed'), true);
-  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('failed'), true);
-  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('cancelled'), true);
-  assert.equal(runtimeTerminalPacketNeedsMessageRefresh('waiting_user'), false);
+test("terminal websocket packet refreshes canonical tool-call history", () => {
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh("completed"), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh("failed"), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh("cancelled"), true);
+  assert.equal(runtimeTerminalPacketNeedsMessageRefresh("waiting_user"), false);
   assert.equal(runtimeTerminalPacketNeedsMessageRefresh(undefined), false);
 });
 
-test('websocket terminal packet does not duplicate a canonical refreshed answer', () => {
+test("websocket terminal packet does not duplicate a canonical refreshed answer", () => {
   assert.equal(
     terminalAssistantMessageAlreadyPresent(
-      [{ id: 'message-1', role: 'assistant', content: 'final answer', _streaming: false }],
-      'message-1',
-      'final answer',
+      [
+        {
+          id: "message-1",
+          role: "assistant",
+          content: "final answer",
+          _streaming: false,
+        },
+      ],
+      "message-1",
+      "final answer",
     ),
     true,
   );
   assert.equal(
     terminalAssistantMessageAlreadyPresent(
-      [{ id: 'message-1', role: 'assistant', content: 'final answer', _streaming: false }],
-      'message-2',
-      'final answer',
+      [
+        {
+          id: "message-1",
+          role: "assistant",
+          content: "final answer",
+          _streaming: false,
+        },
+      ],
+      "message-2",
+      "final answer",
     ),
     false,
   );
   assert.equal(
     terminalAssistantMessageAlreadyPresent(
-      [{ role: 'assistant', content: 'final answer', _streaming: true }],
+      [{ role: "assistant", content: "final answer", _streaming: true }],
       null,
-      'final answer',
+      "final answer",
     ),
     false,
   );
   assert.equal(
     terminalAssistantMessageAlreadyPresent(
-      [{ role: 'assistant', content: 'final answer', _streaming: false }],
+      [{ role: "assistant", content: "final answer", _streaming: false }],
       null,
-      'final answer',
+      "final answer",
     ),
     true,
   );
 });
 
-test('poll-before-websocket ordering merges runtime diagnostics into the canonical message', () => {
+test("poll-before-websocket ordering merges runtime diagnostics into the canonical message", () => {
   const canonical = {
-    id: 'message-1',
-    role: 'assistant',
-    content: 'request failed',
+    id: "message-1",
+    role: "assistant",
+    content: "request failed",
   };
   const runtimeError = {
-    message: 'request failed',
-    code: 'provider_rate_limited',
-    traceId: 'worker-trace',
-    runId: 'run-1',
+    message: "request failed",
+    code: "provider_rate_limited",
+    traceId: "worker-trace",
+    runId: "run-1",
   };
 
   assert.deepEqual(
-    mergeTerminalAssistantMessage(
-      [canonical],
-      { ...canonical, runtimeError },
-    ),
+    mergeTerminalAssistantMessage([canonical], { ...canonical, runtimeError }),
     [{ ...canonical, runtimeError }],
   );
   assert.equal(
@@ -304,39 +345,39 @@ test('poll-before-websocket ordering merges runtime diagnostics into the canonic
   );
 });
 
-test('waiting websocket packet is only a non-actionable hint', () => {
+test("waiting websocket packet is only a non-actionable hint", () => {
   assert.deepEqual(
     waitingSessionActiveRunHint({
-      runId: 'run-1',
-      sessionId: 'session-1',
-      correlationId: 'confirm-1',
+      runId: "run-1",
+      sessionId: "session-1",
+      correlationId: "confirm-1",
       current: waitingRun,
     }),
     {
       ...waitingRun,
-      threadId: 'session-1',
-      sessionId: 'session-1',
-      status: 'waiting_user',
-      waitingType: 'user',
+      threadId: "session-1",
+      sessionId: "session-1",
+      status: "waiting_user",
+      waitingType: "user",
       waitingReason: null,
-      correlationId: 'confirm-1',
+      correlationId: "confirm-1",
       canResume: false,
       canCancel: false,
     },
   );
 });
 
-test('only a valid persisted runtime-state response grants actions', () => {
+test("only a valid persisted runtime-state response grants actions", () => {
   assert.deepEqual(
     sessionActiveRunFromResponse({
       active_run: {
-        run_id: 'run-1',
-        thread_id: 'session-1',
-        session_id: 'session-1',
-        status: 'waiting_user',
-        waiting_type: 'user',
-        waiting_reason: 'Continue?',
-        correlation_id: 'confirm-1',
+        run_id: "run-1",
+        thread_id: "session-1",
+        session_id: "session-1",
+        status: "waiting_user",
+        waiting_type: "user",
+        waiting_reason: "Continue?",
+        correlation_id: "confirm-1",
         model_step_count: 2,
         can_resume: true,
         can_cancel: true,
@@ -348,10 +389,10 @@ test('only a valid persisted runtime-state response grants actions', () => {
   assert.equal(
     sessionActiveRunFromResponse({
       active_run: {
-        run_id: 'run-1',
-        thread_id: 'session-1',
-        session_id: 'session-1',
-        status: 'waiting_user',
+        run_id: "run-1",
+        thread_id: "session-1",
+        session_id: "session-1",
+        status: "waiting_user",
         correlation_id: null,
         can_resume: true,
         can_cancel: true,
@@ -361,134 +402,168 @@ test('only a valid persisted runtime-state response grants actions', () => {
   );
 });
 
-test('unknown write reconciliation is parsed strictly and disables plain resume', () => {
+test("unknown write reconciliation is parsed strictly and disables plain resume", () => {
   const parsed = sessionActiveRunFromResponse({
     active_run: {
-      run_id: 'run-1',
-      thread_id: 'session-1',
-      session_id: 'session-1',
-      status: 'waiting_user',
-      waiting_type: 'user',
-      correlation_id: 'confirm-1',
+      run_id: "run-1",
+      thread_id: "session-1",
+      session_id: "session-1",
+      status: "waiting_user",
+      waiting_type: "user",
+      correlation_id: "confirm-1",
       model_step_count: 3,
       can_resume: false,
       can_cancel: true,
-      pending_tool_reconciliations: [{
-        execution_id: 'execution-1',
-        tool_call_id: 'call-1',
-        tool_name: 'write_file',
-        result_summary: 'outcome unknown',
-        error_code: 'workspace_write_outcome_unknown',
-        can_reconcile: true,
-      }],
+      pending_tool_reconciliations: [
+        {
+          execution_id: "execution-1",
+          tool_call_id: "call-1",
+          tool_name: "write_file",
+          result_summary: "outcome unknown",
+          error_code: "workspace_write_outcome_unknown",
+          can_reconcile: true,
+        },
+      ],
     },
   });
 
   assert.equal(parsed?.canResume, false);
-  assert.deepEqual(parsed?.pendingToolReconciliations, [{
-    executionId: 'execution-1',
-    toolCallId: 'call-1',
-    toolName: 'write_file',
-    resultSummary: 'outcome unknown',
-    errorCode: 'workspace_write_outcome_unknown',
-    canReconcile: true,
-  }]);
-  assert.equal(sessionActiveRunFromResponse({
-    active_run: {
-      run_id: 'run-1',
-      thread_id: 'session-1',
-      session_id: 'session-1',
-      status: 'waiting_user',
-      pending_tool_reconciliations: [{ execution_id: 'execution-1' }],
+  assert.deepEqual(parsed?.pendingToolReconciliations, [
+    {
+      executionId: "execution-1",
+      toolCallId: "call-1",
+      toolName: "write_file",
+      resultSummary: "outcome unknown",
+      errorCode: "workspace_write_outcome_unknown",
+      canReconcile: true,
     },
-  }), null);
+  ]);
+  assert.equal(
+    sessionActiveRunFromResponse({
+      active_run: {
+        run_id: "run-1",
+        thread_id: "session-1",
+        session_id: "session-1",
+        status: "waiting_user",
+        pending_tool_reconciliations: [{ execution_id: "execution-1" }],
+      },
+    }),
+    null,
+  );
 });
 
-test('workspace reconciliation fields preserve status and file counts', () => {
+test("workspace reconciliation fields preserve status and file counts", () => {
   const parsed = sessionActiveRunFromResponse({
     active_run: {
-      run_id: 'run-1',
-      thread_id: 'session-1',
-      session_id: 'session-1',
-      status: 'waiting_user',
-      pending_tool_reconciliations: [{
-        execution_id: 'execution-1',
-        tool_call_id: 'call-1',
-        tool_name: 'write_file',
-        can_reconcile: true,
-        resolution_status: 'conflicted',
-        savedCount: 1,
-        pendingCount: 2,
-        conflictedCount: 1,
-        workspaceResolution: true,
-      }],
+      run_id: "run-1",
+      thread_id: "session-1",
+      session_id: "session-1",
+      status: "waiting_user",
+      pending_tool_reconciliations: [
+        {
+          execution_id: "execution-1",
+          tool_call_id: "call-1",
+          tool_name: "write_file",
+          can_reconcile: true,
+          resolution_status: "conflicted",
+          savedCount: 1,
+          pendingCount: 2,
+          conflictedCount: 1,
+          workspaceResolution: true,
+        },
+      ],
     },
   });
 
   assert.deepEqual(parsed?.pendingToolReconciliations[0], {
-    executionId: 'execution-1',
-    toolCallId: 'call-1',
-    toolName: 'write_file',
+    executionId: "execution-1",
+    toolCallId: "call-1",
+    toolName: "write_file",
     resultSummary: null,
     errorCode: null,
     canReconcile: true,
-    resolutionStatus: 'conflicted',
+    resolutionStatus: "conflicted",
     savedCount: 1,
     pendingCount: 2,
     conflictedCount: 1,
     workspaceResolution: true,
   });
-  assert.equal(toolReconciliationNeedsUserAction(parsed.pendingToolReconciliations[0]), true);
   assert.equal(
-    toolReconciliationsByCallId(parsed.pendingToolReconciliations).get('call-1')?.executionId,
-    'execution-1',
+    toolReconciliationNeedsUserAction(parsed.pendingToolReconciliations[0]),
+    true,
+  );
+  assert.equal(
+    toolReconciliationsByCallId(parsed.pendingToolReconciliations).get("call-1")
+      ?.executionId,
+    "execution-1",
   );
 });
 
-test('only settled verification avoids user action; pending receipts always keep an exit', () => {
-  assert.equal(toolReconciliationNeedsUserAction({
-    executionId: 'execution-1',
-    toolCallId: 'call-1',
-    toolName: 'write_file',
-    canReconcile: false,
-    resolutionStatus: 'checking',
-    workspaceResolution: true,
-  }), false);
-  assert.equal(toolReconciliationNeedsUserAction({
-    executionId: 'execution-1',
-    toolCallId: 'call-1',
-    toolName: 'write_file',
-    canReconcile: true,
-    resolutionStatus: 'saved',
-    workspaceResolution: true,
-  }), true);
+test("only settled verification avoids user action; pending receipts always keep an exit", () => {
+  assert.equal(
+    toolReconciliationNeedsUserAction({
+      executionId: "execution-1",
+      toolCallId: "call-1",
+      toolName: "write_file",
+      canReconcile: false,
+      resolutionStatus: "checking",
+      workspaceResolution: true,
+    }),
+    false,
+  );
+  assert.equal(
+    toolReconciliationNeedsUserAction({
+      executionId: "execution-1",
+      toolCallId: "call-1",
+      toolName: "write_file",
+      canReconcile: true,
+      resolutionStatus: "saved",
+      workspaceResolution: true,
+    }),
+    true,
+  );
 });
 
-test('workspace reconciliation keeps decisions in the composer and passive status on the tool row', () => {
+test("workspace reconciliation keeps decisions in the composer and passive status on the tool row", () => {
   assert.match(agentDetailSource, /toolCallId: msg\.toolCallId/);
-  assert.match(agentDetailSource, /reconciliationsByToolCallId\.get\(tc\.toolCallId\)/);
-  assert.match(agentDetailSource, /Agent 处理后的文件与工作区中的源文件不同。请选择要保留哪一个。/);
+  assert.match(
+    agentDetailSource,
+    /reconciliationsByToolCallId\.get\(tc\.toolCallId\)/,
+  );
+  assert.match(
+    agentDetailSource,
+    /Agent 处理后的文件与工作区中的源文件不同。请选择要保留哪一个。/,
+  );
   assert.match(agentDetailSource, /使用 Agent 的结果/);
   assert.match(agentDetailSource, /保留源文件/);
   assert.match(agentDetailSource, /className="chat-tool-reconciliation"/);
   assert.doesNotMatch(agentDetailSource, /locateToolReconciliation/);
-  assert.doesNotMatch(agentDetailSource, /analysis-tool-reconciliation__actions/);
+  assert.doesNotMatch(
+    agentDetailSource,
+    /analysis-tool-reconciliation__actions/,
+  );
 });
 
-test('analysis cards count only Tool rows from their own user turn', () => {
+test("analysis cards count only Tool rows from their own user turn", () => {
   assert.doesNotMatch(agentDetailSource, /totalToolCount/);
   assert.doesNotMatch(agentDetailSource, /activeSession\?\.tool_call_count/);
   assert.match(
     agentDetailSource,
-    /toolCallsTotal', \{ count: toolItems\.length \}/,
+    /toolCallsTotal["'], \{ count: toolItems\.length \}/,
   );
 });
 
-test('onboarding only treats an authoritative runtime-state payload as loaded', () => {
-  assert.equal(sessionRuntimeStateResponseIsValid({ active_run: null }, null), true);
+test("onboarding only treats an authoritative runtime-state payload as loaded", () => {
+  assert.equal(
+    sessionRuntimeStateResponseIsValid({ active_run: null }, null),
+    true,
+  );
   assert.equal(sessionRuntimeStateResponseIsValid({}, null), false);
   assert.equal(
-    sessionRuntimeStateResponseIsValid({ active_run: { status: 'running' } }, null),
+    sessionRuntimeStateResponseIsValid(
+      { active_run: { status: "running" } },
+      null,
+    ),
     false,
   );
   assert.equal(

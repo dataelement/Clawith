@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from loguru import logger
+
 
 class RunWorkspace(Protocol):
     """Minimum interface required for a run-scoped materialized workspace."""
@@ -97,7 +99,11 @@ async def close_run_workspace(run_id: str) -> None:
         return
     try:
         state = await asyncio.shield(task)
-    except (asyncio.CancelledError, Exception):
+    except asyncio.CancelledError:
+        logger.debug("[SandboxWorkspace] Close cancelled before materialization")
+        return
+    except Exception:  # noqa: BLE001 -- failed materialization owns no workspace.
+        logger.exception("[SandboxWorkspace] Materialization failed before close")
         return
     async with state.lock:
         state.workspace.cleanup()

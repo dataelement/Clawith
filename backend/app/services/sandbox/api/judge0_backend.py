@@ -1,12 +1,13 @@
 """Judge0 API-based sandbox backend."""
 
+import asyncio
 import time
 
 import httpx
+from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-from loguru import logger
 
 # Judge0 language IDs
 _JUDGE0_LANGUAGE_IDS = {
@@ -58,7 +59,7 @@ class Judge0Backend(BaseSandboxBackend):
                     timeout=5.0
                 )
                 return response.status_code == 200
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health normalizes provider failures.
             return False
 
     async def execute(
@@ -139,7 +140,7 @@ class Judge0Backend(BaseSandboxBackend):
 
                         # Check if still processing
                         if status.get("id") <= 2:  # In Queue or Processing
-                            await client.sleep(0.5)
+                            await asyncio.sleep(0.5)
                             continue
 
                         # Completed
@@ -161,7 +162,7 @@ class Judge0Backend(BaseSandboxBackend):
                             error=None if status.get("id") == 3 else status.get("description", "Execution failed")
                         )
 
-                    await client.sleep(0.5)
+                    await asyncio.sleep(0.5)
 
                 # Timeout waiting for result
                 return ExecutionResult(
@@ -184,9 +185,9 @@ class Judge0Backend(BaseSandboxBackend):
                 error=f"Code execution timed out after {timeout}s"
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- provider failures become results.
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.exception(f"[Judge0] Execution error")
+            logger.exception("[Judge0] Execution error")
             return ExecutionResult(
                 success=False,
                 stdout="",

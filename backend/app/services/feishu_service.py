@@ -1,7 +1,8 @@
-"""Feishu (Lark) OAuth and API integration service."""
+"""Feishu (Lark) provider API transport."""
 
 import json
 from collections import OrderedDict
+from typing import TYPE_CHECKING
 
 import httpx
 from loguru import logger
@@ -12,19 +13,10 @@ try:
 except ImportError:
     lark = None  # type: ignore
     _HAS_LARK = False
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+if TYPE_CHECKING:
+    from lark_oapi import Client as LarkClient
 
-from app.dao import query_dao
-from app.config import get_settings
-from app.core.security import create_access_token
-from app.models.user import User, Identity
-from app.models.identity import IdentityProvider
-
-settings = get_settings()
-
-FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token"
-FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
+FEISHU_TENANT_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
 FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 FEISHU_SEND_MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 FEISHU_CHAT_LIST_URL = "https://open.feishu.cn/open-apis/im/v1/chats"
@@ -77,7 +69,7 @@ class FeishuAPIError(RuntimeError):
 
 
 class FeishuService:
-    """Service for Feishu OAuth login and message API."""
+    """Bounded transport for Feishu provider APIs."""
 
     # Maximum number of lark SDK client instances to keep alive simultaneously.
     # Each entry corresponds to a unique (app_id, app_secret) pair.  Excess entries
@@ -86,13 +78,10 @@ class FeishuService:
     _LARK_CLIENT_CACHE_MAX = 50
 
     def __init__(self):
-        self.app_id = settings.FEISHU_APP_ID
-        self.app_secret = settings.FEISHU_APP_SECRET
-        self._app_access_token: str | None = None
         # OrderedDict is used as a simple LRU cache: move_to_end() on each hit
         # keeps the most-recently-used entries at the tail so we can evict from
         # the head when the cache is full.
-        self._lark_clients: OrderedDict[str, lark.Client] = OrderedDict()
+        self._lark_clients: OrderedDict[tuple[str, str], LarkClient] = OrderedDict()
 
     @staticmethod
     def _parse_api_response(
@@ -155,27 +144,27 @@ class FeishuService:
 
         return data
 
-    async def get_app_access_token(self) -> str:
-        """Get or refresh the app-level access token. Deprecated: Use get_tenant_access_token instead."""
-        return await self.get_tenant_access_token(self.app_id, self.app_secret)
-        
-    async def get_tenant_access_token(self, app_id: str = None, app_secret: str = None) -> str:
-        """Get or refresh the app-level access token (tenant_access_token)."""
-        target_app_id = app_id or self.app_id
-        target_app_secret = app_secret or self.app_secret
-        
+    async def get_tenant_access_token(
+        self,
+        app_id: str,
+        app_secret: str,
+    ) -> str:
+        """Get a tenant access token for explicit application credentials."""
         async with httpx.AsyncClient() as client:
-            resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": target_app_id,
-                "app_secret": target_app_secret,
+            resp = await client.post(FEISHU_TENANT_TOKEN_URL, json={
+                "app_id": app_id,
+                "app_secret": app_secret,
             })
-            data = resp.json()
-            
-            token = data.get("tenant_access_token") or data.get("app_access_token", "")
-            if not app_id: # only cache default app token
-                self._app_access_token = token
-                
-            return token
+        data = self._parse_api_response(resp, stage="get_tenant_access_token")
+        token = data.get("tenant_access_token")
+        if not isinstance(token, str) or not token:
+            raise FeishuAPIError(
+                stage="get_tenant_access_token",
+                http_status=resp.status_code,
+                code=data.get("code"),
+                msg="Provider response omitted tenant_access_token",
+            )
+        return token
 
     async def list_bot_chats(
         self,
@@ -197,171 +186,6 @@ class FeishuService:
                 params=params,
             )
         return self._parse_api_response(response, stage="list_bot_chats")
-
-    async def exchange_code_for_user(self, code: str) -> dict:
-        """Exchange OAuth authorization code for user info.
-
-        Returns dict with: open_id, union_id, user_id, name, email, avatar_url
-        """
-        app_token = await self.get_app_access_token()
-
-        async with httpx.AsyncClient() as client:
-            # Get user access token
-            token_resp = await client.post(FEISHU_TOKEN_URL, json={
-                "grant_type": "authorization_code",
-                "code": code,
-            }, headers={"Authorization": f"Bearer {app_token}"})
-            token_data = token_resp.json()
-            user_access_token = token_data.get("data", {}).get("access_token", "")
-
-            # Get user info
-            info_resp = await client.get(FEISHU_USER_INFO_URL, headers={
-                "Authorization": f"Bearer {user_access_token}",
-            })
-            info_data = info_resp.json().get("data", {})
-
-            return {
-                "open_id": info_data.get("open_id"),
-                "union_id": info_data.get("union_id"),
-                "user_id": info_data.get("user_id"),
-                "name": info_data.get("name", ""),
-                "email": info_data.get("email", ""),
-                "avatar_url": info_data.get("avatar_url", ""),
-            }
-
-    async def login_or_register(self, db: AsyncSession, feishu_user: dict, tenant_id: str | None = None) -> tuple[User, str]:
-        """Login existing user or register new one via Feishu SSO.
-
-        Uses OrgMember as the identity anchor (synced from Feishu org directory).
-        Returns (user, jwt_token)
-        """
-        from app.models.org import OrgMember
-
-        open_id = feishu_user["open_id"]
-        user_id = feishu_user.get("user_id", "")
-        union_id = feishu_user.get("union_id")
-        fs_email = feishu_user.get("email", "")
-        fs_name = feishu_user.get("name", "")
-        fs_avatar = feishu_user.get("avatar_url", "")
-
-        # Resolve provider (needed for OrgMember.provider_id scoping)
-        provider_query = select(IdentityProvider).where(IdentityProvider.provider_type == "feishu")
-        provider_query = provider_query.where(IdentityProvider.tenant_id == tenant_id)
-        provider_result = await query_dao.execute(db, provider_query)
-        provider = provider_result.scalars().first()
-        if not provider:
-            provider = IdentityProvider(
-                provider_type="feishu",
-                name="Feishu",
-                is_active=True,
-                config={"app_id": self.app_id, "app_secret": self.app_secret},
-                tenant_id=tenant_id,
-            )
-            query_dao.add(db, provider)
-            await query_dao.flush(db)
-
-        # 1. Look up OrgMember by open_id (primary) or external_id (user_id)
-        #    Also filter by tenant_id and provider_id for accuracy
-        member = None
-        if open_id:
-            member_r = await query_dao.execute(db, 
-                select(OrgMember).where(
-                    OrgMember.open_id == open_id,
-                    OrgMember.provider_id == provider.id,
-                    OrgMember.status == "active",
-                )
-            )
-            member = member_r.scalars().first()
-        if not member and user_id:
-            member_r = await query_dao.execute(db, 
-                select(OrgMember).where(
-                    OrgMember.external_id == user_id,
-                    OrgMember.provider_id == provider.id,
-                    OrgMember.status == "active",
-                )
-            )
-            member = member_r.scalars().first()
-
-        # 2. Resolve User from OrgMember
-        user = None
-        if member and member.user_id:
-            u_result = await query_dao.execute(db, select(User).where(User.id == member.user_id))
-            user = u_result.scalars().first()
-
-        # 3. Fallback: find by email matching (exact match)
-        if not user and fs_email:
-            query = select(User).join(User.identity).where(Identity.email == fs_email)
-            if tenant_id:
-                query = query.where(User.tenant_id == tenant_id)
-            result = await query_dao.execute(db, query)
-            user = result.scalars().first()
-
-        if user:
-            # Existing user — sync latest profile from Feishu
-            if fs_avatar:
-                user.avatar_url = fs_avatar
-            if (not user.email or user.email.endswith("@feishu.local")) and fs_email:
-                user.email = fs_email
-            if fs_name:
-                user.display_name = fs_name
-            # Update identity fields (user_id only)
-            if user_id:
-                user.external_id = user_id
-                user.feishu_user_id = user_id
-            # Link to OrgMember if not yet bound
-            if member and not member.user_id:
-                member.user_id = user.id
-        else:
-            # New user — create account
-            username = fs_email.split("@")[0] if fs_email else f"feishu_{open_id[:8]}"
-            email = fs_email or f"{username}@feishu.local"
-
-            # Ensure unique username within tenant
-            query = (
-                select(User)
-                .join(User.identity)
-                .where(Identity.username == username)
-            )
-            if tenant_id:
-                query = query.where(User.tenant_id == tenant_id)
-            
-            existing = await query_dao.execute(db, query)
-            if existing.scalar_one_or_none():
-                import uuid
-                username = f"{username}_{uuid.uuid4().hex[:6]}"
-
-            # Step 1: Find or create global Identity using unified registration service
-            from app.services.registration_service import registration_service
-            # No phone available in this specific Feishu login block, but it handles email/username matching
-            identity = await registration_service.find_or_create_identity(
-                email=email,
-                phone=feishu_user.get("mobile"),
-                username=username,
-                password=open_id,
-            )
-
-            # Step 2: Create tenant-scoped User linked to Identity
-            user = User(
-                identity_id=identity.id,
-                display_name=fs_name or username,
-                avatar_url=fs_avatar or None,
-                registration_source="feishu",
-                tenant_id=tenant_id,
-                is_active=True,
-            )
-
-            query_dao.add(db, user)
-            await query_dao.flush(db)
-
-            # Link back to OrgMember if found
-            if member:
-                member.user_id = user.id
-
-        await query_dao.flush(db)
-
-        token = create_access_token(str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None)
-        return user, token
-
 
     async def send_message(
         self,
@@ -531,29 +355,6 @@ class FeishuService:
                     return uid
             return None
 
-    async def send_approval_card(self, app_id: str, app_secret: str,
-                                  creator_open_id: str, agent_name: str,
-                                  action_type: str, details: str, approval_id: str) -> dict:
-        """Send an interactive approval card to the agent creator via Feishu."""
-        import json
-        card_content = json.dumps({
-            "type": "template",
-            "data": {
-                "template_id": "",  # Use custom card
-                "template_variable": {
-                    "agent_name": agent_name,
-                    "action_type": action_type,
-                    "details": details,
-                    "approval_id": approval_id,
-                }
-            }
-        })
-        # Simplified — in production, use Feishu interactive card JSON
-        text_content = json.dumps({
-            "text": f"🔴 [{agent_name}] 请求审批\n操作: {action_type}\n详情: {details}\n\n请在 Clawith 平台审批。"
-        })
-        return await self.send_message(app_id, app_secret, creator_open_id, "text", text_content)
-
     async def download_message_resource(self, app_id: str, app_secret: str,
                                          message_id: str, file_key: str,
                                          resource_type: str = "file") -> bytes:
@@ -597,7 +398,7 @@ class FeishuService:
             headers = {"Authorization": f"Bearer {app_token}"}
 
             # Upload file
-            with open(fp, "rb") as f:
+            with open(fp, "rb") as f:  # noqa: ASYNC230 -- bytes must be materialized before multipart upload
                 file_bytes = f.read()
             # Determine file type for Feishu upload
             ext = fp.suffix.lower()
@@ -688,7 +489,7 @@ class FeishuService:
         """Query records in a specific table."""
         tenant_token = await self.get_tenant_access_token(app_id, app_secret)
         body = dict(filters) if filters else {}
-        params: dict[str, object] = {
+        params: dict[str, str | int] = {
             "page_size": max(1, min(page_size, 500)),
         }
         if page_token:
@@ -855,7 +656,13 @@ class FeishuService:
             )
             return resp.json()
 
-    async def query_approval_instances(self, app_id: str, app_secret: str, approval_code: str, status: str = None) -> dict:
+    async def query_approval_instances(
+        self,
+        app_id: str,
+        app_secret: str,
+        approval_code: str,
+        status: str | None = None,
+    ) -> dict:
         """Query Feishu approval instances."""
         tenant_token = await self.get_tenant_access_token(app_id, app_secret)
         body = {"approval_code": approval_code}
@@ -887,15 +694,15 @@ class FeishuService:
         Implements a simple LRU eviction policy: when the cache exceeds
         _LARK_CLIENT_CACHE_MAX entries, the least-recently-used client is removed.
         """
-        if not _HAS_LARK:
+        if not _HAS_LARK or lark is None:
             raise RuntimeError("lark-oapi package is not installed. Install with: pip install lark-oapi")
-        cache_key = f"{app_id}:{app_secret}"
+        cache_key = (app_id, app_secret)
         client = self._lark_clients.get(cache_key)
         if client is None:
             # Evict the oldest entry if the cache is at capacity.
             if len(self._lark_clients) >= self._LARK_CLIENT_CACHE_MAX:
-                evicted_key, _ = self._lark_clients.popitem(last=False)
-                logger.debug(f"[Feishu] _lark_clients LRU evict: {evicted_key[:8]}...")
+                (evicted_app_id, _), _ = self._lark_clients.popitem(last=False)
+                logger.debug(f"[Feishu] _lark_clients LRU evict: app_id={evicted_app_id}")
             client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
             self._lark_clients[cache_key] = client
         else:
@@ -911,7 +718,8 @@ class FeishuService:
     ) -> str:
         """Create a CardKit card entity and return its card_id."""
         from lark_oapi.api.cardkit.v1.model import (
-            CreateCardRequest, CreateCardRequestBody,
+            CreateCardRequest,
+            CreateCardRequestBody,
         )
 
         client = self._get_lark_client(app_id, app_secret)
@@ -920,9 +728,12 @@ class FeishuService:
             .data(json.dumps(card_dict)) \
             .build()
         request = CreateCardRequest.builder().request_body(body).build()
+        cardkit = client.cardkit
+        if cardkit is None:
+            raise RuntimeError("Feishu CardKit client is unavailable")
 
         try:
-            resp = await client.cardkit.v1.card.acreate(request)
+            resp = await cardkit.v1.card.acreate(request)
             logger.info(
                 f"[Feishu CardKit] create_card_entity response: "
                 f"code={resp.code}, msg={resp.msg}"
@@ -930,6 +741,10 @@ class FeishuService:
             if not resp.success():
                 raise RuntimeError(
                     f"Feishu CardKit create_card_entity failed: code={resp.code}, msg={resp.msg}"
+                )
+            if resp.data is None or not resp.data.card_id:
+                raise RuntimeError(
+                    "Feishu CardKit create_card_entity returned no card_id"
                 )
             return resp.data.card_id
         except Exception as e:
@@ -972,7 +787,8 @@ class FeishuService:
     ) -> None:
         """Stream content to a specific card element via CardKit API."""
         from lark_oapi.api.cardkit.v1.model import (
-            ContentCardElementRequest, ContentCardElementRequestBody,
+            ContentCardElementRequest,
+            ContentCardElementRequestBody,
         )
 
         client = self._get_lark_client(app_id, app_secret)
@@ -985,9 +801,12 @@ class FeishuService:
             .element_id(element_id) \
             .request_body(body) \
             .build()
+        cardkit = client.cardkit
+        if cardkit is None:
+            raise RuntimeError("Feishu CardKit client is unavailable")
 
         try:
-            resp = await client.cardkit.v1.card_element.acontent(request)
+            resp = await cardkit.v1.card_element.acontent(request)
             logger.info(
                 f"[Feishu CardKit] stream_card_content response: "
                 f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "
@@ -1014,7 +833,8 @@ class FeishuService:
     ) -> None:
         """Toggle streaming mode on a card via CardKit settings API."""
         from lark_oapi.api.cardkit.v1.model import (
-            SettingsCardRequest, SettingsCardRequestBody,
+            SettingsCardRequest,
+            SettingsCardRequestBody,
         )
 
         client = self._get_lark_client(app_id, app_secret)
@@ -1026,9 +846,12 @@ class FeishuService:
             .card_id(card_id) \
             .request_body(body) \
             .build()
+        cardkit = client.cardkit
+        if cardkit is None:
+            raise RuntimeError("Feishu CardKit client is unavailable")
 
         try:
-            resp = await client.cardkit.v1.card.asettings(request)
+            resp = await cardkit.v1.card.asettings(request)
             logger.info(
                 f"[Feishu CardKit] set_card_streaming_mode response: "
                 f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "
@@ -1055,7 +878,9 @@ class FeishuService:
     ) -> None:
         """Full card update via CardKit API."""
         from lark_oapi.api.cardkit.v1.model import (
-            UpdateCardRequest, UpdateCardRequestBody, Card,
+            Card,
+            UpdateCardRequest,
+            UpdateCardRequestBody,
         )
 
         client = self._get_lark_client(app_id, app_secret)
@@ -1071,9 +896,12 @@ class FeishuService:
             .card_id(card_id) \
             .request_body(body) \
             .build()
+        cardkit = client.cardkit
+        if cardkit is None:
+            raise RuntimeError("Feishu CardKit client is unavailable")
 
         try:
-            resp = await client.cardkit.v1.card.aupdate(request)
+            resp = await cardkit.v1.card.aupdate(request)
             logger.info(
                 f"[Feishu CardKit] update_cardkit_card response: "
                 f"code={resp.code}, msg={resp.msg}, card_id={card_id}, "

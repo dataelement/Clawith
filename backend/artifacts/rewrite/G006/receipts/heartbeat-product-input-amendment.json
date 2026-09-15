@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json",
+  "previous_receipt_hash": "1d5f2238258886b8ba234313980f8652729446352a01603bb9919034b288b3ac",
+  "owner_row": {
+    "owner_id": "heartbeat",
+    "implementation_phase": 5,
+    "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+    "state": "contract_approved",
+    "schema_wave": "S2",
+    "contract_artifact": "specs/backend-product-inputs.md",
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
+        "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+      }
+    ]
+  }
+}

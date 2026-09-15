@@ -1,6 +1,10 @@
 # Default values for clawith
 # This is a YAML-formatted file.
 
+# G002 exposes only a local health entry. The chart renders no resources unless
+# a future reviewed deployment explicitly clears this quarantine.
+g002Deferred: true
+
 # Global settings
 global:
   # Namespace to deploy to
@@ -117,7 +121,7 @@ postgresql:
     pullPolicy: IfNotPresent
 
   auth:
-    database: clawith
+    database: clawith_target
     username: postgres
     # Password will be base64 encoded
     password: clawith123456
@@ -151,7 +155,7 @@ postgresql:
   external:
     host: ""
     port: 5432
-    database: clawith
+    database: clawith_target
     username: postgres
     password: ""
 

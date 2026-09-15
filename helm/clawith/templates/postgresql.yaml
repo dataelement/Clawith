@@ -1,4 +1,4 @@
-{{- if .Values.postgresql.enabled }}
+{{- if and (not .Values.g002Deferred) .Values.postgresql.enabled }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -180,4 +180,3 @@ spec:
     port: {{ .Values.postgresql.primary.service.port }}
     targetPort: tcp-postgresql
 {{- end }}
-

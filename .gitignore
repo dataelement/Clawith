@@ -4,6 +4,7 @@ node_modules/
 dist/
 *.zip
 uv.lock
+!backend/uv.lock
 .vite/
 *.log
 pnpm-lock.yaml
@@ -33,6 +34,24 @@ ss-nodes.json
 .agents/
 _agent/
 _agents/
+
+# Commit the repository-owned Agent Note system and selected Clawith workflows.
+!.agents/
+.agents/*
+!.agents/notes/
+!.agents/notes/**
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/clawith-pre-push-checks/
+!.agents/skills/clawith-pre-push-checks/**
+!.agents/skills/clawith-code-review/
+!.agents/skills/clawith-code-review/**
+!.agents/skills/clawith-find-simplifications/
+!.agents/skills/clawith-find-simplifications/**
+!.agents/skills/clawith-prose-standard/
+!.agents/skills/clawith-prose-standard/**
+!.agents/skills/clawith-trim-cot-leakage/
+!.agents/skills/clawith-trim-cot-leakage/**
 
 # Internal docs
 /RELEASE_NOTES.md

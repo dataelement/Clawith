@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clawith Pre-push Checks"
+  short_description: "Validate outgoing contract chains before a Push."
+  default_prompt: "Use $clawith-pre-push-checks to validate the current outgoing change before Push."

@@ -7,18 +7,20 @@
 /* ─── Tokens ──────────────────────────────────────────── */
 .atlas-page {
   /* Paper Atlas defaults (light theme) */
-  --bg: #F4F1EB;
-  --bg-card: #FFFFFF;
-  --ink: #1A1814;
-  --ink-soft: #3C3933;
-  --muted: #8A8478;
-  --hairline: #ECE9E2;
+  --bg: #f4f1eb;
+  --bg-card: #ffffff;
+  --ink: #1a1814;
+  --ink-soft: #3c3933;
+  --muted: #8a8478;
+  --hairline: #ece9e2;
   --grid: rgba(26, 24, 20, 0.05);
   --star: rgba(26, 24, 20, 0.32);
 
-  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
-  --font-sans:  'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  --font-mono:  'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans:
+    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   position: relative;
   min-height: 100dvh;
@@ -32,8 +34,12 @@
 /* Page enter — whole page fades in, then the body content lifts up
    slightly with a tiny stagger from the chrome */
 @keyframes atlas-page-enter {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .atlas-page > .atlas-frame-body {
@@ -41,8 +47,14 @@
 }
 
 @keyframes atlas-body-enter {
-  from { opacity: 0; transform: translateY(14px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -53,11 +65,11 @@
 }
 
 [data-theme="dark"] .atlas-page {
-  --bg: #0E0F14;
+  --bg: #0e0f14;
   --bg-card: #000000;
-  --ink: #ECE9E2;
-  --ink-soft: #C7C3B9;
-  --muted: #6C6A65;
+  --ink: #ece9e2;
+  --ink-soft: #c7c3b9;
+  --muted: #6c6a65;
   --hairline: rgba(236, 233, 226, 0.12);
   --grid: rgba(236, 233, 226, 0.04);
   --star: rgba(236, 233, 226, 0.36);
@@ -115,7 +127,9 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease;
+  transition:
+    border-color 140ms ease,
+    color 140ms ease;
 }
 .atlas-globe-btn:hover {
   border-color: var(--ink);
@@ -139,7 +153,9 @@
   cursor: pointer;
   transition: border-color 140ms ease;
 }
-.atlas-back-btn:hover { border-color: var(--ink); }
+.atlas-back-btn:hover {
+  border-color: var(--ink);
+}
 
 .atlas-frame-body {
   position: relative;
@@ -172,10 +188,30 @@
   pointer-events: none;
   z-index: 49;
 }
-.atlas-corner--bl { bottom: 28px; left: 28px; border-left: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
-.atlas-corner--br { bottom: 28px; right: 28px; border-right: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
-.atlas-corner--tl { top: 28px;    left: 28px; border-left: 1px solid var(--hairline); border-top: 1px solid var(--hairline); }
-.atlas-corner--tr { top: 28px;    right: 28px; border-right: 1px solid var(--hairline); border-top: 1px solid var(--hairline); }
+.atlas-corner--bl {
+  bottom: 28px;
+  left: 28px;
+  border-left: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+.atlas-corner--br {
+  bottom: 28px;
+  right: 28px;
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+.atlas-corner--tl {
+  top: 28px;
+  left: 28px;
+  border-left: 1px solid var(--hairline);
+  border-top: 1px solid var(--hairline);
+}
+.atlas-corner--tr {
+  top: 28px;
+  right: 28px;
+  border-right: 1px solid var(--hairline);
+  border-top: 1px solid var(--hairline);
+}
 
 /* ─── Star field (background) ────────────────────────── */
 .atlas-starfield {
@@ -203,7 +239,7 @@
   font-weight: 400;
   font-style: normal;
   font-size: 64px;
-  line-height: 1.0;
+  line-height: 1;
   letter-spacing: -0.01em;
   color: var(--ink);
   margin: 0;
@@ -248,7 +284,9 @@
   color: var(--ink);
   margin: 0;
 }
-.atlas-body--muted { color: var(--muted); }
+.atlas-body--muted {
+  color: var(--muted);
+}
 
 .atlas-mono {
   font-family: var(--font-mono);
@@ -288,7 +326,11 @@
   cursor: pointer;
   white-space: nowrap;
   text-decoration: none;
-  transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+  transition:
+    opacity 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
 }
 
 .atlas-btn--primary {
@@ -418,8 +460,12 @@
   border-radius: 0;
   width: 100%;
 }
-.atlas-input-standalone::placeholder { color: var(--muted); }
-.atlas-input-standalone:focus { border-bottom-color: var(--ink); }
+.atlas-input-standalone::placeholder {
+  color: var(--muted);
+}
+.atlas-input-standalone:focus {
+  border-bottom-color: var(--ink);
+}
 
 /* ─── Chips (Screen 3 personality) ──────────────────── */
 .atlas-chip {
@@ -435,7 +481,10 @@
   font-size: 13px;
   color: var(--muted);
   cursor: pointer;
-  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
 }
 .atlas-chip:hover {
   border-color: var(--ink);
@@ -511,8 +560,13 @@
   justify-content: center;
   border-radius: 4px;
 }
-.atlas-modal-close:hover { color: var(--muted); }
-.atlas-modal-close:disabled { opacity: 0.4; cursor: not-allowed; }
+.atlas-modal-close:hover {
+  color: var(--muted);
+}
+.atlas-modal-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .atlas-modal-title {
   margin: 0 0 8px;
   font-family: var(--font-serif);
@@ -595,8 +649,18 @@
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 64px 64px;
   pointer-events: none;
-  mask-image: radial-gradient(circle at 50% 50%, black 0%, black 55%, transparent 95%);
-  -webkit-mask-image: radial-gradient(circle at 50% 50%, black 0%, black 55%, transparent 95%);
+  mask-image: radial-gradient(
+    circle at 50% 50%,
+    black 0%,
+    black 55%,
+    transparent 95%
+  );
+  -webkit-mask-image: radial-gradient(
+    circle at 50% 50%,
+    black 0%,
+    black 55%,
+    transparent 95%
+  );
 }
 
 .atlas-screen-form {
@@ -621,7 +685,9 @@
   justify-content: center;
 }
 
-.atlas-screen-pad { padding: 90px 24px; }
+.atlas-screen-pad {
+  padding: 90px 24px;
+}
 
 .atlas-divider {
   height: 1px;
@@ -690,7 +756,9 @@
 
 /* Login form widget overrides — scoped to .atlas-page so other pages
    keep their original styles. */
-.atlas-page .login-form-header { margin-bottom: 28px; }
+.atlas-page .login-form-header {
+  margin-bottom: 28px;
+}
 
 .atlas-page .login-form-title {
   font-family: var(--font-serif);
@@ -710,9 +778,17 @@
   margin: 0;
 }
 
-.atlas-page .login-form { display: flex; flex-direction: column; gap: 22px; }
+.atlas-page .login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
 
-.atlas-page .login-field { display: flex; flex-direction: column; gap: 8px; }
+.atlas-page .login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
 .atlas-page .login-field label {
   font-family: var(--font-mono);
@@ -724,9 +800,9 @@
 }
 
 .atlas-page .login-field input,
-.atlas-page .login-field input[type='text'],
-.atlas-page .login-field input[type='email'],
-.atlas-page .login-field input[type='password'],
+.atlas-page .login-field input[type="text"],
+.atlas-page .login-field input[type="email"],
+.atlas-page .login-field input[type="password"],
 .atlas-page .login-field select {
   background: transparent;
   border: 0;
@@ -742,7 +818,9 @@
   transition: border-bottom-color 140ms ease;
 }
 
-.atlas-page .login-field input::placeholder { color: var(--muted); }
+.atlas-page .login-field input::placeholder {
+  color: var(--muted);
+}
 
 .atlas-page .login-field input:focus,
 .atlas-page .login-field select:focus {
@@ -773,8 +851,13 @@
   transition: opacity 140ms ease;
   margin-top: 8px;
 }
-.atlas-page .login-submit:hover:not(:disabled) { opacity: 0.88; }
-.atlas-page .login-submit:disabled { opacity: 0.42; cursor: not-allowed; }
+.atlas-page .login-submit:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.atlas-page .login-submit:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
 
 .atlas-page .login-error {
   display: inline-flex;
@@ -857,9 +940,13 @@
   z-index: 10;
 }
 
-.atlas-display--centered { text-align: center; }
+.atlas-display--centered {
+  text-align: center;
+}
 
-.atlas-name-stack .atlas-tag { margin-bottom: 4px; }
+.atlas-name-stack .atlas-tag {
+  margin-bottom: 4px;
+}
 
 .atlas-name-stack .atlas-display {
   font-size: 56px;
@@ -906,7 +993,9 @@
   text-underline-offset: 4px;
   align-self: center;
 }
-.atlas-text-underline:hover { color: var(--ink); }
+.atlas-text-underline:hover {
+  color: var(--ink);
+}
 
 /* ═══════════════════════════════════════════════════════
    SCREEN 3 — FIRST EMPLOYEE
@@ -959,7 +1048,9 @@
   resize: vertical;
   outline: none;
 }
-.atlas-textarea:focus { border-color: var(--ink); }
+.atlas-textarea:focus {
+  border-color: var(--ink);
+}
 
 .atlas-cta-row {
   display: flex;
@@ -1012,19 +1103,49 @@
    Responsive — collapse splits on narrow viewports
    ═══════════════════════════════════════════════════════ */
 @media (max-width: 1100px) {
-  .atlas-login-split { grid-template-columns: 1fr; }
-  .atlas-login-form-pane { border-left: 0; border-top: 1px solid var(--hairline); padding: 60px 32px; }
+  .atlas-login-split {
+    grid-template-columns: 1fr;
+  }
+  .atlas-login-form-pane {
+    border-left: 0;
+    border-top: 1px solid var(--hairline);
+    padding: 60px 32px;
+  }
 }
 
 @media (max-width: 900px) {
-  .atlas-frame-top { padding: 20px 24px; }
-  .atlas-frame-bottom { padding: 0 24px 20px; font-size: 9px; }
-  .atlas-corner { width: 20px; height: 20px; }
-  .atlas-corner--bl, .atlas-corner--br { bottom: 18px; }
-  .atlas-corner--bl { left: 18px; }
-  .atlas-corner--br { right: 18px; }
-  .atlas-screen-split { grid-template-columns: 1fr; }
-  .atlas-screen-plate { padding: 40px 24px; min-height: 360px; }
-  .atlas-screen-form { padding: 40px 24px; }
-  .atlas-name-stack .atlas-display { font-size: 40px; }
+  .atlas-frame-top {
+    padding: 20px 24px;
+  }
+  .atlas-frame-bottom {
+    padding: 0 24px 20px;
+    font-size: 9px;
+  }
+  .atlas-corner {
+    width: 20px;
+    height: 20px;
+  }
+  .atlas-corner--bl,
+  .atlas-corner--br {
+    bottom: 18px;
+  }
+  .atlas-corner--bl {
+    left: 18px;
+  }
+  .atlas-corner--br {
+    right: 18px;
+  }
+  .atlas-screen-split {
+    grid-template-columns: 1fr;
+  }
+  .atlas-screen-plate {
+    padding: 40px 24px;
+    min-height: 360px;
+  }
+  .atlas-screen-form {
+    padding: 40px 24px;
+  }
+  .atlas-name-stack .atlas-display {
+    font-size: 40px;
+  }
 }

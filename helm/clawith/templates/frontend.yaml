@@ -1,4 +1,4 @@
-{{- if .Values.frontend.enabled }}
+{{- if and (not .Values.g002Deferred) .Values.frontend.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -53,4 +53,3 @@ spec:
     targetPort: http
     name: http
 {{- end }}
-

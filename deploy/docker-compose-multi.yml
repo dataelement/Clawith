@@ -1,5 +1,6 @@
 services:
   postgres:
+    profiles: ["deferred-product"]
     image: postgres:15-alpine
     restart: unless-stopped
     networks:
@@ -7,16 +8,17 @@ services:
     environment:
       POSTGRES_USER: clawith
       POSTGRES_PASSWORD: clawith
-      POSTGRES_DB: clawith
+      POSTGRES_DB: clawith_target
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clawith"]
+      test: ["CMD-SHELL", "pg_isready -U clawith -d clawith_target"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
+    profiles: ["deferred-product"]
     image: redis:7-alpine
     restart: unless-stopped
     networks:
@@ -30,6 +32,7 @@ services:
       retries: 5
 
   minio:
+    profiles: ["deferred-product"]
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -47,6 +50,7 @@ services:
       retries: 5
 
   backend-api:
+    profiles: ["deferred-product"]
     build:
       context: ../backend
       args:
@@ -55,7 +59,7 @@ services:
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith_target
       REDIS_URL: redis://redis:6379/0
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
@@ -114,6 +118,7 @@ services:
         max-file: "3"
 
   backend-trigger:
+    profiles: ["deferred-product"]
     build:
       context: ../backend
       args:
@@ -122,7 +127,7 @@ services:
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith_target
       REDIS_URL: redis://redis:6379/0
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
@@ -175,6 +180,7 @@ services:
         max-file: "3"
 
   frontend:
+    profiles: ["deferred-product"]
     build: ./frontend
     restart: unless-stopped
     ports:

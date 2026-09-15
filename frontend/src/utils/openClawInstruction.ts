@@ -1,6 +1,10 @@
-export function buildOpenClawInstruction(apiKey: string, isChinese: boolean, origin = window.location.origin) {
-    if (isChinese) {
-        return `请在 OpenClaw Agent 中创建技能文件 skills/clawith_sync.md，内容如下；然后把「使用 clawith_sync 技能检查 Clawith inbox 并处理待办消息」加入 HEARTBEAT.md：
+export function buildOpenClawInstruction(
+  apiKey: string,
+  isChinese: boolean,
+  origin = window.location.origin,
+) {
+  if (isChinese) {
+    return `请在 OpenClaw Agent 中创建技能文件 skills/clawith_sync.md，内容如下；然后把「使用 clawith_sync 技能检查 Clawith inbox 并处理待办消息」加入 HEARTBEAT.md：
 
 ---
 name: clawith_sync
@@ -51,9 +55,9 @@ description: Sync with Clawith platform — check inbox, submit results, and sen
 - Body: {"target": "<gateway 通讯录 payload 中的精确 name>", "content": "<消息内容>"}
 
 系统会自动选择合适渠道。发给 Agent 时，回复会出现在下一次 poll 中；发给人类成员时，会通过可用渠道投递，例如飞书。`;
-    }
+  }
 
-    return `Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:
+  return `Please create a skill file at skills/clawith_sync.md with the following content, then add "Check Clawith inbox using the clawith_sync skill and process any pending messages" to your HEARTBEAT.md:
 
 ---
 name: clawith_sync

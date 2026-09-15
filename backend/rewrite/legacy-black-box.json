@@ -1,0 +1,30 @@
+{
+  "fixtures": [
+    {
+      "argv": [
+        "{python}",
+        "-c",
+        "from app.main import app; assert app is not None"
+      ],
+      "cwd": "backend",
+      "id": "application-import",
+      "required": true
+    }
+  ],
+  "environment_from": {
+    "AGENT_DATA_DIR": "CLAWITH_LEGACY_REFERENCE_AGENT_DATA_DIR",
+    "DATABASE_URL": "CLAWITH_LEGACY_REFERENCE_DATABASE_URL",
+    "REDIS_URL": "CLAWITH_LEGACY_REFERENCE_REDIS_URL",
+    "S3_PREFIX": "CLAWITH_LEGACY_REFERENCE_S3_PREFIX",
+    "STORAGE_LOCAL_ROOT": "CLAWITH_LEGACY_REFERENCE_STORAGE_LOCAL_ROOT"
+  },
+  "persistence_namespace": "clawith_legacy_reference",
+  "schema_version": 1,
+  "target_environment_from": {
+    "AGENT_DATA_DIR": "CLAWITH_TARGET_AGENT_DATA_DIR",
+    "DATABASE_URL": "CLAWITH_TARGET_DATABASE_URL",
+    "REDIS_URL": "CLAWITH_TARGET_REDIS_URL",
+    "S3_PREFIX": "CLAWITH_TARGET_S3_PREFIX",
+    "STORAGE_LOCAL_ROOT": "CLAWITH_TARGET_STORAGE_LOCAL_ROOT"
+  }
+}

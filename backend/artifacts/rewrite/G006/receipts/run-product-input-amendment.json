@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G005/receipts/run-contract-amendment.json",
+  "previous_receipt_hash": "34945e6088970649a919dc3427bb492f7d77f92a8d2e6388f9737f4a68cf00a9",
+  "owner_row": {
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
+        "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+      }
+    ],
+    "schema_wave": "S1",
+    "owner_id": "run",
+    "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+    "implementation_phase": 4,
+    "contract_artifact": "specs/backend-product-inputs.md",
+    "state": "contract_approved"
+  }
+}

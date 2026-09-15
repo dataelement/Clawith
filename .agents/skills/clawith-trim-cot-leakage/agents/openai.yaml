@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trim Clawith CoT Leakage"
+  short_description: "Remove reasoning transcripts from durable prose."
+  default_prompt: "Use $clawith-trim-cot-leakage to remove session-relative reasoning from the requested prose."

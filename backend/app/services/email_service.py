@@ -1,23 +1,18 @@
-"""Email service — IMAP/SMTP email operations for agent tools.
+"""Email service — staged IMAP/SMTP provider operations.
 
 Supports all major email providers via preset configurations.
-Each agent stores its own email credentials in per-agent tool config.
+Callers supply explicit provider connection settings.
 """
 
+import email as email_lib
 import imaplib
 import smtplib
 import ssl
-import email as email_lib
-import uuid
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from email.header import decode_header
-from email.utils import parseaddr, make_msgid
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
+from email.header import decode_header
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import make_msgid, parseaddr
 
 from app.core.email import force_ipv4, send_smtp_email
 
@@ -156,10 +151,7 @@ async def send_email(
     to: str,
     subject: str,
     body: str,
-    cc: Optional[str] = None,
-    attachments: Optional[list[str]] = None,
-    workspace_path: Optional[Path] = None,
-    agent_id: Optional[uuid.UUID] = None,
+    cc: str | None = None,
 ) -> str:
     """Send an email via SMTP.
 
@@ -169,9 +161,6 @@ async def send_email(
         subject: Email subject
         body: Email body text
         cc: CC recipients, comma-separated
-        attachments: List of workspace-relative file paths to attach
-        workspace_path: Agent workspace root for resolving attachment paths
-        agent_id: Optional UUID of the agent for retrieving files from storage
     """
     cfg = resolve_config(config)
     addr = cfg["email_address"]
@@ -187,46 +176,11 @@ async def send_email(
     if cc:
         msg["Cc"] = cc
     msg["Message-ID"] = make_msgid()
-    msg["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
+    msg["Date"] = datetime.now().strftime(  # noqa: DTZ005 -- preserve the existing local-time header
+        "%a, %d %b %Y %H:%M:%S %z"
+    )
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    # Attach files
-    if attachments and workspace_path:
-        from app.services.storage import get_storage_backend, normalize_storage_key
-        storage = get_storage_backend()
-
-        for rel_path in attachments:
-            clean_rel = rel_path.replace("\\", "/").strip().lstrip("/")
-            prefix = str(agent_id) if agent_id else workspace_path.name
-            storage_key = normalize_storage_key(f"{prefix}/{clean_rel}")
-            file_bytes = None
-            filename = Path(clean_rel).name
-
-            # 1. Try to read from the storage backend (e.g. S3 or local storage)
-            try:
-                if await storage.exists(storage_key) and await storage.is_file(storage_key):
-                    file_bytes = await storage.read_bytes(storage_key)
-            except Exception:
-                pass
-
-            # 2. Fall back to local disk if not found in storage backend
-            if file_bytes is None:
-                full_path = workspace_path / rel_path
-                if full_path.exists() and full_path.is_file():
-                    try:
-                        with open(full_path, "rb") as f:
-                            file_bytes = f.read()
-                        filename = full_path.name
-                    except Exception:
-                        pass
-
-            if file_bytes is not None:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(file_bytes)
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", "attachment", filename=filename)
-                msg.attach(part)
 
     try:
         recipients = [r.strip() for r in to.split(",")]
@@ -248,14 +202,14 @@ async def send_email(
         return f"✅ Email sent to {to}" + (f" (CC: {cc})" if cc else "")
     except smtplib.SMTPAuthenticationError:
         return "❌ SMTP authentication failed. Please check your email address and authorization code."
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- the public adapter normalizes all SMTP failures
         return f"❌ Failed to send email: {str(e)[:200]}"
 
 
 async def read_emails(
     config: dict,
     limit: int = 10,
-    search: Optional[str] = None,
+    search: str | None = None,
     folder: str = "INBOX",
 ) -> str:
     """Read emails from IMAP mailbox.
@@ -301,7 +255,10 @@ async def read_emails(
                 _, msg_data = mail.fetch(mid, "(RFC822)")
                 if not msg_data or not msg_data[0]:
                     continue
-                raw = msg_data[0][1]
+                first_item = msg_data[0]
+                if not isinstance(first_item, tuple) or not isinstance(first_item[1], bytes):
+                    continue
+                raw = first_item[1]
                 msg = email_lib.message_from_bytes(raw)
 
                 from_addr = _decode_header_value(msg.get("From", ""))
@@ -330,7 +287,7 @@ async def read_emails(
         if "LOGIN" in err.upper() or "AUTH" in err.upper():
             return "❌ IMAP authentication failed. Please check your email address and authorization code."
         return f"❌ IMAP error: {err[:200]}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- the public adapter normalizes all IMAP failures
         return f"❌ Failed to read emails: {str(e)[:200]}"
 
 
@@ -371,7 +328,12 @@ async def reply_email(
                 return f"❌ Original email not found with Message-ID: {message_id}"
 
             _, msg_data = mail.fetch(msg_ids[0], "(RFC822)")
-            raw = msg_data[0][1]
+            if not msg_data:
+                return f"❌ Original email could not be fetched: {message_id}"
+            first_item = msg_data[0]
+            if not isinstance(first_item, tuple) or not isinstance(first_item[1], bytes):
+                return f"❌ Original email returned invalid content: {message_id}"
+            raw = first_item[1]
             original = email_lib.message_from_bytes(raw)
             original_from = original.get("From", "")
             original_subject = _decode_header_value(original.get("Subject", ""))
@@ -404,7 +366,7 @@ async def reply_email(
 
         return f"✅ Reply sent to {reply_msg['To']} (Subject: {reply_subject})"
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- the public adapter normalizes fetch and send failures
         return f"❌ Failed to reply: {str(e)[:200]}"
 
 
@@ -435,7 +397,7 @@ async def test_connection(config: dict) -> dict:
     except imaplib.IMAP4.error as e:
         result["ok"] = False
         result["imap"] = f"❌ IMAP failed: {str(e)[:150]}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- connection tests report provider failures as data
         result["ok"] = False
         result["imap"] = f"❌ IMAP error: {str(e)[:150]}"
 
@@ -456,7 +418,7 @@ async def test_connection(config: dict) -> dict:
     except smtplib.SMTPAuthenticationError:
         result["ok"] = False
         result["smtp"] = "❌ SMTP authentication failed"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- connection tests report provider failures as data
         result["ok"] = False
         result["smtp"] = f"❌ SMTP error: {str(e)[:150]}"
 

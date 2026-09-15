@@ -1,0 +1,12 @@
+# Agent owner
+
+This module owns the Tenant-scoped Agent core record: identity, presentation fields, Soul, timezone, required Model binding, enabled/archive state, and creation attribution.
+
+- `models.py` and `repository.py` are private. Other owners import only `public.py`.
+- Agent creation resolves an explicit or current Tenant default Model once and persists the resulting Model ID. Later default changes never rewrite existing Agents.
+- Creation and management require a captured Tenant administrator Principal. Soul is required and timezone values use the IANA timezone database.
+- `get_for_execution` exposes the same immutable Agent configuration to a human caller whose login Principal already permits that Agent. It checks the captured IDs, explicit Tenant and Agent availability without querying Permission or changing management authorization. `get` and management mutations remain administrator-only.
+- Update distinguishes omitted optional presentation fields from explicit `None`; `None` clears avatar, description, or greeting.
+- Archival disables the Agent and preserves the record. This owner exposes no hard-delete operation and creates no Workspace, Tool, capability, or permission grant.
+- Permission may consume only the bounded, explicitly Tenant-scoped `AgentMetadataView` queries. It does not import Agent persistence.
+- Product invitation candidates use `list_visible_metadata`, which filters captured Agent access in SQL before pagination and returns only active metadata. Group roster membership does not create visibility grants.

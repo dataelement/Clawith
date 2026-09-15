@@ -1,4 +1,3 @@
-import asyncio
 from app.services.sandbox.config import SandboxConfig
 
 config = {"allow_network": True}

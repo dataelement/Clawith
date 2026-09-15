@@ -1,0 +1,10 @@
+[
+  {"id": "declarative_base_class", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import DeclarativeBase\nclass AgentBase(DeclarativeBase):\n    pass\n"},
+  {"id": "declarative_base_class_alias", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import DeclarativeBase as OrmBase\nclass AgentBase(OrmBase):\n    pass\n"},
+  {"id": "metadata_call", "path": "app/modules/agent/model.py", "source": "from sqlalchemy import MetaData\nmetadata = MetaData()\n"},
+  {"id": "metadata_module_alias", "path": "app/modules/agent/model.py", "source": "import sqlalchemy as sa\nmetadata = sa.MetaData()\n"},
+  {"id": "registry_call", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import registry\nmapper_registry = registry()\n"},
+  {"id": "registry_alias", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import registry as make_registry\nmapper_registry = make_registry()\n"},
+  {"id": "declarative_base_call", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import declarative_base\nBase = declarative_base()\n"},
+  {"id": "declarative_base_alias", "path": "app/modules/agent/model.py", "source": "from sqlalchemy.orm import declarative_base as make_base\nBase = make_base()\n"}
+]

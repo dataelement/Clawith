@@ -1,0 +1,6 @@
+[
+  {"id": "direct", "path": "app/modules/auth/application.py", "source": "from fastapi import FastAPI\napp = FastAPI()\n"},
+  {"id": "symbol_alias", "path": "app/modules/auth/application.py", "source": "from fastapi import FastAPI as Api\napp = Api()\n"},
+  {"id": "module_alias", "path": "app/modules/auth/application.py", "source": "import fastapi as fa\napp = fa.FastAPI()\n"},
+  {"id": "assigned_alias", "path": "app/modules/auth/application.py", "source": "from fastapi import FastAPI\nApi = FastAPI\napp = Api()\n"}
+]

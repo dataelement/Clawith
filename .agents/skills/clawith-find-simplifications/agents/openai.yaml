@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clawith Simplifications"
+  short_description: "Find safe deletion, reuse, and boundary repairs."
+  default_prompt: "Use $clawith-find-simplifications to find safe simplifications in the requested scope."

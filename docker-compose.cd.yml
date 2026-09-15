@@ -7,11 +7,12 @@
 
 services:
   backend-api:
+    profiles: ["deferred-product"]
     image: clawith-backend:${IMAGE_TAG:?IMAGE_TAG is required}
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith_target
       REDIS_URL: redis://redis:6379/0
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
@@ -57,11 +58,12 @@ services:
         max-file: "3"
 
   backend-worker:
+    profiles: ["deferred-product"]
     image: clawith-backend:${IMAGE_TAG:?IMAGE_TAG is required}
     restart: unless-stopped
     command: ["/bin/bash", "/app/entrypoint.sh"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith
+      DATABASE_URL: postgresql+asyncpg://clawith:clawith@postgres:5432/clawith_target
       REDIS_URL: redis://redis:6379/0
       AGENT_DATA_DIR: /data/agents
       AGENT_TEMPLATE_DIR: /app/agent_template
@@ -105,6 +107,7 @@ services:
         max-file: "3"
 
   frontend:
+    profiles: ["deferred-product"]
     image: clawith-frontend:${IMAGE_TAG:?IMAGE_TAG is required}
     restart: unless-stopped
     ports:

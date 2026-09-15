@@ -1,4 +1,4 @@
-{{- if .Values.backend.enabled }}
+{{- if and (not .Values.g002Deferred) .Values.backend.enabled }}
 {{- if and .Values.backend.persistence.enabled (not .Values.backend.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim

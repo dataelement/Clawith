@@ -1,0 +1,16 @@
+scope: G003 Audit amendment and G004 contract preparation; not G004 execution-dependency completion
+verified_source_head: 085a40b79e936baaddb20683a14f15f06ff4df6f
+verified_at: 2026-09-07T03:10:04Z
+command: bash scripts/ci-g003-gates.sh
+exit_code: 0
+architecture: 1690 passed, 1 warning in 75.23s
+backend: 1927 passed, 4 warnings in 89.80s
+foundation_postgresql: 86 passed in 11.39s
+ruff: app tests passed
+pyright: configured app checks passed, 0 errors
+audit_review: independent code/security COMMENT with no current-interface blocker; independent architecture APPROVE/CLEAR
+audit_implementation: coupled append port removed; non-blocking observation interface; bounded queue and independent consumer transactions; consumer closes before database disposal
+audit_boundary: existing foreign keys still restrict physical deletion; current business APIs archive/disable, so future delete contracts must address historical references
+audit_delivery: best effort; full/closed/invalid/failed writes are counted and dropped; no lossless or exactly-once guarantee
+contracts: S2 prerequisite owners approved; original G003 approvals retained; reviewed changes have chained amendment receipts
+not_verified: S2 schema, Workspace/Tool/Market/Provider execution, hosted CI, migrations, Sandbox, Runtime/product E2E, frontend or 50-execution load

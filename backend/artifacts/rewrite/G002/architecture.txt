@@ -1,0 +1,7 @@
+goal: G002
+validation: architecture
+command: uv run --extra dev pytest tests/architecture
+verified_source_head: 085a40b79e936baaddb20683a14f15f06ff4df6f
+verified_at: 2026-09-07T03:10:04Z
+exit_code: 0
+result: 1690 passed, 1 Starlette deprecation warning in 75.23s

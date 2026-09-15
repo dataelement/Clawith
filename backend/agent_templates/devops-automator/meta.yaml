@@ -8,8 +8,3 @@ capability_bullets:
   - "Runbooks & on-call — playbooks for the top 10 things that break"
 default_skills:
   - "mcp-installer"
-default_autonomy_policy:
-  read_files: "L1"
-  write_workspace_files: "L1"
-  delete_files: "L2"
-  send_feishu_message: "L2"

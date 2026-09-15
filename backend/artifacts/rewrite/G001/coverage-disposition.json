@@ -1,0 +1,11 @@
+{
+  "goal": "G001",
+  "validation": "coverage-disposition-state",
+  "command": "uv run python scripts/rewrite_inventory.py check --manifest rewrite/coverage.json --require-zero-unreviewed --require-zero-disposition-missing",
+  "verified_source_head": "085a40b79e936baaddb20683a14f15f06ff4df6f",
+  "verified_at": "2026-09-07T03:10:04Z",
+  "exit_code": 0,
+  "unreviewed": 0,
+  "disposition_missing": 0,
+  "nonterminal": 401
+}

@@ -7,408 +7,555 @@
  * Linear-style design with card-based credential list and modal editor.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { credentialApi } from '../services/api';
+import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { caughtErrorMessage } from "../services/apiError";
+import { credentialApi } from "../services/api";
+import type {
+  Credential,
+  CredentialMutationRequest,
+} from "../services/apiContracts";
 
 /* ── Types ── */
-interface Credential {
-    id: string;
-    agent_id: string;
-    credential_type: string;
-    platform: string;
-    display_name: string;
-    status: string;
-    cookies_updated_at: string | null;
-    last_login_at: string | null;
-    last_injected_at: string | null;
-    has_cookies: boolean;
-    created_at: string;
-    updated_at: string;
-}
-
 interface FormData {
-    credential_type: string;
-    platform: string;
-    display_name: string;
-    cookies_json: string;
+  credential_type: string;
+  platform: string;
+  display_name: string;
+  cookies_json: string;
 }
 
 const EMPTY_FORM: FormData = {
-    credential_type: 'website',
-    platform: '',
-    display_name: '',
-    cookies_json: '',
+  credential_type: "website",
+  platform: "",
+  display_name: "",
+  cookies_json: "",
 };
 
 /* ── Icons ── */
 const PlusIcon = (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-        <path d="M8 3v10M3 8h10" />
-    </svg>
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+  >
+    <path d="M8 3v10M3 8h10" />
+  </svg>
 );
 
 const KeyIcon = (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10.5 2a3.5 3.5 0 0 0-3.23 4.84L2 12.11V14h1.89l.53-.53V12.5H5.5v-.53l.53-.53H7v-1.06l.53-.53h.63A3.5 3.5 0 1 0 10.5 2z" />
-        <circle cx="11" cy="5" r="0.8" fill="currentColor" stroke="none" />
-    </svg>
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M10.5 2a3.5 3.5 0 0 0-3.23 4.84L2 12.11V14h1.89l.53-.53V12.5H5.5v-.53l.53-.53H7v-1.06l.53-.53h.63A3.5 3.5 0 1 0 10.5 2z" />
+    <circle cx="11" cy="5" r="0.8" fill="currentColor" stroke="none" />
+  </svg>
 );
 
 const TrashIcon = (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9" />
-    </svg>
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9" />
+  </svg>
 );
 
 const EditIcon = (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M11 2.5a1.41 1.41 0 0 1 2 2L5.5 12 2 13l1-3.5z" />
-    </svg>
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M11 2.5a1.41 1.41 0 0 1 2 2L5.5 12 2 13l1-3.5z" />
+  </svg>
 );
 
 const CloseIcon = (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-        <path d="M4 4l8 8M12 4l-8 8" />
-    </svg>
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+  >
+    <path d="M4 4l8 8M12 4l-8 8" />
+  </svg>
 );
 
 const CookieIcon = (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-        <circle cx="8" cy="8" r="6" />
-        <circle cx="6" cy="6" r="1" fill="currentColor" stroke="none" />
-        <circle cx="10" cy="7" r="0.8" fill="currentColor" stroke="none" />
-        <circle cx="7" cy="10" r="0.8" fill="currentColor" stroke="none" />
-    </svg>
+  <svg
+    width="12"
+    height="12"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+  >
+    <circle cx="8" cy="8" r="6" />
+    <circle cx="6" cy="6" r="1" fill="currentColor" stroke="none" />
+    <circle cx="10" cy="7" r="0.8" fill="currentColor" stroke="none" />
+    <circle cx="7" cy="10" r="0.8" fill="currentColor" stroke="none" />
+  </svg>
 );
 
 /* ── Component ── */
 interface Props {
-    agentId: string;
+  agentId: string;
 }
 
 export default function AgentCredentials({ agentId }: Props) {
-    const { t } = useTranslation();
-    const [credentials, setCredentials] = useState<Credential[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
+  const { t } = useTranslation();
+  const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
-    // Modal state
-    const [showModal, setShowModal] = useState(false);
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [form, setForm] = useState<FormData>({ ...EMPTY_FORM });
-    const [saving, setSaving] = useState(false);
-    const [formError, setFormError] = useState('');
+  // Modal state
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<FormData>({ ...EMPTY_FORM });
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
 
-    // Delete confirmation
-    const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Delete confirmation
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-    // Status badge styles - using translation keys
-    const getStatusConfig = useCallback((status: string) => {
-        const configs: Record<string, { bg: string; text: string; labelKey: string }> = {
-            active: { bg: 'rgba(52, 199, 89, 0.12)', text: '#34c759', labelKey: 'agent.credentials.status.active' },
-            expired: { bg: 'rgba(255, 149, 0, 0.12)', text: '#ff9500', labelKey: 'agent.credentials.status.expired' },
-            needs_relogin: { bg: 'rgba(255, 59, 48, 0.12)', text: '#ff3b30', labelKey: 'agent.credentials.status.needs_relogin' },
-        };
-        return configs[status] || configs.active;
-    }, []);
-
-    // Relative time helper using translations
-    const timeAgo = useCallback((dateStr: string | null): string => {
-        if (!dateStr) return '';
-        const diff = Date.now() - new Date(dateStr).getTime();
-        const mins = Math.floor(diff / 60000);
-        if (mins < 1) return t('agent.credentials.timeAgo.justNow');
-        if (mins < 60) return t('agent.credentials.timeAgo.minutes', { count: mins });
-        const hours = Math.floor(mins / 60);
-        if (hours < 24) return t('agent.credentials.timeAgo.hours', { count: hours });
-        const days = Math.floor(hours / 24);
-        return t('agent.credentials.timeAgo.days', { count: days });
-    }, [t]);
-
-    const fetchCredentials = useCallback(async () => {
-        try {
-            setLoading(true);
-            const data = await credentialApi.list(agentId);
-            setCredentials(data);
-        } catch (e: any) {
-            setError(e.message || t('agent.credentials.error'));
-        } finally {
-            setLoading(false);
-        }
-    }, [agentId, t]);
-
-    useEffect(() => {
-        fetchCredentials();
-    }, [fetchCredentials]);
-
-    const handleAdd = () => {
-        setEditingId(null);
-        setForm({ ...EMPTY_FORM });
-        setFormError('');
-        setShowModal(true);
+  // Status badge styles - using translation keys
+  const getStatusConfig = useCallback((status: string) => {
+    const configs: Record<
+      string,
+      { bg: string; text: string; labelKey: string }
+    > = {
+      active: {
+        bg: "rgba(52, 199, 89, 0.12)",
+        text: "#34c759",
+        labelKey: "agent.credentials.status.active",
+      },
+      expired: {
+        bg: "rgba(255, 149, 0, 0.12)",
+        text: "#ff9500",
+        labelKey: "agent.credentials.status.expired",
+      },
+      needs_relogin: {
+        bg: "rgba(255, 59, 48, 0.12)",
+        text: "#ff3b30",
+        labelKey: "agent.credentials.status.needs_relogin",
+      },
     };
+    return configs[status] || configs.active;
+  }, []);
 
-    const handleEdit = (cred: Credential) => {
-        setEditingId(cred.id);
-        setForm({
-            credential_type: cred.credential_type,
-            platform: cred.platform,
-            display_name: cred.display_name,
-            cookies_json: '', // Never pre-fill cookies
-        });
-        setFormError('');
-        setShowModal(true);
+  // Relative time helper using translations
+  const timeAgo = useCallback(
+    (dateStr: string | null): string => {
+      if (!dateStr) return "";
+      const diff = Date.now() - new Date(dateStr).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return t("agent.credentials.timeAgo.justNow");
+      if (mins < 60)
+        return t("agent.credentials.timeAgo.minutes", { count: mins });
+      const hours = Math.floor(mins / 60);
+      if (hours < 24)
+        return t("agent.credentials.timeAgo.hours", { count: hours });
+      const days = Math.floor(hours / 24);
+      return t("agent.credentials.timeAgo.days", { count: days });
+    },
+    [t],
+  );
+
+  const fetchCredentials = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await credentialApi.list(agentId);
+      setCredentials(data);
+    } catch (error) {
+      setError(caughtErrorMessage(error) || t("agent.credentials.error"));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId, t]);
+
+  useEffect(() => {
+    let active = true;
+    void credentialApi
+      .list(agentId)
+      .then((data) => {
+        if (!active) return;
+        setCredentials(data);
+        setLoading(false);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setError(caughtErrorMessage(error) || t("agent.credentials.error"));
+        setLoading(false);
+      });
+    return () => {
+      active = false;
     };
+  }, [agentId, t]);
 
-    const handleSave = async () => {
-        if (!form.platform.trim()) {
-            setFormError(t('agent.credentials.platformRequired'));
-            return;
+  const handleAdd = () => {
+    setEditingId(null);
+    setForm({ ...EMPTY_FORM });
+    setFormError("");
+    setShowModal(true);
+  };
+
+  const handleEdit = (cred: Credential) => {
+    setEditingId(cred.id);
+    setForm({
+      credential_type: cred.credential_type,
+      platform: cred.platform,
+      display_name: cred.display_name,
+      cookies_json: "", // Never pre-fill cookies
+    });
+    setFormError("");
+    setShowModal(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.platform.trim()) {
+      setFormError(t("agent.credentials.platformRequired"));
+      return;
+    }
+
+    // Validate cookies JSON if provided
+    if (form.cookies_json.trim()) {
+      try {
+        const parsed = JSON.parse(form.cookies_json);
+        if (!Array.isArray(parsed)) {
+          setFormError(t("agent.credentials.cookiesInvalid"));
+          return;
         }
+      } catch {
+        setFormError(t("agent.credentials.cookiesJsonInvalid"));
+        return;
+      }
+    }
 
-        // Validate cookies JSON if provided
-        if (form.cookies_json.trim()) {
-            try {
-                const parsed = JSON.parse(form.cookies_json);
-                if (!Array.isArray(parsed)) {
-                    setFormError(t('agent.credentials.cookiesInvalid'));
-                    return;
-                }
-            } catch {
-                setFormError(t('agent.credentials.cookiesJsonInvalid'));
-                return;
-            }
-        }
+    setSaving(true);
+    setFormError("");
 
-        setSaving(true);
-        setFormError('');
+    try {
+      // Build payload — only include non-empty fields for updates
+      const payload: CredentialMutationRequest = {
+        credential_type: form.credential_type,
+        platform: form.platform.trim(),
+        display_name: form.display_name.trim(),
+      };
+      if (form.cookies_json.trim())
+        payload.cookies_json = form.cookies_json.trim();
 
-        try {
-            // Build payload — only include non-empty fields for updates
-            const payload: any = {
-                credential_type: form.credential_type,
-                platform: form.platform.trim(),
-                display_name: form.display_name.trim(),
-            };
-            if (form.cookies_json.trim()) payload.cookies_json = form.cookies_json.trim();
+      if (editingId) {
+        await credentialApi.update(agentId, editingId, payload);
+      } else {
+        await credentialApi.create(agentId, payload);
+      }
 
-            if (editingId) {
-                await credentialApi.update(agentId, editingId, payload);
-            } else {
-                await credentialApi.create(agentId, payload);
-            }
+      setShowModal(false);
+      await fetchCredentials();
+    } catch (error) {
+      setFormError(
+        caughtErrorMessage(error) || t("agent.credentials.saveError"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
 
-            setShowModal(false);
-            await fetchCredentials();
-        } catch (e: any) {
-            setFormError(e.message || t('agent.credentials.saveError'));
-        } finally {
-            setSaving(false);
-        }
-    };
+  const handleDelete = async (id: string) => {
+    try {
+      await credentialApi.delete(agentId, id);
+      setDeletingId(null);
+      await fetchCredentials();
+    } catch (error) {
+      setError(caughtErrorMessage(error) || t("agent.credentials.deleteError"));
+    }
+  };
 
-    const handleDelete = async (id: string) => {
-        try {
-            await credentialApi.delete(agentId, id);
-            setDeletingId(null);
-            await fetchCredentials();
-        } catch (e: any) {
-            setError(e.message || t('agent.credentials.deleteError'));
-        }
-    };
+  return (
+    <div className="credentials-section">
+      {/* Header */}
+      <div className="credentials-header">
+        <div className="credentials-title">
+          {KeyIcon}
+          <span>{t("agent.credentials.title")}</span>
+          <span className="credentials-count">{credentials.length}</span>
+        </div>
+        <button className="credentials-add-btn" onClick={handleAdd}>
+          {PlusIcon}
+          <span>{t("agent.credentials.add")}</span>
+        </button>
+      </div>
 
-    return (
-        <div className="credentials-section">
-            {/* Header */}
-            <div className="credentials-header">
-                <div className="credentials-title">
-                    {KeyIcon}
-                    <span>{t('agent.credentials.title')}</span>
-                    <span className="credentials-count">{credentials.length}</span>
+      {/* Description */}
+      <p className="credentials-desc">{t("agent.credentials.description")}</p>
+
+      {/* Error */}
+      {error && <div className="credentials-error">{error}</div>}
+
+      {/* Credential list */}
+      {loading ? (
+        <div className="credentials-loading">
+          {t("agent.credentials.loading")}
+        </div>
+      ) : credentials.length === 0 ? (
+        <div className="credentials-empty">
+          {KeyIcon}
+          <span>{t("agent.credentials.empty")}</span>
+        </div>
+      ) : (
+        <div className="credentials-list">
+          {credentials.map((cred) => {
+            const statusConfig = getStatusConfig(cred.status);
+            return (
+              <div key={cred.id} className="credential-card">
+                <div className="credential-card-top">
+                  <div className="credential-platform">{cred.platform}</div>
+                  <span
+                    className="credential-status-badge"
+                    style={{
+                      background: statusConfig.bg,
+                      color: statusConfig.text,
+                    }}
+                  >
+                    {t(statusConfig.labelKey)}
+                  </span>
                 </div>
-                <button className="credentials-add-btn" onClick={handleAdd}>
-                    {PlusIcon}
-                    <span>{t('agent.credentials.add')}</span>
-                </button>
+                {cred.display_name && (
+                  <div className="credential-display-name">
+                    {cred.display_name}
+                  </div>
+                )}
+                <div className="credential-meta">
+                  {cred.has_cookies && (
+                    <span className="credential-meta-tag">
+                      {CookieIcon}
+                      {t("agent.credentials.meta.cookies")}{" "}
+                      {cred.cookies_updated_at
+                        ? `(${timeAgo(cred.cookies_updated_at)})`
+                        : ""}
+                    </span>
+                  )}
+                  {cred.last_injected_at && (
+                    <span className="credential-meta-tag">
+                      {t("agent.credentials.meta.injected")}{" "}
+                      {timeAgo(cred.last_injected_at)}
+                    </span>
+                  )}
+                </div>
+                <div className="credential-actions">
+                  <button
+                    className="credential-action-btn"
+                    onClick={() => handleEdit(cred)}
+                    title={t("agent.credentials.actions.edit")}
+                  >
+                    {EditIcon}
+                  </button>
+                  <button
+                    className="credential-action-btn credential-action-danger"
+                    onClick={() => setDeletingId(cred.id)}
+                    title={t("agent.credentials.actions.delete")}
+                  >
+                    {TrashIcon}
+                  </button>
+                </div>
+
+                {/* Delete confirmation */}
+                {deletingId === cred.id && (
+                  <div className="credential-delete-confirm">
+                    <span>
+                      {t("agent.credentials.deleteConfirm.title", {
+                        platform: cred.platform,
+                      })}
+                    </span>
+                    <div className="credential-delete-actions">
+                      <button onClick={() => setDeletingId(null)}>
+                        {t("agent.credentials.actions.cancel")}
+                      </button>
+                      <button
+                        className="credential-delete-yes"
+                        onClick={() => handleDelete(cred.id)}
+                      >
+                        {t("agent.credentials.deleteConfirm.confirm")}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add/Edit Modal */}
+      {showModal && (
+        <div
+          className="credential-modal-overlay"
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="credential-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="credential-modal-header">
+              <h3>
+                {editingId
+                  ? t("agent.credentials.modal.editTitle")
+                  : t("agent.credentials.modal.addTitle")}
+              </h3>
+              <button
+                className="credential-modal-close"
+                onClick={() => setShowModal(false)}
+              >
+                {CloseIcon}
+              </button>
             </div>
 
-            {/* Description */}
-            <p className="credentials-desc">
-                {t('agent.credentials.description')}
-            </p>
+            <div className="credential-modal-body">
+              {formError && (
+                <div className="credential-form-error">{formError}</div>
+              )}
 
-            {/* Error */}
-            {error && <div className="credentials-error">{error}</div>}
+              <label className="credential-field">
+                <span className="credential-field-label">
+                  {t("agent.credentials.modal.platform")}{" "}
+                  <span style={{ color: "var(--error)" }}>*</span>
+                </span>
+                <input
+                  type="text"
+                  value={form.platform}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, platform: e.target.value }))
+                  }
+                  placeholder={t("agent.credentials.modal.platformPlaceholder")}
+                  autoFocus
+                />
+              </label>
 
-            {/* Credential list */}
-            {loading ? (
-                <div className="credentials-loading">{t('agent.credentials.loading')}</div>
-            ) : credentials.length === 0 ? (
-                <div className="credentials-empty">
-                    {KeyIcon}
-                    <span>{t('agent.credentials.empty')}</span>
-                </div>
-            ) : (
-                <div className="credentials-list">
-                    {credentials.map((cred) => {
-                        const statusConfig = getStatusConfig(cred.status);
-                        return (
-                            <div key={cred.id} className="credential-card">
-                                <div className="credential-card-top">
-                                    <div className="credential-platform">
-                                        {cred.platform}
-                                    </div>
-                                    <span
-                                        className="credential-status-badge"
-                                        style={{ background: statusConfig.bg, color: statusConfig.text }}
-                                    >
-                                        {t(statusConfig.labelKey)}
-                                    </span>
-                                </div>
-                                {cred.display_name && (
-                                    <div className="credential-display-name">{cred.display_name}</div>
-                                )}
-                                <div className="credential-meta">
-                                    {cred.has_cookies && (
-                                        <span className="credential-meta-tag">
-                                            {CookieIcon}
-                                            {t('agent.credentials.meta.cookies')} {cred.cookies_updated_at ? `(${timeAgo(cred.cookies_updated_at)})` : ''}
-                                        </span>
-                                    )}
-                                    {cred.last_injected_at && (
-                                        <span className="credential-meta-tag">
-                                            {t('agent.credentials.meta.injected')} {timeAgo(cred.last_injected_at)}
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="credential-actions">
-                                    <button
-                                        className="credential-action-btn"
-                                        onClick={() => handleEdit(cred)}
-                                        title={t('agent.credentials.actions.edit')}
-                                    >
-                                        {EditIcon}
-                                    </button>
-                                    <button
-                                        className="credential-action-btn credential-action-danger"
-                                        onClick={() => setDeletingId(cred.id)}
-                                        title={t('agent.credentials.actions.delete')}
-                                    >
-                                        {TrashIcon}
-                                    </button>
-                                </div>
+              <label className="credential-field">
+                <span className="credential-field-label">
+                  {t("agent.credentials.modal.displayName")}
+                </span>
+                <input
+                  type="text"
+                  value={form.display_name}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, display_name: e.target.value }))
+                  }
+                  placeholder={t(
+                    "agent.credentials.modal.displayNamePlaceholder",
+                  )}
+                />
+              </label>
 
-                                {/* Delete confirmation */}
-                                {deletingId === cred.id && (
-                                    <div className="credential-delete-confirm">
-                                        <span>{t('agent.credentials.deleteConfirm.title', { platform: cred.platform })}</span>
-                                        <div className="credential-delete-actions">
-                                            <button onClick={() => setDeletingId(null)}>{t('agent.credentials.actions.cancel')}</button>
-                                            <button
-                                                className="credential-delete-yes"
-                                                onClick={() => handleDelete(cred.id)}
-                                            >
-                                                {t('agent.credentials.deleteConfirm.confirm')}
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            )}
+              <label className="credential-field">
+                <span className="credential-field-label">
+                  {t("agent.credentials.modal.type")}
+                </span>
+                <select
+                  value={form.credential_type}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, credential_type: e.target.value }))
+                  }
+                >
+                  <option value="website">
+                    {t("agent.credentials.modal.typeOptions.website")}
+                  </option>
+                  <option value="email">
+                    {t("agent.credentials.modal.typeOptions.email")}
+                  </option>
+                  <option value="social">
+                    {t("agent.credentials.modal.typeOptions.social")}
+                  </option>
+                  <option value="api_key">
+                    {t("agent.credentials.modal.typeOptions.api_key")}
+                  </option>
+                </select>
+              </label>
 
-            {/* Add/Edit Modal */}
-            {showModal && (
-                <div className="credential-modal-overlay" onClick={() => setShowModal(false)}>
-                    <div className="credential-modal" onClick={(e) => e.stopPropagation()}>
-                        <div className="credential-modal-header">
-                            <h3>{editingId ? t('agent.credentials.modal.editTitle') : t('agent.credentials.modal.addTitle')}</h3>
-                            <button className="credential-modal-close" onClick={() => setShowModal(false)}>
-                                {CloseIcon}
-                            </button>
-                        </div>
+              <label className="credential-field">
+                <span className="credential-field-label">
+                  {t("agent.credentials.modal.cookies")}
+                  {editingId && (
+                    <span className="credential-field-hint">
+                      {t("agent.credentials.modal.cookiesHint")}
+                    </span>
+                  )}
+                </span>
+                <textarea
+                  value={form.cookies_json}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, cookies_json: e.target.value }))
+                  }
+                  placeholder={t("agent.credentials.modal.cookiesPlaceholder")}
+                  rows={6}
+                />
+                <span className="credential-field-help">
+                  {t("agent.credentials.modal.cookiesHelp")}{" "}
+                  <a
+                    href="https://cookie-editor.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {t("agent.credentials.modal.cookiesHelpLink")}
+                  </a>{" "}
+                  {t("agent.credentials.modal.cookiesHelpSuffix")}
+                </span>
+              </label>
+            </div>
 
-                        <div className="credential-modal-body">
-                            {formError && <div className="credential-form-error">{formError}</div>}
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">{t('agent.credentials.modal.platform')} <span style={{ color: 'var(--error)' }}>*</span></span>
-                                <input
-                                    type="text"
-                                    value={form.platform}
-                                    onChange={(e) => setForm(f => ({ ...f, platform: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.platformPlaceholder')}
-                                    autoFocus
-                                />
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">{t('agent.credentials.modal.displayName')}</span>
-                                <input
-                                    type="text"
-                                    value={form.display_name}
-                                    onChange={(e) => setForm(f => ({ ...f, display_name: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.displayNamePlaceholder')}
-                                />
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">{t('agent.credentials.modal.type')}</span>
-                                <select
-                                    value={form.credential_type}
-                                    onChange={(e) => setForm(f => ({ ...f, credential_type: e.target.value }))}
-                                >
-                                    <option value="website">{t('agent.credentials.modal.typeOptions.website')}</option>
-                                    <option value="email">{t('agent.credentials.modal.typeOptions.email')}</option>
-                                    <option value="social">{t('agent.credentials.modal.typeOptions.social')}</option>
-                                    <option value="api_key">{t('agent.credentials.modal.typeOptions.api_key')}</option>
-                                </select>
-                            </label>
-
-                            <label className="credential-field">
-                                <span className="credential-field-label">
-                                    {t('agent.credentials.modal.cookies')}
-                                    {editingId && <span className="credential-field-hint">{t('agent.credentials.modal.cookiesHint')}</span>}
-                                </span>
-                                <textarea
-                                    value={form.cookies_json}
-                                    onChange={(e) => setForm(f => ({ ...f, cookies_json: e.target.value }))}
-                                    placeholder={t('agent.credentials.modal.cookiesPlaceholder')}
-                                    rows={6}
-                                />
-                                <span className="credential-field-help">
-                                    {t('agent.credentials.modal.cookiesHelp')}{' '}
-                                    <a href="https://cookie-editor.com" target="_blank" rel="noopener noreferrer">
-                                        {t('agent.credentials.modal.cookiesHelpLink')}
-                                    </a>
-                                    {' '}{t('agent.credentials.modal.cookiesHelpSuffix')}
-                                </span>
-                            </label>
-                        </div>
-
-                        <div className="credential-modal-footer">
-                            <button className="credential-btn-cancel" onClick={() => setShowModal(false)}>
-                                {t('agent.credentials.actions.cancel')}
-                            </button>
-                            <button
-                                className="credential-btn-save"
-                                onClick={handleSave}
-                                disabled={saving}
-                            >
-                                {saving ? t('agent.credentials.actions.saving') : editingId ? t('agent.credentials.actions.update') : t('agent.credentials.actions.create')}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Inline styles for the component */}
-            <style>{credentialStyles}</style>
+            <div className="credential-modal-footer">
+              <button
+                className="credential-btn-cancel"
+                onClick={() => setShowModal(false)}
+              >
+                {t("agent.credentials.actions.cancel")}
+              </button>
+              <button
+                className="credential-btn-save"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                {saving
+                  ? t("agent.credentials.actions.saving")
+                  : editingId
+                    ? t("agent.credentials.actions.update")
+                    : t("agent.credentials.actions.create")}
+              </button>
+            </div>
+          </div>
         </div>
-    );
+      )}
+
+      {/* Inline styles for the component */}
+      <style>{credentialStyles}</style>
+    </div>
+  );
 }
 
 /* ── Styles ── */

@@ -1,0 +1,11 @@
+[
+  {"id": "api", "path": "app/application.py", "source": "from app.api import router\n"},
+  {"id": "core", "path": "app/infrastructure/config.py", "source": "from app.core.config import settings\n"},
+  {"id": "dao", "path": "app/modules/agent/service.py", "source": "from app.dao.agent import AgentDAO\n"},
+  {"id": "models", "path": "app/modules/run/service.py", "source": "from app.models.agent import Agent\n"},
+  {"id": "schemas", "path": "app/runtime/loop.py", "source": "from app.schemas.run import RunRequest\n"},
+  {"id": "services", "path": "app/modules/session/service.py", "source": "from app.services.session import SessionService\n"},
+  {"id": "config", "path": "app/application.py", "source": "from app.config import settings\n"},
+  {"id": "database", "path": "app/modules/audit/service.py", "source": "import app.database as database\n"},
+  {"id": "relative_services", "path": "app/modules/run/service.py", "source": "from ...services.agent import AgentService\n"}
+]

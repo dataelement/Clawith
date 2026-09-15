@@ -78,15 +78,15 @@ class SandboxBackend(Protocol):
         """
         ...
 
+    def _format_result(self, result: ExecutionResult) -> str:
+        """Format an execution result for a human-readable Tool summary."""
+        ...
+
 
 class BaseSandboxBackend(ABC):
     """Base class providing common functionality for sandbox backends."""
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Backend name for identification."""
-        pass
+    name: str
 
     @abstractmethod
     async def execute(
@@ -98,17 +98,14 @@ class BaseSandboxBackend(ABC):
         **kwargs
     ) -> ExecutionResult:
         """Execute code in the sandbox."""
-        pass
 
     @abstractmethod
     async def health_check(self) -> bool:
         """Check if the sandbox backend is healthy."""
-        pass
 
     @abstractmethod
     def get_capabilities(self) -> SandboxCapabilities:
         """Get the capabilities of this sandbox backend."""
-        pass
 
     def _format_result(self, result: ExecutionResult) -> str:
         """Format execution result for user display."""

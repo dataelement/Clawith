@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clawith Prose Standard"
+  short_description: "Write concise, contract-focused Clawith prose."
+  default_prompt: "Use $clawith-prose-standard to review the requested prose for complete and concise contracts."

@@ -2,10 +2,10 @@
 import time
 
 import httpx
+from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-from loguru import logger
 
 # CodeSandbox language mapping
 _CODESANDBOX_LANGUAGES = {
@@ -54,7 +54,7 @@ class CodeSandboxBackend(BaseSandboxBackend):
                     timeout=5.0
                 )
                 return response.status_code in (200, 401)  # 401 means auth works but no sandboxes
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health normalizes provider failures.
             return False
 
     async def execute(
@@ -146,9 +146,9 @@ class CodeSandboxBackend(BaseSandboxBackend):
                 error=f"Code execution timed out after {timeout}s"
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- provider failures become results.
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.exception(f"[CodeSandbox] Execution error")
+            logger.exception("[CodeSandbox] Execution error")
             return ExecutionResult(
                 success=False,
                 stdout="",

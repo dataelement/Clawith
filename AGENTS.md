@@ -30,62 +30,39 @@ Each behavior-driving fact has one authoritative owner. Other layers may submit 
 - **Lifecycle ownership is explicit.** Every registration, task, subscription, connection, or resource that outlives the current operation has one owner, defined termination conditions, and cleanup paths for success, failure, and cancellation.
 - **Runtime responsibilities are documented.** Every capability or subsystem with an independent runtime responsibility must document the authoritative facts and relationships it owns, how those facts change, and how their correctness is verified. Do not infer runtime health from the presence of code, configuration, services, or UI state.
 - **State and protocol variants are explicit.** Treat internal lifecycle states and shared contracts as closed unless they are deliberately designed for extension. Update every producer and consumer when a closed set changes, and define explicit unknown-value behavior for extensible inputs.
-- **Model-visible inputs are traceable.** Every input that can affect a model decision must have an identifiable source and be attributable to the corresponding Run. Do not inject transient context that cannot later be inspected or reconstructed. See [`docs/model-visible-inputs.md`](docs/model-visible-inputs.md).
+- **Model-visible inputs are traceable.** Every input that can affect a model decision must have an identifiable source and be attributable to the corresponding Run. Do not inject transient context that cannot later be inspected or reconstructed.
 - **Keep the Runtime core generic.** The Agent Runtime core may change while its execution model is being completed, but core changes must define general execution semantics rather than product-, integration-, UI-, or capability-specific behavior. Add specialized behavior through its owning Tool, Skill, Provider, Channel, Hook, or service boundary. Document and test every change to the execution model.
 - **New state machines require an independent owner and need.** Do not introduce a state machine merely to represent workflow steps, UI progress, or a lifecycle already owned elsewhere. A new state machine must correspond to an independently identified object with authoritative transitions and a current behavioral consumer.
 - **Capability boundaries require real participants.** Introduce a shared capability contract only when it has a current provider and consumer. Keep roles together when they change for the same reason; separate them only when their responsibilities and evolution are genuinely independent.
 - **Resolve policy before execution.** Defaults, configuration precedence, and policy choices must be resolved explicitly by their owning layer before an operation executes. Execution code consumes resolved inputs and must not hide additional policy decisions in fallbacks.
 - **Misconfiguration fails at the earliest authoritative point.** Reject an invalid or missing configuration as soon as its owning layer has enough information to determine the error. Do not silently skip the configured behavior, invent a fallback, or defer a known failure into execution.
 - **Validate at trust boundaries.** Use static types for same-process internal contracts and avoid duplicating runtime validation between already typed layers. Validate data when it enters from configuration, HTTP or WebSocket requests, model or Tool JSON, persistence, files, workers, processes, and external integrations.
-- **Data access is bounded and evidence-driven.** Query and loading paths must
-  define their expected cardinality and enforce filtering, pagination, batching,
-  and result limits at the layer that owns the complete data operation. Avoid
-  per-item queries, repeated full materialization, and loading unbounded data
-  for downstream filtering.
-- **Caches require ownership and measured need.** Introduce caching only after
-  identifying repeated expensive work on a real access path. Every cache must
-  define its authoritative source, owner, key scope, invalidation rule, capacity
-  bound, and freshness behavior.
+- **Data access is bounded and evidence-driven.** Query and loading paths must define their expected cardinality and enforce filtering, pagination, batching, and result limits at the layer that owns the complete data operation. Avoid per-item queries, repeated full materialization, and loading unbounded data for downstream filtering.
+- **Caches require ownership and measured need.** Introduce caching only after identifying repeated expensive work on a real access path. Every cache must define its authoritative source, owner, key scope, invalidation rule, capacity bound, and freshness behavior.
 - **Ignored failures are narrow and explained.** Catch only the single operation whose specific failure may be ignored, and state what is being ignored and why the primary outcome remains safe. Never use an empty or broad catch to hide unrelated failures.
 - **Tests enforce behavior, not product truth.** A passing test proves that the implementation matches its asserted behavior; it does not prove that the asserted behavior matches the current product or architecture contract. Update obsolete tests together with an explicitly approved contract change, and never change an expectation merely to make a failure disappear.
-- **Non-trivial changes keep code, Agent Notes, and commit history aligned.** Any change to behavior, architecture, a shared contract, Runtime semantics, persistence, security, permissions, compatibility, or engineering process must add or update its owning Agent Note in the same change. The code implements the decision, the Agent Note owns its durable rationale and current contract, and the commit message records the intent, scope, and verification of this change. These three records must not contradict one another. Update an existing owning note instead of creating a duplicate; only mechanical or strictly local changes are exempt.
+- **Non-trivial changes keep code, Agent Notes, and commit history aligned.** Any change to behavior, architecture, a shared contract, Runtime semantics, persistence, security, permissions, compatibility, or engineering process must add or update its owning Agent Note in the same change. The code implements the decision, the Agent Note owns its durable rationale and current contract, and the commit message records the intent, scope, and verification of this change. These three records must not contradict one another. Update an existing owning note instead of creating a duplicate; only mechanical or strictly local changes are exempt. Follow the [Agent Note rules](.agents/notes/README.md).
 
 ## 3. Change Discipline
 
-- Keep each change scoped to one intent. Do not mix structural refactoring,
-  behavior changes, compatibility work, and unrelated cleanup.
-- Preserve verified behavior unless the task explicitly changes the owning
-  product or architecture contract.
-- Before introducing an abstraction, identify the current owner and consumer.
-  Delete obsolete code, reuse the existing owner when it already fits, and move
-  misplaced behavior back to that owner while removing bypass paths. Add a new
-  layer only when it has an independently changing responsibility and a current
-  consumer.
-- **Delete verified dead code.** Once code, configuration, tests, compatibility
-  paths, or documentation are confirmed to have no current contract or
-  production consumer, remove them in the same change. Do not keep
-  commented-out implementations, speculative fallbacks, or tests that only
-  preserve deleted behavior.
+- Keep each change scoped to one intent. Do not mix structural refactoring, behavior changes, compatibility work, and unrelated cleanup.
+- Preserve verified behavior unless the task explicitly changes the owning product or architecture contract.
+- **Trace shared contracts end to end.** Before changing a shared, API, persistence, credential, state, protocol, or cross-layer fact, trace its authoritative owner, persisted representations, producers and mutations, adapters, every consumer, and cleanup, failure, and compatibility paths. Do not fix the fact only where a diagnostic or caller exposes it, or treat local tests as proof that the contract chain is complete. Change and verify all participants in one intent using owner-produced data shapes and real end-to-end failure paths.
+- Before introducing an abstraction, identify the current owner and consumer. Delete obsolete code, reuse the existing owner when it already fits, and move misplaced behavior back to that owner while removing bypass paths. Add a new layer only when it has an independently changing responsibility and a current consumer.
+- **Delete verified dead code.** Once code, configuration, tests, compatibility paths, or documentation are confirmed to have no current contract or production consumer, remove them in the same change. Do not keep commented-out implementations, speculative fallbacks, or tests that only preserve deleted behavior.
 - Preserve unrelated working-tree changes and user-owned files.
 - Use repository-relative paths in code, documentation, and instructions.
-- When ownership or a boundary changes, update the nearest path-specific
-  `AGENTS.md` and the corresponding durable documentation.
-- Do not add fallback or compatibility paths without a documented reason,
-  regression coverage, and a removal condition.
-- Keep source facts, test evidence, CI evidence, deployment evidence, and
-  live-system evidence clearly separated.
+- When ownership or a boundary changes, update the nearest path-specific `AGENTS.md` and the corresponding durable documentation.
+- Do not add fallback or compatibility paths without a documented reason, regression coverage, and a removal condition.
+- Keep source facts, test evidence, CI evidence, deployment evidence, and live-system evidence clearly separated.
 
 ## 4. Type Checking
 
 Everything compiles under `strict: true` with `noImplicitAny`; every remaining `any` explains why narrowing is infeasible.
 
-Public interfaces must be usable without reading their implementation. Types
-define structure; owning documentation defines non-obvious behavior, failure,
-side effects, ownership, timing, cancellation, and durability.
+Public interfaces must be usable without reading their implementation. Types define structure; owning documentation defines non-obvious behavior, failure, side effects, ownership, timing, cancellation, and durability.
 
-Every new or changed automated rule must include positive and negative coverage:
-valid cases pass, and representative invalid cases fail for the intended
-reason.
+Every new or changed automated rule must include positive and negative coverage: valid cases pass, and representative invalid cases fail for the intended reason.
 
 ## 5. Quick Command Reference
 
@@ -128,18 +105,12 @@ Run checks before pushes via [`clawith-pre-push-checks`](.agents/skills/clawith-
 ## Communication
 
 - Lead with the conclusion, result, or blocker.
-- Use direct, concrete language and name the actual actor, fact, file, command,
-  API, state, or behavior.
+- Use direct, concrete language and name the actual actor, fact, file, command, API, state, or behavior.
 - Separate verified repository facts, inference, and unverified live behavior.
 - Do not narrate internal reasoning, tool choreography, or review history.
-- Report only commands and checks actually run, together with relevant
-  verification gaps.
-- Keep responses concise unless risk, ambiguity, or the user requests more
-  detail.
+- Report only commands and checks actually run, together with relevant verification gaps.
+- Keep responses concise unless risk, ambiguity, or the user requests more detail.
 
 ## Editing these instructions
 
-Keep repository-wide instructions concise, self-contained, and linked to their
-owning documentation. Put path-specific rules in the nearest nested
-`AGENTS.md`, and do not duplicate rules across instruction files. Add or expand
-a root rule only when it must remain available across the repository.
+Keep repository-wide instructions concise, self-contained, and linked to their owning documentation. Put path-specific rules in the nearest nested `AGENTS.md`, and do not duplicate rules across instruction files. Add or expand a root rule only when it must remain available across the repository.

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "operation": "approve_owner_contract",
+  "owner_id": "session",
+  "manifest_path": "backend/rewrite/owner-contracts.json",
+  "contract_artifact": "specs/backend-execution-dependencies.md",
+  "contract_hash": "e23c3e112800e955016da113fffb0680c76c2c406d918a6c5aa44c5d903def3a",
+  "evidence": [
+    {
+      "path": "backend/artifacts/rewrite/G004/execution-contract-review.md",
+      "sha256": "9b60e204fa56ddb77c99a08720eb797621bd6719515b334bb1be1a360f02347c"
+    }
+  ],
+  "resulting_state": "contract_approved",
+  "resulting_owner_row_hash": "0788c898ec883eee99c7a9d060102ec491248b61b0237f7356d30c1a759e20c6"
+}

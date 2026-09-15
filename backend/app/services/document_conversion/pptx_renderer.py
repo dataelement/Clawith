@@ -9,7 +9,9 @@ from loguru import logger
 from app.services.document_conversion.chrome_renderer import collect_browser_layout
 
 
-async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, ws: Path, arguments: dict[str, Any]) -> str:
+async def render_html_to_pptx(
+    src_file: Path, tgt_file: Path, target_path: str, ws: Path, arguments: dict[str, Any]
+) -> str:
     try:
         from bs4 import BeautifulSoup
         from bs4.element import Tag
@@ -18,7 +20,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
         from pptx.enum.shapes import MSO_SHAPE
         from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
         from pptx.util import Inches, Pt
-        
+
         html_content = src_file.read_text(encoding="utf-8")
         soup = BeautifulSoup(html_content, "html.parser")
 
@@ -33,16 +35,24 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
         prs = Presentation()
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
+        slide_width_inches = 13.333
+        slide_height_inches = 7.5
         blank_layout = prs.slide_layouts[6]
 
         named_colors = {
-            "black": "000000", "white": "ffffff", "gray": "808080", "grey": "808080",
-            "red": "ff0000", "green": "008000", "blue": "0000ff", "transparent": "",
+            "black": "000000",
+            "white": "ffffff",
+            "gray": "808080",
+            "grey": "808080",
+            "red": "ff0000",
+            "green": "008000",
+            "blue": "0000ff",
+            "transparent": "",
         }
 
         def parse_css_block(css: str) -> dict[str, dict[str, str]]:
             rules: dict[str, dict[str, str]] = {}
-            css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+            css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
             for selector_text, body in re.findall(r"([^{}]+)\{([^{}]+)\}", css):
                 decls = parse_style(body)
                 for selector in selector_text.split(","):
@@ -81,7 +91,8 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                 style.update(css_rules.get(f"{el.name}.{cls}", {}))
             if el.get("id"):
                 style.update(css_rules.get(f"#{el.get('id')}", {}))
-            style.update(parse_style(el.get("style")))
+            raw_style = el.get("style")
+            style.update(parse_style(str(raw_style) if raw_style is not None else None))
             return style
 
         def color_tuple(value: str | None) -> tuple[int, int, int, float] | None:
@@ -142,7 +153,9 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                     b = round(b * alpha + bb * (1 - alpha))
             return RGBColor(max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
-        def representative_color(value: str | None, prefer: str = "last", backdrop: str | RGBColor | None = None) -> RGBColor | None:
+        def representative_color(
+            value: str | None, prefer: str = "last", backdrop: str | RGBColor | None = None
+        ) -> RGBColor | None:
             if not value:
                 return None
             matches = re.findall(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b|rgba?\([^)]+\)", value)
@@ -164,7 +177,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                     return float(value[:-2]) / 72.0
                 if value.endswith("in"):
                     return float(value[:-2])
-                if value.endswith("rem") or value.endswith("em"):
+                if value.endswith(("rem", "em")):
                     return axis_total_in * (float(value[:-3] if value.endswith("rem") else value[:-2]) * 16) / axis_px
                 return axis_total_in * float(value) / axis_px
             except ValueError:
@@ -180,7 +193,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                     return float(raw[:-2]) * 0.75
                 if raw.endswith("pt"):
                     return float(raw[:-2])
-                if raw.endswith("rem") or raw.endswith("em"):
+                if raw.endswith(("rem", "em")):
                     return float(raw[:-3] if raw.endswith("rem") else raw[:-2]) * 12
             except ValueError:
                 return float(default)
@@ -208,16 +221,26 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                 return 0.0
             try:
                 if raw.endswith("px"):
-                    return float(raw[:-2]) * (prs.slide_width / 914400) / axis_px
+                    return float(raw[:-2]) * slide_width_inches / axis_px
                 if raw.endswith("rem"):
-                    return float(raw[:-3]) * 16 * (prs.slide_width / 914400) / axis_px
+                    return float(raw[:-3]) * 16 * slide_width_inches / axis_px
                 if raw.endswith("em"):
-                    return float(raw[:-2]) * 16 * (prs.slide_width / 914400) / axis_px
+                    return float(raw[:-2]) * 16 * slide_width_inches / axis_px
             except ValueError:
                 return 0.0
             return 0.0
 
-        def add_textbox(slide, text: str, x: float, y: float, w: float, h: float, style: dict[str, str], default_size: int, bold: bool = False):
+        def add_textbox(
+            slide,
+            text: str,
+            x: float,
+            y: float,
+            w: float,
+            h: float,
+            style: dict[str, str],
+            default_size: int,
+            bold: bool = False,
+        ):
             shape = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
             tf = shape.text_frame
             tf.clear()
@@ -260,7 +283,9 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             border = parse_color(style.get("border-color") or style.get("border"), bg or backdrop)
             has_border = "border" in style
             try:
-                has_border = has_border or float(str(style.get("border-width") or "0").replace("px", "").strip() or 0) > 0
+                has_border = (
+                    has_border or float(str(style.get("border-width") or "0").replace("px", "").strip() or 0) > 0
+                )
             except ValueError:
                 pass
             if not bg and has_border:
@@ -269,7 +294,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                 border = None
             if not bg and not border:
                 return None
-            radius = length_to_inches(style.get("border-radius"), prs.slide_width / 914400, design_w_px) or 0
+            radius = length_to_inches(style.get("border-radius"), slide_width_inches, design_w_px) or 0
             shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if radius > 0.03 else MSO_SHAPE.RECTANGLE
             shape = slide.shapes.add_shape(shape_type, Inches(x), Inches(y), Inches(w), Inches(h))
             if bg:
@@ -299,8 +324,8 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             return None
 
         def element_box(style: dict[str, str]) -> tuple[float | None, float | None, float | None, float | None]:
-            sw = prs.slide_width / 914400
-            sh = prs.slide_height / 914400
+            sw = slide_width_inches
+            sh = slide_height_inches
             return (
                 length_to_inches(style.get("left") or style.get("x"), sw, design_w_px),
                 length_to_inches(style.get("top") or style.get("y"), sh, design_h_px),
@@ -309,24 +334,35 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             )
 
         def visible_children(el: Tag) -> list[Tag]:
-            return [child for child in el.children if isinstance(child, Tag) and child.name not in ("style", "script", "meta", "link")]
+            return [
+                child
+                for child in el.children
+                if isinstance(child, Tag) and child.name not in ("style", "script", "meta", "link")
+            ]
 
         def render_flow_element(slide, el: Tag, y: float, x: float = 0.75, width: float = 11.85) -> float:
             style = element_style(el)
             name = el.name or ""
             left, top, box_w, box_h = element_box(style)
-            if (style.get("position") == "absolute" or left is not None or top is not None) and (left is not None or top is not None):
+            if (style.get("position") == "absolute" or left is not None or top is not None) and (
+                left is not None or top is not None
+            ):
                 render_absolute_element(slide, el, left or x, top or y, box_w or width, box_h)
                 return y
             if name == "img":
-                p = image_path(el.get("src"))
+                raw_src = el.get("src")
+                p = image_path(str(raw_src) if raw_src is not None else None)
                 if p:
                     h = box_h or 2.2
-                    slide.shapes.add_picture(str(p), Inches(x), Inches(y), width=Inches(box_w or min(width, 5.5)), height=Inches(h))
+                    slide.shapes.add_picture(
+                        str(p), Inches(x), Inches(y), width=Inches(box_w or min(width, 5.5)), height=Inches(h)
+                    )
                     return y + h + 0.18
                 return y
             classes = set(el.get("class") or [])
-            looks_like_card = bool({"card", "panel", "box", "tile"} & classes) or any(k in style for k in ("background", "background-color", "border", "border-color"))
+            looks_like_card = bool({"card", "panel", "box", "tile"} & classes) or any(
+                k in style for k in ("background", "background-color", "border", "border-color")
+            )
             children = visible_children(el)
             if children and name in ("div", "main", "section", "article", "header", "footer", "aside", "nav"):
                 if looks_like_card:
@@ -380,7 +416,8 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             style = element_style(el)
             name = el.name or ""
             if name == "img":
-                p = image_path(el.get("src"))
+                raw_src = el.get("src")
+                p = image_path(str(raw_src) if raw_src is not None else None)
                 if p:
                     slide.shapes.add_picture(str(p), Inches(x), Inches(y), width=Inches(w), height=Inches(h or 2.0))
                 return
@@ -401,8 +438,8 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             slides = layout.get("slides") or []
             if not slides:
                 return False
-            slide_w = prs.slide_width / 914400
-            slide_h = prs.slide_height / 914400
+            slide_w = slide_width_inches
+            slide_h = slide_height_inches
 
             for slide_data in slides:
                 slide_bg_value = slide_data.get("backgroundColor") or ""
@@ -445,7 +482,9 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                     w = max(0.05, min(raw_w, max(1.0, root_w - raw_x)) * sx)
                     h = max(0.05, min(raw_h, max(1.0, root_h - raw_y)) * sy)
                     ppt_style = {
-                        "background": "" if style.get("backgroundImage") == "none" else (style.get("backgroundImage") or ""),
+                        "background": ""
+                        if style.get("backgroundImage") == "none"
+                        else (style.get("backgroundImage") or ""),
                         "background-color": style.get("backgroundColor") or "",
                         "border-color": style.get("borderColor") or "",
                         "border-width": style.get("borderWidth") or "",
@@ -472,7 +511,9 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                         shape_screenshots = layout.get("shapeScreenshots") or {}
                         shape_screenshot = shape_screenshots.get(str(item.get("itemId") or ""))
                         if shape_screenshot and Path(shape_screenshot).exists():
-                            slide.shapes.add_picture(shape_screenshot, Inches(x), Inches(y), width=Inches(w), height=Inches(h))
+                            slide.shapes.add_picture(
+                                shape_screenshot, Inches(x), Inches(y), width=Inches(w), height=Inches(h)
+                            )
                         else:
                             add_card(slide, x, y, w, h, ppt_style)
                     elif kind == "image":
@@ -494,8 +535,8 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             screenshots = layout.get("screenshots") or []
             if not slides or not screenshots:
                 return False
-            slide_w = prs.slide_width / 914400
-            slide_h = prs.slide_height / 914400
+            slide_w = slide_width_inches
+            slide_h = slide_height_inches
 
             for slide_data, screenshot in zip(slides, screenshots):
                 if not screenshot or not Path(screenshot).exists():
@@ -519,7 +560,11 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             return True
 
         browser_layout = await collect_browser_layout(src_file, design_w_px, design_h_px, render_mode, render_scale)
-        if browser_layout and render_mode in ("visual", "screenshot", "image", "hybrid") and render_browser_screenshots(browser_layout):
+        if (
+            browser_layout
+            and render_mode in ("visual", "screenshot", "image", "hybrid")
+            and render_browser_screenshots(browser_layout)
+        ):
             tgt_file.parent.mkdir(parents=True, exist_ok=True)
             prs.save(str(tgt_file))
             return (
@@ -560,7 +605,7 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
                 current_y = render_flow_element(slide, child, current_y)
                 if current_y > 7.0:
                     break
-                    
+
         tgt_file.parent.mkdir(parents=True, exist_ok=True)
         prs.save(str(tgt_file))
         return (
@@ -568,6 +613,6 @@ async def render_html_to_pptx(src_file: Path, tgt_file: Path, target_path: str, 
             "Note: common typography, colors, cards, lists, images, and simple absolute positioning are preserved; "
             "complex CSS such as flex/grid effects, shadows, filters, and animations may still need manual adjustment."
         )
-    except Exception as e:
-        logger.exception(f"Convert HTML to PPTX failed: {e}")
-        return f"❌ Conversion failed: {e}"
+    except Exception as exc:  # noqa: BLE001 - normalize optional converter failures for the Tool boundary.
+        logger.exception(f"Convert HTML to PPTX failed: {exc}")
+        return f"❌ Conversion failed: {exc}"

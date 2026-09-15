@@ -6,11 +6,23 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from app.services.workspace_collaboration import normalize_workspace_path
-
 WorkspaceMode = Literal["merge", "isolated_output"]
 PublicationOwner = Literal["gateway", "workspace_cas"]
 PublicationConflictMode = Literal["fail", "overwrite"]
+
+
+def _normalize_workspace_path(path: str) -> str:
+    clean = (path or "").replace("\\", "/").strip().lstrip("/")
+    parts: list[str] = []
+    for part in clean.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +43,7 @@ class SandboxWorkspacePolicy:
     def session_output_path(self) -> str | None:
         if self.session_id is None:
             return None
-        return normalize_workspace_path(f"workspace/output/{self.session_id}")
+        return _normalize_workspace_path(f"workspace/output/{self.session_id}")
 
     @property
     def guest_output_path(self) -> str | None:
@@ -63,12 +75,12 @@ def build_workspace_policy(
     session_id: uuid.UUID | None,
     default_paths: list[str] | tuple[str, ...],
 ) -> SandboxWorkspacePolicy:
-    materialized = tuple(normalize_workspace_path(path) for path in default_paths)
+    materialized = tuple(_normalize_workspace_path(path) for path in default_paths)
     if mode == "merge":
         return SandboxWorkspacePolicy(mode, session_id, materialized, materialized)
     if mode != "isolated_output":
         raise ValueError("Unsupported sandbox workspace mode")
     if session_id is None:
         raise ValueError("isolated_output requires a Session")
-    output_path = normalize_workspace_path(f"workspace/output/{session_id}")
+    output_path = _normalize_workspace_path(f"workspace/output/{session_id}")
     return SandboxWorkspacePolicy(mode, session_id, materialized, (output_path,))

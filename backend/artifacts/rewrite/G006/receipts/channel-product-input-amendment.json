@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "operation": "amend_owner_contract",
+  "previous_receipt": "backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
+  "previous_receipt_hash": "ba61bcf9e910e7f5de4ee5131e8e2cb250b0930ad1ef1c7fb48f9b3a9895ae11",
+  "owner_row": {
+    "evidence": [
+      {
+        "path": "backend/artifacts/rewrite/G006/product-input-contract-review.md",
+        "sha256": "d2e517f2ebbd14d84a8fd37381227e72b9fc798ef787af30e71ca7d140494ba4"
+      }
+    ],
+    "owner_id": "channel",
+    "implementation_phase": 5,
+    "contract_hash": "7ccac7d4ca94b37003daff622171cfc7b4cedcd6960ba7ecc675df2275c830f6",
+    "contract_artifact": "specs/backend-product-inputs.md",
+    "state": "contract_approved",
+    "schema_wave": "S2"
+  }
+}

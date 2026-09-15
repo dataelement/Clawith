@@ -10,10 +10,10 @@ because its response was lost on one transport.
 Reference: https://modelcontextprotocol.io/docs
 """
 
-import httpx
 import json
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import httpx
 from loguru import logger
 
 
@@ -83,7 +83,9 @@ class MCPClient:
                     except json.JSONDecodeError:
                         pass
         if last_data is None:
-            raise Exception("No valid JSON found in SSE response")
+            raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                "No valid JSON found in SSE response"
+            )
         return last_data
 
     # ── Streamable HTTP Transport ────────────────────────────────
@@ -113,8 +115,8 @@ class MCPClient:
                 json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                 headers=self._headers(),
             )
-        except Exception:
-            pass  # initialization failure is non-fatal — server may be stateless
+        except Exception:  # noqa: BLE001, S110 -- initialization is optional for stateless servers
+            pass
 
     async def _streamable_request(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC request via Streamable HTTP transport."""
@@ -147,11 +149,14 @@ class MCPClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         messages_url = None
+        event_type = ""
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:  # noqa: SIM117
             async with client.stream("GET", sse_url, headers=headers) as resp:
                 if resp.status_code != 200:
-                    raise Exception(f"SSE connect failed: HTTP {resp.status_code}")
+                    raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                        f"SSE connect failed: HTTP {resp.status_code}"
+                    )
 
                 # Read SSE events until we get the endpoint event
                 async for line in resp.aiter_lines():
@@ -172,7 +177,9 @@ class MCPClient:
                         pass
 
         if not messages_url:
-            raise Exception("SSE endpoint did not return a messages URL")
+            raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                "SSE endpoint did not return a messages URL"
+            )
 
         return messages_url
 
@@ -197,11 +204,13 @@ class MCPClient:
 
         timeout = 60 if method == "tools/call" else 30
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:  # noqa: SIM117
             # Open the SSE stream
             async with client.stream("GET", sse_url, headers=headers_sse) as sse_resp:
                 if sse_resp.status_code != 200:
-                    raise Exception(f"SSE connect failed: HTTP {sse_resp.status_code}")
+                    raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                        f"SSE connect failed: HTTP {sse_resp.status_code}"
+                    )
 
                 messages_url = None
                 event_type = ""
@@ -222,7 +231,9 @@ class MCPClient:
                             break
 
                 if not messages_url:
-                    raise Exception("SSE endpoint did not return a messages URL")
+                    raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                        "SSE endpoint did not return a messages URL"
+                    )
 
                 # Phase 2: MCP handshake — initialize + initialized notification
                 init_body = {
@@ -273,7 +284,9 @@ class MCPClient:
                                 pass
 
                 if result is None:
-                    raise Exception("No response received from SSE transport")
+                    raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                        "No response received from SSE transport"
+                    )
                 return result
 
     # ── Auto-detect Transport ────────────────────────────────────
@@ -289,7 +302,7 @@ class MCPClient:
             result = await self._streamable_request(method, params)
             self._transport = "streamable"
             return result
-        except Exception as streamable_err:
+        except Exception as streamable_err:  # noqa: BLE001 -- read-only detection may safely try both transports
             streamable_error_message = str(streamable_err)
             logger.info(
                 "[MCPClient] Streamable HTTP read-only probe failed ({}), "
@@ -347,7 +360,9 @@ class MCPClient:
             if "error" in data:
                 err = data["error"]
                 msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                raise Exception(f"MCP error: {msg}")
+                raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                    f"MCP error: {msg}"
+                )
 
             result = data.get("result", {})
             tools = result.get("tools", []) if isinstance(result, dict) else []
@@ -360,7 +375,9 @@ class MCPClient:
                 for t in tools
             ]
         except httpx.HTTPError as e:
-            raise Exception(f"Connection failed: {str(e)[:200]}")
+            raise Exception(  # noqa: TRY002 -- preserve the existing MCP adapter error contract
+                f"Connection failed: {str(e)[:200]}"
+            ) from e
 
     async def call_tool_result(self, tool_name: str, arguments: dict) -> dict:
         """Execute once and preserve the complete JSON-RPC response."""
@@ -369,7 +386,9 @@ class MCPClient:
             {"name": tool_name, "arguments": arguments},
         )
         if not isinstance(data, dict):
-            raise ValueError("MCP tools/call returned a non-object response")
+            raise ValueError(  # noqa: TRY004 -- preserve the existing MCP adapter error contract
+                "MCP tools/call returned a non-object response"
+            )
         return data
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
@@ -406,5 +425,5 @@ class MCPClient:
 
         except httpx.HTTPError as e:
             return f"❌ MCP connection failed: {str(e)[:200]}"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- legacy text adapter returns bounded failure text
             return f"❌ MCP connection failed: {str(e)[:200]}"

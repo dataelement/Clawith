@@ -1,11 +1,8 @@
 export type McpAuthorizationState =
-  | 'unknown'
-  | 'auth_required'
-  | 'connected'
-  | 'unavailable';
+  "unknown" | "auth_required" | "connected" | "unavailable";
 
 export type McpAuthorizationStatus = {
-  state: Exclude<McpAuthorizationState, 'unknown'>;
+  state: Exclude<McpAuthorizationState, "unknown">;
   authorizationUrl?: string;
 };
 
@@ -18,8 +15,8 @@ type SmitheryManagedTool = {
 type FetchLike = (
   url: string,
   init: {
-    method: 'GET';
-    cache: 'no-store';
+    method: "GET";
+    cache: "no-store";
     headers: { Authorization: string };
   },
 ) => Promise<{
@@ -27,8 +24,8 @@ type FetchLike = (
   json: () => Promise<unknown>;
 }>;
 
-type AuthorizationWindow = Pick<Window, 'closed' | 'close'> & {
-  location: Pick<Location, 'replace'>;
+type AuthorizationWindow = Pick<Window, "closed" | "close"> & {
+  location: Pick<Location, "replace">;
   opener: WindowProxy | null;
 };
 
@@ -40,7 +37,7 @@ type OpenWindowLike = (
 type AssignLocationLike = (url: string | URL) => void;
 
 export function isSmitheryManagedMcpTool(tool: SmitheryManagedTool): boolean {
-  return tool.type === 'mcp' && tool.mcp_authorization_provider === 'smithery';
+  return tool.type === "mcp" && tool.mcp_authorization_provider === "smithery";
 }
 
 export function getSmitheryAuthorizationTool<T extends SmitheryManagedTool>(
@@ -51,22 +48,22 @@ export function getSmitheryAuthorizationTool<T extends SmitheryManagedTool>(
 
 export function getSmitheryAuthorizationButtonLabel(
   state: McpAuthorizationState,
-): 'Authorize' | 'Re-authorize' | 'Check' {
-  if (state === 'unknown') return 'Authorize';
-  if (state === 'auth_required') return 'Re-authorize';
-  return 'Check';
+): "Authorize" | "Re-authorize" | "Check" {
+  if (state === "unknown") return "Authorize";
+  if (state === "auth_required") return "Re-authorize";
+  return "Check";
 }
 
 export function shouldPreopenMcpAuthorizationWindow(
   state: McpAuthorizationState,
 ): boolean {
-  return state === 'unknown' || state === 'auth_required';
+  return state === "unknown" || state === "auth_required";
 }
 
 export function openMcpAuthorizationWindow(
   openWindow: OpenWindowLike = window.open.bind(window),
 ): AuthorizationWindow | null {
-  const authorizationWindow = openWindow('about:blank', '_blank');
+  const authorizationWindow = openWindow("about:blank", "_blank");
   if (authorizationWindow) authorizationWindow.opener = null;
   return authorizationWindow;
 }
@@ -85,25 +82,27 @@ export function closeMcpAuthorizationWindow(
 export function navigateMcpAuthorizationWindow(
   authorizationWindow: AuthorizationWindow | null,
   authorizationUrl: string,
-  assignLocation: AssignLocationLike = window.location.assign.bind(window.location),
-): 'popup' | 'same_page' {
+  assignLocation: AssignLocationLike = window.location.assign.bind(
+    window.location,
+  ),
+): "popup" | "same_page" {
   if (authorizationWindow && !authorizationWindow.closed) {
     try {
       authorizationWindow.location.replace(authorizationUrl);
-      return 'popup';
+      return "popup";
     } catch {
       closeMcpAuthorizationWindow(authorizationWindow);
     }
   }
   assignLocation(authorizationUrl);
-  return 'same_page';
+  return "same_page";
 }
 
 function safeAuthorizationUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:'
+    return url.protocol === "http:" || url.protocol === "https:"
       ? url.toString()
       : null;
   } catch {
@@ -111,24 +110,26 @@ function safeAuthorizationUrl(value: unknown): string | null {
   }
 }
 
-function normalizeAuthorizationStatus(payload: unknown): McpAuthorizationStatus {
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('Invalid authorization status response');
+function normalizeAuthorizationStatus(
+  payload: unknown,
+): McpAuthorizationStatus {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Invalid authorization status response");
   }
   const data = payload as Record<string, unknown>;
-  if (data.provider !== 'smithery') {
-    throw new Error('Invalid authorization status provider');
+  if (data.provider !== "smithery") {
+    throw new Error("Invalid authorization status provider");
   }
-  if (data.state === 'connected') return { state: 'connected' };
-  if (data.state === 'unavailable') return { state: 'unavailable' };
-  if (data.state === 'auth_required') {
+  if (data.state === "connected") return { state: "connected" };
+  if (data.state === "unavailable") return { state: "unavailable" };
+  if (data.state === "auth_required") {
     const authorizationUrl = safeAuthorizationUrl(data.authorization_url);
     if (!authorizationUrl) {
-      throw new Error('Invalid authorization status response');
+      throw new Error("Invalid authorization status response");
     }
-    return { state: 'auth_required', authorizationUrl };
+    return { state: "auth_required", authorizationUrl };
   }
-  throw new Error('Invalid authorization status response');
+  throw new Error("Invalid authorization status response");
 }
 
 export async function requestMcpAuthorizationStatus(
@@ -140,13 +141,13 @@ export async function requestMcpAuthorizationStatus(
   const response = await fetchImpl(
     `/api/tools/agents/${encodeURIComponent(agentId)}/mcp-tools/${encodeURIComponent(toolId)}/authorization-status`,
     {
-      method: 'GET',
-      cache: 'no-store',
+      method: "GET",
+      cache: "no-store",
       headers: { Authorization: `Bearer ${token}` },
     },
   );
   if (!response.ok) {
-    throw new Error('Authorization status request failed');
+    throw new Error("Authorization status request failed");
   }
   return normalizeAuthorizationStatus(await response.json());
 }

@@ -4,10 +4,37 @@ import asyncio
 import json
 import os
 import shutil
+import socket
+import sys
+import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
+import websockets
 from loguru import logger
+
+
+def read_json_url(url: str | urllib.request.Request, *, timeout: float) -> dict[str, Any]:
+    """Read a Chrome DevTools JSON endpoint outside the event loop."""
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("Chrome DevTools endpoint did not return a JSON object")
+    return payload
+
+
+async def stop_process(process: asyncio.subprocess.Process) -> None:
+    """Stop an owned Chrome process and wait until it exits."""
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
 
 
 def chrome_executable() -> str | None:
@@ -48,14 +75,6 @@ async def collect_browser_layout(
     render_mode: str,
     render_scale: float = 2.0,
 ) -> dict[str, Any] | None:
-    import socket
-    import subprocess
-    import sys
-    import tempfile
-    import time
-    import urllib.request
-    import websockets
-
     chrome = chrome_executable()
     if not chrome:
         return None
@@ -65,7 +84,7 @@ async def collect_browser_layout(
         port = sock.getsockname()[1]
 
     profile_dir = tempfile.TemporaryDirectory(prefix="clawith-html-pptx-")
-    
+
     chrome_args = [
         chrome,
         "--headless=new",
@@ -82,28 +101,27 @@ async def collect_browser_layout(
         # Linux environments (like Docker containers) require no-sandbox in standard restricted container contexts
         chrome_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
 
-    proc = subprocess.Popen(
-        chrome_args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    process: asyncio.subprocess.Process | None = None
     try:
+        process = await asyncio.create_subprocess_exec(
+            *chrome_args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
         base = f"http://127.0.0.1:{port}"
         deadline = time.time() + 8
         while time.time() < deadline:
             try:
-                with urllib.request.urlopen(f"{base}/json/version", timeout=0.25) as resp:
-                    json.loads(resp.read().decode("utf-8"))
+                await asyncio.to_thread(read_json_url, f"{base}/json/version", timeout=0.25)
                 break
-            except Exception:
+            except (OSError, TimeoutError, TypeError, ValueError):
                 await asyncio.sleep(0.1)
         else:
             return None
 
         file_url = src_file.resolve().as_uri()
         req = urllib.request.Request(f"{base}/json/new?{file_url}", method="PUT")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            target = json.loads(resp.read().decode("utf-8"))
+        target = await asyncio.to_thread(read_json_url, req, timeout=2)
         ws_url = target.get("webSocketDebuggerUrl")
         if not ws_url:
             return None
@@ -292,6 +310,7 @@ roots = [body];
         msg_id = 0
 
         async with websockets.connect(ws_url, max_size=20_000_000) as ws_conn:
+
             async def send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                 nonlocal msg_id
                 msg_id += 1
@@ -304,12 +323,15 @@ roots = [body];
 
             await send("Page.enable")
             await send("Runtime.enable")
-            await send("Emulation.setDeviceMetricsOverride", {
-                "width": design_w_px,
-                "height": design_h_px,
-                "deviceScaleFactor": render_scale,
-                "mobile": False,
-            })
+            await send(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": design_w_px,
+                    "height": design_h_px,
+                    "deviceScaleFactor": render_scale,
+                    "mobile": False,
+                },
+            )
             await send("Page.navigate", {"url": file_url})
             load_deadline = time.time() + 8
             while time.time() < load_deadline:
@@ -318,30 +340,37 @@ roots = [body];
                 if message.get("method") == "Page.loadEventFired":
                     break
             await asyncio.sleep(0.25)
-            result = await send("Runtime.evaluate", {
-                "expression": expression,
-                "returnByValue": True,
-                "awaitPromise": True,
-            })
+            result = await send(
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                },
+            )
             layout = result.get("result", {}).get("result", {}).get("value")
             if layout and render_mode in ("visual", "screenshot", "image", "hybrid"):
                 import base64
+
                 screenshots: list[str | None] = []
                 for idx, slide_data in enumerate(layout.get("slides") or []):
                     clip_w = max(1.0, float(slide_data.get("width") or design_w_px))
                     clip_h = max(1.0, float(slide_data.get("height") or design_h_px))
-                    screenshot_result = await send("Page.captureScreenshot", {
-                        "format": "png",
-                        "captureBeyondViewport": True,
-                        "fromSurface": True,
-                        "clip": {
-                            "x": max(0.0, float(slide_data.get("x") or 0)),
-                            "y": max(0.0, float(slide_data.get("y") or 0)),
-                            "width": clip_w,
-                            "height": clip_h,
-                            "scale": 1,
+                    screenshot_result = await send(
+                        "Page.captureScreenshot",
+                        {
+                            "format": "png",
+                            "captureBeyondViewport": True,
+                            "fromSurface": True,
+                            "clip": {
+                                "x": max(0.0, float(slide_data.get("x") or 0)),
+                                "y": max(0.0, float(slide_data.get("y") or 0)),
+                                "width": clip_w,
+                                "height": clip_h,
+                                "scale": 1,
+                            },
                         },
-                    })
+                    )
                     data = screenshot_result.get("result", {}).get("data")
                     if not data:
                         screenshots.append(None)
@@ -353,6 +382,7 @@ roots = [body];
                 layout["screenshots"] = screenshots
             if layout and render_mode in ("editable", "hybrid_editable"):
                 import base64
+
                 background_screenshots: list[str | None] = []
                 shape_screenshots: dict[str, str] = {}
                 page_bg_value = str(layout.get("pageBackground") or "")
@@ -384,18 +414,21 @@ roots = [body];
                     restore_expr = "document.getElementById('clawith-bg-capture-style')?.remove()"
                     await send("Runtime.evaluate", {"expression": hide_expr, "awaitPromise": True})
                     try:
-                        screenshot_result = await send("Page.captureScreenshot", {
-                            "format": "png",
-                            "captureBeyondViewport": True,
-                            "fromSurface": True,
-                            "clip": {
-                                "x": max(0.0, float(slide_data.get("x") or 0)),
-                                "y": max(0.0, float(slide_data.get("y") or 0)),
-                                "width": clip_w,
-                                "height": clip_h,
-                                "scale": 1,
+                        screenshot_result = await send(
+                            "Page.captureScreenshot",
+                            {
+                                "format": "png",
+                                "captureBeyondViewport": True,
+                                "fromSurface": True,
+                                "clip": {
+                                    "x": max(0.0, float(slide_data.get("x") or 0)),
+                                    "y": max(0.0, float(slide_data.get("y") or 0)),
+                                    "width": clip_w,
+                                    "height": clip_h,
+                                    "scale": 1,
+                                },
                             },
-                        })
+                        )
                     finally:
                         await send("Runtime.evaluate", {"expression": restore_expr})
                     data = screenshot_result.get("result", {}).get("data")
@@ -434,29 +467,32 @@ roots = [body];
                             "const style=document.createElement('style');"
                             "style.id=id;"
                             "style.textContent="
-                            f"'[data-clawith-slide-root=\"{slide_idx}\"] * {{ visibility: hidden !important; }} "
-                            f"[data-clawith-slide-root=\"{slide_idx}\"] [data-clawith-item-id=\"{item_id}\"] {{ visibility: visible !important; color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }} "
-                            f"[data-clawith-slide-root=\"{slide_idx}\"] [data-clawith-item-id=\"{item_id}\"]::before, "
-                            f"[data-clawith-slide-root=\"{slide_idx}\"] [data-clawith-item-id=\"{item_id}\"]::after {{ color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }} "
-                            f"[data-clawith-slide-root=\"{slide_idx}\"] [data-clawith-item-id=\"{item_id}\"] * {{ visibility: hidden !important; color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }}';"
+                            f'\'[data-clawith-slide-root="{slide_idx}"] * {{ visibility: hidden !important; }} '
+                            f'[data-clawith-slide-root="{slide_idx}"] [data-clawith-item-id="{item_id}"] {{ visibility: visible !important; color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }} '
+                            f'[data-clawith-slide-root="{slide_idx}"] [data-clawith-item-id="{item_id}"]::before, '
+                            f'[data-clawith-slide-root="{slide_idx}"] [data-clawith-item-id="{item_id}"]::after {{ color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }} '
+                            f'[data-clawith-slide-root="{slide_idx}"] [data-clawith-item-id="{item_id}"] * {{ visibility: hidden !important; color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }}\';'
                             "document.head.appendChild(style);"
                             "})()"
                         )
                         restore_expr = "document.getElementById('clawith-item-bg-capture-style')?.remove()"
                         await send("Runtime.evaluate", {"expression": hide_expr, "awaitPromise": True})
                         try:
-                            screenshot_result = await send("Page.captureScreenshot", {
-                                "format": "png",
-                                "captureBeyondViewport": True,
-                                "fromSurface": True,
-                                "clip": {
-                                    "x": max(0.0, float(slide_data.get("x") or 0) + float(item.get("x") or 0)),
-                                    "y": max(0.0, float(slide_data.get("y") or 0) + float(item.get("y") or 0)),
-                                    "width": clip_w,
-                                    "height": clip_h,
-                                    "scale": 1,
+                            screenshot_result = await send(
+                                "Page.captureScreenshot",
+                                {
+                                    "format": "png",
+                                    "captureBeyondViewport": True,
+                                    "fromSurface": True,
+                                    "clip": {
+                                        "x": max(0.0, float(slide_data.get("x") or 0) + float(item.get("x") or 0)),
+                                        "y": max(0.0, float(slide_data.get("y") or 0) + float(item.get("y") or 0)),
+                                        "width": clip_w,
+                                        "height": clip_h,
+                                        "scale": 1,
+                                    },
                                 },
-                            })
+                            )
                         finally:
                             await send("Runtime.evaluate", {"expression": restore_expr})
                         data = screenshot_result.get("result", {}).get("data")
@@ -469,16 +505,13 @@ roots = [body];
                 layout["backgroundScreenshots"] = background_screenshots
                 layout["shapeScreenshots"] = shape_screenshots
             return layout
-    except Exception as layout_exc:
+    except Exception as layout_exc:  # noqa: BLE001 - browser rendering is an optional conversion enhancement.
         logger.warning(f"Browser layout extraction failed, falling back to DOM flow conversion: {layout_exc}")
         return None
     finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
+        if process is not None:
             try:
-                proc.kill()
-            except Exception:
-                pass
+                await stop_process(process)
+            except ProcessLookupError:
+                logger.debug("Chrome layout process exited before cleanup")
         profile_dir.cleanup()

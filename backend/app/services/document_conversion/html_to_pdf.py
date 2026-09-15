@@ -1,13 +1,24 @@
 """HTML to PDF conversion service."""
 
 import asyncio
+import base64
 import json
+import socket
+import sys
+import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
+import websockets
 from loguru import logger
 
-from app.services.document_conversion.chrome_renderer import chrome_executable
+from app.services.document_conversion.chrome_renderer import (
+    chrome_executable,
+    read_json_url,
+    stop_process,
+)
 
 
 async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, arguments: dict[str, Any]) -> str:
@@ -16,14 +27,6 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
         chrome_pdf_error: Exception | None = None
 
         async def try_chrome_pdf() -> bool:
-            import base64
-            import socket
-            import subprocess
-            import tempfile
-            import time
-            import urllib.request
-            import websockets
-
             chrome = chrome_executable()
             if not chrome:
                 return False
@@ -45,39 +48,38 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                 f"--user-data-dir={profile_dir.name}",
                 "about:blank",
             ]
-            import sys
             if sys.platform.startswith("linux"):
                 # Linux environments (like Docker containers) require no-sandbox in standard restricted container contexts
                 chrome_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
 
-            proc = subprocess.Popen(
-                chrome_args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            process: asyncio.subprocess.Process | None = None
             try:
+                process = await asyncio.create_subprocess_exec(
+                    *chrome_args,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
                 base = f"http://127.0.0.1:{port}"
                 deadline = time.time() + 8
                 while time.time() < deadline:
                     try:
-                        with urllib.request.urlopen(f"{base}/json/version", timeout=0.25) as resp:
-                            json.loads(resp.read().decode("utf-8"))
+                        await asyncio.to_thread(read_json_url, f"{base}/json/version", timeout=0.25)
                         break
-                    except Exception:
+                    except (OSError, TimeoutError, TypeError, ValueError):
                         await asyncio.sleep(0.1)
                 else:
                     return False
 
                 file_url = src_file.resolve().as_uri()
                 req = urllib.request.Request(f"{base}/json/new?{file_url}", method="PUT")
-                with urllib.request.urlopen(req, timeout=2) as resp:
-                    target = json.loads(resp.read().decode("utf-8"))
+                target = await asyncio.to_thread(read_json_url, req, timeout=2)
                 ws_url = target.get("webSocketDebuggerUrl")
                 if not ws_url:
                     return False
 
                 msg_id = 0
                 async with websockets.connect(ws_url, max_size=20_000_000) as ws_conn:
+
                     async def send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         nonlocal msg_id
                         msg_id += 1
@@ -92,12 +94,15 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                     design_h_px = int(arguments.get("design_height") or 720)
                     await send("Page.enable")
                     await send("Runtime.enable")
-                    await send("Emulation.setDeviceMetricsOverride", {
-                        "width": design_w_px,
-                        "height": design_h_px,
-                        "deviceScaleFactor": 1,
-                        "mobile": False,
-                    })
+                    await send(
+                        "Emulation.setDeviceMetricsOverride",
+                        {
+                            "width": design_w_px,
+                            "height": design_h_px,
+                            "deviceScaleFactor": 1,
+                            "mobile": False,
+                        },
+                    )
                     await send("Emulation.setEmulatedMedia", {"media": "screen"})
                     await send("Page.navigate", {"url": file_url})
                     load_deadline = time.time() + 8
@@ -108,10 +113,13 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                             break
                     await asyncio.sleep(0.25)
 
-                    page_info = await send("Runtime.evaluate", {
-                        "expression": "(() => ({w: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0, innerWidth), h: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0, innerHeight)}))()",
-                        "returnByValue": True,
-                    })
+                    page_info = await send(
+                        "Runtime.evaluate",
+                        {
+                            "expression": "(() => ({w: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0, innerWidth), h: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0, innerHeight)}))()",
+                            "returnByValue": True,
+                        },
+                    )
                     dims = page_info.get("result", {}).get("result", {}).get("value") or {}
                     scroll_w = max(1, float(dims.get("w") or design_w_px))
                     scroll_h = max(1, float(dims.get("h") or design_h_px))
@@ -126,17 +134,21 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                         "marginRight": float(arguments.get("margin_right", 0)),
                     }
                     if mode in ("single", "long", "fullpage"):
-                        pdf_params.update({
-                            "paperWidth": scroll_w / 96.0,
-                            "paperHeight": scroll_h / 96.0,
-                            "scale": 1,
-                        })
+                        pdf_params.update(
+                            {
+                                "paperWidth": scroll_w / 96.0,
+                                "paperHeight": scroll_h / 96.0,
+                                "scale": 1,
+                            }
+                        )
                     else:
-                        pdf_params.update({
-                            "paperWidth": float(arguments.get("paper_width") or 8.27),
-                            "paperHeight": float(arguments.get("paper_height") or 11.69),
-                            "scale": float(arguments.get("scale") or 0.64),
-                        })
+                        pdf_params.update(
+                            {
+                                "paperWidth": float(arguments.get("paper_width") or 8.27),
+                                "paperHeight": float(arguments.get("paper_height") or 11.69),
+                                "scale": float(arguments.get("scale") or 0.64),
+                            }
+                        )
 
                     pdf_result = await send("Page.printToPDF", pdf_params)
                     data = pdf_result.get("result", {}).get("data")
@@ -145,31 +157,29 @@ async def convert_html_to_pdf(src_file: Path, tgt_file: Path, target_path: str, 
                     tgt_file.write_bytes(base64.b64decode(data))
                     return True
             finally:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
+                if process is not None:
                     try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                        await stop_process(process)
+                    except ProcessLookupError:
+                        logger.debug("Chrome PDF process exited before cleanup")
                 profile_dir.cleanup()
 
         try:
             chrome_success = await try_chrome_pdf()
             if chrome_success:
                 return f"✅ Successfully converted HTML to PDF with Chrome: {target_path}"
-            else:
-                chrome_pdf_error = Exception("Chrome process timed out or failed to connect to debugging port")
-                logger.warning("Chrome HTML to PDF failed (timed out), falling back to WeasyPrint")
-        except Exception as exc:
+            chrome_pdf_error = RuntimeError("Chrome process timed out or failed to connect to debugging port")
+            logger.warning("Chrome HTML to PDF failed (timed out), falling back to WeasyPrint")
+        except Exception as exc:  # noqa: BLE001 - Chrome is optional and any browser failure must use WeasyPrint.
             chrome_pdf_error = exc
             logger.warning(f"Chrome HTML to PDF failed, falling back to WeasyPrint: {exc}")
 
         from weasyprint import HTML
-        HTML(filename=str(src_file)).write_pdf(str(tgt_file))
+
+        html = HTML(filename=str(src_file))
+        await asyncio.to_thread(html.write_pdf, str(tgt_file))
         note = f" Chrome fallback reason: {chrome_pdf_error}" if chrome_pdf_error else ""
         return f"✅ Successfully converted HTML to PDF with WeasyPrint: {target_path}.{note}"
-    except Exception as e:
-        logger.exception(f"Convert HTML to PDF failed: {e}")
-        return f"❌ Conversion failed: {e}"
+    except Exception as exc:  # noqa: BLE001 - normalize optional converter failures for the Tool boundary.
+        logger.exception(f"Convert HTML to PDF failed: {exc}")
+        return f"❌ Conversion failed: {exc}"

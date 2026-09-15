@@ -1,4 +1,4 @@
-{{- if and .Values.frontend.enabled .Values.frontend.ingress.enabled }}
+{{- if and (not .Values.g002Deferred) .Values.frontend.enabled .Values.frontend.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -33,4 +33,3 @@ spec:
             port:
               number: {{ .Values.frontend.service.port }}
 {{- end }}
-

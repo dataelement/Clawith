@@ -1,0 +1,20 @@
+[
+  {"id": "context_import", "path": "app/runtime/loop.py", "source": "from app.modules.context.public import ContextView\n"},
+  {"id": "model_import", "path": "app/runtime/loop.py", "source": "from app.modules.model.public import ModelService\n"},
+  {"id": "tool_import", "path": "app/runtime/runner.py", "source": "from app.modules.tool.public import ToolService\n"},
+  {"id": "capability_market_import", "path": "app/runtime/runner.py", "source": "from app.modules.capability_market.public import CapabilityMarket\n"},
+  {"id": "workspace_import", "path": "app/runtime/loop.py", "source": "from app.modules.workspace.public import Workspace\n"},
+  {"id": "permission_import", "path": "app/runtime/loop.py", "source": "from app.modules.permission.public import PermissionDecision\n"},
+  {"id": "session_import", "path": "app/runtime/runner.py", "source": "from app.modules.session.public import SessionService\n"},
+  {"id": "other_product_owner_import", "path": "app/runtime/runner.py", "source": "from app.modules.agent.public import AgentSnapshot\n"},
+  {"id": "context_module", "path": "app/runtime/context.py", "source": "class View:\n    pass\n"},
+  {"id": "model_class", "path": "app/runtime/state.py", "source": "class ModelSnapshot:\n    pass\n"},
+  {"id": "tool_assignment", "path": "app/runtime/state.py", "source": "tool_state = {}\n"},
+  {"id": "capability_market_class", "path": "app/runtime/state.py", "source": "class CapabilityMarketState:\n    pass\n"},
+  {"id": "workspace_class", "path": "app/runtime/state.py", "source": "class WorkspaceState:\n    pass\n"},
+  {"id": "permission_class", "path": "app/runtime/state.py", "source": "class PermissionState:\n    pass\n"},
+  {"id": "session_class", "path": "app/runtime/state.py", "source": "class SessionState:\n    pass\n"},
+  {"id": "a2a_class", "path": "app/runtime/state.py", "source": "class A2AState:\n    pass\n"},
+  {"id": "repository_module", "path": "app/runtime/repository.py", "source": "class RuntimeRepository:\n    pass\n"},
+  {"id": "orm_table", "path": "app/runtime/state.py", "source": "class RuntimeState:\n    __tablename__ = 'runtime_state'\n"}
+]

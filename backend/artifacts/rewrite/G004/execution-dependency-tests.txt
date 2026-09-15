@@ -1,0 +1,17 @@
+goal: G004
+validation: execution-dependency-integration
+command: uv run --extra dev pytest tests/database/test_schema_wave_S2.py tests/modules/workspace tests/modules/tool tests/modules/capability_market tests/modules/model/test_execution.py tests/modules/model/test_continuation.py
+verified_source_head: 3083dba17c9ce2900a7dac87587d8d3c8d311c15
+verified_at: 2026-09-07T08:13:53Z
+source_isolation: detached committed-source checkout; application import location verified; deferred working-tree drafts excluded
+exit_code: 0
+result: 205 passed in 53.61s
+supporting_full_backend_command: .venv/bin/python -m pytest -q
+supporting_full_backend: 2301 passed, 4 warnings in 149.34s
+supporting_architecture: 1748 passed, 1 warning in 60.83s
+supporting_foundation: 211 passed in 50.98s
+supporting_collection: 2301 tests collected in 2.76s
+supporting_static: ruff check app tests passed; configured pyright app 0 errors
+supporting_governance: 48 passed; goal manifest valid; owner and product roster checks passed; unreviewed=0 disposition_missing=0; strict load profile valid; immutable reference=valid
+review: independent code/security and architecture reviews approved both fixes; cumulative dependency architecture CLEAR
+not_verified: hosted CI, actual Provider/S3 behavior, GitHub/ClawHub importer acceptance, G005 Runner/Loop, product APIs, deployment migrations, frontend and 50-Agent load

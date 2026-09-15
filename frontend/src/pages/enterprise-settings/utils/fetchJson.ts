@@ -1,1 +1,1 @@
-export { fetchJson } from '../../../services/api';
+export { fetchJson } from "../../../services/api";

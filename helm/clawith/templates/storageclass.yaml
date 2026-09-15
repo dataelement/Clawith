@@ -1,4 +1,4 @@
-{{- if .Values.storageClass.create }}
+{{- if and (not .Values.g002Deferred) .Values.storageClass.create }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -14,4 +14,3 @@ parameters:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}
-

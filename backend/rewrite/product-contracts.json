@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module_id": "auth", "owner_id": "auth", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "sso", "owner_id": "sso", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "organization", "owner_id": "organization", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "invitation", "owner_id": "invitation", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "onboarding", "owner_id": "onboarding", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "okr", "owner_id": "okr", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "focus", "owner_id": "focus", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "notification", "owner_id": "notification", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "page", "owner_id": "published_page", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "plaza", "owner_id": "plaza", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "enterprise_settings", "owner_id": "enterprise_settings", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "platform_administration", "owner_id": "platform_administration", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "agentbay", "owner_id": "agentbay", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "directory", "owner_id": "directory", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "agent_template", "owner_id": "agent_template", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "observability", "owner_id": "observability", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    },
+    {
+      "module_id": "tenant_knowledge", "owner_id": "tenant_knowledge", "state": "unreviewed",
+      "contract_artifact": null, "contract_hash": null, "evidence": [],
+      "actors": null, "product_workflow": null, "persistence": null,
+      "api_events": null, "authorization": null, "failure_behavior": null,
+      "consumers": null, "endpoint_mapping": null, "acceptance_tests": null,
+      "explicit_deletions": null
+    }
+  ]
+}

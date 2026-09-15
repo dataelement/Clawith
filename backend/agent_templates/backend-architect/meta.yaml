@@ -7,8 +7,3 @@ capability_bullets:
   - "Data modeling — schema, indexes, partitioning, migration sequencing"
   - "Trade-off analysis — CAP, consistency, latency vs. cost, honest about risk"
 default_skills: []
-default_autonomy_policy:
-  read_files: "L1"
-  write_workspace_files: "L1"
-  delete_files: "L2"
-  send_feishu_message: "L2"

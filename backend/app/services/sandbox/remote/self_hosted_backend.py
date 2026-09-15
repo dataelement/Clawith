@@ -3,10 +3,10 @@
 import time
 
 import httpx
+from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-from loguru import logger
 
 
 class SelfHostedBackend(BaseSandboxBackend):
@@ -52,16 +52,24 @@ class SelfHostedBackend(BaseSandboxBackend):
         try:
             async with httpx.AsyncClient() as client:
                 # Try /v1/sandbox first (aio-sandbox), then fall back to /health
-                for endpoint in ["/v1/sandbox", "/health"]:
+                for probe, endpoint in (
+                    ("sandbox", "/v1/sandbox"),
+                    ("health", "/health"),
+                ):
                     check_url = self.api_url.split("/v1/")[0] + endpoint if "/v1/" in self.api_url else f"{self.api_url.rsplit('/', 1)[0]}/health"
                     try:
                         response = await client.get(check_url, timeout=5.0)
                         if response.status_code == 200:
                             return True
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001 -- external health probe
+                        logger.debug(
+                            "[SelfHosted] Health probe failed probe={} error={}",
+                            probe,
+                            type(exc).__name__,
+                        )
                         continue
                 return False
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health normalizes provider failures.
             return False
 
     async def execute(
@@ -94,11 +102,11 @@ class SelfHostedBackend(BaseSandboxBackend):
         if "shell" in url_lower:
             # aio-sandbox shell: wrap code as command
             if language == "python":
-                cmd = f"python3 -c {repr(code)}"
+                cmd = f"python3 -c {code!r}"
             elif language == "bash":
                 cmd = code
             elif language == "node":
-                cmd = f"node -e {repr(code)}"
+                cmd = f"node -e {code!r}"
             else:
                 cmd = code
             payload = {"cmd": cmd}
@@ -189,9 +197,9 @@ class SelfHostedBackend(BaseSandboxBackend):
                 error=f"Code execution timed out after {timeout}s"
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- provider failures become results.
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.exception(f"[SelfHosted] Execution error")
+            logger.exception("[SelfHosted] Execution error")
             return ExecutionResult(
                 success=False,
                 stdout="",

@@ -1,4 +1,4 @@
-{{- if .Values.redis.enabled }}
+{{- if and (not .Values.g002Deferred) .Values.redis.enabled }}
 {{- if and .Values.redis.persistence.enabled (not .Values.redis.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -90,4 +90,3 @@ spec:
     port: {{ .Values.redis.service.port }}
     targetPort: redis
 {{- end }}
-

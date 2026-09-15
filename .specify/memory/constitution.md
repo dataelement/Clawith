@@ -1,9 +1,9 @@
 <!--
 Sync Impact Report
-- Version change: template -> 1.0.0
-- Added principles: Evidence Before Claims; Minimal Scoped Changes; Contract and State Ownership;
-  Tests Prove Behavior; Preserve Existing Work
-- Added sections: Project Constraints; Development Workflow
+- Version change: 1.0.0 -> 1.1.0
+- Updated execution ownership to the clean-break Runner/History contract.
+- Removed LangGraph and generic exactly-once external execution requirements.
+- Added login-scoped human authorization and per-Run execution configuration.
 - Templates requiring updates:
   - ✅ .specify/templates/plan-template.md (existing Constitution Check supports these gates)
   - ✅ .specify/templates/spec-template.md (scope and measurable acceptance sections already present)
@@ -28,7 +28,7 @@ forbidden unless explicitly approved.
 
 ### III. Contract and State Ownership
 Each fact MUST have one authoritative owner. Provider-specific adapters own mapping external business
-states into typed outcomes; Runtime owns Tool receipts, scheduling, waiting, settlement, and resume;
+states into typed outcomes; Agent Runner owns Run status, append-only History, scheduling, waiting, settlement, and resume;
 the Model owns intent and user-facing content. Consumers MUST use the structured contract rather than
 re-deriving state from summaries or prose.
 
@@ -45,12 +45,13 @@ MUST avoid destructive commands and MUST report unavoidable ownership conflicts 
 
 ## Project Constraints
 
-- Backend Runtime work uses the existing Python, FastAPI, SQLAlchemy, LangGraph, and pytest stack.
+- Backend work uses Python, FastAPI, SQLAlchemy, PostgreSQL and pytest in the clean-break modular monolith. LangGraph, checkpoint, Command and generic Tool Ledger authorities are excluded.
+- Human permissions are resolved at login; each new Run resolves Agent-owned execution configuration within that scope. Runner does not implement live reauthorization or revocation sweeps.
 - No dependency may be added without explicit user approval.
 - Documentation may describe historical intent, but implementation claims MUST be checked against
   current source.
 - Public Tool behavior and internal Runtime behavior MUST not be broadened merely to simplify one fix.
-- External writes MUST remain exactly-once where the existing Tool policy requires it.
+- External writes use provider-supported idempotency where available. An uncertain outcome remains explicit and never authorizes blind replay; the platform does not promise generic exactly-once external execution.
 
 ## Development Workflow
 
@@ -69,4 +70,4 @@ version update, date update, and consistency review of dependent Spec Kit templa
 plan MUST evaluate these principles before design and again before implementation. Any exception MUST
 be explicit in the plan's Complexity Tracking section and approved before code changes begin.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-05 | **Last Amended**: 2026-08-05
+**Version**: 1.1.0 | **Ratified**: 2026-08-05 | **Last Amended**: 2026-09-06

@@ -1,6 +1,7 @@
 """DingTalk service for sending messages via Open API."""
 
 import json
+
 import httpx
 from loguru import logger
 
@@ -26,7 +27,7 @@ async def get_dingtalk_access_token(app_id: str, app_secret: str) -> dict:
             else:
                 logger.error(f"[DingTalk] Failed to get access_token: {data}")
                 return {"errcode": data.get("errcode"), "errmsg": data.get("errmsg")}
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- normalize every provider/decoding failure to the result contract
             logger.error(f"[DingTalk] Network error getting access_token: {e}")
             return {"errcode": -1, "errmsg": str(e)}
 
@@ -37,7 +38,7 @@ async def send_dingtalk_v1_robot_oto_message(
     user_ids: list[str],
     message: str,
     msg_type: str = "text",
-    robot_code: str = None,
+    robot_code: str | None = None,
 ) -> dict:
     """Send single chat messages via Robot using modern v1.0 API (RECOMMENDED).
     
@@ -80,7 +81,7 @@ async def send_dingtalk_v1_robot_oto_message(
             else:
                 logger.error(f"[DingTalk] Failed to send v1.0 OTO message: {data}")
                 return {"errcode": resp.status_code, "errmsg": str(data)}
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- normalize every provider/decoding failure to the result contract
             logger.error(f"[DingTalk] Network error sending v1.0 OTO message: {e}")
             return {"errcode": -1, "errmsg": str(e)}
 
@@ -119,7 +120,7 @@ async def send_dingtalk_corp_conversation(
             else:
                 logger.error(f"[DingTalk] Failed to send corp conversation: {data}")
                 return data
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- normalize every provider/decoding failure to the result contract
             logger.error(f"[DingTalk] Network error sending corp conversation: {e}")
             return {"errcode": -1, "errmsg": str(e)}
 
@@ -129,7 +130,7 @@ async def send_dingtalk_message(
     app_secret: str,
     user_id: str,
     message: str,
-    agent_id: str = None,
+    agent_id: str | None = None,
     use_robot: bool = True,
     msg_type: str = "text",
 ) -> dict:
@@ -155,20 +156,3 @@ async def send_dingtalk_message(
         if not agent_id:
             agent_id = app_id
         return await send_dingtalk_corp_conversation(app_id, app_secret, user_id, msg_body, agent_id)
-
-
-async def download_dingtalk_media(
-    app_id: str, app_secret: str, download_code: str
-) -> bytes | None:
-    """Download a media file from DingTalk using a downloadCode.
-
-    Convenience wrapper that delegates to the stream module's download helper.
-    Returns raw file bytes on success, or None on failure.
-
-    Args:
-        app_id: DingTalk app key (robotCode).
-        app_secret: DingTalk app secret.
-        download_code: The downloadCode from the incoming message payload.
-    """
-    from app.services.dingtalk_stream import download_dingtalk_media as _download
-    return await _download(app_id, app_secret, download_code)

@@ -5,10 +5,13 @@ Saves extracted text as a companion .md file alongside the original.
 """
 
 import io
+from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
+from xml.etree.ElementTree import ParseError
+from zipfile import BadZipFile
 
 from loguru import logger
-
 
 # File extensions that need text extraction
 EXTRACTABLE_EXTS = {".pdf", ".docx", ".xlsx", ".pptx"}
@@ -17,13 +20,44 @@ EXTRACTABLE_EXTS = {".pdf", ".docx", ".xlsx", ".pptx"}
 TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
              ".js", ".ts", ".py", ".html", ".css", ".sh", ".log", ".env"}
 
+_COMMON_EXTRACTION_ERRORS: tuple[type[Exception], ...] = (
+    BadZipFile,
+    EOFError,
+    KeyError,
+    OSError,
+    ParseError,
+    ValueError,
+)
+
+
+def _supported_extraction_errors(extension: str) -> tuple[type[Exception], ...]:
+    if extension == ".pdf":
+        from pdfminer.pdfexceptions import PDFException
+
+        return (*_COMMON_EXTRACTION_ERRORS, PDFException)
+    if extension == ".docx":
+        from docx.opc.exceptions import OpcError
+        from lxml.etree import LxmlError
+
+        return (*_COMMON_EXTRACTION_ERRORS, OpcError, LxmlError)
+    if extension == ".xlsx":
+        from openpyxl.utils.exceptions import InvalidFileException
+
+        return (*_COMMON_EXTRACTION_ERRORS, InvalidFileException)
+    if extension == ".pptx":
+        from lxml.etree import LxmlError
+        from pptx.exc import PythonPptxError
+
+        return (*_COMMON_EXTRACTION_ERRORS, PythonPptxError, LxmlError)
+    return _COMMON_EXTRACTION_ERRORS
+
 
 def _clean_cell(value: object) -> str:
     text = str(value or "").strip()
     return text.replace("\n", "<br>").replace("|", "\\|")
 
 
-def _markdown_table(rows: list[list[object]]) -> str:
+def _markdown_table(rows: Sequence[Sequence[object]]) -> str:
     cleaned = [[_clean_cell(cell) for cell in row] for row in rows]
     cleaned = [row for row in cleaned if any(cell for cell in row)]
     if not cleaned:
@@ -64,8 +98,8 @@ def extract_text(file_bytes: bytes, filename: str) -> str | None:
             return _extract_xlsx(file_bytes)
         elif ext == ".pptx":
             return _extract_pptx(file_bytes)
-    except Exception as e:
-        logger.error(f"[TextExtractor] Failed to extract from {filename}: {e}")
+    except _supported_extraction_errors(ext) as exc:
+        logger.error(f"[TextExtractor] Failed to extract from {filename}: {exc}")
         return None
     
     return None
@@ -177,6 +211,8 @@ def _extract_xlsx(data: bytes) -> str:
 def _extract_pptx(data: bytes) -> str:
     """Extract text from PPTX using python-pptx."""
     from pptx import Presentation
+    from pptx.shapes.autoshape import Shape
+    from pptx.shapes.graphfrm import GraphicFrame
     
     prs = Presentation(io.BytesIO(data))
     parts = []
@@ -186,13 +222,13 @@ def _extract_pptx(data: bytes) -> str:
         tables = []
         for shape in slide.shapes:
             if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
+                for para in cast(Shape, shape).text_frame.paragraphs:
                     text = para.text.strip()
                     if text:
                         texts.append(text)
             if shape.has_table:
                 rows = []
-                for row in shape.table.rows:
+                for row in cast(GraphicFrame, shape).table.rows:
                     rows.append([cell.text.strip() for cell in row.cells])
                 table_md = _markdown_table(rows)
                 if table_md:

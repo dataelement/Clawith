@@ -1,0 +1,9 @@
+{
+  "goal": "G001",
+  "validation": "owner-dag-and-wave-roster",
+  "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json",
+  "verified_source_head": "085a40b79e936baaddb20683a14f15f06ff4df6f",
+  "verified_at": "2026-09-07T03:10:04Z",
+  "exit_code": 0,
+  "result": "owner contract manifest passed: rewrite/owner-contracts.json"
+}

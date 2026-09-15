@@ -1,0 +1,17 @@
+[
+  {
+    "id": "owner_public_contract",
+    "path": "app/modules/session/service.py",
+    "source": "from app.modules.run.public import RunService\n"
+  },
+  {
+    "id": "runtime_run_contract",
+    "path": "app/runtime/loop.py",
+    "source": "from app.infrastructure.database import DatabaseResources\nfrom app.modules.run.public import RunCommand\n\nclass Loop:\n    pass\n"
+  },
+  {
+    "id": "same_owner_crypto",
+    "path": "app/modules/credential/public.py",
+    "source": "from app.modules.credential.crypto import CredentialKeyring\n"
+  }
+]

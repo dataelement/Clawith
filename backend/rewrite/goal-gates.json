@@ -1,0 +1,500 @@
+{
+  "version": 1,
+  "policy": {
+    "cumulative": true,
+    "validation_commands_are_repeatable": true,
+    "mutations_require_receipts": true,
+    "mutation_replay_policy": "verify_receipt_before_execute",
+    "e2e_levels": [
+      "unavailable",
+      "core_runtime",
+      "product_input",
+      "module_cumulative",
+      "complete_backend"
+    ]
+  },
+  "goals": [
+    {
+      "id": "G000",
+      "title": "Planning and authority gate",
+      "phase_crosswalk": [0],
+      "carries_forward": [],
+      "e2e_level": "unavailable",
+      "implementation_owners": [],
+      "contract_approval_owners": [],
+      "required_paths": [
+        ".agents/notes/proposed/architecture/2026-08-28-target-agent-execution-architecture.md",
+        ".agents/notes/proposed/architecture/2026-08-27-agent-runner-lifecycle-and-history.md",
+        ".agents/notes/proposed/architecture/2026-08-28-capacity-performance-and-responsiveness.md",
+        ".agents/notes/proposed/architecture/2026-08-28-product-input-main-run-and-output-boundaries.md",
+        ".agents/notes/proposed/testing/2026-09-02-cumulative-goal-checkpoints.md",
+        "backend/rewrite/goal-gates.json"
+      ],
+      "validations": [
+        {
+          "id": "goal-gate-contract",
+          "command": "uv run python scripts/validate_goal_gates.py --manifest rewrite/goal-gates.json",
+          "artifacts": ["backend/rewrite/goal-gates.json"]
+        }
+      ],
+      "mutations": []
+    },
+    {
+      "id": "G001",
+      "title": "Phase 0 validation-only gate",
+      "phase_crosswalk": [0],
+      "carries_forward": ["G000"],
+      "e2e_level": "unavailable",
+      "implementation_owners": [],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/rewrite/coverage.json",
+        "backend/rewrite/owner-contracts.json",
+        "backend/rewrite/product-contracts.json",
+        "backend/rewrite/owner-dag.json",
+        "backend/rewrite/legacy-black-box.json",
+        "scripts/check-g001-reference.sh",
+        "backend/tests/performance/profiles/backend_50.json"
+      ],
+      "validations": [
+        {
+          "id": "coverage-disposition-state",
+          "command": "uv run python scripts/rewrite_inventory.py check --manifest rewrite/coverage.json --require-zero-unreviewed --require-zero-disposition-missing",
+          "artifacts": ["backend/artifacts/rewrite/G001/coverage-disposition.json"]
+        },
+        {
+          "id": "governance",
+          "command": "uv run --extra dev pytest tests/architecture/test_governance.py tests/architecture/test_module_boundaries.py",
+          "artifacts": ["backend/artifacts/rewrite/G001/governance.txt"]
+        },
+        {
+          "id": "owner-dag-and-wave-roster",
+          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json",
+          "artifacts": ["backend/artifacts/rewrite/G001/owner-dag-wave-roster.json"]
+        },
+        {
+          "id": "product-roster-and-linkage",
+          "command": "uv run python scripts/validate_goal_gates.py --manifest rewrite/goal-gates.json --check-product-roster-and-linkage",
+          "artifacts": ["backend/artifacts/rewrite/G001/product-roster-linkage.json"]
+        },
+        {
+          "id": "strict-load-profile",
+          "command": "uv run python scripts/validate_load_profile.py tests/performance/profiles/backend_50.json",
+          "artifacts": ["backend/artifacts/rewrite/G001/strict-load-profile.txt"]
+        },
+        {
+          "id": "immutable-reference",
+          "command": "bash ../scripts/check-g001-reference.sh",
+          "artifacts": ["backend/artifacts/rewrite/G001/legacy-reference.json"]
+        }
+      ],
+      "mutations": []
+    },
+    {
+      "id": "G002",
+      "title": "Architecture, static, and collection disposition gate",
+      "phase_crosswalk": [1],
+      "carries_forward": ["G000", "G001"],
+      "e2e_level": "unavailable",
+      "implementation_owners": [],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/app/application.py",
+        "backend/app/infrastructure/database.py",
+        "backend/tests/architecture/test_application_composition.py",
+        "backend/tests/architecture/test_import_boundaries.py",
+        "backend/tests/architecture/test_module_boundaries.py"
+      ],
+      "validations": [
+        {
+          "id": "architecture",
+          "command": "uv run --extra dev pytest tests/architecture",
+          "artifacts": ["backend/artifacts/rewrite/G002/architecture.txt"]
+        },
+        {
+          "id": "ruff",
+          "command": "uv run --extra dev ruff check app tests",
+          "artifacts": ["backend/artifacts/rewrite/G002/ruff.txt"]
+        },
+        {
+          "id": "pyright",
+          "command": "uv run --extra dev pyright app",
+          "artifacts": ["backend/artifacts/rewrite/G002/pyright.txt"]
+        },
+        {
+          "id": "full-test-collection-disposition",
+          "command": "uv run --extra dev pytest --collect-only",
+          "artifacts": ["backend/artifacts/rewrite/G002/pytest-collection.txt"]
+        }
+      ],
+      "mutations": []
+    },
+    {
+      "id": "G003",
+      "title": "Foundation schema and integration gate",
+      "phase_crosswalk": [2],
+      "carries_forward": ["G000", "G001", "G002"],
+      "e2e_level": "unavailable",
+      "implementation_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit"],
+      "schema_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "run", "context"],
+      "contract_approval_owners": ["identity_tenant", "credential", "model", "agent", "permission", "auth", "audit", "workspace", "tool", "capability_market", "context", "run"],
+      "required_paths": [
+        "backend/rewrite/owner-contracts.json",
+        "backend/tests/database/test_schema_wave_S0.py",
+        "backend/tests/database/test_schema_wave_S1.py",
+        "backend/tests/compose.postgres.yml"
+      ],
+      "validations": [
+        {
+          "id": "foundation-contract-prerequisites",
+          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner run --require-approved-owner context --require-approved-wave S0 --require-approved-wave S1 --approval-receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json",
+          "artifacts": ["backend/artifacts/rewrite/G003/owner-contract-check.txt"]
+        },
+        {
+          "id": "foundation-schema-and-integration",
+          "command": "uv run --extra dev pytest tests/database tests/modules/identity_tenant tests/modules/credential tests/modules/model tests/modules/agent tests/modules/permission tests/modules/auth tests/modules/audit",
+          "artifacts": ["backend/artifacts/rewrite/G003/foundation-tests.txt"]
+        }
+      ],
+      "mutations": [
+        {
+          "id": "approve-identity-tenant-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner identity_tenant --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-credential-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner credential --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-model-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner model --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/model-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-agent-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner agent --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-permission-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner permission --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-auth-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner auth --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-audit-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner audit --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-workspace-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner workspace --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-tool-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner tool --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-capability-market-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner capability_market --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-context-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner context --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/context-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-run-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner run --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G003/receipts/run-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        }
+      ]
+    },
+    {
+      "id": "G004",
+      "title": "Execution dependency schema and integration gate",
+      "phase_crosswalk": [3],
+      "carries_forward": ["G000", "G001", "G002", "G003"],
+      "e2e_level": "unavailable",
+      "implementation_owners": ["workspace", "tool", "capability_market", "model"],
+      "schema_owners": ["workspace", "tool", "capability_market", "session", "a2a", "group", "trigger", "heartbeat", "channel"],
+      "contract_approval_owners": ["session", "a2a", "group", "trigger", "heartbeat", "channel"],
+      "required_paths": [
+        "backend/rewrite/owner-contracts.json",
+        "backend/tests/database/test_schema_wave_S2.py",
+        "backend/tests/modules/workspace",
+        "backend/tests/modules/tool",
+        "backend/tests/modules/capability_market"
+      ],
+      "validations": [
+        {
+          "id": "product-input-contract-prerequisites",
+          "command": "uv run python scripts/check_owner_contracts.py check --manifest rewrite/owner-contracts.json --require-approved-owner session --require-approved-owner a2a --require-approved-owner group --require-approved-owner trigger --require-approved-owner heartbeat --require-approved-owner channel --require-approved-wave S2 --approval-receipt backend/artifacts/rewrite/G003/receipts/identity-tenant-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/credential-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/model-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/agent-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/permission-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/auth-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/audit-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/workspace-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/tool-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/capability-market-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/context-contract-approval.json --approval-receipt backend/artifacts/rewrite/G003/receipts/run-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/session-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/group-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json --approval-receipt backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
+          "artifacts": ["backend/artifacts/rewrite/G004/owner-contract-check.txt"]
+        },
+        {
+          "id": "execution-dependency-integration",
+          "command": "uv run --extra dev pytest tests/database/test_schema_wave_S2.py tests/modules/workspace tests/modules/tool tests/modules/capability_market tests/modules/model/test_execution.py tests/modules/model/test_continuation.py",
+          "artifacts": ["backend/artifacts/rewrite/G004/execution-dependency-tests.txt"]
+        }
+      ],
+      "mutations": [
+        {
+          "id": "approve-session-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner session --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/session-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/session-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-a2a-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner a2a --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/a2a-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-group-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner group --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/group-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/group-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-trigger-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner trigger --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/trigger-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-heartbeat-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner heartbeat --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/heartbeat-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "approve-channel-contract-only",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner channel --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G004/receipts/channel-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        }
+      ]
+    },
+    {
+      "id": "G005",
+      "title": "First real-entry core Runtime E2E gate",
+      "phase_crosswalk": [4],
+      "carries_forward": ["G000", "G001", "G002", "G003", "G004"],
+      "e2e_level": "core_runtime",
+      "implementation_owners": ["run", "context"],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/tests/e2e/test_runtime_product_owner_fixture.py",
+        "backend/tests/performance/profiles/backend_50.json",
+        "backend/tests/performance/test_execution_scheduler_fairness.py"
+      ],
+      "hostile_fairness_test": {
+        "scheduler": "in_memory_tenant_then_agent_execution_scheduler",
+        "boundary": "after_each_bounded_model_step_or_tool_batch",
+        "initial_tenant_a_runs": 50,
+        "tenant_a_runs": "continuously_runnable_nonterminating",
+        "tenant_b_expectation": "next_model_step_within_scheduler_bound",
+        "max_consecutive_eligible_tenant_skips": 1,
+        "fifo_scope": "per_agent",
+        "terminal_cleanup": ["cancellation_removes_run", "failure_removes_run", "execution_slot_released"],
+        "excluded_authorities": ["initial_admission_queue", "persisted_queue", "checkpoint", "durable_scheduler_state", "whole_run_limit"]
+      },
+      "validations": [
+        {
+          "id": "core-runtime-real-entry",
+          "command": "uv run --extra dev pytest tests/runtime tests/e2e/test_runtime_product_owner_fixture.py tests/performance/test_execution_scheduler_fairness.py",
+          "artifacts": ["backend/artifacts/rewrite/G005/core-runtime-e2e.txt"]
+        },
+        {
+          "id": "core-runtime-load",
+          "command": "uv run python tests/performance/run_backend_load.py --profile tests/performance/profiles/backend_50.json --scenario core --out artifacts/performance/core.json",
+          "artifacts": ["backend/artifacts/performance/core.json"]
+        }
+      ],
+      "mutations": []
+    },
+    {
+      "id": "G006",
+      "title": "First real product-input API and WebSocket E2E gate",
+      "phase_crosswalk": [5],
+      "carries_forward": ["G000", "G001", "G002", "G003", "G004", "G005"],
+      "e2e_level": "product_input",
+      "implementation_owners": ["session", "a2a", "group", "trigger", "heartbeat", "channel"],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/tests/e2e/test_direct_session.py",
+        "backend/tests/e2e/test_product_inputs.py",
+        "backend/tests/performance/profiles/backend_50.json"
+      ],
+      "validations": [
+        {
+          "id": "product-input-real-entry",
+          "command": "uv run --extra dev pytest tests/modules/session tests/modules/a2a tests/modules/group tests/modules/trigger tests/modules/heartbeat tests/modules/channel tests/e2e/test_direct_session.py tests/e2e/test_product_inputs.py",
+          "artifacts": ["backend/artifacts/rewrite/G006/product-input-e2e.txt"]
+        },
+        {
+          "id": "mixed-product-input-load",
+          "command": "uv run python tests/performance/run_backend_load.py --profile tests/performance/profiles/backend_50.json --scenario mixed --out artifacts/performance/mixed.json",
+          "artifacts": ["backend/artifacts/performance/mixed.json"]
+        }
+      ],
+      "mutations": []
+    },
+    {
+      "id": "G007",
+      "title": "Cumulative module E2E gate",
+      "phase_crosswalk": [6],
+      "carries_forward": ["G000", "G001", "G002", "G003", "G004", "G005", "G006"],
+      "e2e_level": "module_cumulative",
+      "implementation_owners": ["auth", "S3-approved-owner"],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/rewrite/coverage.json",
+        "backend/rewrite/owner-contracts.json",
+        "backend/rewrite/product-contracts.json",
+        "backend/tests/e2e"
+      ],
+      "validations": [
+        {
+          "id": "auth-product-contract",
+          "command": "uv run python scripts/check_product_contracts.py --manifest rewrite/product-contracts.json --module auth",
+          "artifacts": ["backend/artifacts/rewrite/G007/auth-product-contract.txt"]
+        },
+        {
+          "id": "all-implemented-module-e2e",
+          "command": "uv run --extra dev pytest tests/e2e",
+          "artifacts": ["backend/artifacts/rewrite/G007/cumulative-module-e2e.txt"]
+        },
+        {
+          "id": "coverage-terminal-progress",
+          "command": "uv run python scripts/rewrite_inventory.py check --manifest rewrite/coverage.json",
+          "artifacts": ["backend/artifacts/rewrite/G007/coverage-progress.json"]
+        }
+      ],
+      "mutations": [
+        {
+          "id": "approve-s3-owner-contract",
+          "command": "uv run python scripts/check_owner_contracts.py approve --manifest rewrite/owner-contracts.json --owner <owner> --contract-artifact <path> --evidence <path> --receipt backend/artifacts/rewrite/G007/receipts/<owner>-contract-approval.json",
+          "receipt": "backend/artifacts/rewrite/G007/receipts/<owner>-contract-approval.json",
+          "replay_policy": "verify_receipt_before_execute"
+        },
+        {
+          "id": "transition-coverage-row",
+          "command": "uv run python scripts/rewrite_inventory.py transition --manifest rewrite/coverage.json --id <id> --to <state> --evidence <path>",
+          "receipt": "backend/artifacts/rewrite/G007/receipts/coverage-<id>-<state>.json",
+          "replay_policy": "verify_receipt_before_execute"
+        }
+      ]
+    },
+    {
+      "id": "G008",
+      "title": "Fresh-environment complete Backend E2E and reference-removal gate",
+      "phase_crosswalk": [7, 8],
+      "carries_forward": ["G000", "G001", "G002", "G003", "G004", "G005", "G006", "G007"],
+      "e2e_level": "complete_backend",
+      "implementation_owners": [],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/tests/e2e",
+        "backend/tests/database/test_fresh_baseline.py",
+        "backend/rewrite/coverage.json",
+        "backend/rewrite/legacy-black-box.json"
+      ],
+      "validations": [
+        {
+          "id": "fresh-environment-e2e-before-reference-removal",
+          "command": "uv run --extra dev pytest tests/database/test_fresh_baseline.py tests/e2e",
+          "artifacts": ["backend/artifacts/rewrite/G008/fresh-e2e-before-reference-removal.txt"]
+        },
+        {
+          "id": "terminal-coverage-before-reference-removal",
+          "command": "uv run python scripts/rewrite_inventory.py check --manifest rewrite/coverage.json --require-all-terminal",
+          "artifacts": ["backend/artifacts/rewrite/G008/terminal-coverage.json"]
+        },
+        {
+          "id": "fresh-environment-e2e-after-reference-removal",
+          "command": "uv run --extra dev pytest tests/database/test_fresh_baseline.py tests/e2e",
+          "artifacts": ["backend/artifacts/rewrite/G008/fresh-e2e-after-reference-removal.txt"]
+        }
+      ],
+      "mutations": [
+        {
+          "id": "release-legacy-reference",
+          "command": "uv run python scripts/rewrite_inventory.py release-reference --manifest rewrite/coverage.json --require-all-terminal --worktree <legacy-path>",
+          "receipt": "backend/artifacts/rewrite/G008/receipts/legacy-reference-removal.json",
+          "replay_policy": "verify_receipt_before_execute",
+          "requires_artifact": "backend/artifacts/rewrite/G008/fresh-e2e-before-reference-removal.txt",
+          "followed_by_artifact": "backend/artifacts/rewrite/G008/fresh-e2e-after-reference-removal.txt"
+        }
+      ]
+    },
+    {
+      "id": "G009",
+      "title": "Full rerun, deployment, load, and recovery qualification",
+      "phase_crosswalk": [8],
+      "carries_forward": ["G000", "G001", "G002", "G003", "G004", "G005", "G006", "G007", "G008"],
+      "e2e_level": "complete_backend",
+      "implementation_owners": [],
+      "contract_approval_owners": [],
+      "required_paths": [
+        "backend/tests/e2e",
+        "backend/tests/deployment/test_single_runner_topology.py",
+        "backend/tests/deployment/test_readiness.py",
+        "backend/tests/recovery/test_target_snapshot_restore.py",
+        "backend/tests/recovery/test_fix_forward.py",
+        "backend/tests/performance/profiles/backend_50.json"
+      ],
+      "validations": [
+        {
+          "id": "complete-backend-pytest",
+          "command": "uv run --extra dev pytest",
+          "artifacts": ["backend/artifacts/rewrite/G009/complete-backend-pytest.txt"]
+        },
+        {
+          "id": "complete-backend-ruff",
+          "command": "uv run --extra dev ruff check .",
+          "artifacts": ["backend/artifacts/rewrite/G009/complete-backend-ruff.txt"]
+        },
+        {
+          "id": "complete-backend-pyright",
+          "command": "uv run --extra dev pyright app",
+          "artifacts": ["backend/artifacts/rewrite/G009/complete-backend-pyright.txt"]
+        },
+        {
+          "id": "deployment-and-recovery",
+          "command": "uv run --extra dev pytest tests/deployment/test_single_runner_topology.py tests/deployment/test_readiness.py tests/recovery/test_target_snapshot_restore.py tests/recovery/test_fix_forward.py",
+          "artifacts": ["backend/artifacts/rewrite/G009/deployment-recovery.txt"]
+        },
+        {
+          "id": "final-load",
+          "command": "uv run python tests/performance/run_backend_load.py --profile tests/performance/profiles/backend_50.json --scenario final --out artifacts/performance/final.json",
+          "artifacts": ["backend/artifacts/performance/final.json"]
+        }
+      ],
+      "mutations": []
+    }
+  ]
+}

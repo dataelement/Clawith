@@ -1,10 +1,12 @@
+{{- if not .Values.g002Deferred }}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Values.global.namespace }}
   labels:
     {{- include "clawith.labels" . | nindent 4 }}
-{{- if .Values.secrets.create }}
+{{- end }}
+{{- if and (not .Values.g002Deferred) .Values.secrets.create }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -17,4 +19,3 @@ stringData:
   secret-key: {{ .Values.backend.secrets.secretKey | quote }}
   jwt-secret-key: {{ .Values.backend.secrets.jwtSecretKey | quote }}
 {{- end }}
-

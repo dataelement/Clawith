@@ -1,0 +1,15 @@
+{
+  "goal": "G001",
+  "validation": "immutable-reference",
+  "command": "bash ../scripts/check-g001-reference.sh",
+  "verified_source_head": "085a40b79e936baaddb20683a14f15f06ff4df6f",
+  "verified_at": "2026-09-07T03:10:04Z",
+  "exit_code": 0,
+  "reference_head": "8ed4ae2f",
+  "reference_clean": true,
+  "reference_hash_valid": true,
+  "persistence_configuration_isolated": true,
+  "boot_smoke": "passed: application import only",
+  "black_box_fixtures": "passed: application-import fixture only",
+  "not_verified": "reference database connectivity, application lifespan and business workflows"
+}

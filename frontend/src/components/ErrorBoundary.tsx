@@ -1,61 +1,99 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { withTranslation, WithTranslation } from 'react-i18next';
-import { IconAlertTriangle } from '@tabler/icons-react';
+import React, { Component, ErrorInfo, ReactNode } from "react";
+import { withTranslation, WithTranslation } from "react-i18next";
+import { IconAlertTriangle } from "@tabler/icons-react";
 
 interface Props extends WithTranslation {
-    children?: ReactNode;
-    fallback?: ReactNode;
+  children?: ReactNode;
+  fallback?: ReactNode;
 }
 
 interface State {
-    hasError: boolean;
-    error: Error | null;
+  hasError: boolean;
+  error: Error | null;
 }
 
 class ErrorBoundary extends Component<Props, State> {
-    public state: State = {
-        hasError: false,
-        error: null
-    };
+  public state: State = {
+    hasError: false,
+    error: null,
+  };
 
-    public static getDerivedStateFromError(error: Error): State {
-        return { hasError: true, error };
+  public static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  public render() {
+    const { t } = this.props;
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div
+          style={{
+            padding: "20px",
+            color: "var(--text-primary)",
+            maxWidth: "600px",
+            margin: "40px auto",
+            background: "var(--bg-card)",
+            borderRadius: "8px",
+            boxShadow: "var(--shadow-md)",
+          }}
+        >
+          <h2
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              margin: "0 0 16px 0",
+              color: "var(--error)",
+            }}
+          >
+            <IconAlertTriangle size={24} stroke={1.8} />{" "}
+            {t("errorBoundary.title")}
+          </h2>
+          <p style={{ color: "var(--text-secondary)", marginBottom: "16px" }}>
+            {t("errorBoundary.description")}
+          </p>
+          <details
+            style={{
+              whiteSpace: "pre-wrap",
+              marginBottom: "20px",
+              padding: "12px",
+              background: "var(--bg-secondary)",
+              borderRadius: "4px",
+              fontSize: "13px",
+              border: "1px solid var(--border-color)",
+              color: "var(--error)",
+            }}
+          >
+            <summary
+              style={{
+                cursor: "pointer",
+                fontWeight: "bold",
+                marginBottom: "8px",
+              }}
+            >
+              {t("errorBoundary.errorDetails")}
+            </summary>
+            {this.state.error && this.state.error.toString()}
+          </details>
+          <button
+            className="btn btn-primary"
+            onClick={() => window.location.reload()}
+          >
+            {t("errorBoundary.refreshPage")}
+          </button>
+        </div>
+      );
     }
 
-    public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-        console.error('Uncaught error:', error, errorInfo);
-    }
-
-    public render() {
-        const { t } = this.props;
-        if (this.state.hasError) {
-            if (this.props.fallback) {
-                return this.props.fallback;
-            }
-            return (
-                <div style={{ padding: '20px', color: 'var(--text-primary)', maxWidth: '600px', margin: '40px auto', background: 'var(--bg-card)', borderRadius: '8px', boxShadow: 'var(--shadow-md)' }}>
-                    <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '0 0 16px 0', color: 'var(--error)' }}>
-                        <IconAlertTriangle size={24} stroke={1.8} /> {t('errorBoundary.title')}
-                    </h2>
-                    <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
-                        {t('errorBoundary.description')}
-                    </p>
-                    <details style={{ whiteSpace: 'pre-wrap', marginBottom: '20px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '4px', fontSize: '13px', border: '1px solid var(--border-color)', color: 'var(--error)' }}>
-                        <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '8px' }}>{t('errorBoundary.errorDetails')}</summary>
-                        {this.state.error && this.state.error.toString()}
-                    </details>
-                    <button
-                        className="btn btn-primary"
-                        onClick={() => window.location.reload()}
-                    >
-                        {t('errorBoundary.refreshPage')}
-                    </button>
-                </div>
-            );
-        }
-
-        return this.props.children;
-    }
+    return this.props.children;
+  }
 }
 
 export default withTranslation()(ErrorBoundary);

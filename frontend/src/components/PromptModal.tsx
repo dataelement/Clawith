@@ -1,78 +1,123 @@
-import { useState, useEffect, useRef } from 'react';
-import { useTranslation } from 'react-i18next';
+import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 interface PromptModalProps {
-    open: boolean;
-    title: string;
-    placeholder?: string;
-    allowEmpty?: boolean;
-    onConfirm: (value: string) => void;
-    onCancel: () => void;
+  open: boolean;
+  title: string;
+  placeholder?: string;
+  allowEmpty?: boolean;
+  onConfirm: (value: string) => void;
+  onCancel: () => void;
 }
 
 export default function PromptModal({
-    open,
-    title,
-    placeholder,
-    allowEmpty = false,
-    onConfirm,
-    onCancel,
+  open,
+  title,
+  placeholder,
+  allowEmpty = false,
+  onConfirm,
+  onCancel,
 }: PromptModalProps) {
-    const { t } = useTranslation();
-    const [value, setValue] = useState('');
-    const inputRef = useRef<HTMLInputElement>(null);
+  if (!open) return null;
 
-    useEffect(() => {
-        if (open) {
-            setValue('');
-            setTimeout(() => inputRef.current?.focus(), 100);
-        }
-    }, [open]);
+  return (
+    <PromptModalContent
+      title={title}
+      placeholder={placeholder}
+      allowEmpty={allowEmpty}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
+  );
+}
 
-    if (!open) return null;
+type PromptModalContentProps = Omit<PromptModalProps, "open">;
 
-    const canConfirm = allowEmpty || Boolean(value.trim());
-    const confirm = () => {
-        if (canConfirm) onConfirm(value.trim());
-    };
+function PromptModalContent({
+  title,
+  placeholder,
+  allowEmpty = false,
+  onConfirm,
+  onCancel,
+}: PromptModalContentProps) {
+  const { t } = useTranslation();
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
-    return (
-        <div style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 10000,
-        }} onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-            <div style={{
-                background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px',
-                width: '400px', maxWidth: '90vw', border: '1px solid var(--border-subtle)',
-                boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
-            }}>
-                <h4 style={{ marginBottom: '16px', fontSize: '15px' }}>{title}</h4>
-                <input
-                    ref={inputRef}
-                    className="input"
-                    value={value}
-                    onChange={e => setValue(e.target.value)}
-                    placeholder={placeholder || ''}
-                    onKeyDown={e => {
-                        // Enter commits an IME candidate before it should submit the prompt.
-                        if (e.nativeEvent.isComposing) return;
-                        if (e.key === 'Enter') {
-                            e.preventDefault();
-                            confirm();
-                        } else if (e.key === 'Escape') {
-                            e.preventDefault();
-                            onCancel();
-                        }
-                    }}
-                    style={{ width: '100%', marginBottom: '16px' }}
-                />
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button className="btn btn-secondary" onClick={onCancel}>{t('common.confirmActions.cancelLabel')}</button>
-                    <button className="btn btn-primary" onClick={confirm}
-                        disabled={!canConfirm}>{t('common.confirmActions.confirmLabel')}</button>
-                </div>
-            </div>
+  useEffect(() => {
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 100);
+    return () => window.clearTimeout(focusTimer);
+  }, []);
+
+  const canConfirm = allowEmpty || Boolean(value.trim());
+  const confirm = () => {
+    if (canConfirm) onConfirm(value.trim());
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 10000,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div
+        style={{
+          background: "var(--bg-primary)",
+          borderRadius: "12px",
+          padding: "24px",
+          width: "400px",
+          maxWidth: "90vw",
+          border: "1px solid var(--border-subtle)",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+        }}
+      >
+        <h4 style={{ marginBottom: "16px", fontSize: "15px" }}>{title}</h4>
+        <input
+          ref={inputRef}
+          className="input"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={placeholder || ""}
+          onKeyDown={(e) => {
+            // Enter commits an IME candidate before it should submit the prompt.
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "Enter") {
+              e.preventDefault();
+              confirm();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          style={{ width: "100%", marginBottom: "16px" }}
+        />
+        <div
+          style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}
+        >
+          <button className="btn btn-secondary" onClick={onCancel}>
+            {t("common.confirmActions.cancelLabel")}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={confirm}
+            disabled={!canConfirm}
+          >
+            {t("common.confirmActions.confirmLabel")}
+          </button>
         </div>
-    );
+      </div>
+    </div>
+  );
 }

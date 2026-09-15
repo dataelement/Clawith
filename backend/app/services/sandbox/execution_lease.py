@@ -8,11 +8,9 @@ import os
 import socket
 import uuid
 from contextlib import suppress
+from typing import Protocol
 
 from loguru import logger
-
-from app.core.events import get_redis
-from app.services.sandbox.workspace_policy import SandboxExecutionScope
 
 _RENEW_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -29,8 +27,39 @@ return 0
 _EXECUTOR_INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
 
 
+class SandboxLeaseRedis(Protocol):
+    async def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        nx: bool,
+        px: int,
+    ) -> object: ...
+
+    async def eval(
+        self,
+        script: str,
+        numkeys: int,
+        *keys_and_args: object,
+    ) -> object: ...
+
+
+class SandboxLeaseScope(Protocol):
+    tenant_id: uuid.UUID
+    agent_id: uuid.UUID
+    session_id: uuid.UUID
+
+
 class SandboxExecutionLease:
-    def __init__(self, key: str, value: str, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        redis: SandboxLeaseRedis,
+        key: str,
+        value: str,
+        ttl_seconds: int,
+    ) -> None:
+        self._redis = redis
         self.key = key
         self._value = value
         self.ttl_seconds = ttl_seconds
@@ -44,9 +73,16 @@ class SandboxExecutionLease:
 
     async def _renew(self, seconds: int) -> bool:
         try:
-            redis = await get_redis()
-            renewed = bool(await redis.eval(_RENEW_SCRIPT, 1, self.key, self._value, seconds * 1000))
-        except Exception:
+            renewed = bool(
+                await self._redis.eval(
+                    _RENEW_SCRIPT,
+                    1,
+                    self.key,
+                    self._value,
+                    seconds * 1000,
+                )
+            )
+        except Exception:  # noqa: BLE001 -- Redis failures make ownership unverifiable.
             logger.exception("[SandboxLease] Renewal unverifiable key={}", self.key)
             renewed = False
         if not renewed:
@@ -63,7 +99,7 @@ class SandboxExecutionLease:
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=interval)
                     return
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if not await self._renew(self.ttl_seconds):
                         return
 
@@ -83,13 +119,17 @@ class SandboxExecutionLease:
             self._heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-        redis = await get_redis()
-        await asyncio.shield(redis.eval(_RELEASE_SCRIPT, 1, self.key, self._value))
+        await asyncio.shield(
+            self._redis.eval(_RELEASE_SCRIPT, 1, self.key, self._value)
+        )
 
 
 class SandboxExecutionLeaseStore:
+    def __init__(self, redis: SandboxLeaseRedis) -> None:
+        self._redis = redis
+
     @staticmethod
-    def key(scope: SandboxExecutionScope) -> str:
+    def key(scope: SandboxLeaseScope) -> str:
         return (
             f"tenant:{scope.tenant_id}:sandbox-execution:"
             f"{scope.agent_id}:{scope.session_id}"
@@ -97,14 +137,18 @@ class SandboxExecutionLeaseStore:
 
     async def acquire(
         self,
-        scope: SandboxExecutionScope,
+        scope: SandboxLeaseScope,
         *,
         ttl_seconds: int = 60,
     ) -> SandboxExecutionLease | None:
         key = self.key(scope)
         value = f"v1|{_EXECUTOR_INSTANCE_ID}|{uuid.uuid4().hex}"
-        redis = await get_redis()
-        acquired = await redis.set(key, value, nx=True, px=ttl_seconds * 1000)
+        acquired = await self._redis.set(
+            key,
+            value,
+            nx=True,
+            px=ttl_seconds * 1000,
+        )
         if not acquired:
             return None
-        return SandboxExecutionLease(key, value, ttl_seconds)
+        return SandboxExecutionLease(self._redis, key, value, ttl_seconds)

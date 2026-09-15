@@ -1,4 +1,4 @@
-"""Release migration topology for the Tool Runtime integration."""
+"""Frozen legacy Tool Runtime merge-topology evidence."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ MIGRATION_PATH = (
 )
 
 
-def test_release_merge_revision_joins_both_migration_heads() -> None:
+def test_frozen_legacy_merge_revision_joins_both_migration_heads() -> None:
     spec = importlib.util.spec_from_file_location(
         "v1_11_4_tool_runtime_migration_merge",
         MIGRATION_PATH,

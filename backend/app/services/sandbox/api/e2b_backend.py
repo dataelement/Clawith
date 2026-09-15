@@ -1,10 +1,12 @@
 """E2B API-based sandbox backend."""
 
+import importlib
 import time
+
+from loguru import logger
 
 from app.services.sandbox.base import BaseSandboxBackend, ExecutionResult, SandboxCapabilities
 from app.services.sandbox.config import SandboxConfig
-from loguru import logger
 
 # Lazy import e2b to make it optional
 _e2b = None
@@ -15,8 +17,7 @@ def _get_e2b():
     global _e2b
     if _e2b is None:
         try:
-            import e2b
-            _e2b = e2b
+            _e2b = importlib.import_module("e2b")
         except ImportError:
             raise ImportError(
                 "e2b package is required for E2B backend. "
@@ -74,7 +75,7 @@ class E2bBackend(BaseSandboxBackend):
             # Try to list sandboxes to verify API is accessible
             await e2b_lib.AsyncSandbox.list(api_key=self.config.api_key)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 -- health normalizes SDK failures.
             return False
 
     async def execute(
@@ -134,7 +135,9 @@ class E2bBackend(BaseSandboxBackend):
 
             exit_code = result.exit_code
             if not isinstance(exit_code, int):
-                raise RuntimeError("E2B response did not include an exit code")
+                raise RuntimeError(  # noqa: TRY004 -- malformed provider result
+                    "E2B response did not include an exit code"
+                )
             duration_ms = int((time.time() - start_time) * 1000)
 
             return ExecutionResult(

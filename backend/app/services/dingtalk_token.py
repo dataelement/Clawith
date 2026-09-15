@@ -4,11 +4,11 @@ Caches tokens per app_key with auto-refresh before expiry.
 All DingTalk token acquisition should go through this manager.
 """
 
-import time
 import asyncio
-from typing import Dict, Optional, Tuple
-from loguru import logger
+import time
+
 import httpx
+from loguru import logger
 
 
 class DingTalkTokenManager:
@@ -20,15 +20,15 @@ class DingTalkTokenManager:
     """
 
     def __init__(self):
-        self._cache: Dict[str, Tuple[str, float]] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._cache: dict[str, tuple[str, float]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, app_key: str) -> asyncio.Lock:
         if app_key not in self._locks:
             self._locks[app_key] = asyncio.Lock()
         return self._locks[app_key]
 
-    async def get_token(self, app_key: str, app_secret: str) -> Optional[str]:
+    async def get_token(self, app_key: str, app_secret: str) -> str | None:
         """Get access_token, return cached if valid, refresh if expired."""
         if app_key in self._cache:
             token, expires_at = self._cache[app_key]
@@ -59,11 +59,11 @@ class DingTalkTokenManager:
 
                     logger.error(f"[DingTalk Token] Failed to get token: {data}")
                     return None
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 -- token acquisition is a contained provider boundary
                 logger.error(f"[DingTalk Token] Error getting token: {e}")
                 return None
 
-    async def get_corp_token(self, app_key: str, app_secret: str) -> Optional[str]:
+    async def get_corp_token(self, app_key: str, app_secret: str) -> str | None:
         """Get corp access_token via oapi.dingtalk.com/gettoken (GET).
 
         Used for corp API calls like /topapi/v2/user/get.

@@ -1,7 +1,9 @@
 """DingTalk emotion reaction service — "thinking" indicator on user messages."""
 
 import asyncio
+
 from loguru import logger
+
 from app.services.dingtalk_token import dingtalk_token_manager
 
 
@@ -50,7 +52,7 @@ async def add_thinking_reaction(
             else:
                 logger.warning(f"[DingTalk Reaction] Add failed: {resp.status_code} {resp.text[:200]}")
                 return False
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- fire-and-forget reactions must contain provider failures
         logger.warning(f"[DingTalk Reaction] Add thinking reaction error: {e}")
         return False
 
@@ -104,7 +106,7 @@ async def recall_thinking_reaction(
                     return
                 else:
                     logger.warning(f"[DingTalk Reaction] Recall attempt failed: {resp.status_code}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- each best-effort recall attempt is isolated
             logger.warning(f"[DingTalk Reaction] Recall error: {e}")
 
     logger.warning(f"[DingTalk Reaction] All recall attempts failed for msg {message_id[:16]}")
