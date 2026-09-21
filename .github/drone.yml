@@ -39,6 +39,8 @@ steps:
       - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
       # 将 shallow clone 转换为完整克隆，获取完整 commit 历史
       - git fetch --unshallow --tags || git fetch --tags
+      # Fork commits are reachable through pull refs, not upstream branches.
+      - git fetch origin "$DRONE_COMMIT_REF"
       - git checkout --detach $DRONE_COMMIT
       - echo "当前 commit $(git log --oneline -1)"
       - |
