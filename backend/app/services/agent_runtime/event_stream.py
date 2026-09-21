@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
 import asyncio
-from copy import deepcopy
 import math
+from collections.abc import AsyncIterator, Mapping, Sequence
+from copy import deepcopy
 from typing import cast
 
 from sqlalchemy import and_, or_, select
@@ -20,7 +20,6 @@ from app.services.agent_runtime.contracts import (
     RuntimeEventType,
 )
 from app.services.agent_runtime.state import JsonObject, JsonValue
-
 
 _TERMINAL_EVENT_TYPES = frozenset({"run_completed", "run_failed", "run_cancelled"})
 _DELIVERY_EVENT_TYPES = frozenset({"delivery_succeeded", "delivery_failed"})
@@ -223,6 +222,12 @@ class DatabaseRuntimeEventStream:
                 terminal_seen = terminal_seen or event.event_type in _TERMINAL_EVENT_TYPES
                 delivery_event_seen = delivery_event_seen or event.event_type in _DELIVERY_EVENT_TYPES
                 yield event
+
+            if len(rows) == self._batch_size:
+                # Settlement can already be persisted while its event is on the
+                # next page. Drain the backlog before deciding to close or idle.
+                await asyncio.sleep(0)
+                continue
 
             if terminal_seen and (
                 delivery_event_seen or delivery_status in _SETTLED_DELIVERY_STATUSES

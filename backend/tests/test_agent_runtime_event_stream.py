@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import deque
 from datetime import UTC, datetime, timedelta
-import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
+from app.models.audit import ChatMessage
+from app.services.agent_runtime.chat_stream import stream_web_chat_run
 from app.services.agent_runtime.contracts import RunHandle, RuntimeEventCursor
 from app.services.agent_runtime.event_stream import (
     DatabaseRuntimeEventStream,
@@ -157,6 +160,149 @@ async def test_stream_yields_terminal_and_delivery_events_before_closing() -> No
         "summary": "run completed",
         "artifact_refs": ["artifact://one"],
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_type", ("run_completed", "run_failed", "run_cancelled"))
+@pytest.mark.parametrize(
+    ("delivery_type", "delivery_status"),
+    (("delivery_succeeded", "delivered"), ("delivery_failed", "failed")),
+)
+async def test_full_terminal_page_does_not_hide_persisted_delivery(
+    terminal_type: str, delivery_type: str, delivery_status: str,
+) -> None:
+    run, handle = _run()
+    base = datetime(2026, 7, 13, 18, 0, tzinfo=UTC)
+    rows = [
+        _event(run, event_type, created_at=base + timedelta(microseconds=index))
+        for index, event_type in enumerate(("status_changed", terminal_type, delivery_type))
+    ]
+    factory = _SessionFactory(
+        _Session(_Result(scalar=run)),
+        _Session(_Result(rows=rows[:2]), _Result(scalar=delivery_status)),
+        _Session(_Result(rows=rows[2:]), _Result(scalar=delivery_status)),
+    )
+    stream = DatabaseRuntimeEventStream(
+        session_factory=factory,  # type: ignore[arg-type]
+        poll_interval_seconds=0.001,
+        batch_size=2,
+    )
+
+    events = [event async for event in stream.stream_run(handle)]
+
+    assert [event.event_id for event in events] == [row.id for row in rows]
+    assert not factory.sessions
+
+
+@pytest.mark.asyncio
+async def test_web_chat_receives_done_when_delivery_follows_full_terminal_page() -> None:
+    run, handle = _run()
+    base = datetime(2026, 7, 13, tzinfo=UTC)
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    message = ChatMessage(
+        id=uuid.uuid4(),
+        agent_id=run.agent_id,
+        user_id=user_id,
+        conversation_id=str(session_id),
+        role="assistant",
+        content="Finished result",
+        mentions=[],
+    )
+    rows = [
+        _event(run, event_type, created_at=base + timedelta(microseconds=index))
+        for index, event_type in enumerate(("status_changed", "run_completed", "delivery_succeeded"))
+    ]
+    rows[-1].payload = {
+        "delivery_kind": "terminal",
+        "lifecycle_status": "completed",
+        "message_id": str(message.id),
+    }
+    factory = _SessionFactory(
+        _Session(_Result(scalar=run)),
+        _Session(_Result(rows=rows[:2]), _Result(scalar="delivered")),
+        _Session(_Result(rows=rows[2:]), _Result(scalar="delivered")),
+        _Session(_Result(scalar=message)),
+    )
+    stream = DatabaseRuntimeEventStream(
+        session_factory=factory,  # type: ignore[arg-type]
+        poll_interval_seconds=0.001,
+        batch_size=2,
+    )
+    send = AsyncMock()
+
+    outcome = await stream_web_chat_run(
+        handle=handle,
+        session_factory=factory,  # type: ignore[arg-type]
+        send_packet=send,
+        agent_id=run.agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        event_source=stream,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.content == message.content
+    assert outcome.cursor.event_id == rows[-1].id
+    assert send.await_args.args[0]["type"] == "done"
+    assert send.await_args.args[0]["message_id"] == str(message.id)
+    assert not factory.sessions
+
+
+@pytest.mark.asyncio
+async def test_full_terminal_page_without_delivery_closes_after_empty_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, handle = _run()
+    terminal = _event(run, "run_completed", created_at=datetime(2026, 7, 13, tzinfo=UTC))
+    factory = _SessionFactory(
+        _Session(_Result(scalar=run)),
+        _Session(_Result(rows=[terminal]), _Result(scalar="not_required")),
+        _Session(_Result(rows=[]), _Result(scalar="not_required")),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.services.agent_runtime.event_stream.asyncio.sleep", sleep)
+    stream = DatabaseRuntimeEventStream(
+        session_factory=factory,  # type: ignore[arg-type]
+        batch_size=1,
+    )
+
+    events = [event async for event in stream.stream_run(handle)]
+
+    assert [event.event_id for event in events] == [terminal.id]
+    assert not factory.sessions
+    sleep.assert_awaited_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_backlog_pages_do_not_pay_idle_poll_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, handle = _run()
+    base = datetime(2026, 7, 13, tzinfo=UTC)
+    rows = [
+        _event(run, event_type, created_at=base + timedelta(microseconds=index))
+        for index, event_type in enumerate(("run_created", "status_changed", "run_completed"))
+    ]
+    factory = _SessionFactory(
+        _Session(_Result(scalar=run)),
+        _Session(_Result(rows=rows[:1]), _Result(scalar="pending")),
+        _Session(_Result(rows=rows[1:2]), _Result(scalar="pending")),
+        _Session(_Result(rows=rows[2:]), _Result(scalar="not_required")),
+        _Session(_Result(rows=[]), _Result(scalar="not_required")),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.services.agent_runtime.event_stream.asyncio.sleep", sleep)
+    stream = DatabaseRuntimeEventStream(
+        session_factory=factory,  # type: ignore[arg-type]
+        batch_size=1,
+    )
+
+    events = [event async for event in stream.stream_run(handle)]
+
+    assert [event.event_id for event in events] == [row.id for row in rows]
+    assert [call.args for call in sleep.await_args_list] == [(0,), (0,), (0,)]
+    assert not factory.sessions
 
 
 @pytest.mark.asyncio
