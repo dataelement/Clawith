@@ -88,3 +88,55 @@ test('Tool turn continuation fails closed when a backend cursor stalls', async (
     /cursor did not advance/,
   );
 });
+
+test('maximum-size Tool turn preserves order and does not mutate fetched pages', async () => {
+  const allRows = Array.from({ length: 5000 }, (_, index) =>
+    Object.freeze(row(index, index === 0 ? 'user' : 'tool_call')));
+  const page = await loadDirectHistoryTurn({
+    before: '5000',
+    pageSize: 20,
+    completeToolTurn: true,
+    fetchPage: async (before) => {
+      const end = Number(before);
+      return Object.freeze(allRows.slice(Math.max(0, end - 20), end));
+    },
+  });
+
+  assert.equal(page.requestCount, 250);
+  assert.deepEqual(page.rows, allRows);
+  assert.equal(page.oldestCursor, '0');
+  assert.equal(page.hasMore, true);
+});
+
+for (const length of [20, 23]) {
+  test(`Tool history with ${length} rows ends on an empty or short page`, async () => {
+    const allRows = Array.from({ length }, (_, index) => row(index, 'tool_call'));
+    const page = await loadDirectHistoryTurn({
+      before: String(length),
+      pageSize: 10,
+      completeToolTurn: true,
+      fetchPage: pagedFetcher(allRows, 10),
+    });
+
+    assert.deepEqual(page.rows, allRows);
+    assert.equal(page.requestCount, 3);
+    assert.equal(page.oldestCursor, '0');
+    assert.equal(page.hasMore, false);
+  });
+}
+
+test('an incomplete Tool turn does not publish rows when its request budget is exhausted', async () => {
+  let requests = 0;
+  await assert.rejects(loadDirectHistoryTurn({
+    before: '21',
+    pageSize: 10,
+    completeToolTurn: true,
+    maxContinuationPages: 2,
+    fetchPage: async (before) => {
+      requests += 1;
+      const end = Number(before);
+      return Array.from({ length: 10 }, (_, index) => row(end - 10 + index, 'tool_call'));
+    },
+  }), /exceeded 2 continuation pages/);
+  assert.equal(requests, 2);
+});

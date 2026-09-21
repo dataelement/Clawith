@@ -42,14 +42,16 @@ export async function loadDirectHistoryTurn<T extends DirectHistoryRow>({
     maxContinuationPages = 250,
 }: LoadDirectHistoryTurnOptions<T>): Promise<DirectHistoryTurnPage<T>> {
     let cursor = before;
-    let rows: T[] = [];
-    let hasMore = true;
+    // Pages arrive newest first. Flatten once when publishing the complete turn,
+    // rather than copying every previously fetched row on every request.
+    const pages: T[][] = [];
+    const collectedRows = () => pages.slice().reverse().flat();
     const seenCursors = new Set([before]);
 
     for (let requestCount = 1; requestCount <= maxContinuationPages; requestCount += 1) {
         const batch = await fetchPage(cursor);
         if (batch.length === 0) {
-            return { rows, oldestCursor: cursor, hasMore: false, requestCount };
+            return { rows: collectedRows(), oldestCursor: cursor, hasMore: false, requestCount };
         }
 
         if (completeToolTurn) {
@@ -58,8 +60,9 @@ export async function loadDirectHistoryTurn<T extends DirectHistoryRow>({
                 const completedBoundaryRows = batch.slice(userBoundaryIndex);
                 const boundaryCursor = rowCursor(completedBoundaryRows[0]);
                 if (!boundaryCursor) throw new Error('Direct history boundary is missing its cursor');
+                pages.push(completedBoundaryRows);
                 return {
-                    rows: [...completedBoundaryRows, ...rows],
+                    rows: collectedRows(),
                     oldestCursor: boundaryCursor,
                     hasMore: batch.length >= pageSize || userBoundaryIndex > 0,
                     requestCount,
@@ -67,12 +70,12 @@ export async function loadDirectHistoryTurn<T extends DirectHistoryRow>({
             }
         }
 
-        rows = [...batch, ...rows];
+        pages.push(batch);
         const nextCursor = rowCursor(batch[0]);
         if (!nextCursor) throw new Error('Direct history page is missing its cursor');
-        hasMore = batch.length >= pageSize;
+        const hasMore = batch.length >= pageSize;
         if (!completeToolTurn || !hasMore) {
-            return { rows, oldestCursor: nextCursor, hasMore, requestCount };
+            return { rows: collectedRows(), oldestCursor: nextCursor, hasMore, requestCount };
         }
         if (seenCursors.has(nextCursor)) throw new Error('Direct history cursor did not advance');
         seenCursors.add(nextCursor);
