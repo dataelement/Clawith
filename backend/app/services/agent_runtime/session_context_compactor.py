@@ -227,7 +227,8 @@ def _candidate_from_step(
     if set(arguments) != _OUTPUT_FIELDS:
         raise SessionContextCompactorError(
             "invalid_session_compact_output",
-            "compact output fields do not match session_context_v1",
+            f"compact output fields do not match session_context_v1. "
+            f"Expected: {sorted(_OUTPUT_FIELDS)}, Got: {sorted(arguments.keys())}",
         )
     summary = arguments.get("summary")
     if not isinstance(summary, str) or not summary.strip():
@@ -298,6 +299,17 @@ class LLMSessionContextCompactor:
                     "Session Compact target no longer exists",
                 )
             if session.session_type == "group" and session.group_id is not None:
+                model = await resolve_multi_agent_compact_model(
+                    db,
+                    self._settings,
+                    tenant_id=request.tenant_id,
+                )
+                return CompactModelSelection(
+                    primary=model,
+                    usage_agent_id=None,
+                )
+
+            if session.session_type == "a2a":
                 model = await resolve_multi_agent_compact_model(
                     db,
                     self._settings,
