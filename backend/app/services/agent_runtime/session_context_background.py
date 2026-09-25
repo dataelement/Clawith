@@ -121,6 +121,100 @@ class SessionCompactPolicyResolver:
                 "Session Compact target no longer exists",
             )
 
+        if session.session_type == "a2a":
+            logger.info(
+                "[SessionCompaction][POLICY][A2A] "
+                "session=%s agent=%s peer_agent=%s",
+                session.id,
+                session.agent_id,
+                session.peer_agent_id,
+            )
+            if session.agent_id is None or session.peer_agent_id is None:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "A2A Session has no Agent pair",
+                )
+
+            agent_result = await db.execute(
+                select(Agent).where(
+                    Agent.id.in_(
+                        [session.agent_id, session.peer_agent_id]
+                    ),
+                    Agent.tenant_id == tenant_id,
+                    Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                    Agent.is_expired.is_(False),
+                    Agent.deleted_at.is_(None),
+                )
+            )
+            agents = list(agent_result.scalars().all())
+
+            logger.info(
+                "[SessionCompaction][POLICY][A2A] "
+                "agents=%s",
+                [str(agent.id) for agent in agents],
+            )
+
+            if len(agents) != 2:
+                raise SessionContextBackgroundError(
+                    "session_compact_budget_unavailable",
+                    "A2A Session does not have two valid Agents",
+                )
+
+            models: dict[uuid.UUID, LLMModel] = {}
+
+            for agent in agents:
+                model = await resolve_active_agent_model(db, agent)
+                if model is not None:
+                    models[model.id] = model
+
+            if not models:
+                compact_model = await resolve_multi_agent_compact_model(
+                    db,
+                    self._settings,
+                    tenant_id=tenant_id,
+                )
+                models[compact_model.id] = compact_model
+
+            try:
+                thresholds = {
+                    model.id: _model_threshold(model, self._settings)
+                    for model in models.values()
+                }
+            except ModelCapabilityError as exc:
+                raise SessionContextBackgroundError(
+                    exc.code,
+                    str(exc),
+                ) from exc
+
+            logger.info(
+                "[SessionCompaction][POLICY][A2A] "
+                "models=%s thresholds=%s",
+                [
+                    {
+                        "model_id": str(model.id),
+                        "model": model.model,
+                    }
+                    for model in models.values()
+                ],
+                {
+                    str(model_id): threshold
+                    for model_id, threshold in thresholds.items()
+                },
+            )
+
+            logger.info(
+                "[SessionCompaction][POLICY][A2A] "
+                "final threshold=%s contributing_models=%s",
+                min(thresholds.values()),
+                [str(model_id) for model_id in sorted(thresholds, key=str)],
+            )
+
+            return SessionCompactPolicy(
+                source_agent_id=None,
+                threshold_tokens=min(thresholds.values()),
+                contributing_model_ids=tuple(sorted(thresholds, key=str)),
+            )
+
         if session.session_type != "group":
             raise SessionContextBackgroundError(
                 "direct_thread_owns_context",
@@ -320,11 +414,27 @@ class SessionContextMessageCompactionService:
                 tenant_id=tenant_id,
                 session_id=session_id,
             )
+            logger.info(
+                "[SessionCompaction][SNAPSHOT] "
+                "session=%s version=%s covered_through=%s",
+                session_id,
+                snapshot.version,
+                snapshot.covered_through_message_id,
+            )
             messages = await self._context_service.load_compactable_messages_after_watermark(
                 db,
                 tenant_id=tenant_id,
                 session_id=session_id,
                 covered_through_message_id=snapshot.covered_through_message_id,
+            )
+            logger.info(
+                "[SessionCompaction][MESSAGES] "
+                "session=%s recent_limit=%s count=%s first=%s last=%s",
+                session_id,
+                self._context_service.recent_message_limit,
+                len(messages),
+                messages[0]["id"] if messages else None,
+                messages[-1]["id"] if messages else None,
             )
             recent_messages = await self._context_service.load_recent_user_visible_messages(
                 db,
@@ -337,6 +447,11 @@ class SessionContextMessageCompactionService:
             recent_messages=recent_messages,
             policy=policy,
         ):
+            logger.info(
+                "[SessionCompaction][SKIP] "
+                "session=%s reason=should_compact returned False",
+                session_id,
+            )
             return None
         return SessionCompactRequest(
             tenant_id=tenant_id,
@@ -358,6 +473,12 @@ class SessionContextMessageCompactionService:
         candidate: SessionContextCandidate,
     ) -> None:
         expected_watermark = uuid.UUID(str(request.messages[-1]["id"]))
+        logger.info(
+            "[SessionCompaction][COMMIT] "
+            "session=%s expected_watermark=%s",
+            request.session_id,
+            expected_watermark,
+        )
         if candidate.covered_through_message_id != expected_watermark:
             raise SessionContextBackgroundError(
                 "session_context_watermark_mismatch",
@@ -382,6 +503,12 @@ class SessionContextMessageCompactionService:
                     ),
                     candidate=candidate,
                 )
+                logger.info(
+                    "[SessionCompaction][COMMIT] "
+                    "session=%s watermark advanced to=%s",
+                    request.session_id,
+                    expected_watermark,
+                )
 
     async def compact_session(
         self,
@@ -390,6 +517,12 @@ class SessionContextMessageCompactionService:
         session_id: uuid.UUID,
     ) -> bool:
         """Return true only when this call advances the compact watermark."""
+        logger.info(
+            "[SessionCompaction][START] "
+            "session=%s tenant=%s",
+            session_id,
+            tenant_id,
+        )
 
         async def locked(connection: AsyncConnection) -> bool:
             for _attempt in range(self._max_conflict_retries):
@@ -488,13 +621,36 @@ class SessionContextCompactionScanner:
                     )
                 ),
             )
+            a2a_session = sa.and_(
+                ChatSession.session_type == "a2a",
+                ChatSession.agent_id.is_not(None),
+                ChatSession.peer_agent_id.is_not(None),
+                sa.exists(
+                    select(1).where(
+                        Agent.id == ChatSession.agent_id,
+                        Agent.tenant_id == ChatSession.tenant_id,
+                        Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                        Agent.is_expired.is_(False),
+                        Agent.deleted_at.is_(None),
+                    )
+                ),
+                sa.exists(
+                    select(1).where(
+                        Agent.id == ChatSession.peer_agent_id,
+                        Agent.tenant_id == ChatSession.tenant_id,
+                        Agent.status.in_(_ACTIVE_AGENT_STATUSES),
+                        Agent.is_expired.is_(False),
+                        Agent.deleted_at.is_(None),
+                    )
+                ),
+            )
             statement = (
-                select(ChatSession.tenant_id, ChatSession.id)
+                select(ChatSession.tenant_id, ChatSession.id, ChatSession.session_type)
                 .where(
                     ChatSession.deleted_at.is_(None),
                     ChatSession.last_message_at.is_not(None),
-                    ChatSession.session_type == "group",
-                    sa.or_(native_group, external_feishu_group),
+                    ChatSession.session_type.in_(["group", "a2a"]),
+                    sa.or_(native_group, external_feishu_group, a2a_session),
                 )
                 .order_by(ChatSession.id)
                 .limit(self._settings.AGENT_RUNTIME_SESSION_COMPACT_SCAN_BATCH_SIZE)
@@ -508,7 +664,13 @@ class SessionContextCompactionScanner:
             return 0
         self._cursor = candidates[-1][1]
         compacted = 0
-        for tenant_id, session_id in candidates:
+        for tenant_id, session_id, session_type in candidates:
+            logger.info(
+                "[SessionCompaction][SCAN] "
+                "session=%s type=%s",
+                session_id,
+                session_type,
+            )
             try:
                 compacted += int(
                     await self._service.compact_session(
