@@ -232,6 +232,7 @@ async def _background_agent_setup(
     skill_ids: list[uuid.UUID],
     template_skill_folder_names: list[str],
     template_mcp_servers: list[str],
+    locale: str | None = None,
 ) -> None:
     """Run all creation tasks asynchronously with small, short-lived transactions."""
     # 1. Initialize agent file system from template
@@ -246,6 +247,7 @@ async def _background_agent_setup(
                 agent,
                 personality=personality,
                 boundaries=boundaries,
+                locale=locale,
             )
             await db.commit()
     except Exception as e:
@@ -565,6 +567,7 @@ async def create_agent(
         skill_ids=list(data.skill_ids or []),
         template_skill_folder_names=folder_names,
         template_mcp_servers=template_mcp_servers,
+        locale=data.locale,
     )
 
     return out

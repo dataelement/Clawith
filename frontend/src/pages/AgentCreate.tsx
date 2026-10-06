@@ -219,6 +219,7 @@ export default function AgentCreate() {
         createMutation.mutate({
             name: form.name,
             agent_type: agentType,
+            locale: i18n.language?.startsWith('zh') ? 'zh' : 'en',
             role_description: form.role_description,
             personality: agentType === 'native' ? form.personality : undefined,
             boundaries: agentType === 'native' ? form.boundaries : undefined,

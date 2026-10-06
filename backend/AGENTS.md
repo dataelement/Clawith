@@ -88,6 +88,11 @@ UI-, channel-, and provider-specific behavior in the owning adapter or consumer.
 Do not widen a public service for one internal caller; keep single-consumer
 capabilities private until a real shared contract exists.
 
+Agent creation accepts an optional `locale` (`en` or `zh`) to select the
+default Soul file. English uses `soul.en.md`; Chinese and omitted values retain
+`soul.md`. This is creation-time input, not persisted, and a selected
+`AgentTemplate.soul_template` remains authoritative.
+
 ## Public choices
 
 Do not invent public defaults, modes, operation sets, API fields, event fields,

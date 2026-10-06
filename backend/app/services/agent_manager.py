@@ -93,7 +93,8 @@ class AgentManager:
         local_path.write_bytes(await storage.read_bytes(storage_key))
 
     async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
-                                      personality: str = "", boundaries: str = "") -> None:
+                                      personality: str = "", boundaries: str = "",
+                                      locale: str | None = None) -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
@@ -113,7 +114,10 @@ class AgentManager:
                 if src.is_dir():
                     continue
                 rel = src.relative_to(template_dir).as_posix()
-                if rel == "tasks.json" or rel == "todo.json" or rel.startswith("enterprise_info/"):
+                if (
+                    rel in {"tasks.json", "todo.json", "soul.en.md"}
+                    or rel.startswith("enterprise_info/")
+                ):
                     continue
                 tasks.append(
                     storage.write_bytes(
@@ -154,6 +158,11 @@ class AgentManager:
             selected_soul = template_result.scalar_one_or_none()
             if isinstance(selected_soul, str) and selected_soul.strip():
                 template_content = selected_soul
+        elif locale == "en":
+            english_soul_path = template_dir / "soul.en.md"
+            if not english_soul_path.is_file():
+                raise FileNotFoundError(f"English agent Soul template not found: {english_soul_path}")
+            template_content = english_soul_path.read_text(encoding="utf-8")
         if template_content is None and await storage.exists(soul_key):
             template_content = await storage.read_text(soul_key, encoding="utf-8", errors="replace")
         soul_content = _render_soul_template(

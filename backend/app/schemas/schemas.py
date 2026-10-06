@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator
 
@@ -216,6 +217,7 @@ class UserUpdate(BaseModel):
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
     agent_type: str = "native"  # native | openclaw
+    locale: Literal["en", "zh"] | None = None
     role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
     bio: str | None = None
     welcome_message: str | None = None

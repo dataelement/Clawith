@@ -141,6 +141,7 @@ export default function CustomAgentModal({ open, initialMode = 'native', onClose
             const payload: any = {
                 name: trimmedName,
                 agent_type: mode,
+                locale: i18n.language.startsWith('zh') ? 'zh' : 'en',
                 role_description: roleDescription.trim() || undefined,
                 permission_scope_type: visibility === 'company' ? 'company' : visibility === 'custom' ? 'custom' : 'user',
                 permission_scope_ids: [],

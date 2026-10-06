@@ -130,6 +130,7 @@ export default function PostHireSettingsModal({ template, open, onClose, onDone 
                 name: localized.name,
                 role_description: localized.description,
                 template_id: template.id,
+                locale: isChinese ? 'zh' : 'en',
                 primary_model_id: modelId || undefined,
                 permission_access_level: 'manage',
             };
