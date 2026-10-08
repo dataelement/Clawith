@@ -37,9 +37,12 @@ steps:
       - git config --global core.compression 0
       - git config --global http.postBuffer 524288000
       - git clone --no-single-branch https://github.com/dataelement/Clawith.git .
-      # 将 shallow clone 转换为完整克隆，获取完整 commit 历史
-      - git fetch --unshallow --tags || git fetch --tags
-      - git checkout --detach $DRONE_COMMIT
+      - git fetch --tags
+      - |
+        if [ -n "${DRONE_PULL_REQUEST:-}" ]; then
+          git fetch origin "refs/pull/${DRONE_PULL_REQUEST}/head"
+        fi
+      - git checkout --detach "$DRONE_COMMIT"
       - echo "当前 commit $(git log --oneline -1)"
       - |
         PREVIOUS_RELEASE_TAG=""
