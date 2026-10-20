@@ -30,6 +30,39 @@ MAX_PUBLISHED_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_PUBLISHED_FILE_BYTES = 10 * 1024 * 1024
 
 
+def _safe_failure_error(prefix: str, exc: Exception) -> str:
+    """Expose only known causes; raw exceptions belong in backend logs.
+
+    Detail is at most 500 characters, and the complete wrapper at most 700.
+    Never echo arbitrary exception text, including paths, records or secrets.
+    """
+    message = str(exc).lower()
+    detail = "Failure details withheld; ask an administrator to inspect backend logs."
+    if "bubblewrap" in message or "bwrap:" in message:
+        if "setuid" in message:
+            detail = (
+                "bubblewrap rejected setuid execution. Ask an administrator to "
+                "check bwrap permissions and host/container user-namespace policy."
+            )
+        elif any(term in message for term in (
+            "uid map", "uid_map", "user namespace", "namespace", "operation not permitted",
+            "permission denied",
+        )):
+            detail = (
+                "bubblewrap namespace setup was denied. Ask an administrator to "
+                "check host/container user-namespace policy (including AppArmor)."
+            )
+    else:
+        for cause in (
+            "Sandbox publication ownership could not be verified",
+            "Gateway publication callback is missing",
+        ):
+            if message == cause.lower():
+                detail = cause
+                break
+    return f"{prefix}: {type(exc).__name__[:64]}: {detail[:500]}"[:700]
+
+
 @dataclass
 class _PersistentBwrapSession:
     run_id: str
@@ -1164,16 +1197,14 @@ class SubprocessBackend(BaseSandboxBackend):
                                     )
                                 await gateway_publish()
                         except Exception as exc:
+                            logger.exception("[Subprocess] Persistent publication failed")
                             return ExecutionResult(
                                 success=False,
                                 stdout=stdout_str,
                                 stderr=stderr_str,
                                 exit_code=1,
                                 duration_ms=duration_ms,
-                                error=(
-                                    "sandbox_publication_unknown: "
-                                    f"{type(exc).__name__}"
-                                ),
+                                error=_safe_failure_error("sandbox_publication_unknown", exc),
                             )
                         finally:
                             if is_timeout:
@@ -1214,13 +1245,14 @@ class SubprocessBackend(BaseSandboxBackend):
                         ),
                     )
         except Exception as exc:
+            logger.exception("[Subprocess] Persistent execution failed")
             return ExecutionResult(
                 success=False,
                 stdout="",
                 stderr="",
                 exit_code=1,
                 duration_ms=int((time.time() - start_time) * 1000),
-                error=f"sandbox_persistent_execution_failed: {type(exc).__name__}",
+                error=_safe_failure_error("sandbox_persistent_execution_failed", exc),
             )
 
         # Legacy calls without a Runtime Run retain one-shot isolation.
@@ -1356,13 +1388,14 @@ class SubprocessBackend(BaseSandboxBackend):
                         raise RuntimeError("Gateway publication callback is missing")
                     await gateway_publish()
             except Exception as exc:
+                logger.exception("[Subprocess] One-shot publication failed")
                 return ExecutionResult(
                     success=False,
                     stdout=stdout_str,
                     stderr=stderr_str,
                     exit_code=1,
                     duration_ms=duration_ms,
-                    error=f"sandbox_publication_unknown: {type(exc).__name__}"
+                    error=_safe_failure_error("sandbox_publication_unknown", exc),
                 )
 
             if is_timeout:

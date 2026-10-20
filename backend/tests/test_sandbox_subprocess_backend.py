@@ -595,3 +595,122 @@ async def test_sandbox_workspace_shadow_cloning(tmp_path: Path) -> None:
     assert (target / "new_file.txt").read_text(encoding="utf-8") == "new content"
     assert (target / "existing.txt").read_text(encoding="utf-8") == "modified hello world"
     assert not (target / "folder" / "data.csv").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail", "cause"),
+    [
+        ("bwrap: Cannot run in setuid mode", "setuid"),
+        ("bwrap: setting up uid map: Permission denied", "namespace"),
+    ],
+)
+async def test_execute_reports_bwrap_startup_denial(
+    monkeypatch, tmp_path: Path, detail: str, cause: str,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    backend = SubprocessBackend(SandboxConfig())
+    staging = tmp_path / "staging"
+    (staging / "workspace" / ".tmp").mkdir(parents=True)
+    stdout = asyncio.StreamReader()
+    stdout.feed_eof()
+    stderr = asyncio.StreamReader()
+    stderr.feed_data(detail.encode())
+    stderr.feed_eof()
+    session = SimpleNamespace(
+        staging_path=staging,
+        lock=asyncio.Lock(),
+        process=SimpleNamespace(
+            stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+    monkeypatch.setattr(backend, "_ensure_workspace_venv", AsyncMock())
+    monkeypatch.setattr(backend, "_persistent_session", AsyncMock(return_value=session))
+    log = Mock()
+    monkeypatch.setattr(subprocess_backend.logger, "exception", log)
+
+    result = await backend.execute(
+        "print('hello')", "python", work_dir=str(tmp_path), run_id="run-1",
+    )
+
+    assert not result.success
+    assert result.exit_code == 1
+    assert result.error.startswith("sandbox_persistent_execution_failed: RuntimeError: ")
+    assert cause in result.error
+    assert "administrator" in result.error
+    assert len(result.error) <= 700
+    log.assert_called_once()
+    assert "Persistent execution" in log.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize(
+    "detail",
+    [None, "Sandbox publication ownership could not be verified",
+     "", "x" * 499, "x" * 500, "x" * 501, "秘密" * 501,
+     '/data/agents/private: token=secret\nTraceback: {"password": "hidden"}'],
+)
+async def test_execute_publication_failure_is_safe_and_preserves_output(
+    monkeypatch, tmp_path: Path, persistent: bool, detail: str | None,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    backend = SubprocessBackend(SandboxConfig())
+    monkeypatch.setattr(backend, "_ensure_workspace_venv", AsyncMock())
+    monkeypatch.setattr(
+        backend, "_verify_and_merge_outputs",
+        AsyncMock(side_effect=RuntimeError(detail) if detail is not None else None),
+    )
+    log = Mock()
+    monkeypatch.setattr(subprocess_backend.logger, "exception", log)
+    if persistent:
+        session = SimpleNamespace(lock=asyncio.Lock(), staging_path=tmp_path)
+        monkeypatch.setattr(backend, "_persistent_session", AsyncMock(return_value=session))
+        monkeypatch.setattr(
+            backend, "_run_in_persistent_session",
+            AsyncMock(return_value=(0, "hello\n", "warning\n", False)),
+        )
+    else:
+        stdout = asyncio.StreamReader()
+        stdout.feed_data(b"hello\n")
+        stdout.feed_eof()
+        stderr = asyncio.StreamReader()
+        stderr.feed_data(b"warning\n")
+        stderr.feed_eof()
+        proc = SimpleNamespace(
+            stdout=stdout, stderr=stderr, returncode=0, wait=AsyncMock(return_value=0),
+        )
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+        monkeypatch.setattr(backend, "_build_bwrap_command", lambda *_args, **_kwargs: ["bwrap"])
+        monkeypatch.setattr(backend, "_watch_pip_requests", AsyncMock())
+
+    result = await backend.execute(
+        "print('hello')", "python", work_dir=str(tmp_path),
+        run_id="run-1" if persistent else None,
+    )
+
+    assert result.stdout == "hello\n"
+    assert result.stderr == "warning\n"
+    if detail is None:
+        assert result.success
+        assert result.exit_code == 0
+        assert result.error is None
+        log.assert_not_called()
+        return
+    assert not result.success
+    assert result.exit_code == 1
+    assert result.error.startswith("sandbox_publication_unknown: RuntimeError: ")
+    if detail == "Sandbox publication ownership could not be verified":
+        assert detail in result.error
+    else:
+        assert "details withheld" in result.error
+    assert len(result.error) <= 700
+    assert "secret" not in result.error
+    assert "/data/" not in result.error
+    assert "Traceback" not in result.error
+    log.assert_called_once()
+    assert "publication" in log.call_args.args[0]
