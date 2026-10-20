@@ -2300,6 +2300,8 @@ class ProviderModelSpec:
     pricing_usd_per_million_tokens: dict[str, float | None] = field(default_factory=dict)
     input_modalities: tuple[str, ...] = ()
     thinking: tuple[str, ...] = ()
+    max_output_tokens: int | None = None
+    pricing_notes: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2392,31 +2394,36 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_compatible",
         default_base_url="https://api.minimax.io/v1",
         default_max_tokens=16384,
-        default_model_id="MiniMax-M3",
+        default_model_id="MiniMax-M3.1-Flash",
         models=(
+            ProviderModelSpec(
+                model_id="MiniMax-M3.1-Flash",
+                context_window=1000000,
+                max_output_tokens=524288,
+                pricing_usd_per_million_tokens={
+                    "input": 0.15,
+                    "output": 0.60,
+                    "cache_read": 0.015,
+                    "cache_write": None,
+                },
+                input_modalities=("text", "image", "video"),
+                thinking=("adaptive",),
+            ),
             ProviderModelSpec(
                 model_id="MiniMax-M3",
                 context_window=1000000,
                 pricing_usd_per_million_tokens={
-                    "input": 0.6,
-                    "output": 2.4,
-                    "cache_read": 0.12,
-                    "cache_write": None,
-                },
-                input_modalities=("text", "image", "video"),
-                thinking=("adaptive", "disabled"),
-            ),
-            ProviderModelSpec(
-                model_id="MiniMax-M2.7",
-                context_window=204800,
-                pricing_usd_per_million_tokens={
                     "input": 0.3,
                     "output": 1.2,
                     "cache_read": 0.06,
-                    "cache_write": 0.375,
+                    "cache_write": None,
                 },
-                input_modalities=("text",),
-                thinking=("always_on",),
+                pricing_notes=(
+                    "Standard rates for <=512k input tokens; above 512k, input/output/cache-read "
+                    "cost $0.60/$2.40/$0.12 per million tokens. Priority costs 1.5x standard."
+                ),
+                input_modalities=("text", "image", "video"),
+                thinking=("adaptive", "disabled"),
             ),
         ),
         endpoints=(
@@ -2534,6 +2541,8 @@ def get_provider_manifest() -> list[dict[str, Any]]:
                     "pricing_usd_per_million_tokens": model.pricing_usd_per_million_tokens,
                     "input_modalities": list(model.input_modalities),
                     "thinking": list(model.thinking),
+                    "max_output_tokens": model.max_output_tokens,
+                    "pricing_notes": model.pricing_notes,
                 }
                 for model in spec.models
             ],

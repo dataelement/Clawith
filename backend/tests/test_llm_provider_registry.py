@@ -1,5 +1,4 @@
 import pytest
-
 from app.services.llm.client import (
     PROVIDER_REGISTRY,
     AnthropicClient,
@@ -12,20 +11,26 @@ from app.services.llm.client import (
 def test_minimax_registry_contains_target_models_and_endpoints():
     spec = PROVIDER_REGISTRY["minimax"]
 
-    assert spec.default_model_id == "MiniMax-M3"
-    assert [model.model_id for model in spec.models] == ["MiniMax-M3", "MiniMax-M2.7"]
+    assert spec.default_model_id == "MiniMax-M3.1-Flash"
+    assert [model.model_id for model in spec.models] == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    assert spec.models[0].max_output_tokens == 524288
+    assert spec.models[0].thinking == ("adaptive",)
     assert spec.models[0].pricing_usd_per_million_tokens == {
-        "input": 0.6,
-        "output": 2.4,
-        "cache_read": 0.12,
+        "input": 0.15,
+        "output": 0.60,
+        "cache_read": 0.015,
         "cache_write": None,
     }
     assert spec.models[1].pricing_usd_per_million_tokens == {
         "input": 0.3,
         "output": 1.2,
         "cache_read": 0.06,
-        "cache_write": 0.375,
+        "cache_write": None,
     }
+    assert "<=512k" in spec.models[1].pricing_notes
+    assert "above 512k" in spec.models[1].pricing_notes
+    assert "$0.60/$2.40/$0.12" in spec.models[1].pricing_notes
+    assert "1.5x" in spec.models[1].pricing_notes
     assert {endpoint.region for endpoint in spec.endpoints} == {"global_en", "cn_zh"}
     assert {
         (endpoint.openai_base_url, endpoint.anthropic_base_url)
@@ -40,10 +45,13 @@ def test_minimax_registry_contains_target_models_and_endpoints():
 def test_minimax_manifest_exposes_model_metadata_and_endpoint_choices():
     manifest = next(item for item in get_provider_manifest() if item["provider"] == "minimax")
 
-    assert manifest["model_ids"] == ["MiniMax-M3", "MiniMax-M2.7"]
+    assert manifest["model_ids"] == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    assert manifest["default_model_id"] == manifest["model_ids"][0]
     assert manifest["models"][0]["context_window"] == 1000000
+    assert manifest["models"][0]["max_output_tokens"] == 524288
     assert manifest["models"][0]["input_modalities"] == ["text", "image", "video"]
-    assert manifest["models"][1]["thinking"] == ["always_on"]
+    assert manifest["models"][0]["thinking"] == ["adaptive"]
+    assert manifest["models"][1]["thinking"] == ["adaptive", "disabled"]
     assert {endpoint["region"] for endpoint in manifest["endpoints"]} == {"global_en", "cn_zh"}
 
 

@@ -68,8 +68,8 @@ const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
         default_base_url: 'https://api.minimax.io/v1',
         supports_tool_choice: true,
         default_max_tokens: 16384,
-        default_model_id: 'MiniMax-M3',
-        model_ids: ['MiniMax-M3', 'MiniMax-M2.7'],
+        default_model_id: 'MiniMax-M3.1-Flash',
+        model_ids: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
         endpoints: [
             {
                 region: 'global_en',
