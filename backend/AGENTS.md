@@ -1,75 +1,175 @@
-# Backend AGENTS.md — Clawith Backend Guidelines
+# AGENTS.md — Clawith Backend
 
----
+These backend-specific rules apply to `backend/**` and supplement the
+repository-wide [conventions](../AGENTS.md#2-conventions).
 
-## 1. Subsystem Overview
+The Backend is a Python 3.11+ FastAPI application built on SQLAlchemy's
+asynchronous APIs, PostgreSQL, Redis, and LangGraph with PostgreSQL
+checkpoints. It contains the Agent Runtime, product APIs, persistence,
+background execution, and external integrations.
 
-**Stack**: Python 3.11+, FastAPI, SQLModel (SQLAlchemy 2.0+), Alembic, LangGraph, Celery / Worker processes, Pytest.
-**Root Spec**: Extended from root [`AGENTS.md`](file:///Users/alex/Documents/Code/dataelem/Clawith/AGENTS.md).
+Project metadata and dependency declarations are defined in `pyproject.toml`;
+`uv.lock` records the resolved dependency graph.
 
----
+## Commands
 
-## 2. Common Commands
-
-From `backend/` directory:
+Run Backend commands from `backend/`:
 
 | Action | Command |
 |---|---|
-| Run Dev Server | `uv run uvicorn app.main:app --reload --port 8000` |
-| Run Unit Tests | `uv run pytest` |
-| Run Specific Test File | `uv run pytest tests/test_agent_runtime.py` |
-| Run Linter / Format Check | `uv run ruff check .` |
-| Run Auto-Fix Linter | `uv run ruff check --fix .` |
-| Generate DB Migration | `uv run alembic revision --autogenerate -m "description"` |
-| Apply DB Migrations | `uv run alembic upgrade head` |
+| Install project and development dependencies | `uv sync --extra dev` |
+| Run the development server | `uv run uvicorn app.main:app --reload --port 8000` |
+| Run a focused test file | `uv run --extra dev pytest tests/<test_file>.py` |
+| Run the complete Backend test suite | `uv run --extra dev pytest` |
+| Run lint checks | `uv run --extra dev ruff check .` |
+| Run static type checks | `uv run --extra dev pyright app` |
+| Apply database migrations | `uv run alembic upgrade head` |
 
----
+Use focused Pytest targets during development. Run the complete Backend suite
+only when the affected contracts cross multiple Backend areas or when required
+by the repository testing policy.
 
-## 3. Python Coding Standards
+Read [`alembic/AGENTS.md`](alembic/AGENTS.md) before creating or editing a
+database migration.
 
-### 3.1 Import Placement
-- **File Header Placement**: All Python imports MUST be placed at the top of the file (file header).
-- **No Inline Imports**: Avoid inline/local imports within functions or methods unless strictly necessary (e.g., to break circular import dependencies).
+## Application layout
 
-### 3.2 Multi-Tenant Scope (P0 - C2)
-- **Mandatory Tenant Filter**: Every database query (`select(...)`), update, or delete MUST explicitly include `tenant_id` scoping to guarantee data isolation.
-- **Worker & Context Var**: Ensure background tasks propagate tenant context correctly.
+```text
+pyproject.toml  Project metadata, dependencies, and tool configuration.
+uv.lock         Locked Python dependency graph.
+alembic/        Database schema migrations.
+scripts/        Repository-operated Backend maintenance and data-migration scripts.
+tests/          Backend unit, contract, integration, and regression tests.
+app/main.py    FastAPI application composition, lifespan, middleware, and router
+               registration.
+app/config.py  Application configuration entry point.
+app/database.py
+               Database engine and Session infrastructure.
+app/api/       HTTP and WebSocket transport adapters.
+app/schemas/   Request, response, and transport validation models.
+app/models/    SQLAlchemy persistence models.
+app/dao/       Database access and query ownership.
+app/services/  Product services, Runtime capabilities, background execution,
+               and external integrations.
+app/core/      Cross-cutting security, permissions, errors, events, logging, and
+               middleware.
+app/scripts/   Application maintenance, bootstrap, backfill, and migration tools.
+```
 
-### 3.3 Code Formatting & Type Safety
-- **Ruff Compliance**: Code must adhere to Ruff rules (max line length: 120, target-version: `py311`).
-- **Type Annotations**: All public functions and endpoint handlers must include explicit type hints for parameters and return values.
+Read the nearest nested `AGENTS.md` before modifying a specialized subtree.
+Detailed module structure belongs to that subtree's instruction or owning
+architecture document, not this file.
 
-### 3.4 Code Splitting Guidelines (C6)
-- **Function Length Recommendation**: Recommended ~**100 lines** per function. Treat functions exceeding this size as candidates for refactoring into sub-functions or helper modules (flexible guideline).
-- **File Length Recommendation**: Backend Python files recommended ~**1000 lines**. Split oversized files into modular sub-files when reasonable.
+## Async lifecycle
 
-### 3.5 Anti-Reinvention & Helper Layer (C6)
-- **Search Before Coding**: Check `app/core/`, `app/utils/`, and `app/helpers/` before writing custom helper/utility functions.
-- **Extract Common Logic**: Promote reusable operations (formatting, ID generation, string manipulation) into shared `utils/helpers` modules.
+Represent one asynchronous operation with one lifecycle controller or
+transaction. Readiness, cancellation, disposal, reservation, and sentinel state
+remain in that owner unless they describe an independently owned object or
+settlement point. Do not split one operation into parallel lifecycle state
+machines.
 
-### 3.6 Database & Query Performance (C5)
-- **No Physical Foreign Keys**: Do not define physical `FOREIGN KEY` constraints at the DB layer. Keep relationship checks at the SQLModel / application layer.
-- **Minimize DB JOINs & N+1 Prevention**: Avoid multi-table complex JOINs. Use batch query interfaces (`where(Model.id.in_(ids))` / batch APIs) and `selectinload` to prevent N+1 loop queries.
+## Lifecycle verification
 
----
+Tests for registration, cancellation, shutdown, and cleanup must observe the
+owned resource reaching its terminal or removed state. Asserting only that
+`cancel()`, `close()`, `dispose()`, or a cleanup callback was invoked is not
+sufficient evidence that work stopped or resources were released.
 
-## 4. Subsystem Layout & Architectural Invariants
+## API and service boundaries
 
-- `app/api/`: FastAPI endpoints & HTTP/WS adapters.
-  - **Rule**: Must NOT invoke LangGraph node executors directly. Must submit commands through `RuntimeCommandIntake`. Must NOT write raw ORM queries; delegate to `app/dao/`.
-- `app/dao/`: Data Access Objects (Detailed guidelines → [`app/dao/AGENTS.md`](file:///Users/alex/Documents/Code/dataelem/Clawith/backend/app/dao/AGENTS.md)).
-  - **Rule**: Exclusive owner of database queries and persistence. Must enforce `tenant_id` scope.
-- `app/services/agent_runtime/`: Core execution boundary.
-  - `command_worker.py`: Claims durable commands and executes graph turns.
-  - `graph.py`: LangGraph graph topology definition.
-- `app/models/`: SQLModel data models.
-- `app/services/`: Product domain logic services.
+API handlers are transport adapters. They parse and validate request data,
+establish the authenticated and authorized caller, pass explicit inputs to the
+owning service or command-intake boundary, and map the result to the transport
+response. Do not put business orchestration, ORM queries, Runtime node calls,
+checkpoint mutation, or private lifecycle control into an API handler.
 
----
+Design shared service contracts for all current consumers. Keep transport-,
+UI-, channel-, and provider-specific behavior in the owning adapter or consumer.
+Do not widen a public service for one internal caller; keep single-consumer
+capabilities private until a real shared contract exists.
 
-## 5. Testing Conventions
+## Public choices
 
-- Place unit and integration tests under `tests/`.
-- Name test files with `test_` prefix (e.g., `tests/test_runtime_intake.py`).
-- Use `@pytest.mark.asyncio` for async test functions.
+Do not invent public defaults, modes, operation sets, API fields, event fields,
+or persisted formats merely to make an interface appear flexible. Every public
+choice must be supported by a current consumer, an owning product or
+architecture contract, or established behavior already used by the system.
 
+When that evidence does not exist, require the caller to provide an explicit
+value or defer the choice instead of introducing a speculative default or
+extension point.
+
+## Model-facing contracts
+
+Write prompts, Tool schemas, Tool results, and model-visible diagnostics from
+the model's task perspective. Include the information needed to choose and
+complete the next action; do not expose UI state, transport details, database
+structure, internal service names, or implementation vocabulary unless the
+model must act on that concept.
+
+A failure on a model-visible path must return a bounded, actionable result that
+identifies the failed subject, the relevant condition, and any safe next action.
+Do not silently drop the failure or dump stack traces, raw provider responses,
+internal records, or unbounded diagnostic output into model context.
+
+Treat stable model-visible wording and schemas as behavior. Changes require an
+update to the owning contract and verification through the assembled model
+request or Tool execution path.
+
+## Enforcement
+
+The operation that reads protected data, mutates authoritative state, or causes
+an external side effect must obtain and enforce authorization, tenant scope,
+limits, and policy decisions from the owning Backend permission model at that
+execution boundary. Upstream layers may perform an equivalent preflight for
+faster feedback, but Frontend visibility, prompt instructions, Tool-schema
+omission, API wrappers, and ordinary call ordering are user-experience guidance,
+not security enforcement.
+
+Tests for a denial rule must exercise the real executor or mutation boundary,
+including relevant alternate callers that could bypass an upstream check.
+
+## Independent outcomes
+
+Report independent execution outcomes as separate facts. Acceptance, execution,
+persistence, synchronization, delivery, timeout, cancellation, and cleanup may
+coexist; do not collapse them into one success flag or infer one outcome from
+another.
+
+## Public result contracts
+
+A public Backend contract has one documented success, failure, cancellation,
+and uncertain-outcome model. Adapters normalize provider-, transport-, worker-,
+and implementation-specific result forms at the owning boundary before
+returning them to consumers.
+
+Consumers depend only on the normalized contract and must not guess whether the
+same outcome arrives through an exception, status field, terminal event, empty
+value, or transport closure. Preserve internal defects as internal failures
+instead of misclassifying them as ordinary provider or business outcomes.
+
+Test every supported source form through the real consumer-facing boundary.
+
+## State publication
+
+Publish events, notifications, cache updates, projections, and user-visible
+state only after the authoritative operation reaches its documented commit
+point. A prepared, accepted, queued, or attempted operation is not a committed
+outcome.
+
+Derived state must be rebuilt or updated from the authoritative committed fact,
+not from an optimistic side path. When an external side effect has an uncertain
+outcome, record and reconcile that uncertainty instead of publishing success or
+blindly repeating the operation.
+
+## Complete-operation bounds
+
+Apply item, byte, token, time, and concurrency limits at the owner of the
+complete returned, persisted, queued, or model-visible result. Include wrappers,
+metadata, retries, pagination assembly, and encoded representations when
+evaluating the bound; a limit on one intermediate step is not a complete
+operation bound.
+
+Test limits below, at, and above the boundary, including one oversized item and
+multi-byte text where byte limits apply. Reject or truncate only according to
+the owning contract, and report truncation explicitly.

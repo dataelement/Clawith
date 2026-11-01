@@ -43,3 +43,9 @@ From `frontend/` directory:
 - **Design System**: Use Tailwind CSS and shadcn/ui components for consistent design tokens.
 - **Responsive Layout**: Ensure layouts adapt gracefully to desktop and mobile viewports.
 - **Micro-Interactions**: Use smooth CSS transitions and hover states for interactive elements.
+
+---
+
+## 5. Lifecycle Ownership
+
+Frontend-specific lifecycle ownership and cleanup rules will be defined here.

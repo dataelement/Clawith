@@ -72,5 +72,10 @@ asyncio_mode = "auto"
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+]
+
 [tool.setuptools.packages.find]
 include = ["app*"]
