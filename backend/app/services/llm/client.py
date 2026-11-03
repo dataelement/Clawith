@@ -581,11 +581,13 @@ class OpenAICompatibleClient(LLMClient):
         supports_tool_choice: bool = True,
         supports_parallel_tool_calls: bool = False,
         supports_cache_control: bool = False,
+        provider: str | None = None,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
         self.supports_parallel_tool_calls = supports_parallel_tool_calls
         self.supports_cache_control = supports_cache_control
+        self.provider = provider.lower() if provider else None
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -606,6 +608,29 @@ class OpenAICompatibleClient(LLMClient):
         if url.endswith("/chat/completions"):
             url = url[: -len("/chat/completions")]
         return url
+
+    # OpenAI/Azure reasoning models (o-series, GPT-5+) reject ``max_tokens``
+    # on Chat Completions and only accept ``max_completion_tokens``.
+    _COMPLETION_TOKENS_MODEL = re.compile(r"^(o\d|gpt-[5-9])")
+    _O_SERIES_MODEL = re.compile(r"^o\d")
+
+    def _is_first_party_reasoning_model(self, pattern: re.Pattern[str]) -> bool:
+        """True for OpenAI/Azure reasoning models matched by ``pattern``.
+
+        The rename only applies to the first-party OpenAI and Azure
+        endpoints; other OpenAI-compatible providers may still require the
+        legacy fields for the same model names.
+        """
+        if self.provider not in ("openai", "azure"):
+            return False
+        return bool(self.model and pattern.match(self.model.lower()))
+
+    def _uses_max_completion_tokens(self) -> bool:
+        return self._is_first_party_reasoning_model(self._COMPLETION_TOKENS_MODEL)
+
+    def _is_o_series_reasoning_model(self) -> bool:
+        # Azure documents no parallel tool calls for the o-series.
+        return self._is_first_party_reasoning_model(self._O_SERIES_MODEL)
 
     def _build_payload(
         self,
@@ -632,13 +657,16 @@ class OpenAICompatibleClient(LLMClient):
             payload["stream_options"] = {"include_usage": True}
 
         if max_tokens:
-            payload["max_tokens"] = max_tokens
+            if self._uses_max_completion_tokens():
+                payload["max_completion_tokens"] = max_tokens
+            else:
+                payload["max_tokens"] = max_tokens
 
         if tools:
             payload["tools"] = tools
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
-            if self.supports_parallel_tool_calls:
+            if self.supports_parallel_tool_calls and not self._is_o_series_reasoning_model():
                 payload["parallel_tool_calls"] = True
 
         # Add any additional kwargs
@@ -2634,6 +2662,7 @@ def create_llm_client(
                 spec.supports_parallel_tool_calls if spec else False
             ),
             supports_cache_control=normalized_provider == "qwen",
+            provider=normalized_provider,
         )
     else:
         # Default to OpenAI-compatible for unknown providers
