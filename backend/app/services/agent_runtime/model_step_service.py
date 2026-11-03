@@ -899,6 +899,16 @@ def _prompt_messages(
             )
         if not isinstance(raw_provider_call_ids, Mapping):
             raw_provider_call_ids = {}
+        message_additional_kwargs = raw.get("additional_kwargs")
+        raw_provider_signatures = raw.get("provider_thought_signatures")
+        if not isinstance(raw_provider_signatures, Mapping):
+            raw_provider_signatures = (
+                message_additional_kwargs.get("provider_thought_signatures")
+                if isinstance(message_additional_kwargs, Mapping)
+                else {}
+            )
+        if not isinstance(raw_provider_signatures, Mapping):
+            raw_provider_signatures = {}
         if isinstance(raw_tool_calls, list):
             provider_tool_calls = []
             for raw_call in raw_tool_calls:
@@ -916,6 +926,12 @@ def _prompt_messages(
                 ):
                     provider_call_ids[call_instance_id] = provider_call_id
                     call["id"] = provider_call_id
+                if isinstance(call_instance_id, str):
+                    thought_signature = raw_provider_signatures.get(
+                        call_instance_id
+                    )
+                    if isinstance(thought_signature, str) and thought_signature:
+                        call["_gemini_thought_signature"] = thought_signature
                 provider_tool_calls.append(call)
         raw_tool_call_id = raw.get("tool_call_id")
         provider_tool_call_id = (
@@ -1034,6 +1050,7 @@ def _with_call_instances(
     run_id = uuid.UUID(context.run_id)
     calls: list[JsonObject] = []
     provider_call_ids: dict[str, str] = {}
+    provider_thought_signatures: dict[str, str] = {}
     for index, raw_call in enumerate(result.tool_calls):
         provider_call_id = raw_call.get("id")
         if not isinstance(provider_call_id, str) or not provider_call_id.strip():
@@ -1047,15 +1064,27 @@ def _with_call_instances(
         )
         call["provider_call_id"] = provider_call_id.strip()
         provider_call_ids[cast(str, call["id"])] = provider_call_id.strip()
+        thought_signature = raw_call.get("_gemini_thought_signature")
+        if isinstance(thought_signature, str) and thought_signature:
+            provider_thought_signatures[cast(str, call["id"])] = thought_signature
         calls.append(call)
     assistant_message = cast(JsonObject, deepcopy(result.assistant_message))
     assistant_message["tool_calls"] = [
-        {key: value for key, value in call.items() if key != "provider_call_id"}
+        {
+            key: value
+            for key, value in call.items()
+            if key not in {"provider_call_id", "_gemini_thought_signature"}
+        }
         for call in calls
     ]
-    assistant_message["additional_kwargs"] = {
+    additional_kwargs: dict[str, object] = {
         "provider_call_ids": provider_call_ids,
     }
+    if provider_thought_signatures:
+        additional_kwargs["provider_thought_signatures"] = (
+            provider_thought_signatures
+        )
+    assistant_message["additional_kwargs"] = additional_kwargs
     return replace(
         result,
         assistant_message=assistant_message,
