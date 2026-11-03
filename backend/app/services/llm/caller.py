@@ -141,6 +141,8 @@ def _sanitize_tool_calls_for_context(
         }
         if "_gemini_extra" in tc:
             new_tc["_gemini_extra"] = tc["_gemini_extra"]
+        if "_gemini_thought_signature" in tc:
+            new_tc["_gemini_thought_signature"] = tc["_gemini_thought_signature"]
         sanitized.append(new_tc)
 
     return sanitized, None, None

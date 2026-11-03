@@ -1665,9 +1665,13 @@ class GeminiClient(LLMClient):
                         if "_gemini_extra" in tc:
                             func_call_dict.update(tc["_gemini_extra"])
 
-                        parts.append({
+                        call_part: dict[str, Any] = {
                             "functionCall": func_call_dict
-                        })
+                        }
+                        thought_signature = tc.get("_gemini_thought_signature")
+                        if isinstance(thought_signature, str) and thought_signature:
+                            call_part["thoughtSignature"] = thought_signature
+                        parts.append(call_part)
                 if parts:
                     contents.append({"role": "model", "parts": parts})
                 continue
@@ -1767,8 +1771,8 @@ class GeminiClient(LLMClient):
                     seen_tool_calls.add(dedup_key)
                     
                     extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
-                    
-                    tool_calls.append({
+
+                    tool_call: dict[str, Any] = {
                         "id": f"call_{len(tool_calls) + 1}",
                         "type": "function",
                         "function": {
@@ -1776,7 +1780,11 @@ class GeminiClient(LLMClient):
                             "arguments": args_str,
                         },
                         "_gemini_extra": extra,
-                    })
+                    }
+                    signature = part.get("thoughtSignature")
+                    if isinstance(signature, str) and signature:
+                        tool_call["_gemini_thought_signature"] = signature
+                    tool_calls.append(tool_call)
 
         usage = self._normalize_usage(data.get("usageMetadata"))
 
@@ -1928,8 +1936,8 @@ class GeminiClient(LLMClient):
                             seen_tool_calls.add(dedup_key)
                             
                             extra = {k: v for k, v in function_call.items() if k not in ["name", "args"]}
-                            
-                            tool_calls.append({
+
+                            streamed_call: dict[str, Any] = {
                                 "id": f"call_{len(tool_calls) + 1}",
                                 "type": "function",
                                 "function": {
@@ -1937,7 +1945,10 @@ class GeminiClient(LLMClient):
                                     "arguments": args_str,
                                 },
                                 "_gemini_extra": extra,
-                            })
+                            }
+                            if isinstance(signature, str) and signature:
+                                streamed_call["_gemini_thought_signature"] = signature
+                            tool_calls.append(streamed_call)
 
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
             raise LLMError(f"Connection failed: {e}")
