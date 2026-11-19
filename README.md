@@ -98,6 +98,7 @@ bash setup.sh --dev   # Development: also installs pytest and test tools (~3 min
 
 This will:
 1. Create `.env` from `.env.example`
+   and set `JWT_SECRET_KEY` to a unique random value (for example, generate one with `openssl rand -hex 32`). Keep the same key across restarts and instances; changing it invalidates existing login tokens.
 2. Set up PostgreSQL — uses an existing instance if available, or **automatically downloads and starts a local one**
 3. Install backend dependencies (Python venv + pip)
 4. Install frontend dependencies (npm)

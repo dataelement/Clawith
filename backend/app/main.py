@@ -127,10 +127,13 @@ async def lifespan(app: FastAPI):
     logger.info("[startup] Logging configured")
     _log_bwrap_startup_status()
 
-    # Warn about default JWT secrets in production
-    if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
+    if not settings.JWT_SECRET_KEY.strip() or "change-me" in settings.JWT_SECRET_KEY.lower():
+        raise RuntimeError("JWT_SECRET_KEY must be set to a unique random secret; generate one with: openssl rand -hex 32")
+
+    # Warn about the separate application secret.
+    if "change-me" in settings.SECRET_KEY.lower():
         logger.warning(
-            "[startup] WARNING: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. "
+            "[startup] WARNING: SECRET_KEY contains default 'change-me' value. "
             "This is insecure for production. Set unique secrets in your .env file."
         )
 

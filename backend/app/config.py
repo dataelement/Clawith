@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     INSTANCE_ID: str = _default_instance_id()
 
     # JWT
-    JWT_SECRET_KEY: str = "change-me-jwt-secret"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60

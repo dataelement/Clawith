@@ -46,7 +46,7 @@ services:
       STORAGE_LOCAL_ROOT: /data/agents
       DOCKER_NETWORK: ${CLAWITH_DOCKER_NETWORK:-clawith_network}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       PROCESS_ROLE: all
       AGENT_RUNTIME_COMMAND_CONCURRENCY: ${AGENT_RUNTIME_COMMAND_CONCURRENCY:-10}
       AGENT_RUNTIME_V2_ENABLED: "true"
